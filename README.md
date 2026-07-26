@@ -1,6 +1,6 @@
-<!-- 运行截图 -->
+Windows 桌面宠物：让 Rain World 的蛞蝓猫住在你的屏幕上。exe 见 release 压缩包。
 
-Windows 桌面宠物：让 Rain World 的蛞蝓猫住在你的屏幕上。
+RainWorld里控制蛞蝓猫各个bodychunk拼接和行动的质点系统是C#写的，反编译后参考常量和主要函数就能足够相似的模拟。但粒子shader等效果难以复现原游戏渲染，又为了提升桌宠性能，所以我做了大量简化。
 
 ## 运行要求
 
@@ -25,7 +25,9 @@ python run_slugcatpet.py
 
 ---
 
-A Windows desktop pet that puts Rain World's slugcats on your screen.
+A Windows desktop pet that puts Rain World's slugcats on your screen. The .exe is in the release zip.
+
+The mass-point system in Rain World that controls the connection and movement of the slugcat's various body chunks is written in C#. After decompiling it, I referred to its constants and main functions, which was enough to create a sufficiently similar simulation. However, effects like particle shaders are hard to replicate to match the original game's rendering, and to boost the desktop pet's performance, I made extensive simplifications.
 
 ## Requirements
 
