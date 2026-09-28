@@ -1247,6 +1247,9 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
         self._draw_fx_under(p)
 
+        if self.spears:
+            self._draw_back_spears(p)
+
         for pet in self.pets:
             fx = pet.behavior.exclusive_fx() if pet.behavior is not None else None
             if fx is not None:

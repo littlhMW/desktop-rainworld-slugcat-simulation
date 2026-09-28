@@ -6,11 +6,13 @@ MOOD_NOISE_AMP = 0.20
 
 # 趴下休息：体力驱动的强制疲劳
 EXHAUST_ENTER_ENERGY = 0.1
+# 没饱食度（体力回不了）时低于这个值就主动去睡：醒来回满体力但掉一级业力
+STARVE_REST_ENERGY = 0.35
 EXHAUST_EXIT_ENERGY = 0.50
 LIE_SETTLE_TICKS = 40
 
 # 耗能玩法体力门
-PLAY_ENERGY_GATE = 0.40
+PLAY_ENERGY_GATE = 0.30
 
 # 性格接线全局旋钮
 PERS_ACT_SPREAD  = 1.0
@@ -24,7 +26,7 @@ POLE_START = 0.70
 POLE_QUIT = 0.30
 POLE_INIT = 0.30
 POLE_DECAY = 0.0040
-POLE_RECOVER = 0.00058
+POLE_RECOVER = 0.00100
 POLE_SF_FRESH = 1.50
 POLE_SF_TIRED = 0.10
 
@@ -39,7 +41,7 @@ HPOLE_START = 0.72
 HPOLE_QUIT = 0.30
 HPOLE_INIT = 0.30
 HPOLE_DECAY = 0.0035
-HPOLE_RECOVER = 0.00060
+HPOLE_RECOVER = 0.00100
 HPOLE_SF_FRESH = 1.30
 HPOLE_SF_TIRED = 0.10
 
@@ -49,7 +51,7 @@ CEIL_START = 0.75
 CEIL_QUIT = 0.30
 CEIL_INIT = 0.10
 CEIL_DECAY = 0.0018
-CEIL_RECOVER = 0.00038
+CEIL_RECOVER = 0.00070
 CEIL_SF_FRESH = 1.30
 CEIL_SF_TIRED = 0.15
 # 避水闸：涨水强制中断上吊顶
@@ -58,12 +60,12 @@ CEIL_WATER_ENERGY_GATE = 0.20
 # 发呆兜底候选权重与驻留
 IDLE_BASE = 1.00
 IDLE_SF_KNEE = 0.9
-IDLE_SF_FRESH = 0.30
+IDLE_SF_FRESH = 0.18
 IDLE_SF_TIRED = 24.0
-IDLE_HOLD_MIN = 120
-IDLE_HOLD_MAX = 520
+IDLE_HOLD_MIN = 55
+IDLE_HOLD_MAX = 240
 IDLE_HOLD_TIRED_MULT = 1.8
-IDLE_BREATHER = 50
+IDLE_BREATHER = 40
 
 # 饱食度
 FOOD_INIT = 2
@@ -223,7 +225,7 @@ WALL_START = 0.68
 WALL_QUIT = 0.30
 WALL_INIT = 0.30
 WALL_DECAY = 0.0038
-WALL_RECOVER = 0.00058
+WALL_RECOVER = 0.00100
 WALL_SF_FRESH = 1.30
 WALL_SF_TIRED = 0.10
 WALL_SEEK_R = 90.0            # 墙在这么近内才想起来爬
@@ -282,7 +284,7 @@ PLAYCUR_START = 0.66
 PLAYCUR_QUIT = 0.30
 PLAYCUR_INIT = 0.30
 PLAYCUR_DECAY = 0.0042
-PLAYCUR_RECOVER = 0.00065
+PLAYCUR_RECOVER = 0.00110
 PLAYCUR_SF_FRESH = 1.25
 PLAYCUR_SF_TIRED = 0.12
 PLAYCUR_R = 320.0             # 光标在此半径内才会想过去
@@ -333,9 +335,9 @@ PAT_SPAN = 13.0                   # 竖向折返半高（px）
 PET_SOOTHE = 0.05                 # 一次抚摸/拍拍的安抚量（双方 temper 各降）
 # ── 平时随手小动作：不在社交欲望态里也能冒出来（词表同一份）──
 IDLE_SOCIAL_CHECK = 90            # 每隔这么多 tick 掷一次骰
-IDLE_SOCIAL_P = 0.30              # 附近有同伴时的触发概率（再乘性格）
+IDLE_SOCIAL_P = 0.45              # 附近有同伴时的触发概率（再乘性格）
 IDLE_SOCIAL_CURSOR_P = 0.35       # 鼠标在附近停够久时对鼠标做动作的概率
-IDLE_SOCIAL_CD = 420              # 一次平时小动作后的冷却（约 10s）
+IDLE_SOCIAL_CD = 300              # 一次平时小动作后的冷却（约 10s）
 IDLE_SOCIAL_TICKS_MIN = 40        # 单次小动作时长
 IDLE_SOCIAL_TICKS_MAX = 130
 IDLE_SOCIAL_HOLD = 30             # 做完歇一拍再重抽
@@ -388,6 +390,7 @@ FOOD_URGE_RATE_FULL = 1.0 / 14400.0   # 吃饱了：约 360s（频率更低）
 FOOD_SEEK_P         = 0.75            # 攒满也只是这个命中率 → 找食频率整体略降
 # 代谢：体力每消耗满一条（energy 1.0）扣一格饱食
 METAB_FOOD_PER_BAR  = 1
+METAB_FOOD_PER_REC_BAR = 1     # 回一条体力也得吃一格（体力经济）
 
 # 玩耍式狩猎：不饿但手里有矛/石头时，也会拿手里的家伙打飞虫
 HUNT_PLAY_PROB      = 0.05     # 每次重算闸（每 8 tick）掷中的概率

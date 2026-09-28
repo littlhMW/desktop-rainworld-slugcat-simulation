@@ -120,6 +120,7 @@ SPEAR_GRAB_PAD = 8.0
 SCAVENGER_GRAB_PAD = 14.0
 SPEAR_HIT_SPEED = 7.0            # （保留）飞矛最低速度；现按原版只认 Mode.Thrown
 SPEAR_HIT_PAD = 6.0
+SPEAR_COB_PAD = 5.0      # 原版 Weapon.cs:416 thrownBy is Player ⇒ 判定半径 +5f
 SPEAR_DMG = 1.0                   # Spear.HitSomething: Violence(Stab, spearDamageBonus=1f, 20f)
 SPEAR_STUN_BONUS = 20.0           # 上句里的 stunBonus = 20f
 STONE_DMG = 0.01                  # Rock.HitSomething: Violence(Blunt, 0.01f, 45f)
@@ -218,6 +219,19 @@ def _hit_is_head(creature, x, y, pad: float = 0.0) -> bool:
         if math.hypot(x - s.x, y - s.y) - (s.rad + pad) < d_head:
             return False
     return True
+
+
+def _cob_hit(cb, sp, pad: float = 0.0):
+    """飞矛扫掠线段 vs 爆米花两个 chunk 圆（原版 Weapon.cs:413-416 逐 chunk 判定）。
+
+    旧实现只拿矛的当前点去比，40px/帧的矛一帧跨过整个豆荚 ⇒ 命中率奇低。
+    """
+    r = sp.rad + cb.rad + pad
+    ax, ay = getattr(sp, "last_x", sp.x), getattr(sp, "last_y", sp.y)
+    for px, py in (cb.p0, cb.p1):
+        if _seg_dist(ax, ay, sp.x, sp.y, px, py) < r:
+            return (sp.x, sp.y)
+    return None
 
 
 def _seg_dist(ax, ay, bx, by, x, y) -> float:
@@ -1990,15 +2004,18 @@ class ItemInteractionMixin:
                 if killed:
                     self._lizard_death_fx(lz)
                 break
-            for cb in self.seedcobs:                          # 矛扎中爆米花 → 开荚
+            for cb in self.seedcobs:                          # 矛扎中爆米花 → 开荚 + 插住
                 if cb.opened or cb.dead:
                     continue
-                if _dist_to_path((cb.p0, cb.p1), sp.x, sp.y) > sp.rad + 12.0:
+                hit = _cob_hit(cb, sp, SPEAR_COB_PAD)
+                if hit is None:
                     continue
                 cb.open_cob()
                 kx = 1.0 if sp.vx >= 0.0 else -1.0
-                sp.vx *= 0.5
-                sp.vy *= 0.5
+                sp.vx = sp.vy = 0.0
+                sp.stuck = True
+                sp.stuck_angle = sp.angle_deg
+                sp.stuck_to = (cb, hit[0] - cb.x, hit[1] - cb.y)
                 self._shake[0] += 0.4 * kx
                 break
             for small in (*self.batflies, *self.squidcadas):   # 小生物：一矛带走
@@ -2065,9 +2082,32 @@ class ItemInteractionMixin:
             elif pl is None and sp.pinned and sp.state == ItemState.FREE:
                 sp.pole = self._make_spear_pole(sp)
 
-    def _draw_spears(self, p):
+    def _back_spear_set(self):
+        """当前被某只猫背在背上的矛（这些要画在猫身体之后）。"""
+        out = set()
+        for pet in self.pets:
+            bs = getattr(pet.body, "back_spear", None)
+            if bs is not None:
+                out.add(id(bs))
+        return out
+
+    def _draw_back_spears(self, p):
+        """背上的矛：画在猫之前（原版 spearOnBack 归 body 层，不该压在猫身上）。"""
         ts = self._ts
         for sp in self.spears:
+            if id(sp) not in self._back_spear_set():
+                continue
+            x = sp.last_x + (sp.x - sp.last_x) * ts
+            y = sp.last_y + (sp.y - sp.last_y) * ts
+            ang = _ang_lerp(sp.last_angle, sp.angle_deg, ts)
+            draw_spear(p, self.atlas, x, y, ang, length=SPEAR_DRAW_LEN)
+
+    def _draw_spears(self, p):
+        ts = self._ts
+        back = self._back_spear_set()
+        for sp in self.spears:
+            if id(sp) in back:
+                continue
             x = sp.last_x + (sp.x - sp.last_x) * ts
             y = sp.last_y + (sp.y - sp.last_y) * ts
             ang = sp.stuck_angle if sp.stuck else _ang_lerp(sp.last_angle, sp.angle_deg, ts)

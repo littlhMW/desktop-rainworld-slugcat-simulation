@@ -48,6 +48,8 @@ class HudPanel(QWidget):
         outer.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)   # 尺寸随内容自适应
         self._panel = QWidget()
         self._panel.setObjectName("hudPanel")
+        # 普通 QWidget 不画 QSS 背景 → 必须开 WA_StyledBackground，否则面板是透的
+        self._panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._panel.setStyleSheet(_PANEL_QSS)
         pbox = QVBoxLayout(self._panel)
         pbox.setContentsMargins(10, 8, 10, 8)

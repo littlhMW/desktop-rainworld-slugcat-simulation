@@ -81,6 +81,12 @@ python run_slugcatpet.py
 - **被鼠标抓着的时候**：靠近杆子或地上的东西会自己伸手去够——松手就抓牢，竖杆爬上去、横杆（含钉成杆的矛）就地挂住；抓住的食物拖远也不撒手。
 - **被指向 / 被指指点点**：鼠标只要在猫附近**待够一段时间**就会招来指向和指指点点，**不需要把鼠标停住不动**；挪远了就重新计时。
 - **所有猫都死掉**时会一起走一遍转生：先守灵片刻（这段时间同伴仍能扒拉救回），随后尸身升起白色灵光，全体在屏幕顶部中央转世复活。
+- **体力经济**：除了站着发呆（算歇气，会慢慢喘回来，且走动就不算歇气），**任何行动都要耗体力**——爬杆爬墙最费、取果躲闪次之、其它动作兜底扣。每耗掉一条体力扣一格饱食度，**往回涨一条体力也要扣一格**，所以回体力全靠吃。没饱食度又没体力时，猫会自己趴下睡着（睡到位后体力回满，**代价是掉一级业力**）；吃饱了睡则照常涨业力。
+- **投矛打爆米花**：矛的判定改成按本帧扫掠线段比豆荚（原版 `Weapon.cs` 逐 chunk 命中判定，判半径还带玩家投掷的 +5），不会再一帧跨过整个豆荚而漏判；打中的矛**会插在豆荚上**跟着豆荚晃，想拿回来可以捡（插在生物身上的仍然拔不动）。
+- **活泼度**：发呆驻留时间缩短、发呆权重下调、爬杆/爬墙/追鼠标/小动作的兴趣回升都调快了，玩耍的体力门也放宽了，猫整体更爱动。
+- **猎手背上的备用矛**画在猫身后（原来压在猫身上）。
+- **状态面板**底板修好了（普通 QWidget 要开 `WA_StyledBackground` 才会画 QSS 底色，之前是透的）。
+- **跳跃高度已核对**：我们的物理 1 逻辑单位 = 原版 1 像素（身体 17），实测站立跳峰高 43.7，与按 `Player.cs` 常数独立复刻的结果（44.0）一致；相对画出来的猫高（约 37）是 1.18 倍，和原版观感一致，所以这里不需要按画面再缩放。
 
 ## 素材与版权说明
 
@@ -171,6 +177,12 @@ The same vocabulary also drives **everyday** gestures (when the social urge has 
 - **While the mouse is holding the cat**: it reaches out for poles and loose items by itself - let go and it keeps its grip, climbing a vertical pole or hanging off a horizontal one (including spears lodged into a beam pole); food in its hand is not let go even if you drag the cat away.
 - **Being pointed at**: the cursor only has to *stay near* the cat for a while to draw a point or a scolding - it does **not** have to be held perfectly still; move it away and the timer restarts.
 - When **every cat is dead** they reincarnate together: after a short wake (a companion can still nuzzle one back during it) their bodies rise as white motes and they are all reborn at the top centre of the screen.
+- **Stamina economy**: standing still counts as catching your breath (it trickles back, and pacing around does not count as resting), but **every other action costs stamina** - climbing poles and walls most, fetching fruit and dodging next, anything else a small flat amount. Every stamina bar spent costs one pip of satiety, and **refilling a bar costs one too**, so stamina recovery is paid for with food. With no satiety and no stamina the cat puts itself to sleep (it wakes with a full bar but **loses one karma**); sleeping with food in its belly raises karma as usual.
+- **Throwing a spear at a popcorn plant**: hit detection is now a per-frame swept segment against the cob's chunks (matching `Weapon.cs`, radius +5 for player throws), so a fast spear no longer tunnels through it; the spear that opens the cob **sticks into it** and sways along with it, and can be picked back out (spears stuck in creatures still cannot).
+- **Liveliness**: shorter idle dwell, lower idle weight, faster interest recovery for poles/walls/cursor/small gestures and a lower play stamina gate - the cat is generally busier.
+- **The hunter's spare spear on its back** is drawn behind the cat instead of on top of it.
+- **The status panel background** is fixed (a plain QWidget needs `WA_StyledBackground` to paint its QSS background; it used to be see-through).
+- **Jump height verified**: one logical unit is one original-game pixel (body = 17), and the measured standing jump peak is 43.7, matching an independent replay of the `Player.cs` constants (44.0) - 1.18x the drawn cat height, the same look as the game, so no pixel-ratio rescaling is needed.
 
 ## Origin
 
