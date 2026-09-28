@@ -14,12 +14,13 @@ def _lerp(x, lo, hi, flo, fhi):
 class MoodContext:
     __slots__ = ("energy", "temper", "has_climbable_pole", "cold", "has_warm_lamp",
                  "has_hpole", "can_ceiling_play", "can_ceil_hang", "submerged",
-                 "near_wall", "near_ceiling", "peer_near", "cursor_close", "threat")
+                 "near_wall", "near_ceiling", "peer_near", "cursor_close", "threat",
+                 "social_urge")
 
     def __init__(self, energy, temper, has_climbable_pole, cold=0.0, has_warm_lamp=False,
                  has_hpole=False, can_ceiling_play=True, can_ceil_hang=True, submerged=False,
                  near_wall=False, near_ceiling=False, peer_near=False,
-                 cursor_close=False, threat=0.0):
+                 cursor_close=False, threat=0.0, social_urge=0.0):
         self.energy = energy
         self.temper = temper
         self.has_climbable_pole = has_climbable_pole
@@ -35,6 +36,7 @@ class MoodContext:
         self.peer_near = peer_near
         self.cursor_close = cursor_close
         self.threat = threat
+        self.social_urge = social_urge
 
 
 def _one(_):
@@ -196,12 +198,13 @@ def build_arbiter(rng, personality=None):
                                       tuning.PLAYCUR_SF_FRESH),
         temper_factor=lambda t: 1.0,
         one_shot=True, init=tuning.PLAYCUR_INIT))
-    # 社交：靠近/抚摸同伴
+    # 社交欲望（第六类）：攒满才想找同伴做社交动作
     arb.add(Candidate(
         "socialize", base=tuning.SOCIAL_BASE * _pm("socialize"),
         start=tuning.SOCIAL_START, quit=tuning.SOCIAL_QUIT,
         decay=tuning.SOCIAL_DECAY, recover=tuning.SOCIAL_RECOVER,
-        gate=lambda ctx: ctx.peer_near and ctx.energy >= _gate and not ctx.submerged,
+        gate=lambda ctx: (ctx.peer_near and ctx.social_urge >= 1.0
+                          and ctx.energy >= _gate and not ctx.submerged),
         energy_factor=lambda e: _lerp(e, 0.0, 1.0, tuning.SOCIAL_SF_TIRED,
                                       tuning.SOCIAL_SF_FRESH),
         temper_factor=lambda t: 1.0,

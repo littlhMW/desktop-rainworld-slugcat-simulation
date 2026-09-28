@@ -44,6 +44,22 @@ python run_slugcatpet.py
 - **遮挡处的地面**：被前面的窗口挡住的后面窗口顶边，只有露出来的那一小段能当地板踩。
 - **睡眠**：上床前要磨蹭很久（睡意从 0 缓慢涨到 100），睡着后会睡很长一段随机时间才自然醒。
 - **移动数值对齐原版**：跳跃初速 8/7、按住续力、蹬墙跳 8/7 + 6/5、跑步 4.2、匍匐 4 全部照 `Player.cs` 取值，站立跳约 44px、跑跳约 83px。
+
+**社交动作**（第六类欲望「社交」攒满后凑到同伴身边做；动作词表见 `slugcatpet/behavior/social.py`）：
+
+| 动作 | 手势 | 含义 |
+| --- | --- | --- |
+| 指向 | 伸出手指对象，举着不放 | 指向 / 想要 / 注意 |
+| 指指点点 | 伸出收回手快速循环 1~5 次 | 指责 / 强调 |
+| 抚摸 | 伸出手，在对象上画折返 2~5 次的横线 | 喜欢 / 安抚 |
+| 拍拍 | 伸出手，在对象上画折返 2~5 次的竖线 | 喜欢 / 安抚 |
+| 复活 | 伸出手用力按压目标（身体也一起用力向下）4~8 次 | 复活中，按完对象复活 |
+| 匍匐 | 趴下 | 让路 / 抱歉 / 害怕 |
+| 匍匐指指点点 | 匍匐着指指点点 | 仇恨 / 预备攻击 / 狩猎目标 / 帮我打这个 |
+| 匍匐指向 | 匍匐着指向 | 恐惧这个对象 / 小心这个对象 |
+| 匍匐行走 | 匍匐着潜行挪动 | 害怕强敌，正在潜行 |
+
+性格决定抽得到哪些：`crawl_like` 低的猫（不肯趴）抽不到匍匐族，`point_like` 低（性格好）少指指点点，`sociability` 高更喜欢抚摸/拍拍；记恨的对象会加权匍匐指指点点。
 - 手里或脚边有矛/石头时，蛞蝓猫会主动迎战蜥蜴：捡起家伙、拉开距离、预判弹道扔出去。在杆上也能把手里的东西吃完。
 - 拖拽**爆米花**只会把豆荚拉开（植株不会挪位置，松手弹回），豆荚有弹性，也会和地面/窗口碰撞。
 - 蛞蝓猫**手里拿着东西**时，用鼠标抓着它**剧烈左右摇晃**，东西会被甩掉（先掉石头、再掉果子，最后才是矛），甩出去的物件带着摆动速度飞出去。
@@ -101,6 +117,22 @@ Nothing has a count limit any more - place as many as you like.
 - **Occluded ground**: where a window in front covers another window's top edge, only the visible sliver counts as a floor.
 - **Sleeping**: cats take a long time to get sleepy (the urge creeps from 0 up to 100) and then sleep for a long, random while before waking up.
 - **Movement numbers match the original**: jump 8/7, hold-to-boost, wall-jump 8/7 + 6/5, run 4.2 and crawl 4 are taken straight from `Player.cs`, giving a standing jump of about 44px and a running jump of about 83px.
+
+**Social actions** (the sixth desire, "social", sends a cat over to a companion once it fills up; the vocabulary lives in `slugcatpet/behavior/social.py`):
+
+| Action | Gesture | Meaning |
+| --- | --- | --- |
+| Point | reach out and hold a hand at the target | pointing / wanting / look here |
+| Point-point | extend and retract the hand 1-5 times quickly | scolding / emphasis |
+| Pet | draw a back-and-forth horizontal line on the target 2-5 times | liking / soothing |
+| Pat | draw a back-and-forth vertical line on the target 2-5 times | liking / soothing |
+| Revive | press down hard on the target 4-8 times, body pushing down too | reviving; the target comes back when the presses end |
+| Crouch | lie flat | making way / sorry / afraid |
+| Crouched point-point | point and scold while crouched | hatred / about to attack / hunt this / help me hit this |
+| Crouched point | point while crouched | afraid of this / be careful of this |
+| Crouch-walk | sneak away while crouched | afraid of a strong foe, sneaking |
+
+Personality decides which ones come up: a low `crawl_like` (won't lie down) rules out the crouch family, a low `point_like` (good-natured) means less scolding, a high `sociability` favours petting and patting, and a cat you have a grudge against gets weighted crouched scolding.
 - With a spear or rock in hand (or lying within reach) a slugcat will pick a fight with a lizard: grab the weapon, keep its distance and throw a lead shot. It can also finish a meal while hanging on a pole.
 - Dragging a **popcorn plant** only pulls the cob around (the plant stays rooted and springs back), and the cob is elastic and collides with the ground and window tops.
 - **Shake the cat violently** left and right while it holds something and it drops it (rocks first, then fruit, then spears) - the dropped item flies off with the swing's velocity.

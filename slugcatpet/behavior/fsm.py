@@ -11,6 +11,7 @@ from ..planning import (GIVEUP, HOLDING, MODE_STAY, PlanExecutor, Planner, obj_g
 from .blocking import (blocks_path, yield_target_x, on_same_pole,
                         pole_in_the_way)
 from .pointing import PointGesture
+from . import social
 from .desire import build_arbiter, MoodContext
 from .fetch import (fetch_ready, BITE_HEAD_NUDGE, EAT_APPROACH, EAT_CHOMP_POSE,
                     EAT_HOLD_POSE, EAT_INTERVAL)
@@ -38,7 +39,7 @@ T_HPOLE_TIMEOUT = 1600
 HPOLE_MAX_CLIMBS = 3
 WAKE_STABILIZE_TICKS = 30
 
-# ── 五类欲望（进食/恐惧/战斗/玩耍/睡眠）计时常量 ──
+# ── 六类欲望（进食/恐惧/战斗/玩耍/睡眠/社交）计时常量 ──
 T_WALL_RETRY = 120        # 爬墙失败后的冷却
 T_SOCIAL_RETRY = 400      # 社交冷却
 T_HELP_RETRY = 600        # 帮取食冷却
@@ -276,7 +277,7 @@ class BehaviorFSM:
         self._makeway_of = None
         self._flee_from = None
         self._flee_cd = 0
-        # 五类欲望：匍匐/爬墙/吊顶/玩耍/社交/帮取食/抗议/战斗/复活/睡眠
+        # 六类欲望：匍匐/爬墙/吊顶/玩耍/社交/帮取食/抗议/战斗/复活/睡眠
         self._wall_goal = 0
         self._wall_left = 0
         self._wall_ready = False
@@ -299,6 +300,10 @@ class BehaviorFSM:
         self._social_kind = "pet"
         self._social_target = None
         self._social_touch = 0
+        self._social_urge = 0.0
+        self._social_gesture = None
+        self._social_press_seen = 0
+        self._social_press_per = 1
         self._help_left = 0
         self._help_target = None
         self._protest_left = 0
@@ -745,7 +750,7 @@ class BehaviorFSM:
                 self._flee_from = lz
                 self._transition("FleeLizard")
 
-        # 五类欲望：社交 / 帮取食 / 反击 / 匍匐躲避 / 被抢抗议
+        # 六类欲望：社交 / 帮取食 / 反击 / 匍匐躲避 / 被抢抗议
         self._wants_tick(cursor)
 
         # 体力告急强制休息
@@ -762,6 +767,7 @@ class BehaviorFSM:
         # 取果触发：门禁 + 间隔节流重算候选
         self._fetch_check = (self._fetch_check + 1) % T_FETCH_CHECK
         self._food_urge_tick()
+        self._social_urge_tick()
         if (self._fetch_check == 0
                 and self.body.food < self.body.food_max
                 and self._food_seek_ready()
@@ -1087,7 +1093,8 @@ class BehaviorFSM:
                           near_ceiling=self._ceiling_reachable(),
                           peer_near=self._peer_near(),
                           cursor_close=self._cursor_close(),
-                          threat=self._threat_level())
+                          threat=self._threat_level(),
+                          social_urge=self._social_urge)
         return self.mood.select(ctx)
 
     def _look_candidates(self, cursor):
@@ -1150,8 +1157,17 @@ class BehaviorFSM:
             if tgt is None:
                 self._idle_hold = self._roll_idle_hold()
                 return
-            self._social_kind = "pet"
+            self._social_kind = self._pick_social_kind(tgt)
             self._social_target = tgt
+            if self._social_kind == "crouch_walk":
+                # 匍匐行走：交给现有的 CrawlAway（害怕强敌潜行）
+                self._crawl_from = None
+                self._crawl_point_to = None
+                self._crawl_left = tuning.CRAWL_AWAY_TICKS
+                self._crawl_cd = T_CRAWL_RETRY
+                self._break_active_controllers()
+                self._transition("CrawlAway")
+                return
             self._social_enter()
             self._transition("Socialize")
             return
@@ -3049,7 +3065,7 @@ class BehaviorFSM:
         self.gfx.hand_aim["r"] = None
 
     # ─────────────────────────────────────────────────────────────
-    #  五类欲望：进食 / 恐惧 / 战斗 / 玩耍 / 睡眠
+    #  六类欲望：进食 / 恐惧 / 战斗 / 玩耍 / 睡眠 / 社交
     # ─────────────────────────────────────────────────────────────
     # 判据扫描
     def _peers(self):
@@ -3271,6 +3287,40 @@ class BehaviorFSM:
                 self._transition("FleeLizard")
                 return
 
+    def _pick_social_kind(self, tgt):
+        """社交欲望攒满 → 按性格从动作词表（behavior/social.py）里加权抽一个动作。"""
+        pers = self.pers
+        soc = getattr(pers, "sociability", 0.5)
+        pl = getattr(pers, "point_like", 0.5)
+        cl = getattr(pers, "crawl_like", 0.5)
+        opts = [
+            ("pet", tuning.PET_BASE * (0.4 + 1.2 * soc)),      # 抚摸：喜欢/安抚
+            ("pat", tuning.PAT_BASE * (0.4 + 1.2 * soc)),      # 拍拍：喜欢/安抚
+            ("point", tuning.POINTHOLD_BASE),                  # 指向：想要/注意
+            ("scold", tuning.SOCIAL_SCOLD_BASE * (0.3 + 1.4 * pl)),   # 指指点点
+        ]
+        if cl > 0.25:
+            # 匍匐族：不肯趴的猫（crawl_like 低）不抽
+            opts.append(("crouch", tuning.CROUCH_SOC_BASE * (0.3 + 1.4 * cl)))
+            opts.append(("crouch_point", tuning.CROUCH_POINT_BASE * (0.3 + 1.4 * cl)))
+            opts.append(("crouch_scold",
+                         tuning.CROUCH_SCOLD_BASE * (0.3 + 1.4 * cl) * (0.4 + 1.2 * pl)))
+            if self._nearest_lizard(tuning.CRAWL_FEAR_R * 1.6) is not None:
+                opts.append(("crouch_walk", tuning.CROUCH_WALK_BASE * (0.3 + 1.4 * cl)))
+        if self.anger > 0 or self._protest_target is tgt:
+            # 记恨的对象：匍匐指指点点（仇恨/预备攻击）加权
+            opts.append(("crouch_scold", tuning.CROUCH_SCOLD_BASE * 1.5))
+        total = sum(w for _, w in opts)
+        if total <= 0.0:
+            return "pet"
+        r = self.rng.random() * total
+        acc = 0.0
+        for k, w in opts:
+            acc += w
+            if r <= acc:
+                return k
+        return opts[-1][0]
+
     def _start_protest(self, thief):
         """被抢东西 → 过去扒拉指指点点。"""
         self._social_kind = "protest"
@@ -3387,6 +3437,10 @@ class BehaviorFSM:
     def _social_cleanup(self):
         self._point_end()
         self.gfx.face_special = False
+        self.body.set_crawl(False)          # 匍匐类社交动作收势：站起来
+        self._social_gesture = None
+        self._social_press_seen = 0
+        self._social_urge = 0.0             # 社交欲望：做完归 0，重新慢慢攒
         if self._social_kind == "revive":
             self._revive_cd = T_REVIVE_RETRY
         elif self._social_kind == "protest":
@@ -3628,7 +3682,12 @@ class BehaviorFSM:
             self._social_left = self.rng.randint(tuning.SOCIAL_TICKS_MIN,
                                                  tuning.SOCIAL_TICKS_MAX)
         self._social_touch = 0
-        b.set_posture(True)
+        self._social_gesture = None      # 本次动作的手势（抚摸/拍拍/复活）
+        self._social_press_seen = 0
+        if social.is_crouch(kind):       # 匍匐族：趴着做完整段
+            b.set_crawl(True)
+        else:
+            b.set_posture(True)
         self._clear_hands()
 
     def _st_socialize(self, cursor, disturbed):
@@ -3642,27 +3701,100 @@ class BehaviorFSM:
             self._end_social()
             return
         ob = tgt.body
+        kind = social.ALIASES.get(self._social_kind, self._social_kind)
+        if social.is_crouch(kind):
+            b.set_crawl(True)              # 匍匐族：整段都趴着
         self._social_left -= 1
         d = math.hypot(ob.chunk1.x - b.chunk1.x, ob.chunk1.y - b.chunk1.y)
-        if self._social_kind == "revive":
-            # 必须贴进扒拉半径（_nuzzle_peer 量的是最近 chunk 对），否则永远救不活
+        if kind == "revive":
+            # 必须贴进按压半径（量的是最近 chunk 对），否则永远救不活
             d = self._touch_dist(ob)
         if d > tuning.SOCIAL_ARRIVE:
             b.walk_to(ob.chunk1.x)
             self.gfx.look_at = (ob.chunk0.x, ob.chunk0.y)
+            self._clear_hands()
         else:
             b.stop_walk()
             b.facing = 1 if ob.chunk0.x >= b.chunk0.x else -1
             self.gfx.look_at = (ob.chunk0.x, ob.chunk0.y)
-            if self._social_kind == "revive":
-                self._nuzzle_peer(tgt)
-            else:
-                if self._point_step():          # 一轮 3~5 下指完 → 再来一轮
-                    self._point_begin(tgt)
-                if self.timer % tuning.SOCIAL_POKE_INTERVAL == 0:
-                    self._poke(ob)
+            self._social_act(kind, tgt, ob)
         if self._social_left <= 0:
             self._end_social()
+
+    def _social_act(self, kind, tgt, ob):
+        """到位后照动作词表（behavior/social.py）演对应的手势。"""
+        if kind == "revive":
+            self._social_revive(tgt, ob)
+        elif kind == "pet":
+            self._social_stroke(tgt, ob, True)      # 抚摸：横线
+        elif kind == "pat":
+            self._social_stroke(tgt, ob, False)     # 拍拍：竖线
+        elif kind in ("point", "crouch_point"):
+            # 指向：手举着不放（不上表情），就是「看这个 / 我想要这个」
+            self.gfx.face_special = False
+            if not self._aim_target(tgt):
+                self._end_social()
+        elif kind == "crouch":
+            # 匍匐：就趴着什么也不做（让路 / 抱歉 / 害怕）
+            self.gfx.face_special = False
+            self._clear_hands()
+        else:
+            # 指指点点 / 匍匐指指点点：伸-收快速 1~5 下，指完一轮再来一轮
+            if self.timer % tuning.SOCIAL_POKE_INTERVAL == 0:
+                self._poke(ob)
+            if self._point_step():
+                self._point_begin(tgt)
+
+    def _social_stroke(self, tgt, ob, horizontal):
+        """抚摸（横线）/ 拍拍（竖线）：手贴着对象来回画 2~5 次。"""
+        g = self._social_gesture
+        if g is None or g.done:
+            n = self.rng.randint(tuning.PET_REPS_MIN, tuning.PET_REPS_MAX)
+            self._social_gesture = g = (
+                social.StrokeGesture(n, tuning.PET_ON_TICKS, "h", tuning.PET_SPAN)
+                if horizontal else
+                social.StrokeGesture(n, tuning.PAT_ON_TICKS, "v", tuning.PAT_SPAN))
+        self.gfx.face_special = True
+        ox, oy = g.offset()
+        side = "r" if ob.chunk0.x >= self.body.chunk0.x else "l"
+        self.gfx.hand_aim[side] = (ob.chunk0.x + ox, ob.chunk0.y + oy)
+        self.gfx.hand_aim["l" if side == "r" else "r"] = None
+        if g.step():
+            self._soothe(ob)                        # 画完一轮：双方都平复一点
+
+    def _social_revive(self, tgt, ob):
+        """复活：伸手按在同伴身上用力下按 4~8 下（身体跟着压），按完同伴复活。"""
+        beh = getattr(tgt, "behavior", None)
+        if beh is None:
+            self._end_social()
+            return
+        g = self._social_gesture
+        if g is None:
+            reps = self.rng.randint(tuning.REVIVE_PRESS_MIN, tuning.REVIVE_PRESS_MAX)
+            self._social_gesture = g = social.PressGesture(
+                reps, tuning.REVIVE_PRESS_TICKS, tuning.REVIVE_RELEASE_TICKS)
+            self._social_press_per = max(1, tuning.REVIVE_TOUCH_TICKS // reps)
+        self.gfx.face_special = True
+        self._point_at_peer(tgt)                    # 伸手按住同伴
+        if self._touch_dist(ob) > tuning.REVIVE_TOUCH_R:
+            return                                  # 够不着：先把身子挪过去
+        if g.pressing:                              # 身体跟着用力向下
+            self.body.chunk0.vy += tuning.REVIVE_PRESS_DOWN
+            self.body.chunk1.vy += tuning.REVIVE_PRESS_DOWN * 0.6
+        if self._social_press_seen < g.presses_done:
+            self._social_press_seen = g.presses_done
+            self._poke(ob)                          # 把同伴按下去
+            beh.nuzzle(self._social_press_per)
+            self.body.temper_shift(tuning.TEMPER_FEED * 0.5)
+        if g.step():
+            beh.nuzzle(tuning.REVIVE_TOUCH_TICKS)   # 按完就复活
+            self.body.temper_shift(tuning.TEMPER_FEED)
+            self._end_social()
+
+    def _soothe(self, ob):
+        """安抚：一次抚摸/拍拍画完，双方都平复一点。"""
+        self.body.temper_shift(-tuning.PET_SOOTHE)
+        ob.temper_shift(-tuning.PET_SOOTHE)
 
     def _aim_target(self, tgt) -> bool:
         """【指向】手臂持续瞄着目标（投掷预备/战斗瞄准）；目标无效返回 False。
@@ -3761,22 +3893,6 @@ class BehaviorFSM:
                 if d < best:
                     best = d
         return best
-
-    def _nuzzle_peer(self, peer):
-        """特殊表情扒拉：累计触碰，够了让同伴复活。"""
-        beh = getattr(peer, "behavior", None)
-        if beh is None:
-            return
-        ob = peer.body
-        self.gfx.face_special = True
-        self._point_at_peer(peer)
-        if self._touch_dist(ob) > tuning.REVIVE_TOUCH_R:
-            return
-        if self.timer % 12 == 0:
-            self._poke(ob)
-        if beh.nuzzle(1):
-            self.body.temper_shift(tuning.TEMPER_FEED)
-            self._end_social()
 
     # ── 进食互助：饱了给别的猫取食 ──
     def _help_enter(self):
@@ -4139,6 +4255,10 @@ class BehaviorFSM:
         rate = (tuning.FOOD_URGE_RATE_FULL if self.body.food >= self.body.food_max
                 else tuning.FOOD_URGE_RATE)
         self._food_urge = min(1.0, self._food_urge + rate)
+
+    # ── 社交欲望（第六类）：攒满才想找同伴做社交动作 ──
+    def _social_urge_tick(self):
+        self._social_urge = min(1.0, self._social_urge + tuning.SOCIAL_URGE_RATE)
 
     def _food_seek_ready(self) -> bool:
         """觅食闸：攒满 100 再掷一次骰，整体找食频率略降。"""

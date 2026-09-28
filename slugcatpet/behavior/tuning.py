@@ -216,7 +216,7 @@ SOCIAL_WANDER_CROSS_W = 0.8
 SOCIAL_WANDER_STAY_GAIN = 0.05
 SOCIAL_WANDER_STAY_SPAN_FRAC = 0.06
 
-# ── 五类欲望（进食/恐惧/战斗/玩耍/睡眠）──
+# ── 六类欲望（进食/恐惧/战斗/玩耍/睡眠/社交）──
 # 爬墙（窗口左右边缘＝墙）
 WALL_BASE = 1.00
 WALL_START = 0.68
@@ -313,6 +313,24 @@ SOCIAL_TICKS_MIN = 160
 SOCIAL_TICKS_MAX = 420
 SOCIAL_POKE_TICKS = 90        # 扒拉/抚摸/指指点点动作时长
 SOCIAL_POKE_INTERVAL = 22     # 每次伸手的间隔
+# ── 社交欲望（第六类：进食/恐惧/战斗/玩耍/睡眠/社交）──
+# 动作词表见 behavior/social.py；这里只放手势参数与抽取权重
+SOCIAL_URGE_RATE = 1.0 / 7200.0   # 每 tick 累积（约 120s 攒满才想找人）
+PET_BASE = 1.00                   # 抚摸
+PAT_BASE = 0.85                   # 拍拍
+POINTHOLD_BASE = 0.70             # 指向（举着不放）
+SOCIAL_SCOLD_BASE = 0.60          # 指指点点
+CROUCH_SOC_BASE = 0.45            # 匍匐
+CROUCH_POINT_BASE = 0.35          # 匍匐指向
+CROUCH_SCOLD_BASE = 0.30          # 匍匐指指点点
+CROUCH_WALK_BASE = 0.25           # 匍匐行走（有强敌时）
+PET_REPS_MIN = 2                  # 抚摸/拍拍：折返次数
+PET_REPS_MAX = 5
+PET_ON_TICKS = 10                 # 单程 tick（一个来回 = 2×）
+PET_SPAN = 15.0                   # 横向折返半宽（px）
+PAT_ON_TICKS = 9
+PAT_SPAN = 13.0                   # 竖向折返半高（px）
+PET_SOOTHE = 0.05                 # 一次抚摸/拍拍的安抚量（双方 temper 各降）
 
 # 帮别的猫取食（自己饱了别人没饱）
 HELPFEED_SEEK_R = 900.0
@@ -336,6 +354,11 @@ FIGHT_RECOVER_TICKS = 40      # 反击的迟疑
 REVIVE_TOUCH_R = 34.0        # 最近 chunk 对间距：挨着尸体就算摸到（原 26 一直够不着）
 REVIVE_TOUCH_TICKS = 150
 REVIVE_APPROACH_TICKS = 900
+REVIVE_PRESS_MIN = 4         # 复活：按压次数
+REVIVE_PRESS_MAX = 8
+REVIVE_PRESS_TICKS = 12      # 单次下压 tick
+REVIVE_RELEASE_TICKS = 8     # 单次抬手 tick
+REVIVE_PRESS_DOWN = 0.6      # 下压时身体向下的力
 
 # 恐惧：匍匐潜行躲避
 CRAWL_FEAR_R = 150.0          # 蜥蜴进这个半径 → 趴下潜行
@@ -512,8 +535,8 @@ POLE_NUDGE_POINT_TAIL = 30      # 最后这么多 tick 改成指指点点
 POLE_NUDGE_POINT_PROB = 0.5
 POLE_NUDGE_CD         = 150     # 扒拉完的冷却
 
-# 指指点点手势：伸出 → 收回，重复 3~5 次
-POINT_REPS_MIN = 3
+# 指指点点手势：伸出 → 收回，重复 1~5 次
+POINT_REPS_MIN = 1
 POINT_REPS_MAX = 5
 POINT_ON_TICKS  = 10
 POINT_OFF_TICKS = 8
