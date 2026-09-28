@@ -95,6 +95,16 @@ python run_slugcatpet.py
 - **愤怒的面条蝇成体算威胁**：`_hostile_fly` 走原版 `BigNeedleWormAI` 的 `hostile_to`（拿着它的幼体 / `tempLike < -0.25`）；`_threat_lizard`、`_nearby_lizard`、杆上投矛目标 `_nearest_throw_target` 都认它 → 会躲、会持械、会投矛打。猎食 / 矛杀名单本来就有蝙蝠、乌贼、幼面条蝇与成体。
 - **入睡即结算**：进 `Sleep` 态那一刻就扣掉睡眠饱食度（`food_hibernate` 格）并且业力 +1；睡醒只补体力，不再重复结算。
 
+**面条蝇体色对齐原版调色板（第 45 轮）**：
+
+- **幼体 / 成体各 50%**：`AGE_ROLL` = `((small, 0.5), (big, 0.5))`。
+- **体色逐档对上 wiki 调色板图**（[Adult Noodlefly](https://rainworld.miraheze.org/wiki/Adult_Noodlefly) / [Infant Noodlefly](https://rainworld.miraheze.org/wiki/Infant_Noodlefly) 的 palette 图，原图注明「每块颜色的**面积正比于出现概率**」）：
+  - 主体（成体 `lightness = 0.4`，概率 16/17·2/3）：`#440718`，色相随 `hue = WrappedRandomVariation(0.5, 0.08, 0.2)` 从紫 `#44071B` 扫到红 `#440713`。
+  - 暗档（1/3）：`lightness = 0.4·rand⁵`，一路压到纯 `palette.blackColor`，即 wiki 图顶那条黑带 `#1B0A20`。
+  - 亮档（1/17）：`lightness = 1 − 0.6·rand⁵`，底部那条粉白带。
+- **灰 / 白 / 黑那一档补上了（关键）**：原版 `Custom.HSL2RGB` 的 `switch` 只写了 `case 0..5`，`(int)(h*6)` 落到 6 以上时一个分支都不匹配，直接返回 `r = g = b = l` 的**灰**。面条蝇 `num = hue + 0.478` 有 **15.3%** 的个体 > 1 → 这些个体在原版里就是灰的。之前我们对 hue 取过 `% 1.0`（错），把这 15% 全画成了饱和红。现在按原版不取模：成体灰个体 = `#29222C`，与 wiki 图右侧那根灰柱**逐像素同值**（灰柱宽度 15% ↔ 灰个体占比 15.3%）。
+- 复核脚本 `work/scratch/pal_audit.py`：按同一套个体随机采样 4 万只，画成 wiki 那种「行高 ∝ 明度概率、列宽 ∝ 色相概率」的调色板图 → `outputs/noodlefly_palette_vs_wiki.png`（左 wiki / 右本作）。抽查：主体 `#440719` vs wiki `#440718`、灰柱 `#29222C` vs `#29222C`、顶黑 `#1B091F` vs `#1B0A20`。
+
 **社交动作**（第六类欲望「社交」攒满后凑到同伴身边做；动作词表见 `slugcatpet/behavior/social.py`）：
 
 | 动作 | 手势 | 含义 |
@@ -159,7 +169,7 @@ python run_slugcatpet.py
 - **食性与打猎（第 34 轮）**：吃素的猫（圣徒）不再去打蝙蝠/禅乌贼，捕猎冷却按食性缩放（荤 0.6× / 杂 1.0× / 素 1.4×）——猎手最愿意接着打。
 - **溪流喜欢珍珠（第 34 轮）**：`pearl_like > 1` 的猫把珍珠排在果子前面；拿到珍珠又没拾荒者可交易时不再撒手，而是**端在手里把玩**再放下；闲下来也有概率专门去把地上的珍珠叼起来拿着。
 - **工匠爆炸会吓人（第 34 轮）**：自爆的冲击先给附近同伴一次 `startle`——睡着的**被炸醒**，醒着的按性格（point_like × temper）回头指指点点，然后才吃那一记眩晕。工匠自己不吃这套。
-- **面条蝇（第 35 轮）**：工具栏新增「放面条蝇」，出生年龄随机（早先卵 25% / 幼体 40% / 成体 35%，第 44 轮起去掉卵）。数值照抄原版 `NeedleWorm.cs` / `NeedleWormGraphics.cs` / `SmallNeedleWorm.cs` / `BigNeedleWorm.cs`：幼体 3 躯干 + 4 尾、成体 5 躯干 + 10 尾、吻段 3/5 节，`chunkRad = Lerp(2,5,t)*num`（幼体 ×0.7），空中摩擦 0.999、重力 0.9、弹跳 0.3；个体随机（`wingsSize` / `fatness` / `snoutLength` / `hue = WrappedRandomVariation(0.5,0.08,0.2)` / `lightness` / `hueDiv`）与配色 `HSL2RGB(hue + 0.478, ...)` 逐项照抄，所以每只的面条蝇颜色和胖瘦都不一样。幼体（`SmallNeedleWorm`）5 口可吃、被抓会惨叫并激怒最近的成体；成体有獠牙戳（`Violence(Stab, 0.05, 30)`）与突刺（`Violence(Stab, 1.22, 60)`）两段攻击。伤害抗性也照原版（成体 0.4 / 幼体 0.2）。蛞蝓猫能徒手抓、能叼、能驯服蜥蜴时拿去当礼物（原版 `Eats 0.25/0.3`，比蝉乌贼更可口），蜥蜴会吃、石头能砸、矛能一矛带走、圣徒能超度。
+- **面条蝇（第 35 轮）**：工具栏新增「放面条蝇」，出生年龄随机（第 44 轮起去掉卵，第 45 轮起幼体 / 成体各 50%）。数值照抄原版 `NeedleWorm.cs` / `NeedleWormGraphics.cs` / `SmallNeedleWorm.cs` / `BigNeedleWorm.cs`：幼体 3 躯干 + 4 尾、成体 5 躯干 + 10 尾、吻段 3/5 节，`chunkRad = Lerp(2,5,t)*num`（幼体 ×0.7），空中摩擦 0.999、重力 0.9、弹跳 0.3；个体随机（`wingsSize` / `fatness` / `snoutLength` / `hue = WrappedRandomVariation(0.5,0.08,0.2)` / `lightness` / `hueDiv`）与配色 `HSL2RGB(hue + 0.478, ...)` 逐项照抄，所以每只的面条蝇颜色和胖瘦都不一样。幼体（`SmallNeedleWorm`）5 口可吃、被抓会惨叫并激怒最近的成体；成体有獠牙戳（`Violence(Stab, 0.05, 30)`）与突刺（`Violence(Stab, 1.22, 60)`）两段攻击。伤害抗性也照原版（成体 0.4 / 幼体 0.2）。蛞蝓猫能徒手抓、能叼、能驯服蜥蜴时拿去当礼物（原版 `Eats 0.25/0.3`，比蝉乌贼更可口），蜥蜴会吃、石头能砸、矛能一矛带走、圣徒能超度。
 - **白蜥随机体色（第 35 轮）**：白蜥改成"随机生成颜色版本"——每只出生时按 `HSL2RGB(随机色相, 0.45, ClampedRandomVariation(0.86, 0.10, k))` 抽一个**淡彩色**（低饱和 + 高亮度），头部照旧在原版 `HeadColor1/HeadColor2` 之间黑白呼吸（现在是在「黑 ↔ 个体淡彩色」之间呼吸）。
 - **蜥蜴头的四个方向（第 35 轮）**：原版 `LizardGraphics.DrawSprites` 里头的贴图行号是 `num14 = 3 - (int)(|headDepthRotation| * 3.9)`，四行分别对应**正侧面 / 斜侧面 / 斜正面 / 正对镜头**，行内再按品种取 `LizardHead{行}.{headGraphics[3]}`（Jaw / LowerTeeth / UpperTeeth / Eyes 同理）。之前这一行恒为 0，所以蜥蜴永远只用最侧面的那张头图，一转身头就"不跟着转"。现在按 `headDepthRotation` 的插值实时选行，上下前后都能取到对应精灵。
 - **蜥蜴转身支起上半身（第 35 轮）**：`depthRotation` 平时锁在 ±1（朝左/朝右），转身时从 -1 扫到 +1，中途 |depth|→0（正对镜头），头**顺着这条扫描线从一侧抬起来绕过身体转到另一侧**；转身期间驱动机的落地高度抬高 `turn_lift = TURN_LIFT * (1 - |depth|)`，也就是"支起上半身再转头"，转完自动落回。
@@ -255,10 +265,20 @@ Nothing has a count limit any more - place as many as you like.
 - **Unreachable goals are abandoned**: `HPOLE_GOAL_TIMEOUT` (150 ticks) clears the goal and lets go of the beam; `_hpole_goal_clear` also clears the controller's stop position, otherwise `StandOnBeam`'s 200-tick timeout never fires and the cat stands there until it falls off.
 - **Reaching from a pole** (`_pole_reach_pickups`): with a threat around, a spear-willing cat picks up a spear or rock in reach; a hungry cat bare-hand catches a batfly / squidcada / infant noodlefly that flies within reach (grabbing it drops the pole into `CatchFly`).
 - **Vertical poles can also "jump up and grab"**: `_pole_jump_grab` was pulled out of `_hpole_goal_jump` and is shared by both pole kinds (the original beam jump grab).
-- **Noodleflies no longer roll an egg age**: `AGE_ROLL` is infant 0.55 / adult 0.45 (an egg is an object, not a noodlefly).
+- **Noodleflies no longer roll an egg age**: `AGE_ROLL` has no egg any more (an egg is an object, not a noodlefly); round 45 makes it a flat 50/50 infant / adult.
 - **Noodlefly wings redrawn from the original**: they used to be a fixed "pair behind plus pair in front" drawn straight up, which read as a crossed skeleton. Now `WingSprite(num8, m)` with `num8 = ((l == 0) != (zrot.x > 0))` decides which side flips to the upper layer (layer 0 below, layer 1 above, legs topmost), and the direction applies `Update`'s `vector6` push (segment tangent +/-45 degrees forced upwards, blended by `|vector.y|`), so the wings sweep back the way they do in game. Infants keep the original `isVisible`: no wings once bitten down to `bites <= 4`.
 - **An enraged adult noodlefly counts as a threat**: `_hostile_fly` follows the original `BigNeedleWormAI` `hostile_to` (holding its infant / `tempLike < -0.25`); `_threat_lizard`, `_nearby_lizard` and the on-pole throw target `_nearest_throw_target` all pick it up - so cats flee it, arm themselves and throw spears at it. The hunt / spear-kill list already covered bats, squidcadas and both noodlefly ages.
 - **Sleep settles the moment the cat falls asleep**: entering `Sleep` immediately spends the hibernation food (`food_hibernate` pips) and gives +1 karma; waking only restores energy, with no double settlement.
+
+**Noodlefly body colour matched to the original palette (round 45)**:
+
+- **50/50 infant / adult**: `AGE_ROLL` is a flat `((small, 0.5), (big, 0.5))`.
+- **Colour matched band by band to the wiki palette charts** ([Adult](https://rainworld.miraheze.org/wiki/Adult_Noodlefly) / [Infant](https://rainworld.miraheze.org/wiki/Infant_Noodlefly); the charts state that every colour's **area is proportional to how likely it is**):
+  - Body (adult `lightness = 0.4`, probability 16/17·2/3): `#440718`, sweeping with `hue = WrappedRandomVariation(0.5, 0.08, 0.2)` from purple `#44071B` to red `#440713`.
+  - Dark band (1/3): `lightness = 0.4·rand^5`, running all the way down to plain `palette.blackColor`, i.e. the black band at the top of the wiki chart (`#1B0A20`).
+  - Light band (1/17): `lightness = 1 − 0.6·rand^5`, the pink-white strip along the bottom.
+- **The grey / white / black band is the fix that mattered**: the original `Custom.HSL2RGB` only writes `case 0..5`, so when `(int)(h*6)` lands on 6 or more no branch matches and it returns the flat `r = g = b = l` **grey**. A noodlefly's `num = hue + 0.478` exceeds 1 for **15.3%** of individuals, so in game those really are grey. We had been taking `h % 1.0` (wrong), which painted all 15% as saturated red. Now, as in the original: a grey adult comes out `#29222C`, **pixel-identical** to the grey column on the right of the wiki chart (column width 15% vs 15.3% of individuals).
+- Recheck script `work/scratch/pal_audit.py`: samples 40k individuals through the same individual-randomisation and draws a wiki-style chart (row height proportional to lightness probability, column width to hue probability) into `outputs/noodlefly_palette_vs_wiki.png` (wiki left, ours right). Spot checks: body `#440719` vs wiki `#440718`, grey column `#29222C` vs `#29222C`, top black `#1B091F` vs `#1B0A20`.
 
 **Social actions** (the sixth desire, "social", sends a cat over to a companion once it fills up; the vocabulary lives in `slugcatpet/behavior/social.py`):
 

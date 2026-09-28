@@ -29,12 +29,16 @@ from ..rendering.primitives import blit, draw_rope, ribbon
 from ..rendering.pixelmode import aa_hint
 from .needleworm import AGE_EGG, WING_SEG, FANG_LENGTH, _lerp_map
 
-BLACK_RGB = (27, 11, 33)        # RoomPalette.blackColor 近似值
+BLACK_RGB = (27, 10, 32)        # RoomPalette.blackColor（Outskirts；wiki 调色板图顶行同值）
 FOG_RGB = (78, 92, 104)         # RoomPalette.fogColor 近似值
 
 
 def _rgb(h, sl, l):
-    r, g, b = _hsl2rgb(h % 1.0, sl, l)
+    # 原版 Custom.HSL2RGB 的 switch 只有 case 0..5；(int)(h*6) 落在 6 以上时一个分支都
+    # 不匹配，直接返回 r=g=b=l 的**灰**。面条蝇 hue = WrappedRandomVariation(0.5,0.08,0.2)，
+    # 有 15.3% 的个体 num = hue + 0.478 > 1 → 就是灰/白/黑那一档（wiki 调色板图右侧灰柱
+    # 宽度 15%、wiki 正文「shades of red … some gray」）。这里**不能**对 hue 取模。
+    r, g, b = _hsl2rgb(h, sl, l)
     return (int(clampf(round(r * 255.0), 0, 255)),
             int(clampf(round(g * 255.0), 0, 255)),
             int(clampf(round(b * 255.0), 0, 255)))
