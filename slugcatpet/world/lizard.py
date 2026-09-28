@@ -18,7 +18,7 @@ GROUND_FRICTION = 0.84
 WALL_BOUNCE = 0.2
 BODY_SCALE = 0.86             # 相对游戏像素的整体缩放
 N_BODY = 3                    # 躯干三节（同游戏 bodyChunks）
-MAX_TAIL_SEGS = 9             # 尾段上限（红蜥 11 段在屏幕上过长）
+MAX_TAIL_SEGS = 11            # 尾段上限（原版红蜥 tailSegments=11，最长的品种）
 SEG_STIFF_BODY = 0.55         # 躯干节跟随刚度（高=挺）
 SEG_STIFF_TAIL = 0.30         # 尾节更软
 SEG_GRAV = 0.22               # 悬空（被拎起）时链节下坠
@@ -75,7 +75,12 @@ def _hsl2rgb(h: float, s: float, l: float) -> tuple[int, int, int]:
 
 
 class LizardBreed:
-    """一种蜥蜴的静态定义；字段名对应游戏 LizardBreedParams。"""
+    """一种蜥蜴的静态定义；字段名对应游戏 LizardBreedParams / LizardBreeds。
+
+    数值全部照抄 LizardBreeds.cs 中各品种的赋值（绿/粉/白优先校对过 wiki）。
+    战斗相关：原版 CreatureTemplate.baseDamageResistance = toughness * 2，
+    baseStunResistance = stunToughness，LizardState.health 初始恒为 1.0。
+    """
 
     __slots__ = ("key", "name_zh", "name_en", "hue", "sat", "light", "plain_color",
                  "body_rgb", "head_rgb", "spikes",
@@ -84,16 +89,25 @@ class LizardBreed:
                  "base_speed", "jaw_open_angle", "jaw_lower_fac", "jaw_apart",
                  "neck_stiffness", "body_stiffness", "tail_col_start", "tail_col_exp",
                  "bite_damage", "anchor_y", "head_hue_var", "head_light_var",
-                 "hide_eyes", "health")
+                 "hide_eyes", "toughness", "stun_toughness", "bite_chance",
+                 "attempt_bite_radius", "taming_difficulty", "head_shield_angle",
+                 "danger", "visual_radius", "tongue", "tongue_range", "body_mass",
+                 "flips_from_rock", "bite_damage_chance")
 
     def __init__(self, key, name_zh, name_en, hue, light, head_graphics, *,
                  size=1.0, body_rad_fac=1.0, body_length_fac=1.0, head_size=1.0,
                  tail_segs=5, tail_len_fac=1.2, limb_size=1.0, limb_thickness=1.0,
                  base_speed=4.0, jaw_open_angle=90.0, jaw_lower_fac=2.0 / 3.0,
                  jaw_apart=23.0, neck_stiffness=0.2, body_stiffness=0.2,
-                 tail_col_start=0.3, tail_col_exp=2.0, bite_damage=1.0, health=1.0,
+                 tail_col_start=0.3, tail_col_exp=2.0, bite_damage=1.0,
                  sat=1.0, plain_color=None, anchor_y=0.7,
-                 hue_var=0.10, light_var=0.15, hide_eyes=False, spikes=None):
+                 hue_var=0.10, light_var=0.15, hide_eyes=False, spikes=None,
+                 toughness=1.0, stun_toughness=1.0, bite_chance=0.5,
+                 bite_damage_chance=1.0 / 3.0,
+                 attempt_bite_radius=80.0, taming_difficulty=1.0,
+                 head_shield_angle=100.0, danger=0.45, visual_radius=900.0,
+                 tongue=False, tongue_range=0.0, body_mass=2.1,
+                 flips_from_rock=True):
         self.key = key
         self.name_zh = name_zh
         self.name_en = name_en
@@ -122,9 +136,22 @@ class LizardBreed:
         self.anchor_y = anchor_y
         self.head_hue_var = hue_var
         self.head_light_var = light_var
-        self.health = health                # 血量：矛 1.0 点，红蜥要 5 下
-        self.hide_eyes = hide_eyes          # 黑蜥不画眼睛（游戏里 isVisible=false）
+        self.hide_eyes = hide_eyes
         self.spikes = spikes                # 背刺 (graphic, colored, 出现概率)，None=无
+        # ── 原版战斗/AI 参数 ──
+        self.toughness = toughness
+        self.stun_toughness = stun_toughness
+        self.bite_chance = bite_chance          # 咬中时掷的命中概率
+        self.bite_damage_chance = bite_damage_chance   # 咬中后造成 biteDamage 的概率
+        self.attempt_bite_radius = attempt_bite_radius   # 开始尝试咬的半径（游戏像素）
+        self.taming_difficulty = taming_difficulty
+        self.head_shield_angle = head_shield_angle
+        self.danger = danger
+        self.visual_radius = visual_radius
+        self.tongue = tongue
+        self.tongue_range = tongue_range
+        self.body_mass = body_mass
+        self.flips_from_rock = flips_from_rock   # 原版红蜥不吃石头转身
         # 体/头配色：白蜥全身纯白、头按原版压黑；蝾螈灰白；黑蜥整体近黑；其余体黑头染品种色
         if plain_color == WHITE_RGB:
             self.body_rgb, self.head_rgb = WHITE_RGB, WHITE_RGB
@@ -133,6 +160,20 @@ class LizardBreed:
                                             else BLACK_RGB)
         else:
             self.body_rgb, self.head_rgb = BLACK_RGB, None
+
+    @property
+    def damage_resistance(self) -> float:
+        """原版 CreatureTemplate.baseDamageResistance = toughness * 2。
+
+        矛伤害 1.0 → 粉蜥(1)  0.5/矛 = 2 矛死（wiki：2-4 矛）；
+        绿蜥(2.5) 0.2/矛 = 5 矛（wiki：5-10 矛）；白蜥(0.9) 2 矛；红蜥(3) 6 矛。
+        """
+        return max(0.05, self.toughness * 2.0)
+
+    @property
+    def stun_resistance(self) -> float:
+        """原版 CreatureTemplate.baseStunResistance = stunToughness（不乘 2）。"""
+        return max(0.05, self.stun_toughness)
 
     def color(self, rng) -> tuple[int, int, int]:
         """出生时随机化个体色，同游戏 effectColor 的 WrappedRandomVariation。"""
@@ -149,48 +190,76 @@ class LizardBreed:
         return (color, 0.35 + 0.65 * rng.random())
 
 
-# 基础九种；数值取自 LizardBreeds / Lizard.effectColor
+# 九种基础蜥蜴：数值逐项照抄 LizardBreeds.cs（PinkLizard/GreenLizard/BlueLizard/
+# YellowLizard/WhiteLizard/RedLizard/BlackLizard/Salamander/CyanLizard）。
 BREEDS = (
     LizardBreed("pink", "粉蜥", "Pink lizard", 0.87, 0.50, (0, 0, 0, 0, 0),
-                size=1.00, base_speed=4.1, tail_segs=5, tail_len_fac=1.2, bite_damage=1.0,
-                spikes=(0, 0, 0.5), health=1.0),
+                size=1.00, base_speed=4.1, tail_segs=5, tail_len_fac=1.2,
+                bite_damage=1.0, bite_damage_chance=1.0 / 3.0, bite_chance=0.5, attempt_bite_radius=80.0,
+                taming_difficulty=1.0, danger=0.45, visual_radius=900.0,
+                body_mass=2.1, spikes=(0, 0, 0.5)),
     LizardBreed("green", "绿蜥", "Green lizard", 0.32, 0.50, (1, 1, 1, 1, 1),
                 size=1.20, base_speed=6.7, tail_segs=7, tail_len_fac=0.9, limb_size=1.4,
                 jaw_open_angle=50.0, jaw_lower_fac=0.5, jaw_apart=14.0, neck_stiffness=1.0,
                 body_stiffness=0.5, tail_col_start=0.05, tail_col_exp=4.0,
-                bite_damage=2.0, anchor_y=0.55, health=2.2, spikes=(3, 2, 0.8)),
+                bite_damage=2.0, bite_damage_chance=0.5, bite_chance=1.0 / 3.0, attempt_bite_radius=100.0,
+                anchor_y=0.55,
+                toughness=2.5, stun_toughness=2.5, taming_difficulty=0.8,
+                danger=0.45, visual_radius=850.0, body_mass=7.5, spikes=(3, 2, 0.8)),
     LizardBreed("blue", "蓝蜥", "Blue lizard", 0.57, 0.50, (0, 0, 0, 0, 0),
                 size=0.90, head_size=0.9, base_speed=3.2, tail_segs=4, tail_len_fac=1.0,
                 limb_size=0.9, jaw_open_angle=105.0, jaw_lower_fac=0.55, jaw_apart=20.0,
                 neck_stiffness=0.0, body_stiffness=0.0, tail_col_start=0.1, tail_col_exp=1.2,
-                bite_damage=0.7, health=0.5, hue_var=0.08),
+                bite_damage=0.7, bite_damage_chance=0.2, bite_chance=0.4, attempt_bite_radius=90.0,
+                toughness=0.5, stun_toughness=0.5, taming_difficulty=1.1,
+                danger=0.35, visual_radius=950.0, body_mass=1.4,
+                tongue=True, tongue_range=140.0, hue_var=0.08),
     LizardBreed("yellow", "黄蜥", "Yellow lizard", 0.10, 0.50, (0, 0, 0, 0, 0),
-                size=0.95, body_rad_fac=0.5, head_size=0.95, base_speed=3.75, tail_segs=6,
-                tail_len_fac=1.1, limb_size=0.75, jaw_open_angle=110.0, jaw_apart=15.0,
-                neck_stiffness=0.9, body_stiffness=0.7, tail_col_start=0.9,
-                bite_damage=0.2, health=0.7, hue_var=0.05),
+                size=0.93, base_speed=4.1, tail_segs=5, tail_len_fac=1.2,
+                jaw_open_angle=90.0, jaw_apart=23.0,
+                body_stiffness=0.2, tail_col_start=0.3, tail_col_exp=2.0,
+                bite_damage=0.8, bite_damage_chance=0.25, bite_chance=1.0 / 6.0, attempt_bite_radius=40.0,
+                toughness=0.8, stun_toughness=0.8, taming_difficulty=3.0,
+                danger=0.4, visual_radius=900.0, body_mass=1.7, hue_var=0.05),
     LizardBreed("white", "白蜥", "White lizard", 0.0, 1.0, (0, 0, 0, 0, 3),
                 size=1.00, base_speed=3.8, tail_segs=5, tail_len_fac=1.2,
                 jaw_open_angle=110.0, jaw_lower_fac=0.5, neck_stiffness=0.05,
                 body_stiffness=0.15, tail_col_start=0.1, tail_col_exp=1.2,
-                sat=0.0, plain_color=(255, 255, 255), anchor_y=0.75, health=1.0),
+                bite_damage=1.0, bite_damage_chance=0.2857143, bite_chance=0.5, attempt_bite_radius=85.0,
+                toughness=0.9, stun_toughness=0.9, taming_difficulty=3.0,
+                danger=0.5, visual_radius=1300.0, body_mass=2.1,
+                sat=0.0, plain_color=(255, 255, 255), anchor_y=0.75,
+                tongue=True, tongue_range=440.0),
     LizardBreed("red", "红蜥", "Red lizard", 0.0025, 0.50, (0, 0, 0, 0, 0),
-                size=1.20, head_size=1.2, base_speed=5.0, tail_segs=9, tail_len_fac=1.9,
+                size=1.20, head_size=1.2, base_speed=5.0, tail_segs=11, tail_len_fac=1.9,
                 limb_size=1.5, jaw_open_angle=140.0, body_stiffness=0.3,
-                bite_damage=4.0, health=5.0, hue_var=0.02, spikes=(0, 0, 0.7)),
+                bite_damage=4.0, bite_damage_chance=1.0, bite_chance=1.0, attempt_bite_radius=120.0,
+                toughness=3.0, stun_toughness=3.0, taming_difficulty=7.0,
+                danger=0.8, visual_radius=2300.0, body_mass=3.1,
+                tongue=True, tongue_range=350.0, flips_from_rock=False,
+                hue_var=0.02, spikes=(0, 0, 0.7)),
     LizardBreed("black", "黑蜥", "Black lizard", 0.0, 0.10, (0, 0, 0, 0, 0),
                 size=0.90, base_speed=3.9, tail_segs=6, tail_len_fac=1.2, limb_size=1.1,
-                body_stiffness=0.25, bite_damage=1.0, health=1.0, sat=0.0, plain_color=(26, 26, 26),
+                body_stiffness=0.25, bite_damage=1.0, bite_damage_chance=5.0 / 14.0, bite_chance=1.0 / 3.0,
+                attempt_bite_radius=70.0, toughness=1.0, stun_toughness=1.0,
+                taming_difficulty=4.0, danger=0.45, visual_radius=0.0, body_mass=2.0,
+                sat=0.0, plain_color=(26, 26, 26),
                 hue_var=0.0, light_var=0.0, hide_eyes=True, spikes=(0, 0, 0.7)),
     LizardBreed("salamander", "蝾螈", "Salamander", 0.90, 0.40, (2, 2, 2, 2, 2),
                 size=0.90, head_size=0.9, base_speed=3.1, tail_segs=5, tail_len_fac=1.2,
-                limb_size=0.65, jaw_apart=15.0, bite_damage=0.9, health=1.0, hue_var=0.15),
+                limb_size=0.65, jaw_apart=15.0, bite_damage=0.9, bite_damage_chance=1.0 / 3.0,
+                bite_chance=1.0 / 3.0, attempt_bite_radius=70.0,
+                toughness=1.0, stun_toughness=1.0, taming_difficulty=3.5,
+                head_shield_angle=70.0, danger=0.4, visual_radius=960.0, body_mass=2.1,
+                tongue=True, tongue_range=150.0, hue_var=0.15),
     LizardBreed("cyan", "青蜥", "Cyan lizard", 0.49, 0.50, (0, 0, 0, 0, 0),
                 size=0.65, base_speed=3.0, tail_segs=5, tail_len_fac=1.44, limb_size=0.8,
                 limb_thickness=0.8, jaw_open_angle=80.0, jaw_apart=17.0, body_stiffness=0.8,
-                bite_damage=1.0, health=0.6, hue_var=0.04),
+                bite_damage=1.0, bite_damage_chance=0.25, bite_chance=0.5, attempt_bite_radius=80.0,
+                toughness=0.35, stun_toughness=50.0, taming_difficulty=1.0,
+                head_shield_angle=70.0, danger=0.25, visual_radius=990.0, body_mass=0.8,
+                tongue=True, tongue_range=160.0, hue_var=0.04),
 )
-
 BREED_BY_KEY = {b.key: b for b in BREEDS}
 
 
@@ -239,7 +308,8 @@ class Lizard:
                  "chain_dir",
                  "held_by_hand", "water_y", "room_gravity", "_contact_floor",
                  "dead", "spacing", "spikes", "like", "tamed", "friend_id",
-                 "max_health", "health", "stun", "hurt_flash", "dead_t")
+                 "max_health", "health", "stun", "hurt_flash", "dead_t",
+                 "rock_push", "rock_push_dir")
 
     def __init__(self, x: float, y: float, breed: LizardBreed | None = None,
                  seed: int = 0, id: int = 0):
@@ -270,8 +340,12 @@ class Lizard:
         self._contact_floor = False
         self.held_by_hand = None
         self.dead = False
-        self.max_health = self.health = float(self.breed.health)
+        # 原版 HealthState/LizardState 的 health 初始恒为 1.0；
+        # 抗性走 CreatureTemplate.baseDamageResistance = toughness * 2。
+        self.max_health = self.health = 1.0
         self.stun = 0            # 受击眩晕 tick
+        self.rock_push = 0       # 被石头砸歪的剩余 tick（原版 turnedByRockCounter=20）
+        self.rock_push_dir = 0
         self.hurt_flash = 0      # 受击白闪（渲染用）
         self.dead_t = 0          # 尸体已躺 tick
 
@@ -354,6 +428,15 @@ class Lizard:
         pts.extend((s.x, s.y) for s in self.seg)
         return pts
 
+    @property
+    def notice_r(self) -> float:
+        """视野半径：原版按品种 visualRadius 缩放。
+
+        黑蜥 visualRadius = 0（全盲，只靠近身/声音），红蜥 2300 最远，白蜥 1300。
+        基准 900 = 粉蜥，保持与旧常量 NOTICE_R 同量级。
+        """
+        return clampf(NOTICE_R * self.breed.visual_radius / 900.0, 52.0, NOTICE_R * 2.2)
+
     def bounding_pad(self):
         """脏矩形外扩半径。"""
         return max(self.body_rad, self.head_rad) + 26.0 * self.breed.limb_size + 8.0
@@ -376,21 +459,86 @@ class Lizard:
         self.look_at = None
         self.state = ItemState.FREE
 
-    def hurt(self, dmg: float, kx: float = 0.0) -> bool:
-        """受伤（同游戏 Creature.Violence）：返回本次是否致死。"""
+    # ── 受击：Lizard.Violence / HitHeadShield / HitInMouth 的移植 ──
+    def hit_in_mouth(self, dvec) -> bool:
+        """原版 Lizard.HitInMouth：在 Unity(y↑) 里 direction.y > 0 直接返回 false，
+        再 Slerp(direction, up, 0.1)，与 -bodyChunks[0].Rotation 的夹角 < Lerp(-15, 11, JawOpen)。
+        """
+        dx, dy = dvec
+        ux, uy = dx, -dy                       # 本工程 y↓ → Unity y↑
+        if uy > 0.0:
+            return False
+        n = math.hypot(ux, uy)
+        if n < 1e-9:
+            return False
+        ux, uy = ux / n, uy / n
+        a0 = math.atan2(uy, ux)                # Vector3.Slerp(dir, (0,1), 0.1)
+        d = ((-a0 + math.pi) % math.tau) - math.pi
+        a = a0 + d * 0.1
+        ux, uy = math.cos(a), math.sin(a)
+        hx = math.sin(math.radians(self.head_angle))
+        hy = math.cos(math.radians(self.head_angle))
+        dot = clampf(ux * hx + uy * hy, -1.0, 1.0)
+        return math.degrees(math.acos(dot)) < lerp(-15.0, 11.0, clampf(self.jaw, 0.0, 1.0))
+
+    def hit_head_shield(self, dvec) -> bool:
+        """原版 Lizard.HitHeadShield：伤害方向与「头朝后」夹角 < headShieldAngle + 20*JawOpen
+        （也就是从正面打脸时被头甲弹开）。红蜥之外的品种在嘴张开时盾角更大。
+        """
+        if self.hit_in_mouth(dvec):
+            return False
+        n = math.hypot(dvec[0], dvec[1])
+        if n < 1e-9:
+            return False
+        dir_angle = math.degrees(math.atan2(dvec[0], -dvec[1]))
+        back = self.head_angle + 180.0          # -bodyChunks[0].Rotation
+        a = abs((dir_angle - back + 180.0) % 360.0 - 180.0)
+        return a < self.breed.head_shield_angle + 20.0 * clampf(self.jaw, 0.0, 1.0)
+
+    def hurt(self, damage: float, *, dvec=None, speed: float = 0.0,
+             stun_bonus: float = 0.0, hit_head: bool = False,
+             knock_k: float = 0.0) -> bool:
+        """受伤（原版 Creature.Violence → Lizard.Violence）。返回本次是否致死。
+
+        damage      伤害值：矛 1.0（Spear.spearDamageBonus）/ 石头 0.01（Rock）
+        dvec        攻击动量方向（单位向量，y↓）；None = 无方向
+        speed       攻击物速度；原版 momentum = vel * (mass * 2)，这里折算成 knock_k*speed
+        stun_bonus  眩晕附加：矛 20 / 石头 45
+        hit_head    是否命中头节（原版 hitChunk.index == 0）
+        """
         if self.dead:
             return True
-        self.health -= dmg
+        num = damage / self.breed.damage_resistance
+        num2 = (damage * 30.0 + stun_bonus) / self.breed.stun_resistance
+        shielded = False
+        if hit_head and dvec is not None:
+            if self.hit_in_mouth(dvec):                 # 打进喉咙：伤害 ×1.5、眩晕翻倍
+                num *= 1.5
+                num2 = min(num2 * 2.0, 120.0)
+            elif self.hit_head_shield(dvec):            # 头甲：伤害 ×0.1
+                shielded = True
+                num *= 0.1
+                num2 = ((damage * 0.5 * 30.0 + stun_bonus * (2.0 / 3.0))
+                        / self.breed.stun_resistance)
+        if dvec is not None and speed > 0.0 and knock_k > 0.0:
+            # 原版：hitChunk.vel += directionAndMomentum / hitChunk.mass
+            f = knock_k * speed / max(0.6, self.breed.body_mass)
+            if shielded:
+                f /= 3.0                                # 头盾：directionAndMomentum / 3
+            self.vx += dvec[0] * f
+            self.vy += dvec[1] * f
         self.hurt_flash = HURT_FLASH
-        self.vx += kx
-        if self.health <= 0.0:
+        self.health -= num
+        self.stun = max(self.stun, int(min(num2, 200.0)))
+        self.jaw = 0.0
+        if shielded:
+            # 原版会 WhiteFlicker + 火花：这里只保留头甲的手感（不打断目标）
+            return False
+        if self.health <= 1e-6:            # 原版 HealthState.health <= 0f（容浮点累减）
             self.kill()
             return True
-        self.stun = max(self.stun, HURT_STUN)
-        self.jaw = 0.0
         self.target = self.target_obj = None
         return False
-
     def grab(self, cursor) -> None:
         """被鼠标拎起。"""
         self.held_by_hand = True
@@ -405,8 +553,15 @@ class Lizard:
         self.vx, self.vy = vx, vy
 
     # ── 主循环 ──
-    def step(self, WL: float, HL: float, targets=(), cursor=None) -> None:
-        """推进一 tick。targets: [(obj, x, y)] 可咬目标；cursor: 鼠标逻辑坐标。"""
+    def step(self, WL: float, HL: float, targets=(), cursor=None,
+             rivals=(), prey=()) -> None:
+        """推进一 tick。
+
+        targets: [(obj, x, y)] 蛞蝓猫（原版关系 Eats 1.0）
+        rivals:  [(obj, weight)] 同族竞争者（原版 AgressiveRival，只有绿蜥有）
+        prey:    [(obj, weight)] 小猎物（原版 LizardTemplate → CicadaA Eats 0.05）
+        cursor:  鼠标逻辑坐标
+        """
         self.last_x, self.last_y = self.x, self.y
         self.last_head_angle = self.head_angle
         self.last_jaw = self.jaw
@@ -428,7 +583,7 @@ class Lizard:
         elif self.state == ItemState.MOUSE:
             self._step_held(WL, HL, cursor)
         else:
-            self._step_ai(WL, HL, targets, cursor)
+            self._step_ai(WL, HL, targets, cursor, rivals, prey)
             self._integrate(WL, HL)
 
         self._step_chain(HL)
@@ -483,7 +638,11 @@ class Lizard:
             self.vx = -abs(self.vx) * WALL_BOUNCE
 
     # ── AI ──
-    def _step_ai(self, WL, HL, targets, cursor) -> None:
+    def _step_ai(self, WL, HL, targets, cursor, rivals=(), prey=()) -> None:
+        if self.rock_push > 0:
+            # 原版 Lizard.cs：turnedByRockCounter 期间 WeightedPush(0, 2, (dir,0), 6f)
+            self.rock_push -= 1
+            self.vx += 0.14 * self.rock_push_dir * self.room_gravity
         if self.stun > 0:
             self.stun -= 1
             self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE)
@@ -492,7 +651,7 @@ class Lizard:
         if self.tamed:                           # 认主的蜥蜴不再咬人，只跟着走
             self._follow(WL, HL, targets)
             return
-        self._pick_target(targets, cursor)
+        self._pick_target(targets, cursor, rivals, prey)
         if self.bite_hold > 0:                       # 咬合保持
             self.vx *= 0.84
             self.jaw = clampf(self.jaw + JAW_OPEN_RATE * 0.4, 0.0, 0.34)
@@ -532,20 +691,35 @@ class Lizard:
         else:
             self.vx -= self.vx * 0.22
 
-    def _pick_target(self, targets, cursor) -> None:
-        """最近的可咬目标；没有则退而盯光标。"""
-        best, bestd, bestobj = None, NOTICE_R, None
+    def _pick_target(self, targets, cursor=None, rivals=(), prey=()) -> None:
+        """按「关系强度 / 距离」选目标（原版 Creature.Relationship + 猎物追踪器）。
+
+        权重来自 StaticWorld.EstablishRelationship：
+        蛞蝓猫 1.0；绿蜥对绿/粉/白的 AgressiveRival 0.8/0.2/0.05；
+        蝉乌贼 LizardTemplate 0.05（蓝蜥/白蜥 0.7）。
+        """
+        notice = self.notice_r
+        best, bestscore, bestobj = None, None, None
+
+        def consider(obj, ox, oy, w):
+            nonlocal best, bestscore, bestobj
+            d = math.hypot(ox - self.x, oy - self.y)
+            if d > notice:
+                return
+            score = d / max(0.05, w)          # 权重越高越优先
+            if bestscore is None or score < bestscore:
+                best, bestscore, bestobj = (ox, oy), score, obj
+
         for obj, ox, oy in targets:
             if self.friend_id is not None and getattr(obj, "id", None) == self.friend_id:
                 continue
-            d = math.hypot(ox - self.x, oy - self.y)
-            if d < bestd:
-                best, bestd, bestobj = (ox, oy), d, obj
+            consider(obj, ox, oy, 1.0)
+        for obj, w in rivals:
+            consider(obj, obj.x, obj.y, w)
+        for obj, w in prey:
+            consider(obj, obj.x, obj.y, w)
         if best is None and cursor is not None:
-            cx, cy = cursor
-            d = math.hypot(cx - self.x, cy - self.y)
-            if d < NOTICE_R:
-                best = (cx, cy)
+            consider(None, cursor[0], cursor[1], 1.0)   # 光标只作兜底（原版无此行为）
         if best is not None:
             self.target, self.target_obj = best, bestobj
             self.look_at = best
@@ -558,13 +732,13 @@ class Lizard:
         self.target = None
         self.target_obj = None
         self.look_at = None
-
     def _lunge(self, kx, ky, d, HL) -> None:
         """朝目标加速；够近了就咬。"""
         sp = self.breed.base_speed * 0.8
         self.vx += (kx * sp - self.vx) * LUNGE_ACCEL
         self.jaw = clampf(self.jaw + JAW_OPEN_RATE, 0.0, 0.9)
-        reach = self.head_rad + 16.0 * self.breed.body_size_fac
+        reach = self.head_rad + (16.0 * self.breed.body_size_fac
+                                 * (self.breed.attempt_bite_radius / 80.0))
         if d <= reach and self.bite_cd <= 0 and self.target_obj is not None:
             self._start_bite()
         elif self._contact_floor and self.hop_cd <= 0 and (self.y - self.target[1]) > 34.0:
@@ -572,8 +746,15 @@ class Lizard:
             self.hop_cd = HOP_CD
 
     def gift_received(self, alive: bool, friend_id) -> None:
-        """收到礼物（对照 LizardAI.GiftRecieved：活体 +0.6 / 尸体 +1.2）。"""
-        self.like += 0.6 if alive else 1.2
+        """收到礼物（对照 LizardAI.GiftRecieved）。
+
+        原版：like += (活体 1.2 : 尸体 0.6) / tamingDifficulty，
+        tamingDifficulty = lizardParams.tamingDifficulty * Lerp(0.9,1.1,dominance)。
+        粉蜥难度 1.0 → 一次活体 +0.6；绿蜥 0.8 → +0.75（wiki：1-2 次）；红蜥 7 → +0.086。
+        """
+        # LizardAI.GiftRecieved: flag = 礼物是尸体 → InfluenceLike((flag ? 1.2 : 0.6) / diff)
+        gain = (0.6 if alive else 1.2) / max(0.1, self.breed.taming_difficulty)
+        self.like += gain
         if not self.tamed and self.like > TAME_LIKE:
             self.tamed = True
             self.friend_id = friend_id
@@ -581,10 +762,15 @@ class Lizard:
             self.bite_event = None
 
     def _start_bite(self) -> None:
+        """原版 Lizard.cs:1238：按 biteDamageChance 掷骰，命中则 biteDamage * Lerp(0.8,1.2,rand)。"""
         self.bite_hold = BITE_HOLD
         self.bite_cd = COOLDOWN_TICKS
         self.jaw = 1.0
-        self.bite_event = (self.target_obj, self.breed.bite_damage)
+        b = self.breed
+        dmg = 0.0
+        if b.bite_damage_chance >= 1.0 or self.rng.random() < b.bite_damage_chance:
+            dmg = b.bite_damage * lerp(0.8, 1.2, self.rng.random())
+        self.bite_event = (self.target_obj, dmg)
         self.vx *= 0.2
 
     def _wander(self, WL, HL) -> None:

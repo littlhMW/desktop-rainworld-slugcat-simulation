@@ -49,6 +49,15 @@ LAMP_BULB_FLESH = (255, 255, 255)
 LAMP_BULB_OUTLINE = (255, 51, 0)
 LAMP_GLOW_COLOR = (255, 51, 0)
 LAMP_GLOW_ALPHA = 130
+# ── 蜥蜴之间的关系（原版 StaticWorld.EstablishRelationship）──
+#   GreenLizard → GreenLizard AgressiveRival 0.8 / PinkLizard 0.2 / WhiteLizard 0.05
+#   GreenLizard → BlueLizard Eats 0.25（绿蜥会捕食蓝蜥）
+#   LizardTemplate → CicadaA Eats 0.05；BlueLizard / WhiteLizard → CicadaA Eats 0.7
+#   （关系表里没有蜥蜴 → Fly，所以蜥蜴不主动猎蝙蝠）
+_LIZ_RIVAL_W = {"green": {"green": 0.8, "pink": 0.2, "white": 0.05, "blue": 0.25}}
+_LIZ_PREY_W = {"blue": 0.7, "white": 0.7}
+_LIZ_PREY_DEFAULT = 0.05
+
 LAMP_TILT_MAX_DEG = 25.0
 LAMP_STICK_OUTSET = 40.0
 STONE_STUN_SPEED = 8.0
@@ -101,10 +110,13 @@ SPEAR_GRAB_PAD = 8.0
 SCAVENGER_GRAB_PAD = 14.0
 SPEAR_HIT_SPEED = 7.0            # 飞矛扎猫的最低速度
 SPEAR_HIT_PAD = 6.0
-SPEAR_DMG = 1.0                   # 矛伤害（同游戏 Spear.damage 1.0）
-SPEAR_LIZ_KNOCK = 1.4             # 扎中动物的击退
-STONE_DMG = 0.05                  # 石头伤害（同游戏 Rock 几乎不致命）
-STONE_LIZ_STUN = 90               # 石头砸晕动物 tick
+SPEAR_DMG = 1.0                   # Spear.HitSomething: Violence(Stab, spearDamageBonus=1f, 20f)
+SPEAR_STUN_BONUS = 20.0           # 上句里的 stunBonus = 20f
+STONE_DMG = 0.01                  # Rock.HitSomething: Violence(Blunt, 0.01f, 45f)
+STONE_STUN_BONUS = 45.0           # 上句里的 stunBonus = 45f
+# 原版击退：hitChunk.vel += (攻击物 vel * 攻击物 mass * 2) / hitChunk.mass。
+# 桌面尺度折算：粉蜥（bodyMass 2.1）挨满速矛（_SPEAR_FLING_CAP=18）时约 1.4 px/tick。
+KNOCK_K_PER_MASS = 1.4 * 2.1 / (18.0 * 0.12)
 SPEAR_THROW_SPEED = 11.0         # 拾荒者掷矛初速
 SPEAR_THROW_LIFT = 1.5           # 掷出时的上抬
 # 翅本地多边形（锚在本体，向 -y 伸展）
@@ -164,6 +176,15 @@ def _ball_hit(creature, ball, pad: float = 0.0):
         if math.hypot(ball.x - s.x, ball.y - s.y) < ball.rad + s.rad + pad:
             return (ball.x, ball.y)
     return None
+
+
+def _hit_is_head(creature, x, y, pad: float = 0.0) -> bool:
+    """命中点是否落在头节上（原版 hitChunk.index == 0，头有甲、嘴有洞）。"""
+    d_head = math.hypot(x - creature.x, y - creature.y) - (creature.head_rad + pad)
+    for s in creature.seg:
+        if math.hypot(x - s.x, y - s.y) - (s.rad + pad) < d_head:
+            return False
+    return True
 
 
 def _dist_to_path(pts, x, y):
@@ -409,11 +430,19 @@ class ItemInteractionMixin:
                     continue
                 if math.hypot(s.vx, s.vy) < STONE_STUN_SPEED:
                     continue
-                if _ball_hit(lz, s, 2.0) is None:
+                hit = _ball_hit(lz, s, 2.0)
+                if hit is None:
                     continue
-                kx = (1.0 if s.vx >= 0.0 else -1.0) * 1.2
-                killed = lz.hurt(STONE_DMG, kx=kx)
-                lz.stun = max(lz.stun, STONE_LIZ_STUN)
+                spd = math.hypot(s.vx, s.vy) or 1.0
+                dvec = (s.vx / spd, s.vy / spd)
+                killed = lz.hurt(STONE_DMG, dvec=dvec, speed=spd,
+                                 stun_bonus=STONE_STUN_BONUS,
+                                 hit_head=_hit_is_head(lz, hit[0], hit[1], 2.0),
+                                 knock_k=KNOCK_K_PER_MASS * s.mass)
+                if not killed and lz.breed.flips_from_rock:
+                    # 原版 Lizard.Violence：source is Rock 且非红蜥 → turnedByRockCounter = 20
+                    lz.rock_push = 20
+                    lz.rock_push_dir = 1 if s.vx >= 0.0 else -1
                 s.deflect(self._stun_rng)
                 s.fling = False
                 self._shake[0] += 0.5 * (1.0 if kx >= 0.0 else -1.0)
@@ -1224,8 +1253,29 @@ class ItemInteractionMixin:
         targets = [(pet, pet.body.chunk0.x, pet.body.chunk0.y)
                    for pet in self.pets if pet.behavior is not None]
         for lz in self.lizards:
-            lz.step(self._WL, self._HL, targets=targets, cursor=cur)
+            lz.step(self._WL, self._HL, targets=targets, cursor=cur,
+                    rivals=self._lizard_rivals(lz), prey=self._lizard_prey(lz))
             self._lizard_bite(lz)
+
+    def _lizard_rivals(self, lz):
+        """同族竞争者 / 捕食对象：只有绿蜥蜴在关系表里有同族条目。"""
+        table = _LIZ_RIVAL_W.get(lz.breed.key)
+        if not table:
+            return ()
+        out = []
+        for other in self.lizards:
+            if other is lz or other.dead or other.state != ItemState.FREE:
+                continue
+            w = table.get(other.breed.key)
+            if w:
+                out.append((other, w))
+        return tuple(out)
+
+    def _lizard_prey(self, lz):
+        """小猎物：原版 LizardTemplate → CicadaA Eats 0.05（蓝/白蜥 0.7）。"""
+        w = _LIZ_PREY_W.get(lz.breed.key, _LIZ_PREY_DEFAULT)
+        return tuple((sq, w) for sq in self.squidcadas
+                     if not sq.dead and sq.state == ItemState.FREE)
 
     def _lizard_death_fx(self, lz):
         """蜥蜴被击杀：重震一下（原版会有血花，这里只用震动表示）。"""
@@ -1233,18 +1283,36 @@ class ItemInteractionMixin:
         self._shake[1] += 1.4
 
     def _lizard_bite(self, lz):
-        """蜥蜴咬到猫：眩晕（apply_stun 内部已扣脾气）+ 轻微震动。"""
+        """咬合结算：蛞蝓猫 → 眩晕；同类 → 原版 Violence(Bite)；蝉乌贼 → 被吃掉。"""
         ev = lz.bite_event
         if ev is None:
             return
         lz.bite_event = None
-        obj, _dmg = ev
-        beh = getattr(obj, "behavior", None)
-        if beh is None:
+        obj, dmg = ev
+        if obj is None:
             return
-        if beh.apply_stun(LIZARD_STUN_TICKS):
-            self._shake[0] += 1.6 * lz.facing
-            self._shake[1] += 1.0
+        beh = getattr(obj, "behavior", None)
+        if beh is not None:                       # 蛞蝓猫：眩晕（apply_stun 内部已扣脾气）
+            if beh.apply_stun(LIZARD_STUN_TICKS):
+                self._shake[0] += 1.6 * lz.facing
+                self._shake[1] += 1.0
+            return
+        if isinstance(obj, Lizard):               # 同族撕咬（原版 biteDamage * Lerp(0.8,1.2)）
+            if obj.dead or dmg <= 0.0:
+                return
+            dx, dy = obj.x - lz.x, obj.y - lz.y
+            d = math.hypot(dx, dy) or 1.0
+            killed = obj.hurt(dmg, dvec=(dx / d, dy / d), speed=1.0,
+                              stun_bonus=0.0, hit_head=False, knock_k=0.0)
+            self._shake[0] += 0.8 * lz.facing
+            self._shake[1] += 0.5
+            if killed:
+                self._lizard_death_fx(obj)
+            return
+        if isinstance(obj, Squidcada):            # 被蜥蜴吃掉（原版 Eats 关系）
+            obj.die()
+            obj.state = ItemState.EATEN
+            self._shake[1] += 0.3
 
     def _draw_lizards(self, p):
         ts = self._ts
@@ -1820,16 +1888,28 @@ class ItemInteractionMixin:
             for lz in self.lizards:
                 if lz.dead:
                     continue
-                if _ball_hit(lz, sp, SPEAR_HIT_PAD) is None:
+                hit = _ball_hit(lz, sp, SPEAR_HIT_PAD)
+                if hit is None:
                     continue
-                hit_x, hit_y = sp.x, sp.y
-                kx = (1.0 if sp.vx >= 0.0 else -1.0) * SPEAR_LIZ_KNOCK
-                killed = lz.hurt(SPEAR_DMG, kx=kx)
+                hit_x, hit_y = hit
+                spd = math.hypot(sp.vx, sp.vy) or 1.0
+                dvec = (sp.vx / spd, sp.vy / spd)
+                head = _hit_is_head(lz, hit_x, hit_y, SPEAR_HIT_PAD)
+                shielded = head and lz.hit_head_shield(dvec)
+                killed = lz.hurt(SPEAR_DMG, dvec=dvec, speed=spd,
+                                 stun_bonus=SPEAR_STUN_BONUS, hit_head=head,
+                                 knock_k=KNOCK_K_PER_MASS * sp.mass)
+                if shielded and not lz.dead:
+                    # 头甲弹开：矛不插入，原速 45% 弹回（原版 directionAndMomentum / 3）
+                    sp.vx, sp.vy = -sp.vx * 0.45, -sp.vy * 0.45
+                    self._shake[0] += 0.6 * (1.0 if sp.vx >= 0.0 else -1.0)
+                    self._shake[1] += 0.4
+                    break
                 sp.vx = sp.vy = 0.0
                 sp.stuck = True
                 sp.stuck_angle = sp.angle_deg
                 sp.stuck_to = (lz, hit_x - lz.x, hit_y - lz.y)
-                self._shake[0] += 1.0 * (1.0 if kx >= 0.0 else -1.0)
+                self._shake[0] += 1.0 * (1.0 if dvec[0] >= 0.0 else -1.0)
                 self._shake[1] += 0.6
                 if killed:
                     self._lizard_death_fx(lz)
@@ -2125,9 +2205,12 @@ class ItemInteractionMixin:
         if not self.scavengers:
             return
         cur = self.cursor_logical()
-        threats = [(lz, lz.x, lz.y, False) for lz in self.lizards
-                   if lz.state == ItemState.FREE]
-        threats += [(pet, pet.body.chunk0.x, pet.body.chunk0.y, True) for pet in self.pets]
+        # 原版 ScavengerAI 按「体节」选投掷点：把每个威胁的体节点都传过去
+        threats = [(lz, [(lz.x, lz.y)] + [(s.x, s.y) for s in lz.seg], False)
+                   for lz in self.lizards if lz.state == ItemState.FREE]
+        threats += [(pet, [(pet.body.chunk0.x, pet.body.chunk0.y),
+                           (pet.body.chunk1.x, pet.body.chunk1.y)], True)
+                    for pet in self.pets]
         self._assign_pearl_targets()
         for sc in self.scavengers:
             sc.step(self._WL, self._HL, threats=threats, cursor=cur)

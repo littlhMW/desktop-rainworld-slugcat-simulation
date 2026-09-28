@@ -71,7 +71,7 @@ class Squidcada:
         self.is_meat = True                # 原版：蝉乌贼是肉食（3 口 = 3 格食物）
         self.is_tame_food = True
         self.food_value = 3                # 原版：一只蝉乌贼 3 格食物
-        self.health = 0.6
+        self.health = 1.0        # 原版 HealthState 初始 1.0
         self.collide_with_objects = True
         self._id = int(seed)
         self._impact_cb = None
@@ -124,12 +124,17 @@ class Squidcada:
             return True
         return False
 
+    DAMAGE_RESISTANCE = 0.8       # 原版 StaticWorld: CicadaA baseDamageResistance = 0.8
+
     def hurt(self, dmg: float, kx: float = 0.0, ky: float = 0.0) -> bool:
-        """被武器打中：蝉乌贼脆皮，一下即死（同游戏 0.6 血）。"""
+        """被武器打中：原版 Violence 的 num = damage / baseDamageResistance。
+
+        矛 1.0 / 0.8 = 1.25 ≥ 1.0 → 一矛即死；石头 0.01 / 0.8 → 只被震飞，打不死。
+        """
         self.vx += kx
         self.vy += ky
         if self.health > 0.0:
-            self.health -= dmg
+            self.health -= dmg / self.DAMAGE_RESISTANCE
         if self.health <= 0.0 and not self.dead:
             self.die()
             return True

@@ -30,6 +30,10 @@ THROW_CD = 90
 IDLE_TICKS = (90, 260)
 FLEE_TICKS = 260
 
+# 原版 ScavengerAI.CheckThrow：在目标体节里挑 |DirVec.x| 最大的那一节下手；
+# 若 |DirVec.x| <= 0.5 则要求垂直差 < 40（游戏像素），否则不打（不朝天/地扔）。
+AIM_VERT_TOL = 40.0
+
 PEARL_SEEK_R = 300.0              # 看到珍珠就去捡的半径（原版 CollectScore=10）
 PEARL_TAKE_PAD = 9.0
 TRADE_GIVE_TICKS = 70             # 拿到珍珠后回礼（给矛）的延迟
@@ -415,15 +419,33 @@ class Scavenger:
         if self.spear is not None:      # 手里仍握着矛
             self._carry_spear()
 
+    def _pick_aim_point(self, pts):
+        """原版 CheckThrow 的选点：|DirVec.x| 最大且 (|DirVec.x| > 0.5 或垂直差 < 40)。"""
+        best, best_ax = None, -1.0
+        for px, py in pts:
+            dx, dy = px - self.x, py - self.y
+            n = math.hypot(dx, dy)
+            if n < 1e-6:
+                continue
+            ax = abs(dx / n)
+            if ax <= 0.5 and abs(dy) >= AIM_VERT_TOL:
+                continue
+            if ax > best_ax:
+                best, best_ax = (px, py), ax
+        return best
+
     def _threat_scan(self, threats) -> None:
         """按威胁距离切态：瞄准→投矛→逃跑。"""
         best, bd = None, ALERT_R
-        for obj, ox, oy, is_pet in threats:
+        for obj, pts, is_pet in threats:
             if is_pet and self.friendly:            # 交易过的拾荒者不攻击猫
                 continue
-            d = math.hypot(ox - self.x, oy - self.y)
+            aim = self._pick_aim_point(pts)
+            if aim is None:
+                continue
+            d = math.hypot(aim[0] - self.x, aim[1] - self.y)
             if d < bd:
-                best, bd = (ox, oy), d
+                best, bd = aim, d
         if best is None:
             self.aim = None
             if self.state_t > 0 or self.state != ItemState.FREE or self.aim_t:
