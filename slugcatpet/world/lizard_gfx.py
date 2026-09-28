@@ -24,6 +24,7 @@ from .lizard import BODY_SCALE, BLACK_RGB, _ang_from_up
 
 HEAD_KEY = "base"
 NUM14 = 0                      # 头片行号：0 = 正侧面（游戏 |headDepthRotation|≈1）
+HEAD_FLIP = 180.0              # 头贴图吻部朝下，绘制前翻正
 
 BODY_TOP_K = 1.16              # 体色很轻的垂向受光（原版体色近黑，不能提亮太多）
 BODY_BOT_K = 0.72
@@ -277,8 +278,10 @@ def _draw_head(p, atlas, lz, hx, hy, rot, jaw, color):
     lf = b.jaw_lower_fac
     up_off = apart * (1.0 - lf)
     lo_off = -apart * lf
-    up_rot = rot - b.jaw_open_angle * (1.0 - lf) * jaw
-    lo_rot = rot + b.jaw_open_angle * lf * jaw
+    # 头部贴图在纹理里是「吻部朝下」（牙齿列竖直），所以整体要先翻 180°
+    rt = rot + HEAD_FLIP
+    up_rot = rt - b.jaw_open_angle * (1.0 - lf) * jaw
+    lo_rot = rt + b.jaw_open_angle * lf * jaw
     sc = b.head_size * BODY_SCALE
     sx = face * sc
     head_rgb = b.head_rgb or color          # 游戏 HeadColor：头=品种色（白/黑蜥压黑）
