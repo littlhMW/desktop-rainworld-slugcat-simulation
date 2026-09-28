@@ -28,7 +28,7 @@ MONK_DEF = CatDef(
     # 好脾气：不甩东西、不喜欢指指点点也不敢趴（怕）→ 原地安静地玩
     personality=replace(DEFAULT_PERSONALITY, activity=0.4, stamina=0.8, sociability=0.9,
                         temper=0.2, crawl_like=0.75, point_like=0.25,
-                        play_style="crawl"),
+                        bravery=0.30, kindness=0.90, play_style="crawl"),
     tuning={},
     fsm_mount=None,
     wip=False,

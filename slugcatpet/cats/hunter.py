@@ -24,7 +24,8 @@ HUNTER_DEF = CatDef(
     # 暴躁猎手：玩东西会甩出去，不爱趴，边走边跳，背后常备一支矛
     personality=replace(DEFAULT_PERSONALITY, activity=0.65, stamina=1.05,
                         sociability=0.3, temper=0.9, crawl_like=0.25,
-                        point_like=0.55, play_style="hop", diet=DIET_CARNIVORE),
+                        point_like=0.55, bravery=0.90, kindness=0.25,
+                        play_style="hop", diet=DIET_CARNIVORE),
     # 原版 Player.spearOnBack：猎手背后常备一支矛
     tuning={"back_spear": True},
     fsm_mount=None,

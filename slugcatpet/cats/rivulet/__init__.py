@@ -54,7 +54,8 @@ RIVULET_DEF = CatDef(
     # 极敏捷好奇水生：最好动、爱潜深冲刺
     # 活泼爱玩、话多：边走边跳着玩
     personality=replace(DEFAULT_PERSONALITY, activity=0.95, sociability=0.45, swim_zeal=1.0,
-                        temper=0.45, crawl_like=0.5, point_like=0.75, play_style="hop",
+                        temper=0.45, crawl_like=0.5, point_like=0.75,
+                        bravery=0.55, kindness=0.60, play_style="hop",
                         toy_pref={"pole_climb": 1.2, "hpole": 1.2, "riv_flip": 1.4}),
     tuning={},
     fsm_mount=_fsm_mount,

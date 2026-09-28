@@ -42,6 +42,9 @@ EATEN_COUNTDOWN = 3
 
 WALL_MARGIN = 20.0
 
+# 4 条触须的初始散开偏移（原版是 4 个独立 Limb，各自的物理历史不同）
+_TENT_SPREAD = ((-2.5, 1.5), (2.5, 1.5), (-4.5, 4.0), (4.5, 4.0))
+
 
 class Squidcada:
     """蝉乌贼：悬停游走 → 遇猫扑翅逃 → 力竭落地（此时可被猫抓住）。"""
@@ -55,7 +58,13 @@ class Squidcada:
                  "collide_with_objects", "_id", "_impact_cb",
                  "male", "hue", "_rng", "flap", "flap_ph", "rest", "flaps", "wings",
                  "dir_x", "dir_y", "facing", "rotation", "last_rotation",
-                 "_goal", "_goal_timer", "_contact_floor", "_contact_x")
+                 "_goal", "_goal_timer", "_contact_floor", "_contact_x",
+                 # 渲染个体差异（Cicada.IndividualVariations / CicadaGraphics 状态）
+                 "fatness", "wing_len", "wing_thick", "tent_len", "tent_thick",
+                 "wing_offset", "lazy_wing", "busted_wing", "wing_dep",
+                 "wing_dep_to", "wing_dep_speed", "blink", "flap_t",
+                 # 渲染用体轴 / zRotation（平滑）/ 4 条触须的自由点
+                 "hd", "zx", "zy", "lzx", "lzy", "tent", "tent_last")
 
     def __init__(self, x: float, y: float, seed: int = 0):
         self.x = self.last_x = float(x)
@@ -91,6 +100,33 @@ class Squidcada:
         self.dir_x, self.dir_y = (1.0 if rng.random() < 0.5 else -1.0), 0.0
         self.facing = 1 if self.dir_x >= 0 else -1
         self.rotation = self.last_rotation = (0.0, -1.0)
+        # 渲染：体轴 / zRotation（原版 CicadaGraphics.zRotation，每 tick 向体轴插值 0.15）
+        self.hd = (1.0 if self.facing >= 0 else -1.0, 0.0)
+        self.zx, self.zy = self.hd
+        self.lzx, self.lzy = self.zx, self.zy
+        # 4 条触须各自带一点初始散开量：原版是 4 个独立 Limb，飘着就自然分开
+        self.tent = [(float(x) + _TENT_SPREAD[i][0], float(y) + 6.0 + _TENT_SPREAD[i][1],
+                      0.0, 0.0) for i in range(4)]
+        self.tent_last = list(self.tent)
+        # ── 个体差异：对照 Cicada.GenerateIVars ──
+        # fatness = ClampedRandomVariation(gender ? 0.6 : 0.4, 0.1, 0.5) * 2
+        base = 0.6 if self.male else 0.4
+        self.fatness = (base + rng.uniform(-0.1, 0.1)) * 2.0
+        # wingSoundPitch 用不到；这里按原版顺序取其余随机量
+        r1 = rng.random()
+        self.tent_len = 0.6 + 0.8 * rng.random()      # tentacleLength
+        self.tent_thick = 0.6 + 0.8 * rng.random()    # tentacleThickness
+        self.wing_thick = 1.0 - 0.6 * (r1 * r1)       # wingThickness ∈ 0.4..1
+        self.wing_len = max(0.2, (0.66667 + rng.uniform(-0.3, 0.3)) * 1.5)   # wingLength
+        self.wing_offset = rng.random()               # wingOffset（扑翅相位漂移）
+        self.lazy_wing = rng.randrange(-2, 4)
+        self.busted_wing = rng.randrange(4) if rng.random() < 0.125 else -1
+        dep0 = rng.random()                           # defaultWingDeployment
+        self.wing_dep = [dep0, dep0, dep0, dep0]
+        self.wing_dep_to = 1.0
+        self.wing_dep_speed = [0.0, 0.0, 0.0, 0.0]
+        self.blink = rng.randrange(10, 300)
+        self.flap_t = 0.0
         self._goal = (self.x + rng.uniform(-60.0, 60.0), self.y)
         self._goal_timer = 0
         self._contact_floor = False
@@ -161,8 +197,103 @@ class Squidcada:
         self.bites = 3                     # 刚死的蝉乌贼同样是 3 口
         self.surface_friction = 0.4
 
+    # ── 渲染状态：对照 CicadaGraphics.Update（翅膀展开/收起、眨眼、扑翅相位）──
+    def _heading(self):
+        """体轴（朝头）单位向量：飞的时候取速度方向，否则按朝向横躺。"""
+        sp = math.hypot(self.vx, self.vy)
+        if sp > 0.6:
+            return (self.vx / sp, self.vy / sp)
+        return (float(self.facing), 0.0)
+
+    def _tent_tick(self, ux, uy) -> None:
+        """4 条触须：自由点 + 重力 + 沿体轴推力 + 侧向推力，再被绳长约束到身体前端。
+
+        对照 CicadaGraphics.Update 的触须段与 ConnectToPoint(mainBodyChunk + 体轴*10,
+        (24|19) * tentacleLength)。
+        """
+        v2x, v2y = -uy, ux
+        zx, zy = self.zx, self.zy
+        ax0, ay0 = self.x + ux * 10.0, self.y + uy * 10.0
+        self.tent_last = list(self.tent)
+        out = []
+        for m in range(2):
+            for n in range(2):
+                tx, ty, tvx, tvy = self.tent[m * 2 + n]
+                tvy += 0.6                                  # 原版 vel.y -= 0.6（y↑）
+                tvx += ux * 0.55
+                tvy += uy * 0.55
+                # |zRotation.y| 太小时侧向散不开（4 条会重叠成一根细线）：给个下限
+                wz = max(0.45, abs(zy))
+                lat = (0.2 if n == 0 else 0.6) * (-1.0 if m == 0 else 1.0) * wz
+                tvx += v2x * lat
+                tvy += v2y * lat
+                f_lat = (-0.1 if n == 0 else 0.6) * zx
+                tvx -= v2x * f_lat
+                tvy -= v2y * f_lat
+                tx += tvx
+                ty += tvy
+                tvx *= 0.9
+                tvy *= 0.9
+                reach = (24.0 if n == 0 else 19.0) * self.tent_len
+                dx, dy = tx - ax0, ty - ay0
+                d = math.hypot(dx, dy)
+                if d > reach and d > 1e-6:
+                    nx, ny = dx / d, dy / d
+                    tx, ty = ax0 + nx * reach, ay0 + ny * reach
+                    radial = tvx * nx + tvy * ny
+                    if radial > 0.0:
+                        tvx -= nx * radial
+                        tvy -= ny * radial
+                out.append((tx, ty, tvx, tvy))
+        self.tent = out
+
+    def gfx_tick(self) -> None:
+        """只管渲染状态，不影响物理。原版里这些量确实在 GraphicsModule.Update 里推进。"""
+        ux, uy = self._heading()
+        self.hd = (ux, uy)
+        self.lzx, self.lzy = self.zx, self.zy
+        self.zx += (ux - self.zx) * 0.15
+        self.zy += (uy - self.zy) * 0.15
+        dd = math.hypot(self.zx, self.zy)
+        if dd > 1e-6:
+            self.zx, self.zy = self.zx / dd, self.zy / dd
+        self._tent_tick(ux, uy)
+        self.flap_t += 1.0
+        if self.flap_t >= 3.0:
+            self.flap_t -= 3.0                       # wingTimeAdd：每 tick +1，到 3 归零
+        self.wing_offset += 1.0 / 55.0               # 原版 1/Random.Range(50,60)
+        if self.wing_offset >= 1.0:
+            self.wing_offset -= 1.0
+        self.blink -= 1
+        if self.blink < -15 or (self.blink < -2 and self._rng.random() < 1.0 / 3.0):
+            self.blink = self._rng.randrange(10, 300)
+        if self.dead:
+            return                                   # 非清醒：原版不推进 deployment，保持原姿态
+        if self.airborne and self.state == ItemState.FREE:
+            self.wing_dep_to = 1.0
+        elif self.wing_dep_to == 1.0:
+            self.wing_dep_to = 0.9
+        elif self._rng.random() < 1.0 / 14.0:
+            self.wing_dep_to = max(0.0, self.wing_dep_to - self._rng.random() / 6.0)
+        for k in range(2):
+            for l in range(2):
+                idx = k * 2 + l
+                if self.busted_wing == k + l + l:    # 断翅：永远收着
+                    continue
+                if self._rng.random() < 1.0 / 30.0:
+                    self.wing_dep_speed[idx] = self._rng.random() ** 2 * 0.3
+                if self.wing_dep_to == 1.0 and self.lazy_wing != k + l + l:
+                    self.wing_dep[idx] = 1.0
+                elif self.wing_dep[idx] < self.wing_dep_to:
+                    self.wing_dep[idx] = min(self.wing_dep[idx] + self.wing_dep_speed[idx],
+                                             self.wing_dep_to)
+                elif self.wing_dep[idx] > self.wing_dep_to:
+                    self.wing_dep[idx] = max(self.wing_dep[idx] - self.wing_dep_speed[idx],
+                                             self.wing_dep_to)
+
     # ── 主循环 ──
     def step(self, WL: float, HL: float, threats=()) -> None:
+        self.gfx_tick()
         if self.state in (ItemState.MOUSE, ItemState.CARRIED):
             return
         self.last_x, self.last_y = self.x, self.y

@@ -489,6 +489,7 @@ class ItemInteractionMixin:
                     if _seg_dist(s.last_x, s.last_y, s.x, s.y,
                                  c.x, c.y) < s.rad + c.rad:
                         if pet.behavior.apply_stun(int(STONE_STUN_TICKS * STUN_SCALE)):
+                            self._friendly_fire(getattr(s, "thrower", None), pet)
                             c.vx += s.vx * STONE_KNOCKBACK
                             c.vy += s.vy * STONE_KNOCKBACK
                             s.deflect(self._stun_rng)
@@ -1950,6 +1951,24 @@ class ItemInteractionMixin:
         self._spear_drag_last = None
         return True
 
+    def _thrower_pet(self, obj):
+        """从「是谁扔的」（体节点）找回那只猫。"""
+        if obj is None:
+            return None
+        for p in self.pets:
+            if getattr(p, "body", None) is obj:
+                return p
+        return None
+
+    def _friendly_fire(self, thrower, victim) -> None:
+        """误伤同伴：让扔的人记下「抱歉」。（原版没有，纯性格层）"""
+        tp = self._thrower_pet(thrower)
+        if tp is None or tp is victim or tp.behavior is None:
+            return
+        if getattr(victim, "body", None) is None or victim.body.dead:
+            return
+        tp.behavior.apologize(victim)
+
     def _step_spear_hit(self):
         """飞矛扎到猫：眩晕 + 震动；扎到蜥蜴：受伤并插在身上跟着走。"""
         for pet in self.pets:
@@ -1971,6 +1990,7 @@ class ItemInteractionMixin:
                         # 原版 Spear.HitSomething：Violence(Stab, spearDamageBonus=1, 20)
                         # 蛞蝓猫 num = 1.0 ≥ 即死阈值 1 ⇒ 被矛扎中即死。
                         dmg = float(getattr(sp, "damage", SPEAR_DMG))
+                        self._friendly_fire(getattr(sp, "thrower", None), pet)
                         died, stun = _pet_stun_death(dmg, SPEAR_STUN_BONUS)
                         stun = int(stun * STUN_SCALE)
                         if died:

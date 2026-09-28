@@ -28,7 +28,9 @@ COB_FEED_PUSH_DELAY = 4        # 原版 pushDelay = 4
 
 PALETTE_BLACK = (27, 11, 33)   # 原版 palette.blackColor（与蜥蜴/矛同一取色）
 PLANT_COLOR = (86, 104, 58)    # 原版 palette.texture.GetPixel(0,5) 的近似：暗橄榄绿
-PALETTE_DARK = 0.12            # 原版 rCam.PaletteDarkness() 的固定替代
+PALETTE_DARK = 0.0             # 原版 rCam.PaletteDarkness() 的固定替代；
+                               # 取 0 = 亮房间：wiki 原版截图/gif 就是这个档，
+                               # 豆荚黄 (193,176,108)、高光 (255,252,184) 与之一致
 YELLOW_BASE = (230, 212, 128)  # 原版 new Color(0.9, 0.83, 0.5)
 SHELL_RED = (255, 0, 0)        # 原版 Color.red
 
@@ -529,6 +531,11 @@ def draw_seedcob(painter, atlas, cob, ts: float = 1.0, black=PALETTE_BLACK) -> N
         ns = len(cob.seed_pos)
         hi = seed_hi_color(cob.dead)
         dot = seed_dot_color(cob.dead)
+        # 逐颗算好位置，再分三趟画：主豆粒 → 高光 → 红点。
+        # 原版按 sprite 下标逐颗画（主→高光→点），但豆粒间距只有 ~2px，
+        # 下一颗的主豆粒会把上一颗的高光/红点整个盖住；wiki 原版图里豆荚是
+        # 「亮色为主 + 一圈黄边 + 密集红点」，按层画才与之一致。
+        cells = []
         for i in range(ns):
             sx0, sy0 = cob.seed_pos[i]
             t = sy0 * (math.dist(p1, p0) - 10.0)
@@ -543,12 +550,16 @@ def draw_seedcob(painter, atlas, cob, ts: float = 1.0, black=PALETTE_BLACK) -> N
                 k = math.pow(abs(sx0), _lerp_map(num13, 1.0, 2.0, 1.0, 0.5, 1.0))
                 sgn = 1.0 if sx0 >= 0 else -1.0
                 v18 = (v16[0] * k * sgn * 3.5 * num13, v16[1] * k * sgn * 3.5 * num13)
+            cells.append((v17, v18, num13, pop, sx0))
+        for v17, _v18, num13, pop, _sx0 in cells:
             blit(painter, atlas, SEED_SPRITE, v17[0], v17[1], 0.0,
                  num13 if pop else 0.35, num13 if pop else 0.35, yellow)
+        for v17, v18, num13, pop, _sx0 in cells:
             if pop:
                 blit(painter, atlas, SEED_SPRITE,
                      v17[0] + v18[0] * 0.35, v17[1] + v18[1] * 0.35,
                      0.0, num13 * 0.5, num13 * 0.5, hi)
+        for v17, v18, _num13, pop, sx0 in cells:
             dot_frame = SEED_DOT_ALIVE if (pop and not cob.dead) else SEED_DOT
             blit(painter, atlas, dot_frame, v17[0] + v18[0], v17[1] + v18[1],
                  _aim(0.0, 0.0, v15[0], v15[1]),

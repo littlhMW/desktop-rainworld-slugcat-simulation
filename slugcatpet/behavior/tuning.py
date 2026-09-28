@@ -318,6 +318,12 @@ SOCIAL_POKE_INTERVAL = 22     # 每次伸手的间隔
 # ── 社交欲望（第六类：进食/恐惧/战斗/玩耍/睡眠/社交）──
 # 动作词表见 behavior/social.py；这里只放手势参数与抽取权重
 SOCIAL_URGE_RATE = 1.0 / 4200.0   # 每 tick 累积（约 105s 攒满才想找人）
+# 社交欲望的「事件加成」：吃到东西 / 吃饱 / 睡醒 / 别人的社交 都会大幅拉高
+SOCIAL_URGE_BOOST_EAT = 0.34      # 每吃到一口
+SOCIAL_URGE_BOOST_FULL = 0.50     # 吃到饱
+SOCIAL_URGE_BOOST_WAKE = 0.45     # 睡醒
+SOCIAL_URGE_BOOST_NEAR = 0.40     # 看到同伴做社交动作
+SOCIAL_BOOST_R = 300.0            # 别人社交影响到自己的半径
 PET_BASE = 1.00                   # 抚摸
 PAT_BASE = 0.85                   # 拍拍
 POINTHOLD_BASE = 0.70             # 指向（举着不放）
@@ -376,6 +382,22 @@ REVIVE_PRESS_DOWN = 0.6      # 下压时身体向下的力
 
 # 恐惧：匍匐潜行躲避
 CRAWL_FEAR_R = 150.0          # 蜥蜴进这个半径 → 趴下潜行
+# 害怕时逃跑优先级最高；只有勇敢的敢还手、善良的敢救人，且敌贴太近一律逃
+FEAR_TOO_CLOSE_R = 76.0       # 蜥蜴贴到这个距离：不管性格，一律逃／跳过它
+FEAR_BRAVE_FIGHT = 0.60       # 勇敢度超过它才敢在恐惧状态下还手
+FEAR_KIND_RESCUE = 0.60       # 善良度超过它才敢在恐惧状态下先救人
+APOLOGY_TICKS = 220           # 误伤同伴后抱歉：面对它匍匐
+THANK_TICKS = 260             # 被救活后去拍拍恩人
+# 送礼驯服（原版 FriendTracker.GiftRecieved）：拿着蝉乌贼贴近未驯服蜥蜴才可能交付
+GIFT_SEEK_R = 420.0           # 端着礼物时愿意走过去的距离
+GIFT_APPROACH_R = 130.0       # 拿着礼物靠近蜥蜴到这么近才算「送过去」
+GIFT_START_P = 1.0 / 1600.0   # 每 tick 决定「去喂蜥蜴」的概率（极其低）
+GIFT_DELIVER_DELAY = 26       # 走到嘴边后迟疑这么久才真交出去
+GIFT_TRY_TICKS = 1400         # 一次送礼尝试最多磨这么久
+FEAR_JUMP_MIN_GAIN = 26.0     # 反方向也挪不动 → 判定被逼到角落
+FEAR_JUMP_PUSH = 1.15         # 跳过敌人时的额外水平初速
+RIP_SPEAR_R = 74.0            # 够得着蜥蜴身上的矛才敢拔
+RIP_SPEAR_BRAVE = 0.70        # 勇敢度超过它才敢去拔矛重投
 CRAWL_FEAR_SPEED = 0.55       # 匍匐速度比例
 CRAWL_AWAY_TICKS = 260
 

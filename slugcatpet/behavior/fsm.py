@@ -368,6 +368,13 @@ class BehaviorFSM:
         self._social_gesture = None
         self._social_press_seen = 0
         self._social_press_per = 1
+        self._apology_target = None      # 误伤同伴 → 抱歉：面对它匍匐
+        self._apology_t = 0
+        self._thank_target = None        # 被同伴救活 → 去拍拍恩人
+        self._thank_t = 0
+        self._reviver = None             # 是谁把自己救活的
+        self._gift_left = 0              # 送礼驯服的剩余尝试窗口
+        self._gift_wait = 0              # 走到蜥蜴嘴边后的迟疑计时
         self._help_left = 0
         self._help_target = None
         self._protest_left = 0
@@ -1010,6 +1017,10 @@ class BehaviorFSM:
             self.body.food = self._force_food
         if self.body.food > self._food_prev:
             self._food_urge = 0.0          # 吃到东西：觅食欲望归 0
+            self._social_urge_boost(tuning.SOCIAL_URGE_BOOST_EAT)   # 吃到东西：想社交
+            if (self.body.food >= self.body.food_max
+                    and self._food_prev < self.body.food_max):
+                self._social_urge_boost(tuning.SOCIAL_URGE_BOOST_FULL)   # 吃饱了
         self._food_prev = self.body.food
         self.mood.tick_freshness(self._active_mood())
         self.timer += 1
@@ -1245,6 +1256,7 @@ class BehaviorFSM:
                 return
             self._social_kind = self._pick_social_kind(tgt)
             self._social_target = tgt
+            self._social_left = 0        # 随机时长交给 _social_enter 掷
             if self._social_kind == "crouch_walk":
                 # 匍匐行走：交给现有的 CrawlAway（害怕强敌潜行）
                 self._crawl_from = None
@@ -1584,6 +1596,78 @@ class BehaviorFSM:
         x = b.chunk1.x
         side = 1.0 if x >= lz.x else -1.0
         return min(max(lz.x + side * FLEE_GAP, lo), hi)
+
+    def _flee_lizard_now(self, lz) -> None:
+        """立刻躲开这只敌人：被逼到角落先跳过它，否则顺背匍匐潜走 / 掉头跑。
+
+        对照原版：蜥蜴进恐惧圈时优先逃；匍匐只在「在它背后」时才顺手做。
+        """
+        b = self.body
+        if self._cornered_by(lz) and self._jump_over(lz):
+            self._flee_from = lz
+            self._flee_cd = FLEE_COOLDOWN
+            self._crawl_cd = T_CRAWL_RETRY
+            self._break_active_controllers()
+            self._transition("FleeLizard")
+            return
+        behind = self._behind_creature(lz)
+        # 性格：crawl_like 低的猫宁可拔腿就跑，不肯趴下
+        can_crawl = (self.rng.random()
+                     < 0.25 + 0.75 * getattr(self.pers, "crawl_like", 0.5))
+        if (behind or abs(lz.x - b.chunk1.x) > tuning.CRAWL_FEAR_R * 0.6) and can_crawl:
+            self._crawl_from = lz
+            self._crawl_point_to = None
+            self._crawl_left = tuning.CRAWL_AWAY_TICKS
+            self._break_active_controllers()
+            self._transition("CrawlAway")
+            return
+        self._flee_from = lz
+        self._crawl_cd = T_CRAWL_RETRY
+        self._break_active_controllers()
+        self._transition("FleeLizard")
+
+    def _cornered_by(self, lz) -> bool:
+        """被这只敌人逼到角落：贴着墙，且往反方向也挪不动。"""
+        b = self.body
+        if not b.on_floor():
+            return False
+        if abs(lz.x - b.chunk1.x) > tuning.FEAR_TOO_CLOSE_R:
+            return False
+        if self._near_wall():
+            return True
+        return abs(self._flee_target_x(lz) - b.chunk1.x) < tuning.FEAR_JUMP_MIN_GAIN
+
+    def _jump_over(self, lz) -> bool:
+        """朝敌人另一侧起跳，从它头上跳过去逃跑。"""
+        b = self.body
+        if not b.on_floor():
+            return False
+        side = 1.0 if b.chunk1.x >= lz.x else -1.0
+        b.facing = 1 if side > 0 else -1
+        b.move_dir = b.facing
+        b.walk_target_x = None
+        b.request_jump("stand")
+        b.chunk0.vx += side * tuning.FEAR_JUMP_PUSH
+        self.gfx.look_at = (lz.x, lz.y)
+        return True
+
+    def _nearest_rip_spear(self, lz=None):
+        """插在蜥蜴身上、够得着的矛（勇敢的猫会拔下来重投）。"""
+        best, bd = None, tuning.RIP_SPEAR_R * 2.2
+        c1 = self.body.chunk1
+        lizzies = getattr(self.win, "lizards", ())
+        for sp in getattr(self.win, "spears", ()):
+            if sp.state != ItemState.FREE or getattr(sp, "stuck_to", None) is None:
+                continue
+            host = sp.stuck_to[0]
+            if host not in lizzies or getattr(host, "dead", False):
+                continue
+            if lz is not None and host is not lz:
+                continue
+            d = math.hypot(sp.x - c1.x, sp.y - c1.y)
+            if d < bd:
+                best, bd = sp, d
+        return best
 
     def _enter_fleelizard(self):
         b = self.body
@@ -1980,6 +2064,7 @@ class BehaviorFSM:
             self.body.food_eat(-self.body.food_hibernate)
             self.body.energy = 1.0
             self._hibernating = False
+            self._social_urge_boost(tuning.SOCIAL_URGE_BOOST_WAKE)   # 睡醒：想找人
             self._transition("WakeSequence")
 
     def _st_wakesequence(self, cursor, disturbed):
@@ -2282,6 +2367,13 @@ class BehaviorFSM:
                 self.body.sleeping = False
                 self.gfx.sleep_curl = 0.0
                 self.body.set_posture(False)
+                # 被同伴救活：醒来后去拍拍恩人（感谢）
+                rv = self._reviver
+                if (rv is not None and getattr(rv, "body", None) is not None
+                        and not rv.body.dead):
+                    self._thank_target = rv
+                    self._thank_t = tuning.THANK_TICKS
+                self._reviver = None
                 self._transition("WakeSequence")
 
     def _st_stunned(self, cursor, disturbed):
@@ -3345,7 +3437,7 @@ class BehaviorFSM:
         """社交/帮助/反击/匍匐躲避在「没正事」的态里按优先级抢班。"""
         for k in ("_social_cd", "_help_cd", "_fight_cd", "_crawl_cd",
                   "_protest_cd", "_revive_cd", "_wall_cd", "_scold_cd",
-                  "_pole_nudge_cd", "_act_cd"):
+                  "_pole_nudge_cd", "_act_cd", "_apology_t", "_thank_t"):
             v = getattr(self, k)
             if v > 0:
                 setattr(self, k, v - 1)
@@ -3355,7 +3447,84 @@ class BehaviorFSM:
         if self.state not in _WANTS_FROM:
             return
         b = self.body
-        # 1) 倒地的同伴：过去用特殊表情扒拉救活
+        brave = getattr(self.pers, "bravery", 0.5)
+        kind = getattr(self.pers, "kindness", 0.5)
+        # 0) 恐惧：敌对靠上来时「逃离危险源」优先级永远最高 —— 高于复活/帮取食/
+        #    抗议/反击。唯二例外是勇敢的敢迎战、善良的敢先去救人；但蜥蜴贴到
+        #    FEAR_TOO_CLOSE_R 内一律逃跑（被逼到角落就跳过它跑）。
+        #    手里端着要送蜥蜴的蝉乌贼时不慌（原版送礼不躲）——但空手绝不会靠近。
+        if not b.swimming and b.on_floor() and not self._carrying_gift():
+            flz = self._nearest_lizard(tuning.CRAWL_FEAR_R)
+            if flz is not None:
+                fd = math.hypot(flz.x - b.chunk1.x, flz.y - b.chunk1.y)
+                close = fd <= tuning.FEAR_TOO_CLOSE_R
+                if close:
+                    self._flee_lizard_now(flz)
+                    return
+                if self._crawl_cd <= 0:
+                    if (kind >= tuning.FEAR_KIND_RESCUE and self._revive_cd <= 0):
+                        dp = self._dead_peer_near()
+                        if dp is not None:
+                            self._social_kind = "revive"
+                            self._social_target = dp
+                            self._social_left = tuning.REVIVE_APPROACH_TICKS
+                            self._break_active_controllers()
+                            self._transition("Socialize")
+                            return
+                    if (brave >= tuning.FEAR_BRAVE_FIGHT and self._fight_cd <= 0
+                            and (self._weapon_ready()
+                                 or self._nearest_rip_spear(flz) is not None)):
+                        self._fight_target = flz
+                        self._fight_left = tuning.FIGHT_TICKS
+                        self._break_active_controllers()
+                        self._transition("FightThreat")
+                        return
+                    self._flee_lizard_now(flz)
+                    return
+        # 0b) 送礼驯服：手里端着蝉乌贼 → 极低概率决定去喂未驯服的蜥蜴
+        #     （原版 FriendTracker.GiftRecieved；概率调得极低，驯服是稀有事）
+        if self._carrying_gift() and self.rng.random() < tuning.GIFT_START_P:
+            glz = self.win.nearest_untamed_lizard(b.chunk1.x)
+            if glz is not None and abs(glz.x - b.chunk1.x) <= tuning.GIFT_SEEK_R:
+                self._social_kind = "gift"
+                self._social_target = glz
+                self._social_left = tuning.GIFT_TRY_TICKS
+                self._gift_wait = 0
+                self._break_active_controllers()
+                self._transition("Socialize")
+                return
+        # 1) 误伤同伴 → 抱歉：走过去面对它匍匐
+        if self._apology_t > 0:
+            ap = self._apology_target
+            if ap is None or ap.body.dead:
+                self._apology_target = None
+                self._apology_t = 0
+            else:
+                d = math.hypot(ap.body.chunk1.x - b.chunk1.x,
+                               ap.body.chunk1.y - b.chunk1.y)
+                if d > tuning.SOCIAL_R:
+                    self._apology_t = 0        # 跑太远了：算了
+                else:
+                    self._social_kind = "crouch"      # 匍匐 = 抱歉
+                    self._social_target = ap
+                    self._social_left = tuning.APOLOGY_TICKS
+                    self._break_active_controllers()
+                    self._transition("Socialize")
+                    return
+        # 1b) 被同伴救活 → 去拍拍恩人（感谢）
+        if self._thank_t > 0 and self._thank_target is not None:
+            th = self._thank_target
+            if th.body.dead or th is self:
+                self._thank_target = None
+                self._thank_t = 0
+            else:
+                self._social_kind = "pat"         # 拍拍 = 喜欢/感谢
+                self._social_target = th
+                self._social_left = tuning.THANK_TICKS
+                self._break_active_controllers()
+                self._transition("Socialize")
+                return
+        # 2) 倒地的同伴：过去用特殊表情扒拉救活
         if self._revive_cd <= 0 and not b.swimming:
             dp = self._dead_peer_near()
             if dp is not None:
@@ -3387,32 +3556,22 @@ class BehaviorFSM:
         #    手里/脚边有家伙时也会主动迎战（原版持械的猫）
         if self._fight_cd <= 0:
             ranged = self.anger > 0
-            lz = self._nearest_lizard(tuning.FIGHT_R if ranged else tuning.FIGHT_ARM_R)
-            if lz is not None and (ranged or self._weapon_ready()):
+            arm_r = tuning.FIGHT_ARM_R * (0.55 + 0.90 * brave)   # 越勇敢迎战越远
+            lz = self._nearest_lizard(tuning.FIGHT_R if ranged else arm_r)
+            can_rip = (brave >= tuning.RIP_SPEAR_BRAVE
+                       and self._nearest_rip_spear(lz) is not None)
+            if lz is not None and (ranged or self._weapon_ready() or can_rip):
                 self._fight_target = lz
                 self._fight_left = tuning.FIGHT_TICKS
                 self._break_active_controllers()
                 self._transition("FightThreat")
                 return
         # 5) 恐惧：蜥蜴靠近 → 在它背后就趴下潜行挪开；打了照面直接跑
-        if self._crawl_cd <= 0 and not b.swimming and b.on_floor():
+        if (self._crawl_cd <= 0 and not b.swimming and b.on_floor()
+                and not self._carrying_gift()):
             lz = self._nearest_lizard(tuning.CRAWL_FEAR_R)
-            if lz is not None and not self._carrying_gift():
-                behind = self._behind_creature(lz)
-                # 性格：crawl_like 低的猫宁可拔腿就跑，不肯趴下
-                can_crawl = (self.rng.random()
-                             < 0.25 + 0.75 * getattr(self.pers, "crawl_like", 0.5))
-                if (behind or abs(lz.x - b.chunk1.x) > tuning.CRAWL_FEAR_R * 0.6) and can_crawl:
-                    self._crawl_from = lz
-                    self._crawl_point_to = None
-                    self._crawl_left = tuning.CRAWL_AWAY_TICKS
-                    self._break_active_controllers()
-                    self._transition("CrawlAway")
-                    return
-                self._flee_from = lz
-                self._crawl_cd = T_CRAWL_RETRY
-                self._break_active_controllers()
-                self._transition("FleeLizard")
+            if lz is not None:
+                self._flee_lizard_now(lz)
                 return
         # 6) 平时：附近有同伴 / 鼠标在附近停够久 → 随手做个小社交动作（不切态）
         if (self._act_cd <= 0 and self.state in _IDLE_SOCIAL_FROM
@@ -3530,9 +3689,11 @@ class BehaviorFSM:
         return self.rng.random() < self._sleep_urge * self._sleep_urge
 
     # ── 被同伴救：特殊表情扒拉一会儿就复活 ──
-    def nuzzle(self, ticks: int = 1) -> bool:
+    def nuzzle(self, ticks: int = 1, by=None) -> bool:
         if self.state != "Dead" or self._reincarnate:
             return False
+        if by is not None:
+            self._reviver = by
         self._nuzzle_t += int(ticks)
         if self._nuzzle_t < tuning.REVIVE_TOUCH_TICKS:
             return False
@@ -3572,6 +3733,14 @@ class BehaviorFSM:
         self._social_gesture = None
         self._social_press_seen = 0
         self._social_urge = 0.0             # 社交欲望：做完归 0，重新慢慢攒
+        if self._social_kind == "crouch" and self._apology_target is not None:
+            self._apology_target = None     # 抱歉做完了
+            self._apology_t = 0
+        elif self._social_kind == "pat" and self._thank_target is not None:
+            self._thank_target = None       # 谢过了
+            self._thank_t = 0
+        elif self._social_kind == "gift":
+            self._gift_left = 0
         if self._social_kind == "revive":
             self._revive_cd = T_REVIVE_RETRY
         elif self._social_kind == "protest":
@@ -3811,6 +3980,12 @@ class BehaviorFSM:
         elif kind == "protest":
             self._social_left = tuning.PROTEST_TICKS
             b.drop_all()             # 丢掉手上的东西，腾出手来扒拉
+        elif kind == "gift":
+            self._social_left = tuning.GIFT_TRY_TICKS   # 送礼：磨到交出去或放弃
+        elif kind in ("crouch", "pat"):
+            if self._social_left <= 0:               # 抱歉/道谢：沿用调用方给的时长
+                self._social_left = self.rng.randint(tuning.SOCIAL_TICKS_MIN,
+                                                     tuning.SOCIAL_TICKS_MAX)
         else:
             self._social_left = self.rng.randint(tuning.SOCIAL_TICKS_MIN,
                                                  tuning.SOCIAL_TICKS_MAX)
@@ -3830,11 +4005,17 @@ class BehaviorFSM:
             self._social_cleanup()
             self._transition("Dragged")
             return
-        if tgt is None or getattr(tgt, "body", None) is None:
+        if tgt is None:
+            self._end_social()
+            return
+        kind = social.ALIASES.get(self._social_kind, self._social_kind)
+        if kind == "gift":                 # 给蜥蜴送礼：目标没有 body，用 x/y
+            self._st_social_gift(tgt)
+            return
+        if getattr(tgt, "body", None) is None:
             self._end_social()
             return
         ob = tgt.body
-        kind = social.ALIASES.get(self._social_kind, self._social_kind)
         if social.is_crouch(kind):
             b.set_crawl(True)              # 匍匐族：整段都趴着
         self._social_left -= 1
@@ -3852,6 +4033,32 @@ class BehaviorFSM:
             self.gfx.look_at = (ob.chunk0.x, ob.chunk0.y)
             self._social_act(kind, tgt, ob)
         if self._social_left <= 0:
+            self._end_social()
+
+    def _st_social_gift(self, lz):
+        """送礼驯服：端着蝉乌贼走到未驯服蜥蜴身边，极低概率交出去。
+
+        对照原版 FriendTracker.GiftRecieved（活体 like += 0.6 / 尸体 1.2）。
+        """
+        b = self.body
+        self._social_left -= 1
+        if (getattr(lz, "dead", False) or getattr(lz, "tamed", False)
+                or lz.state != ItemState.FREE or not self._carrying_gift()
+                or self._social_left <= 0):
+            self._end_social()
+            return
+        self.gfx.look_at = (lz.x, lz.y)
+        d = math.hypot(lz.x - b.chunk1.x, lz.y - b.chunk1.y)
+        if d > tuning.GIFT_APPROACH_R:
+            b.walk_to(lz.x)
+            return
+        b.stop_walk()
+        b.facing = 1 if lz.x >= b.chunk0.x else -1
+        self._aim_target(lz)
+        self._gift_wait += 1
+        if self._gift_wait >= tuning.GIFT_DELIVER_DELAY:
+            self.win.deliver_gift(self.win, lz)
+            self.body.temper_shift(tuning.TEMPER_FEED)
             self._end_social()
 
     def _social_act(self, kind, tgt, ob):
@@ -3917,10 +4124,10 @@ class BehaviorFSM:
         if self._social_press_seen < g.presses_done:
             self._social_press_seen = g.presses_done
             self._poke(ob)                          # 把同伴按下去
-            beh.nuzzle(self._social_press_per)
+            beh.nuzzle(self._social_press_per, by=self.win)
             self.body.temper_shift(tuning.TEMPER_FEED * 0.5)
         if g.step():
-            beh.nuzzle(tuning.REVIVE_TOUCH_TICKS)   # 按完就复活
+            beh.nuzzle(tuning.REVIVE_TOUCH_TICKS, by=self.win)   # 按完就复活
             self.body.temper_shift(tuning.TEMPER_FEED)
             self._end_social()
 
@@ -3979,6 +4186,7 @@ class BehaviorFSM:
         if a.crouch:
             self.body.set_crawl(True)
         self.gfx.face_special = (a.gesture == "scold")
+        self._social_witness_boost()       # 别人在社交：附近同伴也想社交
         return True
 
     def _act_active(self) -> bool:
@@ -4525,6 +4733,22 @@ class BehaviorFSM:
         d = math.hypot(tgt.x - b.chunk1.x, tgt.y - b.chunk1.y)
         self.gfx.look_at = (tgt.x, tgt.y)
         if b.carried_spear is None and b.carried_stone is None:
+            rip = None
+            if getattr(self.pers, "bravery", 0.5) >= tuning.RIP_SPEAR_BRAVE:
+                rip = self._nearest_rip_spear(tgt) or self._nearest_rip_spear()
+            if rip is not None:
+                rd = math.hypot(rip.x - b.chunk1.x, rip.y - b.chunk1.y)
+                if rd > tuning.RIP_SPEAR_R:
+                    b.walk_to(rip.x)
+                    return
+                b.stop_walk()
+                side = "r" if rip.x >= b.chunk0.x else "l"
+                b.reach_for(rip, side)
+                if (math.hypot(rip.x - b.chunk0.x, rip.y - b.chunk0.y)
+                        <= tuning.GRAB_REACH + b.arm_full_reach):
+                    if b.grab_spear(rip, side):        # 拔出来（grab_spear 清 stuck）
+                        self._fight_throw_t = tuning.FIGHT_THROW_CD
+                return
             o = self._nearest_ground_weapon()
             if o is not None:
                 od = math.hypot(o.x - b.chunk1.x, o.y - b.chunk1.y)
@@ -4699,6 +4923,29 @@ class BehaviorFSM:
     # ── 社交欲望（第六类）：攒满才想找同伴做社交动作 ──
     def _social_urge_tick(self):
         self._social_urge = min(1.0, self._social_urge + tuning.SOCIAL_URGE_RATE)
+
+    def _social_urge_boost(self, amount: float) -> None:
+        """社交欲望的事件加成：吃到东西 / 吃饱 / 睡醒 / 看到别人社交。"""
+        self._social_urge = clampf(self._social_urge + float(amount), 0.0, 1.0)
+
+    def _social_witness_boost(self) -> None:
+        """别人做社交动作 → 附近同伴的社交欲望大幅上涨。"""
+        c0 = self.body.chunk0
+        for p in self._living_peers():
+            ob = p.body
+            if math.hypot(ob.chunk0.x - c0.x, ob.chunk0.y - c0.y) <= tuning.SOCIAL_BOOST_R:
+                p.behavior._social_urge_boost(tuning.SOCIAL_URGE_BOOST_NEAR)
+
+    def apologize(self, victim) -> None:
+        """误伤同伴：记下它，回头面对它匍匐道歉（抱歉）。"""
+        if victim is None or getattr(victim, "body", None) is None:
+            return
+        if victim.body.dead or victim is self:
+            return
+        if self._apology_target is victim:
+            return
+        self._apology_target = victim
+        self._apology_t = tuning.APOLOGY_TICKS
 
     def _food_seek_ready(self) -> bool:
         """觅食闸：攒满 100 再掷一次骰，整体找食频率略降。"""
