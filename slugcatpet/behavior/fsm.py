@@ -86,6 +86,7 @@ COB_HIT_TOL = 15.0        # 这一掷能不能命中豆荚的竖直容差（矛 
 COB_THROW_CD = 24         # 两矛之间的最短间隔（等矛飞出去、看豆荚开没开）
 COB_TRY_MAX = 5           # 一次啃食预算里最多掷几次矛
 COB_JUMP_APEX = 40.0      # 站立起跳能把掷矛线抬高的量（实测 43.7，留点余量）
+COB_STAND_EPS = 4.0       # 站位的收尾公差（WALK_STOP_EPS=2，留点姿态余量）
 T_CRAWL_RETRY = 300       # 匍匐躲避冷却
 T_PROTEST_RETRY = 900     # 抗议被抢东西的冷却
 T_REVIVE_RETRY = 200      # 复活失败重试
@@ -375,6 +376,9 @@ class BehaviorFSM:
         self._protest_target = None
         self._fight_left = 0
         self._fight_target = None
+        self._fight_climber = None       # 为够到高处的目标而爬的那根竖杆
+        self._fight_climb_thrown = False # 本次爬杆已经出手过（爬完就收工）
+        self._pole_throw_cd = 0          # 爬杆够不着目标的重试冷却
         self._crawl_left = 0
         self._crawl_from = None
         self._nuzzle_t = 0
@@ -903,6 +907,8 @@ class BehaviorFSM:
             self._cob_seek_cd -= 1
         if self._cob_throw_cd > 0:
             self._cob_throw_cd -= 1
+        if self._pole_throw_cd > 0:
+            self._pole_throw_cd -= 1
         self._cob_check = (self._cob_check + 1) % tuning.COB_CHECK_TICKS
         if (self._cob_check == 0 and self._cob_seek_cd <= 0
                 and self.body.food < self.body.food_max
@@ -911,7 +917,7 @@ class BehaviorFSM:
                 and not self._cold_urgent() and not self._zerog()
                 and self.state in _WANTS_FROM):
             cb = self._nearest_cob(feedable=True)
-            if cb is None and self._spear_willing():
+            if cb is None and self._cob_spear_willing():
                 cb = self._nearest_cob(feedable=False)     # 没开荚：去捡矛打
             if cb is not None:
                 self._cob = cb
@@ -1412,6 +1418,27 @@ class BehaviorFSM:
     def _spear_willing(self) -> bool:
         """肯不肯使矛（圣徒几乎不肯碰矛，够不着就用别的办法）。"""
         return float(getattr(self.pers, "spear_like", 1.0)) >= tuning.SPEAR_WILLING_MIN
+
+    def _cob_spear_willing(self) -> bool:
+        """肯不肯为了开爆米花去捡矛：素食猫（圣徒）只吃素，不开荚就没得吃。
+
+        原版 SeedCob.HitByWeapon（SeedCob.cs:398）确实把圣徒排除在外（圣徒的矛
+        打不开荚），这里是用户点名要求的例外：圣徒愿意拿矛敲爆米花，也敲得开。
+        """
+        return self._spear_willing() or self.pers.diet in (DIET_VEGETARIAN, DIET_SPECIAL)
+
+    def meat_sick(self, f) -> bool:
+        """素食猫（圣徒）把荤食咽下去 → 眩晕。
+
+        原版圣徒碰到活体/电击就吃 SaintStagger（Player.cs:3581 = Stun(t/5) 外加一阵
+        抽搐）：Centipede 680、JellyFish 520、Cicada 220、Snail 800。wiki 也写明圣徒
+        是严格素食者。这里取电蝉那档 220 → MEAT_SICK_STUN tick。
+        """
+        if self.pers.diet not in (DIET_VEGETARIAN, DIET_SPECIAL):
+            return False
+        if not getattr(f, "is_meat", False):
+            return False
+        return self.apply_stun(tuning.MEAT_SICK_STUN)
 
     def _point_prob(self, base: float) -> float:
         """按性格缩放一个指指点点概率。"""
@@ -2041,7 +2068,8 @@ class BehaviorFSM:
             if d > 1e-6:
                 self.gfx.head.vx += dx / d * BITE_HEAD_NUDGE
                 self.gfx.head.vy += dy / d * BITE_HEAD_NUDGE
-            b.consume_carried()
+            if b.consume_carried():      # 咽下去：素食猫吃荤当场晕
+                self.meat_sick(f)
         if self._chew_counter >= EAT_INTERVAL:
             self._chew_counter = 0
             self._chew_bit = False
@@ -4273,6 +4301,7 @@ class BehaviorFSM:
         self.body.food_eat(bites)
         self.body.temper_shift(tuning.TEMPER_FEED)
         self.body.energy_change(tuning.EN_EAT_RESTORE * bites)
+        self.meat_sick(fruit)            # 同伴喂来的荤食：素食猫照晕
         fruit.stalk = None
         fruit.state = ItemState.EATEN
         if fruit in getattr(self.win, "fruits", ()):
@@ -4340,6 +4369,7 @@ class BehaviorFSM:
         elif st == "FightThreat":
             self._fight_cd = T_FIGHT_RETRY
             self._fight_target = None
+            self._fight_climber_release()
         elif st == "ChaseCursor":
             self._act_end()
         elif st == "EatCob":
@@ -5138,13 +5168,16 @@ class BehaviorFSM:
         lo, hi = min(cb.p0[1], cb.p1[1]), max(cb.p0[1], cb.p1[1])
         return lo - COB_HIT_TOL, hi + COB_HIT_TOL
 
-    def _cob_would_hit(self, cb, dir_x) -> bool:
+    def _cob_would_hit(self, cb, dir_x, stand_x=None) -> bool:
         """预演这一掷：按原版 Weapon.Thrown 弹道飞一遍，用命中判定函数看会不会中豆荚。
 
         物理逐行对照 world/spear.py 的 Spear.step（飞行时 vel.y += 0.45、重力减半、
         空气阻力 0.999）；命中判定直接复用 items._cob_hit（真正命中时用的同一个函数）。
         只比高度是不行的：豆荚两个 chunk 是斜的，光看高度会把「chunk 已经在掷出点
         身后」也当成能打中，投出去就是空。
+
+        stand_x：假装站在这个 x 上掷（默认＝现在的位置）。挑站位时要用它逐个试：
+        命中与否跟掷出点的 x 有关（豆荚斜着挂，同一个高度上也有一段段的空隙）。
         """
         from ..world.items import SPEAR_COB_PAD, _cob_hit
         from ..world.spear import AIR_FRICTION, GRAVITY, RAD as SPEAR_RAD
@@ -5161,9 +5194,10 @@ class BehaviorFSM:
         else:
             vx, vy = weaponphys.throw_velocity(c0, dir_x, True,
                                                weaponphys.frc(weak=weak))
-        x = c0.x + float(dir_x) * THROW_ORIGIN_DX
+        ox = c0.x if stand_x is None else float(stand_x)
+        x = ox + float(dir_x) * THROW_ORIGIN_DX
         y = c0.y - THROW_ORIGIN_DY
-        lx = c0.x - float(dir_x) * THROW_ORIGIN_DX    # 原版 firstFrameTraceFromPos
+        lx = ox - float(dir_x) * THROW_ORIGIN_DX      # 原版 firstFrameTraceFromPos
         ly = c0.y
         grav = GRAVITY * self.win.room_gravity
         probe = _ShotProbe(SPEAR_RAD)
@@ -5231,7 +5265,7 @@ class BehaviorFSM:
                                             no_handoff=True)
             self._cob_climber_cob = cb
         tx = self._cob_stand_x(cb)
-        dir_x = 1 if tx >= b.chunk0.x else -1
+        dir_x = 1 if (cb.p0[0] + cb.p1[0]) * 0.5 >= b.chunk0.x else -1
         if self._cob_would_hit(cb, dir_x):   # 爬到高度对上了：就地插一矛
             if b.carried_spear is not None:
                 self._launch_weapon(dir_x)
@@ -5294,18 +5328,29 @@ class BehaviorFSM:
         # 还没开荚：原版要用矛打一下才 Open()（空手打不开）。
         # 觅食时会愿意先去地上捡一根矛再回来打（用户要求：选择投矛命中爆米花）。
         if b.carried_spear is None:
-            if self._spear_willing() and self._cob_fetch_spear() and self._cob_left > 0:
+            if self._cob_spear_willing() and self._cob_fetch_spear() and self._cob_left > 0:
                 return                       # 正在去捡矛（不肯用矛的猫直接放弃）
             self._cob_end()
             return
         tx = self._cob_stand_x(cb)
-        if abs(tx - b.chunk0.x) > COB_STAND_DX:      # 先站到离豆荚 COB_STAND_DX 处
-            b.walk_to(tx)
+        tgt = tx
+        if b.walk_min is not None:                   # 和 Body.walk_to 一样先夹进可行走范围
+            tgt = min(max(tx, b.walk_min), b.walk_max)
+        # 朝豆荚本体（两 chunk 中点）掷，不是朝站位点：站在豆荚正下方时
+        # tx 会落到身体这一侧，拿它定方向会把矛往反方向扔出去。
+        dir_x = 1 if (cb.p0[0] + cb.p1[0]) * 0.5 >= b.chunk0.x else -1
+        high = self._cob_high(cb)
+        # 站着够得着（豆荚不在掷矛线上方）就先看「现在的位置掷不掷得中」：
+        # 原来的固定 COB_STAND_DX 停位会让猫停在半路的空档里（预演说打不中），
+        # 站着不动把预算耗完才放弃——用户看到的就是「圣徒敲不动爆米花」。
+        can_toss = b.on_floor() and not high and self._cob_would_hit(cb, dir_x)
+        near = abs(tgt - b.chunk0.x) <= (COB_STAND_DX if high else COB_STAND_EPS)
+        if b.on_floor() and not can_toss and not near:
+            b.walk_to(tx)                            # 掷不中就走到底下的站位，别停在半路
             if self._cob_left <= 0:
                 self._cob_end()
             return
         b.stop_walk()
-        dir_x = 1 if tx >= b.chunk0.x else -1
         b.facing = dir_x
         if self._cob_left <= 0 or self._cob_try >= COB_TRY_MAX:
             self._cob_end()                  # 预算用完 / 掷了几次都打不开：放弃
@@ -5338,10 +5383,64 @@ class BehaviorFSM:
 
     def _fight_end(self):
         self._act_end()
+        self._fight_climber_release()
+        self._fight_climb_thrown = False
         self._fight_cd = T_FIGHT_RETRY
         self._fight_target = None
         self.body.stop_walk()
         self._transition("IdleStand")
+
+    # ── 爬竖杆打高处：站地面时矛只能水平掷（原版 Weapon.Thrown 只有水平分支），
+    #    所以要先爬到和猎物同一高度。爬杆动作/物理全交给 PoleClimber（原版
+    #    ClimbOnBeam 的驱动、杆顶 BeamTip 的失衡与跳杆都在里面）。──
+    def _throw_climb_pole(self, tgt):
+        """能爬到目标那一层的竖杆：杆顶高过目标，且尽量靠近目标的 x（水平掷矛）。"""
+        c0 = self.body.chunk0
+        best, best_c = None, None
+        for p in getattr(self.win, "poles", ()):
+            if getattr(p, "kind", None) != VERTICAL:
+                continue
+            if p.top_y > tgt.y + tuning.POLE_THROW_CLIMB_DY:
+                continue                    # y↓：杆顶比目标还低，爬上去也够不着
+            c = abs(p.x - tgt.x) + abs(p.x - c0.x) * 0.5
+            if best_c is None or c < best_c:
+                best, best_c = p, c
+        return best
+
+    def _start_throw_climb(self, tgt) -> bool:
+        pole = self._throw_climb_pole(tgt)
+        if pole is None:
+            return False
+        from .pole_climb import PoleClimber
+        self._fight_climber_release()
+        # no_handoff：交叉杆换杆由 PoleClimb 态负责，这里不需要
+        self._fight_climber = PoleClimber(self.win, pole, self.rng, no_handoff=True)
+        self._fight_climb_thrown = False
+        return True
+
+    def _fight_climber_release(self):
+        if self._fight_climber is not None:
+            self._fight_climber.release()
+            self._fight_climber = None
+
+    def _fight_climb_tick(self, tgt):
+        """爬杆途中：到目标高度就出手；杆爬完（到顶/跳走）就收杆回普通战斗。"""
+        b = self.body
+        cl = self._fight_climber
+        self._aim_target(tgt)                # 爬杆途中手也一直指着猎物
+        if (not self._fight_climb_thrown
+                and (b.carried_spear is not None or b.carried_stone is not None)
+                and abs(b.chunk0.y - tgt.y) <= THROW_JUMP_DY):
+            dir_x = 1 if tgt.x >= b.chunk0.x else -1
+            b.facing = dir_x
+            b.stop_walk()
+            if self._launch_weapon(dir_x):
+                self._fight_climb_thrown = True
+                self._fight_throw_t = 0
+        # 已经出手过就让攀爬器按「想下杆」走（到顶后跳杆/爬下），不再第二掷
+        if cl.update(self._fight_climb_thrown):
+            self._fight_climber_release()
+            self._pole_throw_cd = T_POLE_THROW_RETRY
 
     def _st_fightthreat(self, cursor, disturbed):
         b = self.body
@@ -5412,6 +5511,14 @@ class BehaviorFSM:
                     tgt.vx += 0.35 if tgt.x >= b.chunk0.x else -0.35
             return
         # 持械：持续瞄着目标（指向），到点就按原版水平掷出
+        # 目标高出一跳够不着的量（例如站在杆上/墙上的蜥蜴）→ 先爬竖杆到同一高度
+        if self._fight_climber is not None:
+            self._fight_climb_tick(tgt)
+            return
+        if (b.chunk0.y - tgt.y > tuning.POLE_THROW_CLIMB_DY
+                and b.on_floor() and not b.on_pole
+                and self._pole_throw_cd <= 0 and self._start_throw_climb(tgt)):
+            return
         self._fight_throw_t += 1
         if d < tuning.FIGHT_ARM_KEEP:                # 太近会被咬：边打边拉开
             b.walk_to(b.chunk1.x - (tgt.x - b.chunk1.x))

@@ -38,6 +38,12 @@ CONN_STAND = cp.DIST_STAND
 CONN_CRAWL = cp.DIST_CRAWL
 HIP_SINK_EASE = 0.06
 
+# 轻抛（Player.TossObject）出手后还能敲开爆米花的帧数：原版轻抛是 Mode.Free，撞到
+# SeedCob 只会被推开（SeedCob.HitByWeapon 只由 Mode.Thrown 的 Weapon 触发，而且
+# SeedCob.cs:398 还专门把圣徒排除掉）。用户点名要求「圣徒愿意击打爆米花触发」，
+# 所以本作只对豆荚开这个口子：轻抛的飞行段算命中。
+TOSS_COB_T = 40
+
 WALK_STOP_EPS = 2.0
 
 # 窗口边缘＝墙/天花：吸附、攀爬、蹬墙跳、吊顶（手感对齐原版攀杆）
@@ -1759,6 +1765,9 @@ class SlugcatBody:
             sp.angle_deg = sp.last_angle = 90.0 if float(dir_x) >= 0.0 else 270.0
             sp.stuck = False
             sp.stuck_to = None
+            sp.toss_t = TOSS_COB_T       # 轻抛期内可以敲开爆米花（原版打不开，用户要求）
+            sp._f1 = True                # 第一帧扫掠也要从出手前位置起算（同 Thrown 的
+                                         # firstFrameTraceFromPos，否则轻抛第一帧漏判）
             sp.state = ItemState.FREE
             self.release_spear(to_free=False)
             c0.vx += float(dir_x) * 4.0 * recoil

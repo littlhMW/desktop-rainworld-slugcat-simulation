@@ -46,7 +46,7 @@ class Spear:
                  "_id", "_rng", "_contact_floor", "_contact_ceil", "_contact_x", "_impact_cb",
                  "_thrown", "_throw_dir", "_exit_spd", "_throw_x", "_throw_y",
                  "collide_with_objects", "held_by", "embedded", "stuck_to", "_still",
-                 "thrower", "no_self_t", "pinned", "pole")
+                 "thrower", "no_self_t", "pinned", "pole", "toss_t")
 
     def __init__(self, x: float, y: float, seed: int = 0, angle_deg: float = 90.0):
         self.x = self.last_x = float(x)
@@ -85,6 +85,9 @@ class Spear:
         self.stuck_to = None           # 插在生物身上的 (obj, dx, dy)；由 items 层维护
         self.pinned = False            # 钉成杆子（原版 stuckInWall → beam），不能再被拾取
         self.pole = None               # 由 items 层注册的杆实体（钉住时非 None）
+        # 轻抛（原版 Player.TossObject，圣徒投矛走这条）刚出手的剩余帧数：原版轻抛是
+        # Mode.Free，什么都打不动；本作用户点名要圣徒能敲开爆米花，只对豆荚开这个口子。
+        self.toss_t = 0
 
     @property
     def pos(self):
@@ -116,6 +119,7 @@ class Spear:
         self.stuck = True
         self.pinned = True                         # 原版：stuckInWall 的格子标成 beam
         self._thrown = False
+        self.toss_t = 0
         self.vx = self.vy = 0.0
         self.spin = 0.0
         self.spinning = False
@@ -176,6 +180,8 @@ class Spear:
             return
         if self.state == ItemState.GONE:
             return
+        if self.toss_t > 0:
+            self.toss_t -= 1
         if self._f1:
             self._f1 = False             # 原版 firstFrameTraceFromPos：第一帧从出手前扫起
         else:

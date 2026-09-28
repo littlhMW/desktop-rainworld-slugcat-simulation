@@ -116,6 +116,17 @@ python run_slugcatpet.py
 - **翅膀宽度照原版 `CentipedeWing` 贴图**：翅是 `CustomFSprite("CentipedeWing")` —— 一张 8×52 的白色叶片贴图，贴到「根 / 尖各半宽 `2*wingsSize`」的四边形上（`NeedleWormGraphics.cs:565`）。CustomFSprite 的 uv 序是 0=左上 1=右上 2=右下 3=左下，而翅的顶点 0/1 在尖、2/3 在根 ⇒ **贴图上缘 = 翅尖**。贴图逐行宽 2,4,6,6,8×20,6×8,4×9,2×11，换成「根→尖」的半宽比就是 **0.25 / 0.5 / 0.75 / 1.0 / 0.75 / 0.25**（外侧半段最宽，像蝉翅）。我们原来固定画成 2.4→1.2 的锥条，两端都不对。
 - 复核：`work/scratch/e2e_r46.py`（24 项；用 `ribbon` 探针直接量每条折线的端点、半宽与绘制顺序）与 `outputs/noodlefly_parts_r46.png`（左 = wiki kiss 动图里的原版成体，右 = 本作：成体闭口 / 成体张口 / 幼体）。
 
+**面条蝇躯干半径 / 圣徒敲爆米花 / 爬杆投矛 / 圣徒吃荤眩晕（第 47 轮）**：
+
+- **面条蝇躯干半径照 `GraphSegmentRad` 重算**（`NeedleWormGraphics.cs:709-720`）：吻段不再是常量 1.0，而是 `1 + pow(InverseLerp(0, 0.5, fangOut), 0.6) * 1.5`（开口时整段吻变粗，闭口 1.0）；尾段不再是线性收到 0.9，而是按 `LerpMap(i - snout - ...)` 带 `(1.4 - 1.35*thinTail) * Lerp(1.8, 0.2, fatness)` 指数收细（`thinTail = 1` 时尾梢 0.707，比原来细）；整段再乘 `num3` —— 成体躯干首尾拉开 50→80px 时 1→0.85 整体收细（幼体恒 1.0）。只改渲染半径，物理半径没动。
+- **圣徒肯拿矛敲爆米花**：`SeedCob.HitByWeapon` 只认 `Spear`，所以「敲开豆荚」必须用矛；而圣徒的 `_spear_willing()` 是 False（不用矛打猎）。现在「为了吃」单独走 `_cob_spear_willing()`（素食 / 特殊食谱也愿意），既不去打猎也能把豆荚敲开。
+- **掷矛站位不再停在空档里**：豆荚两个 chunk 是斜的，`_cob_would_hit` 的预演在同一个高度上是一段一段的「能中 / 不能中」区间。原来「离理想站位 60px 就停下」会让猫正好停在不能中的区间里、站着把预算耗完才放弃 —— 表现就是「圣徒敲不动爆米花」。现在：① 先看**现在这位置**掷不掷得中，能中立刻出手；② 掷不中就走到底下的站位（收尾公差 4px）再掷。
+- **轻抛也要 `firstFrameTraceFromPos`**：圣徒投矛走的是 `Player.TossObject`（不是 `Weapon.Thrown`），原来没记 `firstFrameTraceFromPos`，真实第一帧的扫掠线段比预演的短一截 —— 预演说能中、真掷出去却穿过豆荚。现在轻抛也标 `_f1`（第一帧从出手前位置起算），预演和实弹完全一致。
+- **掷矛方向朝豆荚本体**：原来拿「站位点」定左右，站在豆荚正下方时站位点会落到身体这一侧，矛就直接往反方向飞。现在朝两个 chunk 的中点掷。
+- **爬竖杆到猎物同高再投矛**：目标比猫高 40px 以上、猫在地上又找得到竖杆时，它会挑一根（杆顶高于目标、路线代价最小）爬上去，爬到 `|自己高度 - 猎物高度| <= THROW_JUMP_DY` 再水平投矛，只出手一次；没有竖杆就照旧跳着打。
+- **圣徒吃荤会眩晕**：对照 `Player.SaintStagger`（`Stun(time / 5)`，肉食的 `staggerTime` 220~800），素食 / 特殊食谱（圣徒）吃到 `is_meat` 的东西会 `Stun(44)`，走 Stunned 态并掉下手上的东西；吃果子不晕，杂食猫（白猫）吃荤也不晕。
+- 复核：`work/scratch/e2e_r47.py`（23 项：躯干/吻/尾 20 段逐段对拍、矮豆荚两侧都能敲开、爬杆同高投矛、吃荤眩晕）。
+
 **社交动作**（第六类欲望「社交」攒满后凑到同伴身边做；动作词表见 `slugcatpet/behavior/social.py`）：
 
 | 动作 | 手势 | 含义 |
@@ -301,6 +312,17 @@ Nothing has a count limit any more - place as many as you like.
 - **Needle wobble now includes `zRot.x`**: that term ends in `* vector2.x` in `DrawSprites`; without it the needle never sways with facing (at `fangOut = 1`, `Sin(num10·π) = 0`, so the original is straight there too).
 - **Wing width taken from the original `CentipedeWing` texture**: the wing is a `CustomFSprite("CentipedeWing")` — an 8x52 white leaf texture mapped onto a quad with half-width `2*wingsSize` at both root and tip (`NeedleWormGraphics.cs:565`). CustomFSprite's uv order is 0=top-left 1=top-right 2=bottom-right 3=bottom-left while the wing's vertices 0/1 are at the tip and 2/3 at the root, so **the texture's top edge is the wing tip**. Its rows are 2,4,6,6,8x20,6x8,4x9,2x11 pixels wide, which as root-to-tip half-width ratios is **0.25 / 0.5 / 0.75 / 1.0 / 0.75 / 0.25** (widest in the outer half, like a cicada wing). Ours was a fixed 2.4-to-1.2 taper, wrong at both ends.
 - Verification: `work/scratch/e2e_r46.py` (24 checks; a `ribbon` probe measures every polyline's endpoints, half-widths and draw order) and `outputs/noodlefly_parts_r46.png` (wiki kiss gif on the left, ours on the right: adult closed / adult fang-out / infant).
+
+**Noodlefly torso radii + Saint cracking popcorn + pole throw + Saint meat stagger (round 47)**:
+
+- **Noodlefly torso radii recomputed from `GraphSegmentRad`** (`NeedleWormGraphics.cs:709-720`): the snout is no longer a constant 1.0 but `1 + pow(InverseLerp(0, 0.5, fangOut), 0.6) * 1.5` (the whole snout thickens when the fangs come out; 1.0 closed); the tail no longer tapers linearly to 0.9 but follows the `LerpMap(i - snout - ...)` curve with `(1.4 - 1.35*thinTail) * Lerp(1.8, 0.2, fatness)` (0.707 at the tip with `thinTail = 1`, thinner than before); everything is then scaled by `num3` - an adult torso stretched from 50 to 80px scales 1 -> 0.85 (infants stay at 1.0). Render radii only; the physics radii are untouched.
+- **The Saint will pick up a spear to crack a cob**: `SeedCob.HitByWeapon` only accepts a `Spear`, so opening a cob needs one - but the Saint's `_spear_willing()` is False (it never hunts with spears). "Willing because it is food" now goes through its own `_cob_spear_willing()` (vegetarian / special diets included), so it stays a pacifist and still opens the cob.
+- **The throwing spot no longer parks in a dead band**: the cob's two chunks are diagonal, so `_cob_would_hit`'s dry run alternates between hit and no-hit bands at the same height. The old "stop once within 60px of the ideal spot" rule could park the cat inside a no-hit band, where it stood still until its budget ran out and then gave up - the "the Saint cannot crack the popcorn" report. Now: (1) it first checks whether the throw **hits from where it stands** and throws immediately if so; (2) otherwise it walks all the way to the stand point (4px arrival tolerance) and throws from there.
+- **A light toss needs `firstFrameTraceFromPos` too**: the Saint throws spears through `Player.TossObject` (not `Weapon.Thrown`), which never recorded `firstFrameTraceFromPos`, so the real first frame's swept segment was shorter than the dry run predicted - the dry run said hit, the real spear went straight through the cob. The toss now sets `_f1` as well (the first frame sweeps from the pre-throw position), so prediction and reality agree exactly.
+- **Throw direction aims at the cob itself**: the old code used the stand point for left/right, and when the cat stood right under the cob that point fell on the cat's own side, so the spear flew the wrong way. It now aims at the midpoint between the two chunks.
+- **Climb a pole to the prey's height before throwing**: when the target is more than 40px above and the cat is on the floor with a vertical pole available, it picks the cheapest pole whose top clears the target, climbs until `|its height - prey height| <= THROW_JUMP_DY` and then throws horizontally - once. With no pole it keeps the old jump-and-throw behaviour.
+- **The Saint is staggered by meat**: matching `Player.SaintStagger` (`Stun(time / 5)` with the meat `staggerTime` values of 220-800), a vegetarian / special diet (the Saint) eating something with `is_meat` gets `Stun(44)`, goes through the Stunned state and drops what it is holding; fruit does not stagger it, and an omnivore (the Survivor) is never staggered by meat.
+- Verification: `work/scratch/e2e_r47.py` (23 checks: all 20 torso/snout/tail radii against an independent recomputation, both sides of a low cob opened, same-height pole throw, meat stagger).
 
 **Social actions** (the sixth desire, "social", sends a cat over to a companion once it fills up; the vocabulary lives in `slugcatpet/behavior/social.py`):
 

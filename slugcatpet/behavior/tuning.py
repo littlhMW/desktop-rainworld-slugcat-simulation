@@ -635,6 +635,14 @@ STARTLE_POINT_BASE  = 0.45
 # ── 用矛意愿门：低于此值的猫不肯为了开爆米花去捡矛（圣徒）──
 SPEAR_WILLING_MIN   = 0.4
 
+# ── 圣徒吃荤：原版 Saint 碰到活体/电击就 SaintStagger（Player.cs:3581 = Stun(t/5)）──
+#    Cicada.cs:871 触发电蝉时用 220 → 44 tick；这里当成「素食猫吃下荤食」的眩晕时长。
+MEAT_SICK_STUN      = 44
+
+# ── 打高处的目标：平地起跳抬不起掷矛线时，爬竖杆到目标同高再出手 ──
+POLE_THROW_CLIMB_DY = 40.0      # 目标高出这么多（≈一次跳跃的高度）→ 改爬杆
+T_POLE_THROW_RETRY  = 300       # 爬杆也没够到目标：这么久之内不再试
+
 # ── 喜欢珍珠的猫（溪流）：闲着会把地上的珍珠叼起来拿着 ──
 PEARL_HOARD_P       = 0.25      # 每次重算的概率
 PEARL_HOARD_CD      = 900       # 放下之后这么久才会再去叼

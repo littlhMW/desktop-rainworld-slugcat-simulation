@@ -2359,9 +2359,11 @@ class ItemInteractionMixin:
                 continue
             if sp.stuck and not sp._seg_new:    # 早先就停住/插住了：不再伤人
                 continue
-            if not (sp._thrown or sp._seg_new):  # HitWall 后进 Free，不再伤人（原版 Weapon.Update）
+            thrown = bool(sp._thrown or sp._seg_new)   # 原版 Mode.Thrown 才判命中
+            tossed = (not thrown) and sp.toss_t > 0     # 轻抛只认爆米花（见 TOSS_COB_T）
+            if not (thrown or tossed):          # HitWall 后进 Free，不再伤人（原版 Weapon.Update）
                 continue
-            for lz in self.lizards:
+            for lz in (self.lizards if thrown else ()):
                 if lz.dead:
                     continue
                 hit = _ball_hit(lz, sp, SPEAR_HIT_PAD)
@@ -2404,8 +2406,8 @@ class ItemInteractionMixin:
                 sp.stuck_to = (cb, hit[0] - cb.x, hit[1] - cb.y)
                 self._shake[0] += 0.4 * kx
                 break
-            for small in (*self.batflies, *self.squidcadas,
-                          *self.needleworms):   # 小生物：一矛带走
+            for small in ((*self.batflies, *self.squidcadas,
+                           *self.needleworms) if thrown else ()):   # 小生物：一矛带走
                 if small.dead or small.state != ItemState.FREE:
                     continue
                 if math.hypot(sp.x - small.x, sp.y - small.y) >= sp.rad + small.rad + SPEAR_HIT_PAD:

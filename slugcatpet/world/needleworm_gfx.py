@@ -27,7 +27,8 @@ from ..core.units import clampf, lerp, inv_lerp
 from ..core.gfxmath import _hsl2rgb
 from ..rendering.primitives import blit, draw_rope, ribbon
 from ..rendering.pixelmode import aa_hint
-from .needleworm import AGE_EGG, WING_SEG, FANG_LENGTH, _lerp_map
+from .needleworm import (AGE_EGG, AGE_SMALL, WING_SEG, FANG_LENGTH, TAIL_ROWS,
+                         _chunk_rads, _lerp_map)
 
 BLACK_RGB = (27, 10, 32)        # RoomPalette.blackColor（Outskirts；wiki 调色板图顶行同值）
 FOG_RGB = (78, 92, 104)         # RoomPalette.fogColor 近似值
@@ -234,6 +235,30 @@ def _draw_fang(painter, nw, ts, pts, zx) -> None:
     ribbon(painter, fp, fw, fc)
 
 
+def _graph_seg_rad(nw, i: int, num3: float) -> float:
+    """NeedleWormGraphics.cs:709-720 GraphSegmentRad(i) → 第 i 个图段的渲染半径。
+
+    注意这是**渲染**半径，和物理用的 s.rad 不是一回事：原版 BodyMesh 的顶点横向
+    偏移量 = GraphSegmentRad(j) * num3，其中 num3 是成体拉伸时的整体缩放
+    （NeedleWormGraphics.cs:486-490）。吻段随张口(fangOut)变粗、尾段带 exponent
+    变细，以前这两段是常量/线性，所以躯干看着对不上原版。
+    """
+    sn = nw.snout_n
+    if i < sn:
+        return (1.0 + math.pow(inv_lerp(0.0, 0.5, nw.fang_out), 0.6) * 1.5) * num3
+    fat = lerp(0.75, 1.35, nw.fatness)
+    body_n = nw.body_n
+    k = i - sn
+    rads = _chunk_rads(nw.age)
+    if k < body_n:
+        return rads[k] * fat * num3
+    return _lerp_map(float(k), float(body_n - 1),
+                     float(body_n + TAIL_ROWS[nw.age]),
+                     rads[body_n - 1] * fat, 0.7,
+                     (1.4 - 1.35 * nw.thin_tail)
+                     * lerp(1.8, 0.2, nw.fatness)) * num3
+
+
 def draw_needleworm(painter, atlas, nw, ts) -> None:
     """画一只面条蝇（幼体/成体）。"""
     if nw.age == AGE_EGG:
@@ -261,7 +286,17 @@ def draw_needleworm(painter, atlas, nw, ts) -> None:
             x += (1.0 if (i % 2) else -1.0) * k
             y += (1.0 if (i % 3) else -1.0) * k
         pts.append((x, y))
-        rads.append(max(0.8, s.rad))
+
+    # num3：成体拉伸时整体收细（GraphSegmentPos(吻根) ↔ GraphSegmentPos(末躯干) 的
+    # 间距 50→80px 映射 1→0.85；NeedleWormGraphics.cs:486-490）。
+    num3 = 1.0
+    if nw.age != AGE_SMALL:
+        p0 = pts[min(sn, len(pts) - 1)]
+        p1 = pts[min(sn + nw.body_n - 1, len(pts) - 1)]
+        num3 = _lerp_map(math.hypot(p1[0] - p0[0], p1[1] - p0[1]),
+                         50.0, 80.0, 1.0, 0.85)
+    for i in range(total):
+        rads.append(max(0.3, _graph_seg_rad(nw, i, num3)))
 
     def seg_dir(i):
         if i <= 0:
