@@ -19,7 +19,7 @@ WALL_BOUNCE = 0.2
 BODY_SCALE = 1.0              # 与游戏像素 1:1（基准 = 蛞蝓猫 chunk rad 9/8）
 N_BODY = 3                    # 躯干三节（同游戏 bodyChunks）
 MAX_TAIL_SEGS = 11            # 尾段上限（原版红蜥 tailSegments=11，最长的品种）
-SEG_STIFF_BODY = 0.55         # 躯干节跟随刚度（高=挺）
+SEG_STIFF_BODY = 0.80         # 躯干节跟随刚度（原版 elasticity 0.95，接近刚性）
 SEG_STIFF_TAIL = 0.30         # 尾节更软
 SEG_GRAV = 0.22               # 悬空（被拎起）时链节下坠
 DEPTH_LERP = 0.1              # 原版 depthRotation 的插值系数（LizardGraphics.Update）
@@ -329,7 +329,7 @@ BREEDS = (
                 bite_damage=1.0, bite_damage_chance=0.2857143, bite_chance=0.5, attempt_bite_radius=85.0,
                 toughness=0.9, stun_toughness=0.9, taming_difficulty=3.0,
                 danger=0.5, visual_radius=1300.0, body_mass=2.1,
-                sat=0.0, plain_color=(255, 255, 255), anchor_y=0.75,
+                sat=0.0, plain_color=(255, 255, 255),
                 tongue=True, tongue_range=440.0,
                 step_length=0.6, lift_feet=0.2, feet_down=0.05, limb_speed=8.0,
                 limb_quickness=0.8, smooth_legs=False, leg_pair_disp=0.0,
@@ -445,7 +445,7 @@ class Lizard:
 
         b = self.breed
         self.head_rad = 6.0 * b.head_size * BODY_SCALE
-        self.head_conn = 11.0 * b.head_size * BODY_SCALE
+        self.head_conn = 12.0 * b.head_size * BODY_SCALE   # 原版 head 目标点 = 体节0 + 12*headSize
         self.body_rad = 8.0 * b.body_size_fac * b.body_rad_fac * BODY_SCALE
         self.spacing = 17.0 * b.body_length_fac * (b.body_size_fac + 1.0) / 2.0 * BODY_SCALE
 
@@ -526,8 +526,8 @@ class Lizard:
         self.facing = 1
         self.chain_dir = 1.0
         # 原版 LizardGraphics 的 depthRotation / headDepthRotation（决定头取哪一行贴图）
-        self.depth = self.last_depth = 1.0
-        self.head_depth = self.last_head_depth = 1.0
+        self.depth = self.last_depth = -1.0          # 原版初值：朝右 = -1
+        self.head_depth = self.last_head_depth = -1.0
         self.turn_lift = 0.0
         self.look_at = None
         self.head_angle = 0.0
@@ -744,8 +744,16 @@ class Lizard:
         if cursor is None:
             return
         px, py = cursor
-        self.vx = clampf(px - self.x, -MAX_SEG_SPEED, MAX_SEG_SPEED)
-        self.vy = clampf(py - self.y, -MAX_SEG_SPEED, MAX_SEG_SPEED)
+        dx, dy = px - self.x, py - self.y
+        d = math.hypot(dx, dy)
+        # 原版头点每帧最多跟 40px（LizardGraphics.cs:1292 的距离上限）；
+        # 这里再按 MAX_SEG_SPEED 限速，让身体链能跟上而不被抻长。
+        if d > MAX_SEG_SPEED:
+            px = self.x + dx / d * MAX_SEG_SPEED
+            py = self.y + dy / d * MAX_SEG_SPEED
+            dx, dy, d = px - self.x, py - self.y, MAX_SEG_SPEED
+        self.vx = clampf(dx, -MAX_SEG_SPEED, MAX_SEG_SPEED)
+        self.vy = clampf(dy, -MAX_SEG_SPEED, MAX_SEG_SPEED)
         self.x, self.y = px, py
         self.jaw = clampf(self.jaw + JAW_OPEN_RATE * 0.6, 0.0, 0.5)
 
@@ -1149,12 +1157,16 @@ class Lizard:
 
         原版这两个量由四肢相对躯干连线的深度推导（limbs[i].connection 与
         rotationChunk），2D 宠物里没有 z 轴，等价量就是「身体朝向观众的程度」：
-        平时 = 朝向(±1)（侧视 → 头取正侧面贴图行 0）；转身时从 -1 扫到 +1，
+        平时 = 朝向的负号（朝右 -1 / 朝左 +1，见 LizardGraphics.Update 的 swim 分支），
+        侧视时 |depth|=1 → 头取正侧面贴图行 0；转身时从 -1 扫到 +1，
         中途 |depth|→0，头依次经过行 3/2/1 的正面、斜前贴图 —— 原版蜥蜴转身时
         头「从一侧抬起、绕过身体转到另一侧」正是这个扫描过程。
+        Sign(depth) 同时是头部 5 片的水平镜像（原版 scaleX = Sign(num)）。
         """
         self.last_depth = self.depth
-        self.depth = lerp(self.depth, 1.0 if self.facing >= 0 else -1.0, DEPTH_LERP)
+        # 原版：朝右时 depthRotation -> -1、朝左 -> +1
+        # （LizardGraphics.Update 的 swim 分支 Lerp(num8, head.x>neck.x ? -1 : 1, swim)）
+        self.depth = lerp(self.depth, -1.0 if self.facing >= 0 else 1.0, DEPTH_LERP)
         self.last_head_depth = self.head_depth
         # f2 = InverseLerp(0, 0.6, |dot((lookPos - 躯干0), (头 - 躯干0))|)（原版同名量）
         s0 = self.seg[0]
@@ -1199,6 +1211,15 @@ class Lizard:
             ty = prev_y + uy * s.dist
             s.x += (tx - s.x) * s.stiff
             s.y += (ty - s.y) * s.stiff
+            # 长度刚性：原版 BodyChunkConnection(Normal, elasticity 0.95) 每帧消掉
+            # ~95% 长度误差，等价于「不会被拉长」的绳约束 —— 被鼠标拖快时
+            # 身体因此保持原长，只会整条拖走而不会抻开。
+            dx2, dy2 = s.x - prev_x, s.y - prev_y
+            d2 = math.hypot(dx2, dy2)
+            if d2 > s.dist:
+                k2 = s.dist / d2
+                s.x = prev_x + dx2 * k2
+                s.y = prev_y + dy2 * k2
             lim = HL - s.rad * (TAIL_SINK_FAC if s.tail else BODY_STAND_FAC)
             if s.y > lim:
                 s.y = lim

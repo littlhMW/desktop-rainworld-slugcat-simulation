@@ -3,12 +3,13 @@
 对照 LizardGraphics.InitiateSprites / DrawSprites：
 - 头 5 片共用 anchorY（游戏从底部量 0.7）→ 本文件 ay = 1 - anchorY = 0.30；
   白蜥（headGraphics[4]==3）仅眼睛片 anchorY=0.75 → ay=0.25。
-- 旋转 = aim(躯干节→头)（0=上、顺时针为正，与 Qt/QPainter.rotate 同号）。
-- 朝向：头朝左时整组头部件按 scaleX=-1 镜像（同游戏 Sign(headDepthRotation)）；
-  只转不镜像会让头上下颠倒，且颚的开合位移方向也会反。
-- 张口：上颚组（UpperTeeth/Head/Eyes）转 -A*(1-lf)*jaw，下颚组（Jaw/LowerTeeth）转 +A*lf*jaw，
-  位移沿头轴法线上下分开 A*jaw*BODY_SCALE。
-- 四肢：同游戏 LizardArm_XX 贴图（锚点=脚，旋转 = atan2(-(髋-脚))，贴图未旋转时朝左），
+- 旋转 = aim(颈→头)（0=上、顺时针为正，与 Qt/QPainter.rotate 同号）。
+- 朝向：整组头部件按 scaleX = Sign(headDepthRotation) 镜像（同游戏），朝右时该值为 -1
+  （原版 LizardGraphics.Update 的 swim 分支：head.x > neck.x → -1）。只转不镜像会让头上下颠倒。
+- 张口：上颚组（UpperTeeth/Head/Eyes）转 +A*(1-lf)*jaw*num，下颚组（Jaw/LowerTeeth）转
+  -A*lf*jaw*num；位移沿头轴法线 n3 上下分开 A*jaw*num*BODY_SCALE（num = headDepthRotation）。
+- 四肢：同游戏 LizardArm_XX 贴图（锚点=中心(0.5,0.5)，位置钉在脚上，
+  旋转 = aim(脚→髋) - 90；贴图未旋转时「贴图 +x」指向脚），
   上面叠一层 LizardArmColor_XX 品种色（远侧腿压暗），形成原版「暗底 + 亮面」的腿。
 - 体色：同游戏 BodyColor：白蜥纯白，蝾螈灰白，其余 = palette.blackColor（近黑），
   尾梢按 tailColoration 曲线渐变到品种色（effectColor）；头=品种色，齿/眼 = palette.blackColor。
@@ -35,15 +36,17 @@ def head_row(lz, ts: float) -> int:
     """
     num = lerp(lz.last_head_depth, lz.head_depth, ts)
     return max(0, min(3, 3 - int(abs(num) * 3.9)))
-# 原版：rotation = num12（头-颈 aim，0=上）在 y↑/逆时针系；Qt 是 y↓/顺时针，
-# 故 Qt 角度 = -num12，且头片贴图自带「吻部朝下」→ 需再垂向镜像（sy = -scale）。
-# 推演：屏幕矩阵 F·R(r)·S(s) = Rq(-r)·Sq(s, -1)（F = y 翻转），与 D 组合逐像素核对过游戏截图。
+# 原版 FSprite.rotation 的符号：FNode.UpdateMatrix 用 SetScaleThenRotate(..., rot * -pi/180)
+# 建 [sx*cos, sx*sin ; -sy*sin, sy*cos]（FMatrix.cs:55 / FNode.cs:545），把「贴图 +y」
+# （LizardHead* 画布短边朝吻部）转到屏幕朝前方向 —— 与 Qt 的顺时针 rotate(rot) 完全同号，
+# 所以 Qt 直接用同一个 rot、scaleX = Sign(headDepthRotation)*headSize、scaleY = +headSize，
+# 不需要任何 +180 / sy 取负（那会把左向张口时的上下颚转反，见 _draw_head 的推导）。
 
 BODY_TOP_K = 1.16              # 体色很轻的垂向受光（原版体色近黑，不能提亮太多）
 BODY_BOT_K = 0.72
 HEAD_FLICKER_EXC = 0.2         # 原版 HeadColor 呼吸系数里的 excitement 取值
 LIMB_NEAR_A = 1.0              # 近侧腿色层不透明度
-LIMB_FAR_A = 0.45              # 远侧腿色层压暗（深度感）
+LIMB_FAR_A = 0.30              # 远侧腿色层压暗（原版 Lerp(1, 0.3, |depthRotation|)）
 BODY_TINT = 0.30               # 体色里掺入的品种色比例（见 body_color）
 BODY_EDGE_K = 0.55
 NECK_K = 0.82                  # 颈根半径系数（相对躯干半径）
@@ -181,7 +184,7 @@ def draw_lizard(p, atlas, lz, ts: float) -> None:
     _draw_spikes(p, atlas, lz, spine, rads)
     for i in (0, 2, 1, 3):                      # 远侧前后腿 → 近侧前后腿
         _draw_leg(p, atlas, lz, i, ts)
-    _draw_head(p, atlas, lz, hx, hy, rot, jaw, head_color(lz, ts), ts)
+    _draw_head(p, atlas, lz, hx, hy, s0x, s0y, rot, jaw, head_color(lz, ts), ts)
     p.restore()
 
 
@@ -288,8 +291,33 @@ def _draw_spikes(p, atlas, lz, spine, rads):
                   size, size, 0.5, 0.85)
 
 
+def _leg_flip(lz, lg):
+    """原版 LizardGraphics.cs:1209-1215 的腿翻转符号（= LizardLimb.flip 的稳态值）。
+
+    num11 = DistanceToLine(脚, 挂点, 挂点.rotationChunk)（前腿整体取反）
+    flip -> (num11 < 0 ? +1 : -1)，scaleY = Sign(flip) * limbThickness。
+    挂点：前腿 = 第 0 节（rotationChunk = 第 1 节，连线朝体后）；
+          后腿 = 第 2 节（rotationChunk = 第 1 节，连线朝体前）。
+    因此「腿垂在体轴下方」时四条腿的 flip 同号 —— 远近腿不是镜像关系。
+    """
+    segs = lz.seg
+    if lg.back:
+        l1, l2 = segs[2], (segs[1] if len(segs) > 1 else segs[2])
+        negate = False
+    else:
+        l1, l2 = segs[0], (segs[1] if len(segs) > 1 else segs[0])
+        negate = True
+    dx, dy = l2.x - l1.x, l2.y - l1.y                      # 屏幕
+    # DistanceToLine（Unity y↑）= -cross_screen(脚-l1, l2-l1)/|d|
+    vx, vy = lg.x - l1.x, lg.y - l1.y
+    num11 = -(vx * dy - vy * dx) / (math.hypot(dx, dy) or 1.0)
+    if negate:
+        num11 = -num11
+    return 1.0 if num11 < 0.0 else -1.0
+
+
 def _draw_leg(p, atlas, lz, i, ts):
-    """一条腿：游戏 LizardArm_XX（锚点=脚、按髋→脚距离选帧）+ 品种色层。"""
+    """一条腿：游戏 LizardArm_XX（锚点=中心、按髋→脚距离选帧）+ 品种色层。"""
     lg = lz.legs[i]
     fx = lerp(lg.lx, lg.x, ts)
     fy = lerp(lg.ly, lg.y, ts) - lg.lift
@@ -304,9 +332,9 @@ def _draw_leg(p, atlas, lz, i, ts):
     b = lz.breed
     val = int(math.hypot(ux, uy) / (4.0 * b.limb_size)) + 1
     val = max(1, min(9, val)) + (27 if lg.back else 0)
-    rot = math.degrees(math.atan2(-uy, -ux))         # 贴图未旋转时朝左
-    flip = 1.0 if lg.near else -1.0
-    sx, sy = b.limb_size, flip * b.limb_thickness
+    rot = math.degrees(math.atan2(-uy, -ux))         # = 原版 aim(髋→脚) - 90
+    sx = b.limb_size
+    sy = _leg_flip(lz, lg) * b.limb_thickness
     _blit(p, atlas, "LizardArm_%02d" % val, body_color(lz),
           fx, fy, rot, sx, sy, 0.5, 0.5)
     _blit(p, atlas, "LizardArmColor_%02d" % val, b.head_rgb or lz.color,
@@ -314,40 +342,52 @@ def _draw_leg(p, atlas, lz, i, ts):
           opacity=LIMB_NEAR_A if lg.near else LIMB_FAR_A)
 
 
-def _draw_head(p, atlas, lz, hx, hy, rot, jaw, color, ts=1.0):
-    """头部件：下颚组（Jaw/LowerTeeth）+ 上颚组（UpperTeeth/Head/Eyes）。"""
+
+def _draw_head(p, atlas, lz, hx, hy, s0x, s0y, rot, jaw, color, ts=1.0):
+    """头 5 片：下颚组（Jaw/LowerTeeth）+ 上颚组（UpperTeeth/Head/Eyes）。
+
+    逐行移植 LizardGraphics.cs:1890-1921 的头部段（P9=vector9，头绘制点）：
+      num12 = aim(颈→头)                      （= rot，见 draw_lizard）
+      normalized3 = PerpendicularVector(颈-头) （屏幕等价见下）
+      上颚组 i>=2：pos = P9 + n3 * (jaw*num*jawsApart*(1-ljf))
+                   rot = num12 + jawOpenAngle*(1-ljf)*jaw*num
+      下颚组 i<2 ：pos = P9 - n3 * (jaw*num*jawsApart*ljf)
+                   rot = num12 - jawOpenAngle*ljf*jaw*num
+      scaleX = Sign(num)*headSize，scaleY = headSize     （num = headDepthRotation）
+    原版没有独立 facing：镜像完全由 Sign(headDepthRotation) 决定，且朝右时
+    depthRotation = -1（见 LizardGraphics.Update 的 swim 分支与 FNode.UpdateMatrix）。
+
+    Futile 的 FSprite.rotation θ 实际以 R(-θ) 建矩阵（FNode.cs:545 的 *-0.01745329f），
+    与 Qt 的顺时针 rotate(θ) 同向 —— 所以 Qt 直接用同一个角度、scale 也一致，
+    不需要额外的 +180 / sy 取负（那会变成左右镜像）。
+    """
     b = lz.breed
     hg = b.head_graphics
-    a = math.radians(rot)
-    hdx, hdy = math.sin(a), -math.cos(a)     # 头前向
-    face = 1.0 if lz.facing >= 0 else -1.0   # 同游戏 scaleX=Sign(depthRotation)：按朝向整体镜像
-    nx, ny = hdy * face, -hdx * face         # 背侧法线：恒指头的上方一侧
-    apart = b.jaw_apart * jaw * BODY_SCALE
+    num = lerp(lz.last_head_depth, lz.head_depth, ts)
+    vnx, vny = s0x - hx, s0y - hy                # 颈-头（屏幕 y↓）
+    L = math.hypot(vnx, vny) or 1.0
+    n3x, n3y = vny / L, -vnx / L                 # 游戏 normalized3 的屏幕等价
+    apart = b.jaw_apart * jaw * num * BODY_SCALE
     lf = b.jaw_lower_fac
     up_off = apart * (1.0 - lf)
     lo_off = -apart * lf
-    # 基础旋转：纹理 x = 背侧、纹理 -y = 头前向。
-    # 解 R(rt)*diag(face*sc, -sc) == [n | -f]（n=背侧单位法线，f=前向单位向量）
-    # 得 rt = atan2(-f.x, f.y) = rot + 180（一般式；旧式 rt = -rot 只在 rot≡±90 时成立，
-    # 于是蜥蜴竖挂/斜着走时头会上下颠倒、左右反）。
-    rt = rot + 180.0
-    up_rot = rt - b.jaw_open_angle * (1.0 - lf) * jaw
-    lo_rot = rt + b.jaw_open_angle * lf * jaw
+    up_rot = rot + b.jaw_open_angle * (1.0 - lf) * jaw * num
+    lo_rot = rot - b.jaw_open_angle * lf * jaw * num
     sc = b.head_size * BODY_SCALE
-    sx = face * sc
+    sx = (1.0 if num >= 0.0 else -1.0) * sc      # 原版 scaleX = Sign(num)
     row = head_row(lz, ts)
-    head_rgb = color                        # 游戏 HeadColor（含呼吸闪烁，见 head_color）
-    teeth_rgb = BLACK_RGB                   # 游戏 ApplyPalette：齿与眼都是 palette.blackColor
+    head_rgb = color                             # 原版 HeadColor（含呼吸闪烁）
+    teeth_rgb = BLACK_RGB                        # 原版 ApplyPalette：齿、眼 = palette.blackColor
     ay = 1.0 - b.anchor_y
     eyes_ay = 0.25 if hg[4] == 3 else ay
     for part, idx in (("Jaw", 0), ("LowerTeeth", 1)):
         _blit(p, atlas, "Lizard%s%d.%d" % (part, row, hg[idx]),
               head_rgb if idx == 0 else teeth_rgb,
-              hx + nx * lo_off, hy + ny * lo_off, lo_rot, sx, -sc, 0.5, ay)
+              hx + n3x * lo_off, hy + n3y * lo_off, lo_rot, sx, sc, 0.5, ay)
     for part, idx in (("UpperTeeth", 2), ("Head", 3)):
         _blit(p, atlas, "Lizard%s%d.%d" % (part, row, hg[idx]),
               teeth_rgb if idx == 2 else head_rgb,
-              hx + nx * up_off, hy + ny * up_off, up_rot, sx, -sc, 0.5, ay)
+              hx + n3x * up_off, hy + n3y * up_off, up_rot, sx, sc, 0.5, ay)
     if not b.hide_eyes:
         _blit(p, atlas, "LizardEyes%d.%d" % (row, hg[4]), BLACK_RGB,
-              hx + nx * up_off, hy + ny * up_off, up_rot, sx, -sc, 0.5, eyes_ay)
+              hx + n3x * up_off, hy + n3y * up_off, up_rot, sx, sc, 0.5, eyes_ay)

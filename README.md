@@ -46,6 +46,12 @@ python run_slugcatpet.py
 - **睡眠**：上床前要磨蹭很久（睡意从 0 缓慢涨到 100），睡着后会睡很长一段随机时间才自然醒。
 - **移动数值对齐原版**：跳跃初速 8/7、按住续力、蹬墙跳 8/7 + 6/5、跑步 4.2、匍匐 4 全部照 `Player.cs` 取值，站立跳约 44px、跑跳约 83px。
 
+**蜥蜴渲染对齐原版（第 38 轮）**：
+
+- **头部 5 片按反编译重写**：原版没有独立朝向，镜像只看 `Sign(headDepthRotation)`（朝右 = -1，来自 `LizardGraphics.Update` 里腿翻转累加出的 `depthRotation`），而且 `FSprite.rotation` 的矩阵（`FNode.UpdateMatrix` × `FMatrix.SetScaleThenRotate`）跟 Qt 的顺时针 `rotate` 同号 —— 所以既不要再 +180、也不要垂直翻转。之前「朝左 + 张嘴」时上下颚会朝相反方向转（对称轴整个是错的），现在左/右 × 闭/张四种组合都用数值对照过原版矩阵，位移还走 `PerpendicularVector(颈-头)`。
+- **腿**：翻转符号按原版 `Custom.DistanceToLine(脚, 挂点, 挂点.rotationChunk)` 求、前腿整体取反（`LizardGraphics.cs:1209-1215`）——站立时四条腿同号，**远近腿不是镜像关系**；贴图锚点是中心、位置钉在脚上、旋转 = `aim(脚→髋) - 90`、按髋脚距离在 `LizardArm_01..09`（后腿 `28..36`）里选帧，远侧腿的色层压到 0.3，全部照 `DrawSprites` 逐行对齐。
+- **拖动时的身长**：原版躯干是 `BodyChunkConnection(Normal, elasticity 0.95)` 的近刚性绳，之前拖快时整条会被抻长。现在躯干刚度 0.8、头挂点 `12*headSize`（`LizardGraphics.cs:1291`）、头点每帧最多跟 24px，并给链节加了长度夹取，拖再快身体也保持原长、整条跟着走。
+
 **社交动作**（第六类欲望「社交」攒满后凑到同伴身边做；动作词表见 `slugcatpet/behavior/social.py`）：
 
 | 动作 | 手势 | 含义 |
