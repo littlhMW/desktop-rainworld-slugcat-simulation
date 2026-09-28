@@ -16,7 +16,8 @@ from .fruit import Fruit
 from .enums import ItemState
 from ..rendering.pixelmode import aa_hint
 
-ROOT_Y = -10.0                 # 原版 rootPos = (placedPos.x, -10)：锚在房顶之上
+ROOT_Y = -10.0                 # 原版 rootPos = (placedPos.x, -10)：锚在房顶之上；
+                               # 宠物里改为锚在窗口底边（地面），从地上长起来
 STALK_SEG_MAX = 50
 SEED_N_MIN, SEED_N_MAX = 10, 70
 LEAF_N_MIN, LEAF_N_MAX = 4, 14
@@ -135,19 +136,20 @@ class SeedCob:
     collision_layer = 0
     is_meat = False
 
-    __slots__ = ("placed", "root_pos", "root_dir", "cob_dir", "conn_dist",
+    __slots__ = ("placed", "root_pos", "root_y", "root_dir", "cob_dir", "conn_dist",
                  "stalk_length", "stalk_segments", "cob_segments",
                  "seed_pos", "popped", "leaves", "open", "last_open",
                  "opened", "dead", "rotted", "pop_counter", "state", "rad",
                  "p0", "p0l", "v0", "p1", "p1l", "v1", "_rng", "_id",
                  "push_delay", "delayed_push")
 
-    def __init__(self, x: float, y: float, seed: int = 0):
+    def __init__(self, x: float, y: float, seed: int = 0, root_y: float | None = None):
         rng = _random.Random(seed)
         self._rng = rng
         self._id = int(seed)
+        self.root_y = ROOT_Y if root_y is None else float(root_y)
         self.placed = (float(x), float(y))
-        self.root_pos = (float(x), ROOT_Y)
+        self.root_pos = (float(x), self.root_y)
         d = lerp(60.0, math.dist(self.root_pos, self.placed) / 2.0, 0.3)
         self.conn_dist = d
         self.root_dir = _deg_to_vec(_aim(*self.root_pos, *self.placed) + rng.uniform(-45.0, 45.0))
@@ -237,7 +239,7 @@ class SeedCob:
         """
         rng = _random.Random(self._id * 7919 + int(x) * 131 + int(y) * 17)
         self.placed = (float(x), float(y))
-        self.root_pos = (float(x), ROOT_Y)
+        self.root_pos = (float(x), self.root_y)
         d = lerp(60.0, math.dist(self.root_pos, self.placed) / 2.0, 0.3)
         self.conn_dist = d
         self.root_dir = _deg_to_vec(_aim(*self.root_pos, *self.placed) + rng.uniform(-45.0, 45.0))

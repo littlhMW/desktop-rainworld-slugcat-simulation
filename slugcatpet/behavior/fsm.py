@@ -65,7 +65,7 @@ _WANTS_FROM = frozenset(("IdleStand", "PostThrowWander", "PostThrowStand", "Make
 # 必须保证「离开该态」时一定跑到一次，否则 walk_min/walk_max 会永久留 None
 _WANTS_STATES = frozenset(("WallClimb", "CeilingHang", "ChaseCursor", "Socialize",
                            "HelpFeed", "FightThreat", "CrawlAway", "EatCob",
-                           "ScoldBlocker"))
+                           "ScoldBlocker", "CatchFly", "ItemPlay"))
 
 WALL_MARGIN = 40.0
 
@@ -118,7 +118,7 @@ _WATER_BLOCKED = frozenset(("RelocateToWall", "TongueClimb", "CeilingHang", "Swi
 # 取果触发不打断的态
 _FETCH_NEVER = frozenset(("FetchFruit", "Ascension", "Dragged", "Dead", "WakeSequence",
                           "Stunned", "DodgeKill", "SeekWarmth", "Swimming",
-                          "PyroMaul", "RivSnatch"))
+                          "PyroMaul", "RivSnatch", "CatchFly", "ItemPlay"))
 # play 态接管取果需果在舌头射程内
 _FETCH_PLAY = frozenset(("PoleClimb", "HPole", "CeilingHang"))
 
@@ -127,7 +127,7 @@ _EN_VIGOROUS = frozenset(("TongueClimb", "PoleClimb", "HPole", "CeilingHang", "D
                           "PyroRomp", "RivFlip", "PyroMaul", "RivSnatch"))
 _EN_LIGHT = frozenset(("RelocateToWall", "PostThrowWander", "FetchFruit", "AngryStone",
                        "WakeSequence", "CursorLick", "SeekWarmth", "SeekHPole", "MakeWay",
-                       "FleeLizard"))
+                       "FleeLizard", "CatchFly", "ItemPlay"))
 _EN_REST = frozenset(("LieDown", "Sleep"))
 _EN_IDLE = frozenset(("IdleStand", "PostThrowStand"))
 
@@ -344,6 +344,18 @@ class BehaviorFSM:
         self.stonethrow = None
         self.flyhunt = None
         self._hunt_cd = 0
+        self.flycatch = None            # 徒手抓飞虫控制器
+        self._catch_cd = 0
+        self._itemplay_cd = 0
+        self._itemplay_target = None
+        self._itemplay_left = 0
+        self._itemplay_phase = 0
+        self._itemplay_side = "r"
+        # 觅食欲望：吃到东西归 0，慢慢涨回 1 才想再找吃的
+        self._food_urge = 1.0
+        self._food_prev = self.body.food
+        # 代谢：体力消耗累计（满一条扣一格饱食）
+        self._drain_acc = 0.0
         self.anger = 0
         self.cursorlick = None
         self._cursor_prev = None
@@ -435,7 +447,7 @@ class BehaviorFSM:
             return False
         if self.state in ("WallClimb", "CeilingHang", "ChaseCursor", "Socialize",
                           "HelpFeed", "FightThreat", "CrawlAway", "EatCob",
-                          "ScoldBlocker"):
+                          "ScoldBlocker", "CatchFly", "ItemPlay"):
             self._wants_break(self.state)
         self._break_tongue()
         self.climb = None
@@ -497,7 +509,7 @@ class BehaviorFSM:
             self._seekhpole_break()
         elif self.state in ("WallClimb", "CeilingHang", "ChaseCursor", "Socialize",
                             "HelpFeed", "FightThreat", "CrawlAway", "EatCob",
-                            "ScoldBlocker"):
+                            "ScoldBlocker", "CatchFly", "ItemPlay"):
             self._wants_break(self.state)
         self._hibernating = False
         self.body.food_eat(-tuning.FOOD_KILL_PENALTY)
@@ -610,7 +622,7 @@ class BehaviorFSM:
             self.body.swim_target = None
         elif st in ("WallClimb", "CeilingHang", "ChaseCursor", "Socialize",
                     "HelpFeed", "FightThreat", "CrawlAway", "EatCob",
-                    "ScoldBlocker"):
+                    "ScoldBlocker", "CatchFly", "ItemPlay"):
             self._wants_break(st)
 
     def _break_tongue(self):
@@ -717,8 +729,10 @@ class BehaviorFSM:
 
         # 取果触发：门禁 + 间隔节流重算候选
         self._fetch_check = (self._fetch_check + 1) % T_FETCH_CHECK
+        self._food_urge_tick()
         if (self._fetch_check == 0
                 and self.body.food < self.body.food_max
+                and self._food_seek_ready()
                 and not self.grab.active and not self._exhausted
                 and not self._cold_urgent() and not self._zerog()
                 and self._fetch_cooldown <= 0
@@ -747,12 +761,13 @@ class BehaviorFSM:
         self._cob_check = (self._cob_check + 1) % tuning.COB_CHECK_TICKS
         if (self._cob_check == 0 and self._cob_seek_cd <= 0
                 and self.body.food < self.body.food_max
+                and self._food_seek_ready()
                 and not self.grab.active and not self._exhausted
                 and not self._cold_urgent() and not self._zerog()
                 and self.state in _WANTS_FROM):
             cb = self._nearest_cob(feedable=True)
-            if cb is None and self.body.carried_spear is not None:
-                cb = self._nearest_cob(feedable=False)     # 没开荚：拿矛打
+            if cb is None:
+                cb = self._nearest_cob(feedable=False)     # 没开荚：去捡矛打
             if cb is not None:
                 self._cob = cb
                 self._break_active_controllers()
@@ -763,6 +778,7 @@ class BehaviorFSM:
             self._hunt_cd -= 1
         if (self._fetch_check == 0 and self._hunt_cd <= 0
                 and self.body.food < self.body.food_max
+                and self._food_seek_ready()
                 and not self.grab.active and not self._exhausted
                 and not self._cold_urgent() and not self._zerog()
                 and not self._hibernating and not self.body.swimming
@@ -774,6 +790,34 @@ class BehaviorFSM:
                                    or self.body.carried_spear is not None):
                 self._break_active_controllers()
                 self._act_or_wake("HuntFly")
+
+        # 徒手抓飞虫：饿了抓来吃，吃饱了抓着玩一会儿再放走
+        if self._catch_cd > 0:
+            self._catch_cd -= 1
+        if (self._catch_cd <= 0
+                and not self.grab.active and not self._exhausted
+                and not self._cold_urgent() and not self._zerog()
+                and not self._hibernating and not self.body.swimming
+                and self.state in ("IdleStand", "PostThrowStand", "PostThrowWander")
+                and self._nearest_catchable() is not None):
+            self._break_active_controllers()
+            self._act_or_wake("CatchFly")
+
+        # 平时也爱捡地上的矛/石头把玩（正饿着找食时先不玩，别把矛/石头抢走）
+        if self._itemplay_cd > 0:
+            self._itemplay_cd -= 1
+        if (self._fetch_check == 0 and self._itemplay_cd <= 0
+                and not (self.body.food < self.body.food_max and self._food_urge >= 1.0)
+                and not self.grab.active and not self._exhausted
+                and not self._cold_urgent() and not self._zerog()
+                and not self._hibernating and not self.body.swimming
+                and self.state in ("IdleStand", "PostThrowStand", "PostThrowWander")
+                and self.rng.random() < tuning.ITEMPLY_P):
+            it = self._nearest_play_item()
+            if it is not None:
+                self._itemplay_target = it
+                self._break_active_controllers()
+                self._act_or_wake("ItemPlay")
 
         # 睡眠欲望：吃饱后入睡概率从 0 缓慢升到 100
         self._sleep_urge_tick()
@@ -803,6 +847,7 @@ class BehaviorFSM:
         if self.anger > 0 and self.state in ("PostThrowWander", "PostThrowStand", "AngryStone"):
             self.anger -= 1
 
+        self._squid_lift_tick()
         self.gfx.look_at = None
         self.gfx.sleeping = (self.state == "Sleep")
         self.body.sleeping = (self.state == "Sleep")
@@ -821,13 +866,18 @@ class BehaviorFSM:
             e_delta = -EN_DRAIN_LIGHT * self._drain_fac   # 站杆顶不算剧烈
         elif self.state == "Swimming" and self.body.swim_mode == "surface":
             e_delta = EN_REC_IDLE * tuning.SWIM_SURFACE_REST_FAC   # 浮水面歇气
+        _en_before = self.body.energy
         self.body.energy_change(e_delta)
+        self._metabolism(_en_before)
         if self._force_energy is not None:
             self.body.energy = self._force_energy
         if self._force_temper is not None:
             self.body.temper = self._force_temper
         if self._force_food is not None:
             self.body.food = self._force_food
+        if self.body.food > self._food_prev:
+            self._food_urge = 0.0          # 吃到东西：觅食欲望归 0
+        self._food_prev = self.body.food
         self.mood.tick_freshness(self._active_mood())
         self.timer += 1
 
@@ -933,6 +983,13 @@ class BehaviorFSM:
             self.gfx.hand_aim["l"] = None
             self.gfx.hand_aim["r"] = None
             self.flyhunt = FlyHunter(self.win, self.rng, self)
+        elif st == "CatchFly":
+            from .catchfly import FlyCatcher
+            self.gfx.hand_aim["l"] = None
+            self.gfx.hand_aim["r"] = None
+            self.flycatch = FlyCatcher(self.win, self.rng, self)
+        elif st == "ItemPlay":
+            self._itemplay_enter()
         elif st == "Stunned":
             b.set_posture(False)
             b.stop_walk()
@@ -2870,6 +2927,10 @@ class BehaviorFSM:
             self._cob = None
             self._cob_eat_t = 0
             self._cob_seek_cd = T_COB_RETRY
+        elif st == "CatchFly":
+            self._flycatch_release()
+        elif st == "ItemPlay":
+            self._itemplay_end()
         self._restore_walk_limits()
 
     # ── 爬墙：窗口左右边缘＝墙（原版 ClimbOnBeam 位姿）──
@@ -3330,9 +3391,17 @@ class BehaviorFSM:
             self._cob_eat_t = tuning.COB_EAT_TICKS
             cb.push_from(b.chunk0.x, b.chunk0.y)         # 原版 delayedPush
             return
-        # 还没开荚：原版是用矛打一下才 Open()（空手打不开）
-        if b.carried_spear is None or d > tuning.COB_SPEAR_R:
+        # 还没开荚：原版要用矛打一下才 Open()（空手打不开）。
+        # 觅食时会愿意先去地上捡一根矛再回来打（用户要求：选择投矛命中爆米花）。
+        if b.carried_spear is None:
+            if self._cob_fetch_spear() and self._cob_left > 0:
+                return                       # 正在去捡矛
             self._cob_end()
+            return
+        if d > tuning.COB_SPEAR_R:
+            b.walk_to(px)                    # 先走进射程
+            if self._cob_left <= 0:
+                self._cob_end()
             return
         b.stop_walk()
         b.facing = 1 if px >= b.chunk0.x else -1
@@ -3518,6 +3587,218 @@ class BehaviorFSM:
         b.move_dir = -1 if lz.x >= b.chunk1.x else 1
         b.facing = b.move_dir
         self.gfx.look_at = (lz.x, lz.y)
+
+
+    # ── 觅食欲望：吃完一口归 0，再慢慢涨回 1（饱了也涨，只是更慢）──
+    def _food_urge_tick(self):
+        rate = (tuning.FOOD_URGE_RATE_FULL if self.body.food >= self.body.food_max
+                else tuning.FOOD_URGE_RATE)
+        self._food_urge = min(1.0, self._food_urge + rate)
+
+    def _food_seek_ready(self) -> bool:
+        """觅食闸：攒满 100 再掷一次骰，整体找食频率略降。"""
+        return self._food_urge >= 1.0 and self.rng.random() < tuning.FOOD_SEEK_P
+
+    # ── 代谢：体力消耗累计满一条 → 扣一格饱食 ──
+    def _metabolism(self, before: float):
+        e = self.body.energy
+        if e < before:
+            self._drain_acc += before - e
+        while self._drain_acc >= 1.0:
+            self._drain_acc -= 1.0
+            self.body.food_eat(-tuning.METAB_FOOD_PER_BAR)
+
+    # ── 叼着活的蝉乌贼：扑翅带起一点，下落被拖住 ──
+    def _squid_lift_tick(self):
+        f = self.body.carried_fruit
+        if f is None or not getattr(f, "is_tame_food", False) or getattr(f, "dead", True):
+            return
+        c0 = self.body.chunk0
+        if c0.vy > -tuning.SQUID_LIFT_MAX:
+            c0.vy -= tuning.SQUID_LIFT
+        c0.vx *= tuning.SQUID_DRAG
+
+    # ── 徒手抓飞虫（蝙蝠/蝉乌贼）──
+    def _nearest_catchable(self):
+        """半径内可徒手抓的飞虫（含飞行中）。"""
+        if self.pers.diet in (DIET_VEGETARIAN, DIET_SPECIAL):
+            return None
+        c0 = self.body.chunk0
+        best, bd = None, tuning.CATCH_SEEK_R
+        for f in (*self.win.batflies, *self.win.squidcadas):
+            if not getattr(f, "catchable", False):
+                continue
+            d = math.hypot(f.x - c0.x, f.y - c0.y)
+            if d < bd:
+                best, bd = f, d
+        return best
+
+    def _st_catchfly(self, cursor, disturbed):
+        if self.grab.active:
+            self._flycatch_release()
+            self._transition("Dragged")
+            return
+        if self.flycatch is None:
+            self._transition("IdleStand")
+            return
+        want = self.body.food < self.body.food_max
+        status = self.flycatch.update(want)
+        if status in ("eaten", "released", "delivered", "revert", "idle"):
+            self._flycatch_release()
+            self._transition("IdleStand")
+
+    def _flycatch_release(self):
+        """收尾：控制器清空，手里还捏着就松手放生。"""
+        self.flycatch = None
+        f = self.body.carried_fruit
+        if f is not None:
+            self.body.release_fruit()
+            f.stalk = None
+            f.state = "free"
+            f.held_by_hand = None
+        self.body.eat_raise = 0.0
+        self.body.stop_walk()
+        self.body.arm_aim["l"] = None
+        self.body.arm_aim["r"] = None
+        self.gfx.hand_aim["l"] = None
+        self.gfx.hand_aim["r"] = None
+        self._catch_cd = tuning.CATCH_RETRY
+
+    # ── 平时把玩地上的小物件（矛/石头）──
+    def _nearest_play_item(self):
+        b = self.body
+        if b.carried_spear is not None or b.carried_stone is not None:
+            return None
+        c0 = b.chunk0
+        best, bd = None, tuning.ITEMPLY_SEEK_R
+        for o in self.win.stones:
+            if o.state != "free" or getattr(o, "unfetchable", False):
+                continue
+            if not o.at_rest_on_ground(self.HL):
+                continue
+            d = math.hypot(o.x - c0.x, o.y - c0.y)
+            if d < bd:
+                best, bd = o, d
+        for sp in self.win.spears:
+            if sp.state != "free" or sp.stuck_to is not None:
+                continue
+            if not (sp.stuck or (abs(sp.vx) < 0.4 and abs(sp.vy) < 0.4)):
+                continue
+            d = math.hypot(sp.x - c0.x, sp.y - c0.y)
+            if d < bd:
+                best, bd = sp, d
+        return best
+
+    def _itemplay_enter(self):
+        b = self.body
+        b.set_posture(True)
+        b.stop_walk()
+        self._itemplay_phase = 0
+        self._itemplay_left = 0
+        it = self._itemplay_target
+        self._itemplay_side = "r" if (it is not None and it.x >= b.chunk0.x) else "l"
+
+    def _itemplay_end(self):
+        b = self.body
+        if b.carried_stone is not None:
+            b.release_stone(to_free=True)
+        if b.carried_spear is not None:
+            b.release_spear(to_free=True)
+        b.eat_raise = 0.0
+        b.stop_walk()
+        b.arm_aim["l"] = None
+        b.arm_aim["r"] = None
+        self.gfx.hand_aim["l"] = None
+        self.gfx.hand_aim["r"] = None
+        self._itemplay_target = None
+        self._itemplay_left = 0
+        self._itemplay_phase = 0
+        self._itemplay_cd = tuning.ITEMPLY_RETRY
+
+    def _st_itemplay(self, cursor, disturbed):
+        """拿起地上的矛/石头把玩一会儿，再放下走人。"""
+        b = self.body
+        if self.grab.active:
+            self._itemplay_end()
+            self._transition("Dragged")
+            return
+        if self._itemplay_phase == 0:
+            it = self._itemplay_target
+            if it is None or it.state != "free":
+                self._itemplay_end()
+                self._transition("IdleStand")
+                return
+            side = "r" if it.x >= b.chunk0.x else "l"
+            self._itemplay_side = side
+            b.walk_to(it.x)
+            self.gfx.look_at = (it.x, it.y)
+            hx, hy = b._carry_pos(side)
+            d = min(math.hypot(b.chunk0.x - it.x, b.chunk0.y - it.y),
+                    math.hypot(hx - it.x, hy - it.y))
+            if d < b.arm_full_reach * 2.0:
+                b.reach_for(it, side)
+            if d < tuning.GRAB_REACH:
+                b.stop_walk()
+                from ..world.spear import Spear
+                if isinstance(it, Spear):
+                    b.grab_spear(it, side)
+                else:
+                    b.grab_stone(it, side)
+                self._itemplay_phase = 1
+                self.timer = 0
+                self._itemplay_left = self.rng.randint(tuning.ITEMPLY_TICKS_MIN,
+                                                       tuning.ITEMPLY_TICKS_MAX)
+            elif self.timer > 240:
+                self._itemplay_end()
+                self._transition("IdleStand")
+            return
+        if b.carried_spear is None and b.carried_stone is None:
+            self._itemplay_end()
+            self._transition("IdleStand")
+            return
+        b.stop_walk()
+        self._itemplay_left -= 1
+        t = self.timer
+        b.eat_raise = 0.45 + 0.45 * math.sin(t * 0.13)      # 举起来晃着玩
+        if t % tuning.ITEMPLY_PRANCE_CD == 0 and b.on_floor():
+            b.request_jump("stand")                          # 玩高兴了蹦一下
+        if self._itemplay_left <= 0 or t > 2400:
+            self._itemplay_end()
+            self._transition("IdleStand")
+
+    # ── 觅食时捡矛（打未开荚的爆米花）──
+    def _nearest_fetchable_spear(self):
+        """地上可取用的矛（插着或躺着的），限 COB_SPEAR_FETCH_R 内。"""
+        c0 = self.body.chunk0
+        best, bd = None, tuning.COB_SPEAR_FETCH_R
+        for sp in self.win.spears:
+            if sp.state != "free" or sp.stuck_to is not None:
+                continue
+            if not (sp.stuck or (abs(sp.vx) < 0.4 and abs(sp.vy) < 0.4)):
+                continue
+            d = math.hypot(sp.x - c0.x, sp.y - c0.y)
+            if d < bd:
+                best, bd = sp, d
+        return best
+
+    def _cob_fetch_spear(self) -> bool:
+        """去把地上最近的矛捡起来；有矛可捡返回 True。"""
+        b = self.body
+        sp = self._nearest_fetchable_spear()
+        if sp is None:
+            return False
+        side = "r" if sp.x >= b.chunk0.x else "l"
+        b.walk_to(sp.x)
+        self.gfx.look_at = (sp.x, sp.y)
+        hx, hy = b._carry_pos(side)
+        d = min(math.hypot(b.chunk0.x - sp.x, b.chunk0.y - sp.y),
+                math.hypot(hx - sp.x, hy - sp.y))
+        if d < b.arm_full_reach * 2.0:
+            b.reach_for(sp, side)
+        if d < tuning.GRAB_REACH:
+            b.stop_walk()
+            b.grab_spear(sp, side)
+        return True
 
     def _dismiss_kill_dialog(self):
         """静默消解本猫的死亡威胁弹窗。"""

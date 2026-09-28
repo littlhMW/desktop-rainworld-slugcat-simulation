@@ -29,7 +29,7 @@ EATEN_COUNTDOWN = 3
 # 游走/力竭/卡住常量
 WANDER_REPICK_TICKS, WANDER_REACH, WANDER_MARGIN = 180, 30.0, 24.0
 STUCK_DIST, STUCK_TICKS, STUCK_KICK = 40.0, 40, 2.0
-EXHAUST_FLAPS, EXHAUST_RECOVER = 34, 12
+EXHAUST_FLAPS, EXHAUST_RECOVER = 420, 60   # 体力条大幅拉长：几乎不用休息，蹭一下墙就缓过来
 
 
 def _dist(ax, ay, bx, by):
@@ -105,9 +105,20 @@ class BatFly:
 
     @property
     def fetch_ready(self):
-        # 飞行中够不到，落地/力竭/死亡才可抓
+        # 走过去的取食路径：落地/力竭/死亡才够得到
         return (self.state == ItemState.FREE and self.held_by_hand is None
                 and (self.dead or self._grounded))
+
+    @property
+    def catchable(self):
+        """能徒手抓上来：只要求活着且没被别的嘴叼着（原版蛞蝓猫空中上手抓虫）。"""
+        return (self.state == ItemState.FREE and self.held_by_hand is None
+                and not self.dead)
+
+    @property
+    def airborne(self):
+        """是否在飞（抓下来就是要活的）。"""
+        return not self.dead and self.state == ItemState.FREE and not self._grounded
 
     def collision_chunks(self):
         # 层0 不自碰；被抓/拖/吃/消失本 tick 豁免
@@ -131,8 +142,8 @@ class BatFly:
         self.last_flap_depth = self.flap_depth
         if st == ItemState.CARRIED:
             self.last_x, self.last_y = self.x, self.y
-            if not self.dead and (st == ItemState.CARRIED or self.bites < BITES):
-                self.die()                 # 抓起暴毙
+            if not self.dead and self.bites < BITES:
+                self.die()                 # 啃掉几口才死；活捉时它还是活的
             update_render(self, self._submersion())
             self._eaten_countdown()
             return
@@ -165,7 +176,7 @@ class BatFly:
             self._exhaust()
             self._wander(WL, HL)
         update_render(self, sub)
-        if not self.dead and (self.state == ItemState.CARRIED or self.bites < BITES):
+        if not self.dead and self.bites < BITES:
             self.die()
         self._eaten_countdown()
 

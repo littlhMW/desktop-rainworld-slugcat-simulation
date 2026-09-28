@@ -321,10 +321,45 @@ CRAWL_FEAR_R = 150.0          # 蜥蜴进这个半径 → 趴下潜行
 CRAWL_FEAR_SPEED = 0.55       # 匍匐速度比例
 CRAWL_AWAY_TICKS = 260
 
-# 睡眠：吃饱后入睡概率从 0 缓慢升到 100
-SLEEP_URGE_RATE = 1.0 / 3600.0   # 每 tick 累积（约 90s 到满）
-SLEEP_URGE_DECAY = 1.0 / 1800.0  # 没吃饱时回落
+# 睡眠：吃饱后入睡概率从 0 缓慢升到 100（现在拉得很长，吃饱也别急着睡）
+SLEEP_URGE_RATE = 1.0 / 36000.0  # 每 tick 累积（约 600s 到满）
+SLEEP_URGE_DECAY = 1.0 / 12000.0 # 没吃饱时回落（也很慢）
 SLEEP_CHECK_TICKS = 20           # 每隔这么久掷一次骰
+
+# 觅食欲望：吃完一口归 0，再慢慢涨回 100 才想再去找吃的（饱了也涨，只是更慢）
+FOOD_URGE_RATE      = 1.0 / 2400.0    # 没吃饱：约 60s 攒满
+FOOD_URGE_RATE_FULL = 1.0 / 14400.0   # 吃饱了：约 360s（频率更低）
+FOOD_SEEK_P         = 0.75            # 攒满也只是这个命中率 → 找食频率整体略降
+# 代谢：体力每消耗满一条（energy 1.0）扣一格饱食
+METAB_FOOD_PER_BAR  = 1
+
+# 徒手抓飞虫（蝙蝠/蝉乌贼）：饿了吃掉，吃饱了抓着玩会儿再放走
+CATCH_SEEK_R        = 150.0    # 飞虫进这个半径才想起来抓
+CATCH_REACH         = 26.0     # 手/嘴到这个距离就抓住
+CATCH_UP_MAX        = 150.0    # 比嘴高太多就够不到
+CATCH_JUMP_GAP      = 26.0     # 比嘴高这么多就起跳去够
+CATCH_JUMP_CD       = 36       # 连跳间隔
+CATCH_CHASE_TIMEOUT = 420      # 追不到就放弃
+CATCH_RETRY         = 600      # 两次抓虫之间的冷却
+FLY_PLAY_TICKS      = 260      # 吃饱了抓着玩多久
+FLY_PLAY_POKE       = 36       # 玩的时候每隔这么久拨一下（虫挣扎、自己也晃）
+SPIT_UP_VY          = -2.8     # 放走时把飞虫往上送
+SPIT_AWAY_VX        = 2.6
+SQUID_LIFT          = 0.11     # 叼着活蝉乌贼时的额外升力（每 tick）
+SQUID_LIFT_MAX      = 2.4      # 升力上限（|vy| 到这儿就不再加）
+SQUID_DRAG          = 0.996    # 叼着时的水平拖拽
+
+# 平时也爱抓地上的东西玩（矛/石头）
+ITEMPLY_SEEK_R      = 170.0
+ITEMPLY_REACH       = 22.0
+ITEMPLY_TICKS_MIN   = 150
+ITEMPLY_TICKS_MAX   = 320
+ITEMPLY_RETRY       = 700
+ITEMPLY_PRANCE_CD   = 70       # 玩得高兴时每隔这么久蹦一下
+ITEMPLY_P           = 0.40     # 闲下来时每次抽查愿意去玩的概率
+
+# 觅食时拿矛打爆米花：没矛就去地上捡一根
+COB_SPEAR_FETCH_R   = 240.0
 
 # 站杆顶/横杆面平衡
 BAL_FLAIL_PROB = 0.15
@@ -446,8 +481,8 @@ POLE_NUDGE_CD         = 150     # 扒拉完的冷却
 # 指指点点手势：伸出 → 收回，重复 3~5 次
 POINT_REPS_MIN = 3
 POINT_REPS_MAX = 5
-POINT_ON_TICKS  = 16
-POINT_OFF_TICKS = 12
+POINT_ON_TICKS  = 10
+POINT_OFF_TICKS = 8
 
 # 被鼠标抓住时自己够杆/够食物
 DRAG_REACH_R  = 34.0            # 手够得着就抓（原版手碰到就抓）

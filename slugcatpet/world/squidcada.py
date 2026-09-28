@@ -31,8 +31,9 @@ DRIFT_REPICK = 150
 FLEE_R = 82.0             # 猫进此圈即逃
 FLEE_ACCEL = 0.34
 PANIC_R = 34.0            # 休息时贴脸才炸飞
-FLAPS_MAX = 4             # 体力：可连续扑翅次数
-REST_TICKS = 200          # 力竭落地休息时长
+FLAPS_MAX = 60            # 体力：可连续扑翅次数（大幅拉长，几乎不用休息）
+REST_TICKS = 70           # 力竭落地休息时长（歇一会儿就能再飞）
+FLEE_FLAP_COST = 6        # 逃命时每扑一次翅多耗几格体力（巡航不耗）
 EATEN_COUNTDOWN = 3
 
 WALL_MARGIN = 20.0
@@ -102,9 +103,20 @@ class Squidcada:
 
     @property
     def fetch_ready(self) -> bool:
-        """力竭落地才够得到（同蝙蝠：飞行中抓不到）。"""
+        """走过去的取食路径：力竭落地才够得到。"""
         return (self.state == ItemState.FREE and self.held_by_hand is None
                 and (self.dead or self.rest > 0))
+
+    @property
+    def catchable(self) -> bool:
+        """能徒手抓上来：活着且没被别的嘴叼着（飞行中也能抓）。"""
+        return (self.state == ItemState.FREE and self.held_by_hand is None
+                and not self.dead)
+
+    @property
+    def airborne(self) -> bool:
+        """是否在飞。"""
+        return not self.dead and self.state == ItemState.FREE and self.rest <= 0
 
     def collision_chunks(self):
         self.collide_with_objects = self.state not in (
@@ -197,8 +209,9 @@ class Squidcada:
                 self.flap_ph += 0.55
                 if self.flap_ph > math.tau:
                     self.flap_ph -= math.tau
-                    self.flaps -= 1               # 扑一次翅耗一格体力
+                    self.flaps -= FLEE_FLAP_COST  # 逃命的扑翅格外费体力
                     if self.flaps <= 0:
+                        self.flaps = 0
                         self.rest = REST_TICKS
             else:
                 self.vy += self.gravity * self.room_gravity * 0.55

@@ -2099,7 +2099,7 @@ class ItemInteractionMixin:
     def place_seedcob(self, lx, ly):
         if not self.can_place_seedcob():
             return None
-        cb = SeedCob(lx, ly, seed=self._seedcob_seed)
+        cb = SeedCob(lx, ly, seed=self._seedcob_seed, root_y=self._HL)
         self._seedcob_seed += 1
         self.seedcobs.append(cb)
         self.world_version += 1
@@ -2187,6 +2187,9 @@ class ItemInteractionMixin:
         self._step_seedcob_drag()
         if self.seedcobs:
             for cb in self.seedcobs:
+                cb.root_y = self._HL             # 扎根窗口底边（地面）
+                if cb.root_pos[1] != cb.root_y:
+                    cb.root_pos = (cb.root_pos[0], cb.root_y)
                 cb.step(self._WL, self._HL)
             self.seedcobs = [cb for cb in self.seedcobs if cb.state != ItemState.GONE]
         if self.seeds:
@@ -2213,7 +2216,7 @@ class ItemInteractionMixin:
         seed = self._seedcob_seed
         got = getattr(self, "_seedcob_preview", None)
         if got is None or got[0] != seed:
-            got = (seed, SeedCob(0.0, 0.0, seed=seed))
+            got = (seed, SeedCob(0.0, 0.0, seed=seed, root_y=self._HL))
             self._seedcob_preview = got
         return got[1]
 
