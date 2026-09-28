@@ -35,6 +35,7 @@ class PoleClimber:
         # 换杆请求：("h", 横杆, 交点x) 交叉杆转横 / ("v", 竖杆, None) 跳向另一根杆
         self.handoff = None
         self._cross_t = 0            # 在交点附近逗留的 tick 数
+        self._cross_roll = None      # 本次经过交点的换杆掷骰结果（离开交点重置）
         # 刚从横杆换过来时先离开交点，否则会在交点被反复换回去（卡死）
         self._cross_armed = (start != "climb")
         if start == "climb" and pole is not None:
@@ -67,10 +68,14 @@ class PoleClimber:
             hp = None if self.no_handoff else self._cross_hpole()
             if hp is None:
                 self._cross_t = 0
+                self._cross_roll = None
             else:
+                if self._cross_t == 0:
+                    self._cross_roll = self._roll()      # 每次经过交点只掷一次骰子
                 self._cross_t += 1
                 if (self._cross_t >= tuning.CROSS_DWELL
-                        and self._roll() < tuning.CROSS_SWITCH_PROB):
+                        and self._cross_roll is not None
+                        and self._cross_roll < tuning.CROSS_SWITCH_PROB):
                     self.handoff = ("h", hp, self.pole.x)   # 交点处转横杆
                     return True
             if c1.y <= self.pole.top_y + TIP_ENTER_PAD or self.timer > CLIMB_TIMEOUT:
@@ -92,6 +97,7 @@ class PoleClimber:
         b.standing = True
         b.on_pole = True
         b.animation = "ClimbOnBeam"
+        b.pole_move = 0
         b.pole_x = self.pole.x
         b.facing = 1 if c0.x >= self.pole.x else -1
         c0.vx = c0.vy = 0.0

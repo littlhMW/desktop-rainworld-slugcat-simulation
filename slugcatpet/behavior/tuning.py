@@ -430,6 +430,7 @@ SQUID_DRAG          = 0.996    # 叼着时的水平拖拽
 
 # 平时也爱抓地上的东西玩（矛/石头）
 ITEMPLY_SEEK_R      = 170.0
+PEARL_SEEK_R        = 520.0    # 溪流找珍珠的搜索半径（隔着大半个窗口也会去叼）
 ITEMPLY_REACH       = 22.0
 ITEMPLY_TICKS_MIN   = 150
 ITEMPLY_TICKS_MAX   = 320
@@ -458,15 +459,16 @@ TIP_DISMOUNT_CLIMB_PROB = 0.5
 TIP_MIN_TICKS = 40
 
 # 横杆站面拓展：停顿、吊荡、晃动
-HP_PAUSE_PROB = 0.02
+HP_PAUSE_PROB = 0.04
 HP_PAUSE_MIN = 20
 HP_PAUSE_MAX = 80
-HP_HANG_PROB = 0.0015
+HP_HANG_PROB = 0.010       # 站杆面时翻到杆下悬挂（原版 StandOnBeam+下 → HangFromBeam）
 HP_HANG_TICKS = 70
+HP_JUMP_PROB = 0.5         # 站够久了：起跳离开（原版 StandOnBeam canJump=5）而不是直挺挺掉下去
 # 交叉杆横↔竖切换 + 杆间跳跃（原版 Controls/Pole_Movement：HangFromBeam+上→ClimbOnBeam、
 # ClimbOnBeam+侧→HangFromBeam、jump-pole-hopping）
 CROSS_DWELL = 3                # 在交点附近待够这么多 tick 才「看见」交叉杆
-CROSS_SWITCH_PROB = 0.40       # 看见后每 tick 决定换横/竖的概率
+CROSS_SWITCH_PROB = 0.25       # 每次经过交点换横/竖的概率（每个交点只掷一次）
 CROSS_PAD = 22.0               # 胸心离交点这么近算「站在交点上」（≈爬杆 10 tick 窗口）
 POLE_TIP_HOP_PROB = 0.006      # 杆顶站着时每 tick 想跳到另一根杆的概率
 POLE_AIRGRAB_R = 12.0          # 空中贴杆即抓（jump-pole-hopping）
@@ -567,6 +569,16 @@ POLE_NUDGE_POINT_TAIL = 30      # 最后这么多 tick 改成指指点点
 POLE_NUDGE_POINT_PROB = 0.5
 POLE_NUDGE_CD         = 150     # 扒拉完的冷却
 
+# 杆上冲突按性格分流（原版：好脾气的猫先让路，坏脾气的死磕到底）
+POLE_SOFT_EPS         = 0.18    # |善良-暴躁| 在此以内算中性
+POLE_CONTEST_DIST     = 42.0    # 算「同一场挤位赛」的沿杆距离
+POLE_CONTEST_TICKS    = 70      # 坏性格死磕这么久才分胜负
+POLE_WAIT_TICKS       = 110     # 中性等这么久还没人让就随机让一只先走
+POLE_GIVE_VX          = 1.4     # 让路：松手离杆的横冲量
+POLE_GIVE_VY          = 1.0     # 让路：下坠初速
+POLE_KNOCK_VX         = 2.6     # 被挤掉的横冲量
+POLE_KNOCK_VY         = 1.4     # 被挤掉的下坠初速
+
 # 指指点点手势：伸出 → 收回，重复 1~5 次
 POINT_REPS_MIN = 1
 POINT_REPS_MAX = 5
@@ -603,3 +615,5 @@ SPEAR_WILLING_MIN   = 0.4
 # ── 喜欢珍珠的猫（溪流）：闲着会把地上的珍珠叼起来拿着 ──
 PEARL_HOARD_P       = 0.25      # 每次重算的概率
 PEARL_HOARD_CD      = 900       # 放下之后这么久才会再去叼
+PEARL_LOOK_TICKS    = 90        # 拿到珍珠后「端在手里看一眼」的时长
+PEARL_CARRY_TICKS   = 240       # 把玩珍珠多久才放下（放下后进 PEARL_HOARD_CD 冷却，不会原地反复叼）

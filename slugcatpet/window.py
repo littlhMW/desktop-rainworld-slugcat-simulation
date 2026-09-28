@@ -165,6 +165,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._dragged_stone = None
         self._stone_drag_last = None
         self._stun_rng = random.Random(98765)
+        # 杆上挤位赛：同一场冲突里所有猫必须取到同一个胜者（否则互推同归于尽）
+        self._pole_rng = random.Random(0x9E1770)
+        self._pole_contests = {}
+        self._pole_tick = 0
 
         # 放黏菌
         self.slimemolds = []
@@ -445,12 +449,31 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 return True
         return False
 
-    def fetchables(self):
-        """够取目标：可食物 + （场上有拾荒者时的）珍珠。
+    def pole_contest_winner(self, pole, cats):
+        """杆上挤位赛胜者：同一场冲突里的猫拿到同一个结果（随机但一致）。
 
-        珍珠不可食，只用来跟拾荒者交易（原版货币），故不并入 edibles()。
+        随机只在「都坚持挤」的猫之间发生：只留一只占住位置，其余让路/被挤掉。
         """
-        if self.scavengers:
+        if not cats:
+            return None
+        key = (id(pole), tuple(sorted(id(c) for c in cats)))
+        ent = self._pole_contests.get(key)
+        if ent is not None and 0 <= self._pole_tick - ent[0] <= 30:
+            return ent[1]
+        if len(self._pole_contests) > 64:
+            self._pole_contests.clear()
+        win = cats[self._pole_rng.randrange(len(cats))]
+        self._pole_contests[key] = (self._pole_tick, win)
+        return win
+
+    def fetchables(self, pearl_like: float = 1.0):
+        """够取目标：可食物 + 珍珠。
+
+        珍珠不可食，平常只用来跟拾荒者交易（原版货币），故不并入 edibles()。
+        场上有拾荒者时一律列出（可以拿去换东西）；此外 pearl_like > 1 的猫
+        （溪流）没有拾荒者也会专门去把珍珠叼起来拿着，所以要一起列出来。
+        """
+        if self.pearls and (self.scavengers or pearl_like > 1.0):
             return [*self.edibles(), *self.pearls]
         return list(self.edibles())
 
@@ -597,6 +620,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
     def _do_tick(self):
         """推进一个物理 tick。"""
+        self._pole_tick += 1
         self._plat_tick -= 1
         if self._plat_tick <= 0:
             self._plat_tick = PLATFORM_REFRESH_TICKS

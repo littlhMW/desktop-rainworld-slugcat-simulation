@@ -10,7 +10,7 @@ from ..core.creature import (ZEROG_GRAB_DIST, THROW_ORIGIN_DX, THROW_ORIGIN_DY, 
                              _closest_on_segment)
 from ..planning import (GIVEUP, HOLDING, MODE_STAY, PlanExecutor, Planner, obj_goal)
 from .blocking import (blocks_path, yield_target_x, on_same_pole,
-                        pole_in_the_way)
+                        pole_in_the_way, pole_push_role)
 from . import social
 from .desire import build_arbiter, MoodContext
 from .fetch import (fetch_ready, BITE_HEAD_NUDGE, EAT_APPROACH, EAT_CHOMP_POSE,
@@ -412,6 +412,9 @@ class BehaviorFSM:
         self._pole_nudge_pin = None
         self._pole_nudge_cd = 0
         self._pole_nudge_point = False
+        self._pole_contest_t = 0        # 死磕/等待累计 tick（挤位赛计时）
+        self._pole_nudge_role = 0       # 本次冲突里的角色（进入时定下，钉住期间冻结）
+        self._pole_scold_on_land = False   # 被挤掉后落地要找挤赢的算账
         # 指指点点手势（伸出→收回→再伸出，重复 3~5 下）
         self._point = None
         self._point_tgt = None
@@ -1530,22 +1533,85 @@ class BehaviorFSM:
         if self.timer % tuning.SOCIAL_POKE_INTERVAL == 0:
             self._poke(tb)              # 顺手扒拉
 
-    # ── 杆上被同伴挡路：停在中间扒拉几下（最后有概率指指点点）──
-    def _pole_nudge_tick(self):
-        """返回 True=本 tick 已被接管（别再推进爬杆控制器）。"""
+    # ── 杆上被同伴挡路：按性格分流（原版好脾气的猫先让路，坏脾气的死磕）──
+    def _pole_soft(self) -> float:
+        """杆上让路倾向 = 善良 − 暴躁：>0 会让路，<0 硬挤，≈0 中性。"""
+        return self._pers_soft(self.win)
+
+    @staticmethod
+    def _pers_soft(pet) -> float:
+        pers = getattr(getattr(pet, "cat", None), "personality", None)
+        if pers is None:
+            return 0.0
+        k = clampf(float(getattr(pers, "kindness", 0.5)), 0.0, 1.0)
+        t = clampf(float(getattr(pers, "temper", 0.5)), 0.0, 1.0)
+        return k - t
+
+    def _tip_tenure(self, pet) -> int | None:
+        """pet 蹲在竖杆杆头上的时长；不在杆头则 None。"""
+        pc = getattr(getattr(pet, "behavior", None), "poleclimb", None)
+        if pc is None or getattr(pc, "phase", None) != "tip":
+            return None
+        return int(getattr(pc, "tip_ticks", 0))
+
+    def _pole_role(self, o, tb) -> int:
+        """我对 o 的杆上角色（含「杆头只许一只猫」的补判）。"""
+        # 杆头只许一只猫：都在杆顶时按「谁先站上来」定先后 —— 摇摆出来的
+        # 几像素高低差不算数，否则两端角色会随平衡摆动反复互换。
+        mine = self._tip_tenure(self.win)
+        theirs = self._tip_tenure(o)
+        if mine is not None and theirs is not None:
+            return 1 if (mine, id(self.win)) < (theirs, id(o)) else -1
+        return pole_push_role(self.body, tb)
+
+    def _pole_obj(self):
+        """我正抱着的杆。"""
+        for ctl in (self.poleclimb, self.hpole):
+            p = getattr(ctl, "pole", None)
+            if p is not None:
+                return p
+        return None
+
+    def _pole_crowd(self) -> list:
+        """同一根杆上跟我挤在同一段的全部猫（含我自己）。"""
+        out = [self.win]
+        for pet in getattr(self.win, "pets", ()):
+            if pet is self.win:
+                continue
+            pb = getattr(pet, "body", None)
+            if pb is None:
+                continue
+            if pole_in_the_way(self.body, pb, tuning.POLE_CONTEST_DIST):
+                out.append(pet)
+        return out
+
+    def _pole_nudge_tick(self) -> bool:
+        """返回 True=本 tick 已被接管（别再推进爬杆控制器）。
+
+        好性格：让路（松手/跳下来）；中性：停住等待，能挪到横杆就挪过去；
+        坏性格：坚持硬挤。挤够时间后同一场冲突里只随机留一只，其余让路/被挤掉。
+        """
         o = self._pole_blocker
         b = self.body
         tb = getattr(o, "body", None) if o is not None else None
-        if (o is None or self._pole_nudge <= 0 or tb is None
+        if (o is None or tb is None or self._pole_nudge_cd > 0
                 or not pole_in_the_way(b, tb, tuning.POLE_BLOCK_DIST * 1.6)):
             return self._pole_unfreeze()
-        if self._pole_nudge_pin is None:            # 进入：原地钉住
+        if self._pole_nudge_pin is None:            # 进入冲突：原地钉住 + 定下角色
+            role = self._pole_role(o, tb)
+            if role == 0:
+                return self._pole_unfreeze()
             self._pole_nudge_pin = (b.chunk0.pinned, b.chunk1.pinned,
                                     b.chunk0.x, b.chunk0.y, b.chunk1.x, b.chunk1.y)
+            # 钉住期间角色冻结：横杆上「沿杆方向」靠速度判定，会随平衡摆动来回翻，
+            # 每 tick 重算会让冲突判定在 0 与非 0 之间抖，谁也分不出胜负。
+            self._pole_nudge_role = role
             self._pole_nudge_t = 0
             self._pole_nudge_point = False
+            self._pole_contest_t = 0
             b.stop_walk()
-        self._pole_nudge -= 1
+        else:
+            role = self._pole_nudge_role
         self._pole_nudge_t += 1
         _p0, _p1, x0, y0, x1, y1 = self._pole_nudge_pin
         c0, c1 = b.chunk0, b.chunk1
@@ -1553,24 +1619,117 @@ class BehaviorFSM:
         c0.x, c0.y, c0.vx, c0.vy = x0, y0, 0.0, 0.0
         c1.x, c1.y, c1.vx, c1.vy = x1, y1, 0.0, 0.0
         self.gfx.look_at = (tb.chunk0.x, tb.chunk0.y)
-        if self._pole_nudge <= tuning.POLE_NUDGE_POINT_TAIL and not self._pole_nudge_point:
-            self._pole_nudge_point = self.rng.random() < tuning.POLE_NUDGE_POINT_PROB
-            if self._pole_nudge_point:
-                self._act_begin("scold", o)         # 后半段：指指点点（词表）
-            else:
+        soft = self._pole_soft()
+        if soft >= tuning.POLE_SOFT_EPS:
+            return self._pole_give_way(role)        # 好性格：让路
+        if soft <= -tuning.POLE_SOFT_EPS:
+            return self._pole_contest(o, tb)        # 坏性格：硬挤
+        if role < 0 and self._pole_shift_to_beam():
+            return True                             # 中性（被顶）：挪到横杆上
+        return self._pole_contest(o, tb)            # 中性：停住等待，等有人分胜负
+
+    def _pole_shove_tick(self, tb) -> None:
+        """挤的动作：伸手贴住对方推/扒拉（原版贴身硬挤）。"""
+        c0 = self.body.chunk0
+        if self._pole_nudge_t % tuning.POLE_NUDGE_POKE == 0:
+            self._poke(tb)
+        side = "r" if tb.chunk0.x >= c0.x else "l"
+        self.gfx.hand_aim[side] = (tb.chunk0.x, tb.chunk0.y)
+        self.gfx.hand_aim["l" if side == "r" else "r"] = None
+
+    def _pole_contest(self, o, tb) -> bool:
+        """坚持挤 / 停住等待：计时到点后同一场冲突只留一只（随机，两端一致）。"""
+        soft = self._pole_soft()
+        self._pole_contest_t += 1
+        if soft <= -tuning.POLE_SOFT_EPS:
+            self._pole_shove_tick(tb)               # 坏性格：一直在挤
+            limit = tuning.POLE_CONTEST_TICKS
+        else:
+            # 中性：停住等待，尾巴上有概率改成「指指点点」
+            limit = tuning.POLE_WAIT_TICKS
+            if self._pole_contest_t >= limit - tuning.POLE_NUDGE_POINT_TAIL:
+                if not self._pole_nudge_point:
+                    self._pole_nudge_point = True
+                    if self.rng.random() < tuning.POLE_NUDGE_POINT_PROB:
+                        self._act_begin("scold", o)
+                if self._pole_nudge_point and self._act_active():
+                    if not self._act_tick():
+                        self._act_begin("scold", o)
+                elif self._pole_nudge_t % tuning.POLE_NUDGE_POKE == 0:
+                    self._pole_shove_tick(tb)
+            elif self._pole_nudge_t % tuning.POLE_NUDGE_POKE == 0:
                 self._clear_hands()
-        if self._pole_nudge_point:
-            if not self._act_tick():
-                self._act_begin("scold", o)
-        elif self._pole_nudge_t % tuning.POLE_NUDGE_POKE == 0:
-            self._poke(tb)                          # 扒拉
-            side = "r" if tb.chunk0.x >= c0.x else "l"
-            self.gfx.hand_aim[side] = (tb.chunk0.x, tb.chunk0.y)
-            self.gfx.hand_aim["l" if side == "r" else "r"] = None
-        elif self._pole_nudge_t % tuning.POLE_NUDGE_POKE == tuning.POLE_NUDGE_POKE // 2:
-            self._clear_hands()
-        if self._pole_nudge <= 0:
-            return self._pole_unfreeze()
+        if self._pole_contest_t < limit:
+            return True
+        return self._pole_resolve()
+
+    def _pole_resolve(self) -> bool:
+        """挤位赛分胜负：只留一只占位，其余让路（好/中性）或被挤掉（坏）。"""
+        crowd = self._pole_crowd()
+        pushers = [p for p in crowd
+                   if self._pers_soft(p) <= -tuning.POLE_SOFT_EPS]
+        pool = pushers or crowd
+        get = getattr(self.win, "pole_contest_winner", None)
+        winner = get(self._pole_obj(), pool) if get is not None else pool[0]
+        if winner is None or winner is self.win:
+            self._pole_contest_t = 0                # 我赢：继续占住位置
+            return True
+        self._pole_shove_tick(getattr(winner, "body", self.body))
+        if self._pole_soft() <= -tuning.POLE_SOFT_EPS:
+            self._pole_knocked_off(winner)          # 坏性格被挤掉：摔下去 + 记仇
+        else:
+            self._pole_give_way(-1)                 # 中性让路：松手/下滑
+        return True
+
+    def _pole_give_way(self, role: int) -> bool:
+        """让路：松手离杆（顶部跳下来 / 底部下滑）。"""
+        b = self.body
+        side = float(b.facing or 1)
+        self._pole_release()
+        self._pole_nudge_cd = tuning.POLE_NUDGE_CD
+        c0, c1 = b.chunk0, b.chunk1
+        c0.vx += side * tuning.POLE_GIVE_VX
+        c1.vx += side * tuning.POLE_GIVE_VX * 0.6
+        if role < 0:
+            c0.vy += tuning.POLE_GIVE_VY            # 顶部：跳下来
+        c1.vy += tuning.POLE_GIVE_VY * 0.5
+        self._transition("Airborne")
+        return True
+
+    def _pole_knocked_off(self, winner) -> bool:
+        """被挤掉：脱杆甩出去；坏脾气落地后去找挤赢的那只算账。"""
+        b = self.body
+        wb = getattr(winner, "body", None)
+        side = 1.0
+        if wb is not None:
+            side = 1.0 if b.chunk0.x >= wb.chunk0.x else -1.0
+            if abs(b.chunk0.x - wb.chunk0.x) < 1.0:
+                side = float(b.facing or 1.0)       # 竖杆上左右重合：按朝向甩出去
+        self._pole_release()
+        self._pole_nudge_cd = tuning.POLE_NUDGE_CD
+        c0, c1 = b.chunk0, b.chunk1
+        c0.vx += side * tuning.POLE_KNOCK_VX
+        c1.vx += side * tuning.POLE_KNOCK_VX * 0.6
+        c0.vy += tuning.POLE_KNOCK_VY
+        c1.vy += tuning.POLE_KNOCK_VY
+        if self._pole_soft() <= -tuning.POLE_SOFT_EPS and winner is not None:
+            self._blocker_target = winner
+            self._pole_scold_on_land = True
+        self._transition("Airborne")
+        return True
+
+    def _pole_shift_to_beam(self) -> bool:
+        """中性让路：踩着交点挪到横杆上（原版 ClimbOnBeam+侧 → HangFromBeam）。"""
+        pole = getattr(self.poleclimb, "pole", None)
+        if pole is None:
+            return False
+        hp = cross_partner(pole, self.win.poles)
+        if hp is None or hp.kind == VERTICAL:
+            return False
+        x = pole.x
+        self._pole_release()
+        self._pole_nudge_cd = tuning.POLE_NUDGE_CD
+        self._pole_handoff(("h", hp, x))
         return True
 
     def _pole_unfreeze(self):
@@ -1581,6 +1740,8 @@ class BehaviorFSM:
         self._pole_nudge_pin = None
         self._pole_nudge = 0
         self._pole_nudge_point = False
+        self._pole_contest_t = 0
+        self._pole_nudge_role = 0
         self._pole_nudge_cd = tuning.POLE_NUDGE_CD
         self._act_end()
         b = self.body
@@ -2343,6 +2504,11 @@ class BehaviorFSM:
             self._hp_jump_goal = None
             if on_ceil:
                 self._transition("CeilingHang")     # 窗口顶部当平地：吊住
+                return
+            if self._pole_scold_on_land and self._blocker_target is not None:
+                # 杆上被挤掉：落地就去找挤赢的那只指指点点（性格不好才记仇）
+                self._pole_scold_on_land = False
+                self._transition("ScoldBlocker")
                 return
             self._transition("LieDown" if self._exhausted else "IdleStand")
 
@@ -3201,13 +3367,16 @@ class BehaviorFSM:
         if self.fetch is None:
             self._transition("IdleStand")
             return
-        done = self.fetch.update()
-        if self.fetch.giveup:
+        fh = self.fetch
+        done = fh.update()
+        if fh.giveup:
             self._break_tongue()
             self._fetch_release()
             self._fetch_cooldown = T_FETCH_COOLDOWN
             self._transition("IdleStand")
         elif done:
+            if fh.pearl_done:       # 把玩完珍珠：放地上进冷却，别原地又叼起来
+                self._pearl_cd = tuning.PEARL_HOARD_CD
             self._break_tongue()
             self._fetch_release()
             self._transition("IdleStand")
@@ -3416,7 +3585,7 @@ class BehaviorFSM:
 
     def _free_pearl_near(self):
         """脚边能捡的珍珠（喜欢珍珠的猫闲着会去叼）。"""
-        best, bd = None, tuning.ITEMPLY_SEEK_R
+        best, bd = None, tuning.PEARL_SEEK_R
         c0 = self.body.chunk0
         for pr in getattr(self.win, "pearls", ()):
             if getattr(pr, "state", None) != ItemState.FREE:

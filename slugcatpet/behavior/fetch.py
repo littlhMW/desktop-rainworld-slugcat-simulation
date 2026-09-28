@@ -89,7 +89,7 @@ def fetch_ready(planner, edibles, diet=None):
     return out
 
 
-PEARL_HOLD_TICKS = 900        # 喜欢珍珠的猫玩多久才放下（15 秒）
+PEARL_HOLD_TICKS = tuning.PEARL_CARRY_TICKS   # 拿着珍珠多久才放下（对齐 fsm 的携带计时）
 
 
 class FruitFetcher:
@@ -116,6 +116,7 @@ class FruitFetcher:
         self._deliver = None          # 驯服交付目标（Lizard）
         self._trade_to = None         # 珍珠交易目标（Scavenger）
         self._snatch = TongueSnatch(win)
+        self.pearl_done = False       # 本次取物以「把玩珍珠收尾」结束
 
     def _chunk0(self):
         return self.body.chunk0
@@ -172,7 +173,9 @@ class FruitFetcher:
 
     def _phase_select(self):
         # 候选空 + 曾放弃 → giveup
-        cands = fetch_candidates(self.planner, self.win.fetchables(), diet=self.diet,
+        cands = fetch_candidates(self.planner,
+                                 self.win.fetchables(pearl_like=self.pearl_like),
+                                 diet=self.diet,
                                  pearl_like=self.pearl_like)
         if not cands:
             self.giveup = self._giveup_pending
@@ -294,6 +297,7 @@ class FruitFetcher:
             return False
         self.win.gfx.look_at = (f.x, f.y)
         if self.timer > PEARL_HOLD_TICKS:
+            self.pearl_done = True
             side = self.body.hand_of.get("fruit")
             if side is not None:
                 self.body.arm_aim[side] = None

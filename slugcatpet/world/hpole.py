@@ -23,6 +23,11 @@ TURN_PERIOD = 20
 TURN_PROB = 0.5
 JUMP_DOWN_VY = 2.0
 AIRGRAB_TIMEOUT = 90
+# 原版 HangFromBeam：沿横杆横向攀行（Player.cs 7651-7656）
+HANG_WALK_SPEED = 1.6
+HANG_EDGE = 6.0
+# 原版 StandOnBeam：canJump = 5，站杆面能起跳（Player.cs 7798）
+JUMP_OFF_VX = 2.2
 
 
 class HPoleController:
@@ -36,6 +41,7 @@ class HPoleController:
         # 换杆请求：("v", 竖杆, "climb") 交叉杆转竖杆
         self.handoff = None
         self._cross_t = 0            # 在交点附近逗留的 tick 数
+        self._cross_roll = None      # 本次经过交点的换杆掷骰结果（离开交点重置）
         # 刚从竖杆换过来时先离开交点，否则会在交点被反复换回去（卡死）
         self._cross_armed = (start != "hang")
         self.phase = "swing" if self.tongue is not None else "airgrab"
@@ -48,6 +54,8 @@ class HPoleController:
         self.disbalance = 0.0
         self._sway_c = 0.0
         self._wobble_target = 45.0
+        self._hang_f = 10          # 原版 HangFromBeam animationFrame（1..20，静止靠 10）
+        self._hang_walk = 0        # 悬挂时还要横向爬多少 tick
         self.goal_x = None       # 非 None：站杆面上走到这个 x 就停住（去够东西）
         # 锚点固定到杆
         lo, hi = self._extent()
@@ -69,6 +77,22 @@ class HPoleController:
     # 杆几何
     def _extent(self):
         return min(self.pole.ax, self.pole.bx), max(self.pole.ax, self.pole.bx)
+
+    def _walk_band(self, margin=WALK_MARGIN):
+        """杆面可走带：杆端内缩 margin，且不越出窗口。
+
+        越出窗口时下身 chunk 会被窗口边界夹住、上身还在往前挪 —— 连接约束被拉到
+        极限，起身（GetUpOnBeam）时会看到下身瞬移。原版杆子永远在房间格内。
+        """
+        lo, hi = self._extent()
+        lo, hi = lo + margin, hi - margin
+        wl = getattr(self.win, "_WL", None)
+        if wl:
+            lo, hi = max(lo, margin), min(hi, float(wl) - margin)
+        if hi < lo:
+            mid = (lo + hi) * 0.5
+            lo = hi = mid
+        return lo, hi
 
     def update(self):
         self.timer += 1
@@ -133,6 +157,7 @@ class HPoleController:
         b.animation = "HangFromBeam"
         b.pole_x = ax
         b.pole_y = ay  # 手抓点 y
+        b.pole_move = 0
         b.facing = 1 if c0.x >= c1.x else -1
         # 上身钉杆线
         c0.pinned = True
@@ -143,12 +168,47 @@ class HPoleController:
         c1.pinned = False
 
     def _phase_hang(self):
+        """吊在横杆下：原版 HangFromBeam —— 可沿杆横向攀行（臂摆 20 帧一圈 + 下身侧摆）。
+
+        Player.cs 7631-7713：input.x 推动上身，animationFrame 1..20 循环，
+        bodyChunks[1].vel.x 跟着节奏侧摆；input.jmp / input.y>0 → GetUpOnBeam。
+        """
         b = self.body
-        c0 = b.chunk0
+        c0, c1 = b.chunk0, b.chunk1
         ax, ay = b.pole_x, self.pole.ay
+        lo, hi = self._walk_band(HANG_EDGE)
+        # 攀行方向：有目的地就去够，否则按当前朝向前进，走到杆端掉头
+        move = 0
+        if self.goal_x is not None:
+            if abs(self.goal_x - ax) > tuning.HPOLE_GOAL_EPS:
+                move = 1 if self.goal_x > ax else -1
+        elif self._hang_walk > 0:
+            self._hang_walk -= 1
+            move = self._walk_dir
+        if move != 0:
+            nx = ax + HANG_WALK_SPEED * move
+            if nx <= lo + HANG_EDGE or nx >= hi - HANG_EDGE:
+                nx = max(lo + HANG_EDGE, min(hi - HANG_EDGE, nx))
+                self._walk_dir = -move if self.goal_x is None else move
+                move = 0
+            ax = nx
+        b.pole_move = move
+        if move != 0:
+            self._hang_f += 1
+            if self._hang_f > 20:
+                self._hang_f = 1
+            c1.vx += b.facing * (0.5 + 0.5 * math.sin(
+                self._hang_f / 20.0 * 2.0 * math.pi)) * -0.5
+        elif self._hang_f > 10:
+            self._hang_f -= 1
+        elif self._hang_f < 10:
+            self._hang_f += 1
+        b.pole_x = ax
+        c0.pinned = True
         c0.x = ax  # 上身钉杆线
         c0.y = ay
         c0.vx = c0.vy = 0.0
+        c1.pinned = False
         vp = self._cross_vpole(ax, ay)
         if vp is None:
             self._cross_t = 0
@@ -158,7 +218,7 @@ class HPoleController:
                     and self._roll() < tuning.CROSS_SWITCH_PROB):
                 self.handoff = ("v", vp, "climb")  # 交点处转竖杆（原版 上+吊杆）
                 return True
-        if self.timer > HANG_TICKS:
+        if self.timer > HANG_TICKS and move == 0:
             self.phase = "pullup"
             self.timer = 0
             self._pullup_from = (b.chunk1.x, b.chunk1.y)
@@ -195,31 +255,27 @@ class HPoleController:
     def _phase_stand(self):
         b = self.body
         c0, c1 = b.chunk0, b.chunk1
-        ax_lo, ax_hi = self._extent()
         ay = self.pole.ay
         self._stand_t += 1
         feet_y = ay - STAND_HOVER
-        lo, hi = ax_lo + WALK_MARGIN, ax_hi - WALK_MARGIN
+        lo, hi = self._walk_band()
         can_walk = hi > lo
         vp = self._cross_vpole(c1.x, ay)
         if vp is None:
             self._cross_t = 0
+            self._cross_roll = None
         else:
+            if self._cross_t == 0:
+                self._cross_roll = self._roll()   # 每次经过交点只掷一次骰子
             self._cross_t += 1
-            if (self._cross_t >= tuning.CROSS_DWELL
-                    and self._roll() < tuning.CROSS_SWITCH_PROB):
+            if (self.goal_x is None and self._cross_t >= tuning.CROSS_DWELL
+                    and self._cross_roll is not None
+                    and self._cross_roll < tuning.CROSS_SWITCH_PROB):
                 self.handoff = ("v", vp, "climb")  # 站在交点上：转到竖杆
                 return True
-        # 换杆意图（原版要走到交叉格上再按键）：刚换过来的先走离交点，
-        # 之后主动走回交点换杆，避免站在交点上乱走到超时掉下杆
+        # 原版要走到交叉格上再按键才换杆；不再主动跑向交点 —— 否则站在横杆上的
+        # 猫总会自动跑去爬竖杆，一路爬到竖杆顶（用户反馈的「总往竖杆顶跑」）。
         steer = None
-        xp, xnear = self._vp_near(c1.x, ay)
-        if can_walk and xp is not None and lo <= xp.x <= hi:
-            if not self._cross_armed:
-                if xnear:
-                    steer = -1 if c1.x <= xp.x else 1
-            elif abs(c1.x - xp.x) > 2.0:
-                steer = 1 if xp.x > c1.x else -1
         if self.goal_x is not None:      # 目的地优先：走到位就刹住等抓取
             if abs(c1.x - self.goal_x) <= tuning.HPOLE_GOAL_EPS:
                 steer = None
@@ -259,6 +315,7 @@ class HPoleController:
             c1.x = nx
             b.facing = 1 if self._walk_dir > 0 else -1
         c1.y = feet_y
+        b.pole_move = 1 if walking else 0
         c1.vx = WALK_SPEED * (1.0 if walking else 0.0) * b.facing
         c1.vy = 0.0
         # 走时晃身平衡
@@ -281,7 +338,11 @@ class HPoleController:
         self.gfx.balance_counter = self._sway_c
         self.gfx.look_at = (c0.x + b.facing * 60.0, c0.y)
         if self._stand_t > STAND_TICKS and self.goal_x is None:
-            self._jump_down()
+            # 原版 StandOnBeam canJump=5：站杆面能起跳（向前上跳出去）
+            if self.rng is not None and self.rng.random() < tuning.HP_JUMP_PROB:
+                self._jump_off()
+            else:
+                self._jump_down()
             return True
         return False
 
@@ -337,6 +398,27 @@ class HPoleController:
             self._pullup_from = (c1.x, c1.y)
         return False
 
+    def _jump_off(self):
+        """站横杆面起跳（原版 StandOnBeam canJump=5）：向前上方跳出。"""
+        b = self.body
+        c0, c1 = b.chunk0, b.chunk1
+        c0.pinned = False
+        c1.pinned = False
+        b.on_pole = False
+        b.animation = None
+        b.standing = True
+        b.feet_stuck = None
+        b.crawl_anchor = None
+        b.crawl_pose = 0.0
+        b.walk_target_x = None
+        d = 1.0 if b.facing >= 0 else -1.0
+        c0.vy = b.stats.jump_head
+        c1.vy = b.stats.jump_feet
+        c0.vx += d * JUMP_OFF_VX
+        c1.vx += d * JUMP_OFF_VX * 0.6
+        b.jump_boost = b.stats.jump_boost
+        self._reset_pose()
+
     def _jump_down(self):
         b = self.body
         c0, c1 = b.chunk0, b.chunk1
@@ -353,6 +435,7 @@ class HPoleController:
         self.gfx.hand_aim["l"] = None
         self.gfx.hand_aim["r"] = None
         self.gfx.disbalance = 0.0
+        self.body.pole_move = 0
 
     # 打断清理
     def release(self):
@@ -361,6 +444,7 @@ class HPoleController:
         b.chunk1.pinned = False
         b.on_pole = False
         b.animation = None
+        b.pole_move = 0
         if self.tongue is not None:
             if self.tongue.attached:
                 self.tongue.retract()

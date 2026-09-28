@@ -319,7 +319,16 @@ class SlugcatGraphics(GraphicsDrawMixin):
                 self.anim_frame = 0
         elif b.bodyMode == "ClimbingOnBeam":
             anim = getattr(b, "animation", None)
-            if anim in ("ClimbOnBeam", "HangFromBeam", "GetUpOnBeam"):
+            if anim == "HangFromBeam":
+                # 原版 Player.cs 7644-7660：沿横杆攀行时 animationFrame 1..20 循环，
+                # 停下时向 10 靠拢（手/腿回到杆下的中性姿态）
+                if getattr(b, "pole_move", 0):
+                    self.anim_frame = self.anim_frame % 20 + 1
+                elif self.anim_frame > 10:
+                    self.anim_frame -= 1
+                elif self.anim_frame < 10:
+                    self.anim_frame += 1
+            elif anim in ("ClimbOnBeam", "GetUpOnBeam"):
                 self.anim_frame = (self.anim_frame + 1) % 20
             elif anim == "StandOnBeam":
                 self.anim_frame = ((self.anim_frame + 1) % 7
