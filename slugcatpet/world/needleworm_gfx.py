@@ -1,24 +1,36 @@
 # -*- coding: utf-8 -*-
 """面条蝇 NeedleWorm 渲染（对照 NeedleWormGraphics.DrawSprites，坐标 y↓）。
 
-原版身体是 TriangleMesh 程序化网格（不是贴图），眼睛/翅膀/腿/卵复用现成元件：
-  JetFishEyeB（4x4 眼）、CentipedeWing（8x52 翅）、JetFishFlipper3（23x18 鳍）。
-这里同样程序化：躯干+尾用 draw_rope 画中轴带，再叠高光带、眼睛、翅膀、鳍。
+原版身体是 TriangleMesh 程序化网格（不是贴图）：BodyMesh（含吻+尾）/
+HighLightMesh（躯干前 2/3 的浅色中线条纹）/ FangMesh（成体獠牙，白尖+淡红根、
+见空气后转黑）/ 4 张翅（2 对 × 左右，s=0 在身后、s=1 在身前）/ 退化小短腿 /
+JetFishEyeB 椭圆眼。
+
+对应关系：
+- NeedleWormGraphics.cs:423-453  InitiateSprites：精灵顺序（≈ 图层）
+- NeedleWormGraphics.cs:461-521  BodyMesh / HighLightMesh 顶点
+- NeedleWormGraphics.cs:499-501  惨叫时体节随机抖动
+- NeedleWormGraphics.cs:549-582  4 张翅（vector14/p 的算法照抄）
+- NeedleWormGraphics.cs:583-600  腿（幼体 1 对 / 成体 3 对）
+- NeedleWormGraphics.cs:615-655  獠牙 fangOut/fangBlack
+- NeedleWormGraphics.cs:666-720  GraphSegmentPos / GraphSegmentRad / Eaten 截断
+- NeedleWormGraphics.cs:722-787  ApplyPalette 配色
 """
 from __future__ import annotations
 import math
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtWidgets import QGraphicsItem
 
 from ..core.units import clampf, lerp, inv_lerp
 from ..core.gfxmath import _hsl2rgb
-from ..rendering.primitives import blit, draw_rope
+from ..rendering.primitives import blit, draw_rope, ribbon
 from ..rendering.pixelmode import aa_hint
-from .needleworm import AGE_EGG, WING_SEG, _lerp_map
+from .needleworm import AGE_EGG, WING_SEG, FANG_LENGTH, _lerp_map
 
-BLACK_RGB = (27, 11, 33)
-FOG_RGB = (78, 92, 104)
+BLACK_RGB = (27, 11, 33)        # RoomPalette.blackColor 近似值
+FOG_RGB = (78, 92, 104)         # RoomPalette.fogColor 近似值
 
 
 def _rgb(h, sl, l):
@@ -26,6 +38,13 @@ def _rgb(h, sl, l):
     return (int(clampf(round(r * 255.0), 0, 255)),
             int(clampf(round(g * 255.0), 0, 255)),
             int(clampf(round(b * 255.0), 0, 255)))
+
+
+def _mix(a, b, t):
+    t = clampf(t, 0.0, 1.0)
+    return (int(a[0] + (b[0] - a[0]) * t),
+            int(a[1] + (b[1] - a[1]) * t),
+            int(a[2] + (b[2] - a[2]) * t))
 
 
 def _perp(ux, uy):
@@ -38,104 +57,238 @@ def _aim(ux, uy) -> float:
     return math.degrees(math.atan2(ux, -uy))
 
 
-def _wing_rgb(body, hi, ang):
-    """原版翅膀顶点色 = 体色↔高光色（CicadaWing 着色器再乘一圈透明）。"""
-    t = clampf(0.1 + 0.35 * ang, 0.0, 0.45)
-    return (int(body[0] + (hi[0] - body[0]) * t),
-            int(body[1] + (hi[1] - body[1]) * t),
-            int(body[2] + (hi[2] - body[2]) * t))
-
-
 def _dir(ax, ay, bx, by):
     dx, dy = bx - ax, by - ay
     d = math.hypot(dx, dy)
     return (dx / d, dy / d) if d > 1e-6 else (0.0, -1.0)
 
 
+def _slerp(ax, ay, bx, by, t):
+    """Vector3.Slerp 的 2D 版（原版翅膀朝向插值用）。"""
+    dot = clampf(ax * bx + ay * by, -1.0, 1.0)
+    if dot > 0.9995 or dot < -0.9995:
+        return (ax + (bx - ax) * t, ay + (by - ay) * t)
+    th = math.acos(dot)
+    s = math.sin(th)
+    return (ax * math.sin((1.0 - t) * th) / s + bx * math.sin(t * th) / s,
+            ay * math.sin((1.0 - t) * th) / s + by * math.sin(t * th) / s)
+
+
 def palette(nw):
-    """-> (bodyColor, highLightColor)：NeedleWormGraphics.ApplyPalette。"""
+    """NeedleWormGraphics.cs:722-787 ApplyPalette → (body, highlight, details, eye)。"""
     num = nw.hue + 0.478
     light = nw.lightness
     body = _rgb(num, _lerp_map(light, 0.5, 1.0, 0.9, 0.5), lerp(0.1, 0.8, light * light))
     hi = _rgb(num, _lerp_map(light, 0.5, 1.0, 0.5, 1.0), lerp(0.2, 1.0, light))
-    return body, hi
+    num2 = num + inv_lerp(0.5, 0.6, light) * 0.5
+    cb = nw.cos_bools
+    if cb[2]:
+        eye = _rgb(num2 + 0.5 - nw.hue_div, 1.0, lerp(0.7, 0.3, light ** 1.5))
+        det = _rgb(num2 + 0.5 + nw.hue_div, 0.8, 0.4)
+    else:
+        eye = _rgb(num2 + 0.5, 1.0, lerp(0.7, 0.3, light ** 1.5))
+        det = _rgb(num2 + 0.5, 1.0, 0.5) if cb[3] else _rgb(num2, 1.0, 0.5)
+    if light < 0.5:
+        body = _mix(body, BLACK_RGB, inv_lerp(0.5, 0.0, light) ** 0.5)
+        hi = _mix(hi, _mix(BLACK_RGB, FOG_RGB, 0.4), inv_lerp(0.5, 0.0, light) ** 2)
+    elif light > 0.5:
+        body = _mix(body, FOG_RGB, inv_lerp(0.5, 1.0, light) * 0.2)
+        hi = _mix(body, (255, 255, 255), inv_lerp(0.5, 1.0, light))
+    return body, hi, det, eye
+
+
+def _eaten_frac(nw) -> float:
+    """NeedleWormGraphics.cs:93-103 Eaten：被啃的幼体越啃越短。"""
+    if nw.age != "small":
+        return 1.0
+    return _lerp_map(float(nw.bites), 4.0, 1.0, 1.0, 0.4)
 
 
 def draw_needle_egg(painter, atlas, nw, ts) -> None:
-    """卵：NeedleEgg 外壳（波瓣壳 + 半透明内芯）。"""
+    """卵：两片深色壳 + 中间橙红色软带（wiki：壳会随软带伸缩开合）。"""
     x = lerp(nw.last_x, nw.x, ts)
     y = lerp(nw.last_y, nw.y, ts)
     r = nw.head_rad
-    h = 0.99 + 0.09 * ((nw.hue * 7.3) % 1.0)
-    shell = _rgb(h, lerp(0.8, 1.0, (nw.hue * 3.1) % 1.0), 0.5)
+    wob = clampf(abs(nw._wobble), 0.0, 1.0)
+    band = 1.0 + 0.35 * wob
     painter.save()
     aa_hint(painter)
-    pen = QPen(QColor(*_rgb(h, 1.0, 0.32)))
-    pen.setWidthF(1.6)
-    painter.setPen(pen)
+    # 橙红软带
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(*_rgb(0.05 + 0.03 * wob, 1.0, 0.5)))
+    painter.drawEllipse(x - r * 0.85, y - r * 0.55 * band, r * 1.7, r * 1.1 * band)
+    # 上下两片壳
+    shell = _rgb(0.72 + 0.03 * ((nw.hue * 7.3) % 1.0), 0.35, 0.16)
     painter.setBrush(QColor(*shell))
-    painter.drawEllipse(x - r, y - r * 1.15, r * 2.0, r * 2.3)
+    painter.drawEllipse(x - r, y - r * (1.05 + 0.35 * band), r * 2.0, r * 1.25)
+    painter.drawEllipse(x - r, y + r * (0.05 + 0.30 * band), r * 2.0, r * 1.25)
+    painter.setPen(QPen(QColor(*_mix(shell, BLACK_RGB, 0.5))))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawEllipse(x - r, y - r * (1.05 + 0.35 * band), r * 2.0, r * 1.25)
+    painter.drawEllipse(x - r, y + r * (0.05 + 0.30 * band), r * 2.0, r * 1.25)
     painter.restore()
+
+
+def _draw_wings(painter, atlas, nw, ts, pts, seg_dir, front: bool,
+                vec14, body, hi, det, eye) -> None:
+    """NeedleWormGraphics.cs:549-582：s=0 在身后、s=1 在身前，每侧 2 张翅。"""
+    cb = nw.cos_bools
+    flap = lerp(nw.last_wing_flap, nw.wing_flap, ts)
+    flying = clampf(lerp(0.0, nw.flying, ts), 0.0, 1.0)
+    zy = lerp(nw.lzrot[1], nw.zrot[1], ts)
+    sn = nw.snout_n
+    sign = 1.0 if front else -1.0
+    for m, off in enumerate(WING_SEG[nw.age]):
+        ci = sn + off
+        if ci >= len(pts):
+            continue
+        bx, by = pts[ci]
+        bdir = seg_dir(ci)
+        base = (bx - (-bdir[1]) * (nw.wings_size * 5.0 * abs(zy) * sign),
+                by - (bdir[0]) * (nw.wings_size * 5.0 * abs(zy) * sign))
+        phase = flap + (0.33 if m == 0 else 0.0)
+        tip = (base[0], base[1] - (18.0 + 18.0 * math.sin(phase * math.tau)) * flying * nw.wings_size)
+        d = _dir(base[0], base[1], tip[0], tip[1])
+        tip = (base[0] + d[0] * (lerp(40.0, 60.0, flying) * nw.wings_size),
+               base[1] + d[1] * (lerp(40.0, 60.0, flying) * nw.wings_size))
+        v15 = _slerp(-bdir[1] * sign, bdir[0] * sign, sign, 0.0, flying)
+        v16 = (v15[0] * 2.0 * nw.wings_size, v15[1] * 2.0 * nw.wings_size)
+        root_col = _mix(FOG_RGB, det, 0.5)
+        tip_col = _mix(eye if cb[1] else FOG_RGB, (255, 255, 255), 0.35 if cb[1] else 0.5)
+        ribbon(painter, [base, tip], [2.4 * nw.wings_size, 1.2 * nw.wings_size],
+               [root_col, tip_col])
+        if not nw.small:
+            blit(painter, atlas, "JetFishEyeB", base[0], base[1],
+                 _aim(bdir[0], bdir[1]), 0.9, 1.2,
+                 body if not front else _mix(body, hi, abs(zy) * 0.6))
+        del v16
 
 
 def draw_needleworm(painter, atlas, nw, ts) -> None:
     """画一只面条蝇（幼体/成体）。"""
+    if nw.age == AGE_EGG:
+        draw_needle_egg(painter, atlas, nw, ts)
+        return
     painter.save()
     aa_hint(painter)
-    body, hi = palette(nw)
-    pts, rads = [], []
-    for s in nw.seg:
-        pts.append((lerp(s.lx, s.x, ts), lerp(s.ly, s.y, ts)))
-        rads.append(max(0.8, s.rad))
-    # 身体：吻尖 → 尾梢的中轴带
-    draw_rope(painter, pts, [r * 2.0 for r in rads], body)
-    # 高光带：躯干开始、沿 (-1,+1) 偏一点、宽度 /3.2（原版 HighLightMesh）
+    body, hi, det, eye = palette(nw)
+    cb = nw.cos_bools
     sn = nw.snout_n
-    if len(pts) > sn + 2:
-        hp, hr = [], []
-        for i in range(sn, len(pts)):
-            x, y = pts[i]
-            hp.append((x - 1.0, y + 1.0))
-            hr.append(max(0.5, rads[i] / 3.2))
-        draw_rope(painter, hp, [r * 2.0 for r in hr], hi)
-    if nw.age == AGE_EGG:
-        painter.restore()
-        return
-    # 翅膀：挂在 WING_SEG 的躯干节上，点/成体各两对
-    flap = lerp(nw.last_wing_flap, nw.wing_flap, ts)
-    f = clampf((flap % 1.0), 0.0, 1.0)
-    for ci in [sn + k for k in WING_SEG[nw.age]]:
-        if ci >= len(pts):
-            continue
-        bx, by = pts[ci]
-        seg_dir = _dir(pts[ci - 1][0], pts[ci - 1][1], bx, by) if ci > 0 else (1.0, 0.0)
-        for m in (0, 1):
-            ang = (0.5 + 0.5 * math.sin((flap + (0.33 if m == 0 else 0.0)) * math.tau))
-            ext = 18.0 + 18.0 * math.sin((flap + (0.33 if m == 0 else 0.0)) * math.tau)
-            tip = (bx + seg_dir[0] * 4.0 - seg_dir[1] * 26.0 * nw.wings_size,
-                   by + seg_dir[1] * 4.0 + seg_dir[0] * 26.0 * nw.wings_size
-                   + ext * 0.35 * (1.0 if nw.facing >= 0 else -1.0))
-            d = _dir(bx, by, tip[0], tip[1])
-            rot = _aim(d[0], d[1]) + 180.0
-            blit(painter, atlas, "CentipedeWing", bx, by, rot,
-                 nw.wings_size * 0.55, 0.55, _wing_rgb(body, hi, ang),
-                 ax=0.5, ay=1.0)
-    # 眼睛：头顶两侧
-    if sn + 1 < len(pts):
-        hx, hy = pts[sn]
-        v3 = _dir(hx, hy, pts[1][0], pts[1][1])
-        hx = lerp(hx, pts[0][0], 0.4)
-        hy = lerp(hy, pts[0][1], 0.4)
-        mid = pts[min(len(pts) - 1, sn + max(1, nw.body_n // 2))]
-        axis = _dir(mid[0], mid[1], pts[sn][0], pts[sn][1])
+    # ── 顶点：GraphSegmentPos + Eaten 截断 + 惨叫抖动 ──
+    pts, rads = [], []
+    eaten = _eaten_frac(nw)
+    total = len(nw.seg)
+    last_i = total - 1
+    for i in range(total):
+        s = nw.seg[i]
+        x, y = lerp(s.lx, s.x, ts), lerp(s.ly, s.y, ts)
+        if eaten < 1.0:
+            j = int(round(eaten * last_i)) if inv_lerp(0.0, last_i, i) > eaten else i
+            t = nw.seg[j]
+            x, y = lerp(t.lx, t.x, ts), lerp(t.ly, t.y, ts)
+        if nw.scream > 0.0:
+            k = (nw.scream ** 0.7) * 4.0 * ((i * 7919 % 97) / 97.0) * inv_lerp(total, sn, i)
+            x += (1.0 if (i % 2) else -1.0) * k
+            y += (1.0 if (i % 3) else -1.0) * k
+        pts.append((x, y))
+        rads.append(max(0.8, s.rad))
+
+    def seg_dir(i):
+        if i <= 0:
+            return _dir(pts[1][0], pts[1][1], pts[0][0], pts[0][1]) if len(pts) > 1 else (0.0, -1.0)
+        return _dir(pts[i][0], pts[i][1], pts[i - 1][0], pts[i - 1][1])
+
+    # ── 身后那一对翅膀（s=0）──
+    _draw_wings(painter, atlas, nw, ts, pts, seg_dir, False,
+                pts[sn], body, hi, det, eye)
+    # ── 身体（BodyMesh：吻+躯干+尾，尾端渐暗）──
+    cols = []
+    for i in range(len(pts)):
+        if not nw.small:
+            v = inv_lerp(0.0, len(pts) - 1.0, i)
+            fade = _mix(det, BLACK_RGB, (v * v) * 0.85 if cb[0] else 1.0)
+            cols.append(_mix(body, fade, (inv_lerp(0.3, 1.0, v) ** 2) * (1.0 if cb[0] else 0.6)))
+        else:
+            cols.append(body)
+    ribbon(painter, pts, [r for r in rads], cols)
+    # ── 浅色中线条纹（HighLightMesh：躯干前 2/3）──
+    hl_n = max(2, int(nw.body_n + len(nw.seg) - sn) * 2 // 3)
+    hp, hr, hc = [], [], []
+    for k in range(hl_n):
+        i = min(len(pts) - 1, sn - 1 + k)
+        x, y = pts[i]
+        hp.append((x - 1.0, y + 1.0))
+        hr.append(max(0.5, rads[i] / 3.2))
+        f = inv_lerp(0.0, hl_n - 1.0, k)
+        hc.append(_mix(body, hi, math.sin((f ** 0.4) * math.pi)))
+    ribbon(painter, hp, hr, hc)
+    # ── 腿：幼体 1 对（退化）、成体 3 对（NeedleWormGraphics.cs:583-600）──
+    n_legs = 1 if nw.small else 3
+    zy = lerp(nw.lzrot[1], nw.zrot[1], ts)
+    for side in (-1.0, 1.0):
+        for i in range(n_legs):
+            f = _lerp_map(float(i), 0.0, 2.0, 0.03, 0.1, 2.0)
+            bi = clampf(f * (total - 1.1), 0.0, len(pts) - 1.0)
+            i0 = int(bi)
+            i1 = min(i0 + 1, len(pts) - 1)
+            t = bi - i0
+            ax = lerp(pts[i0][0], pts[i1][0], t)
+            ay = lerp(pts[i0][1], pts[i1][1], t)
+            ar = lerp(rads[i0], rads[i1], t)
+            bd = _dir(pts[i1][0], pts[i1][1], pts[i0][0], pts[i0][1]) if i1 != i0 else (0.0, -1.0)
+            px, py = _perp(bd[0], bd[1])
+            k = (i == 1) and 16.0 or 11.0
+            ln = k * nw.legs_fac
+            ox = ax + px * ar * side * zy
+            oy = ay + py * ar * side * zy
+            tx = ox + px * side * zy * ln + px * side * 0.2 * ln
+            ty = oy + py * side * zy * ln + abs(py * ln) * 0.25
+            ribbon(painter, [(ox, oy), (tx, ty)],
+                   [2.6 * nw.legs_fac, 1.2 * nw.legs_fac],
+                   [body, _mix(body, det, clampf(abs(ln) / (9.0 * nw.legs_fac), 0.0, 1.0))])
+    # ── 身前那一对翅膀（s=1）──
+    _draw_wings(painter, atlas, nw, ts, pts, seg_dir, True,
+                pts[sn], body, hi, det, eye)
+    # ── 獠牙（成体，NeedleWormGraphics.cs:615-655）──
+    if not nw.small:
+        fo = lerp(nw.last_fang_out, nw.fang_out, ts)
+        num10 = inv_lerp(0.5, 1.0, fo)
+        if num10 > 0.0:
+            blk = clampf(nw.fang_black, 0.0, 1.0)
+            c_root = _mix((255, 0, 0), BLACK_RGB, blk ** 3)
+            c_tip = _mix((255, 255, 255), BLACK_RGB, inv_lerp(0.4, 0.55, blk) ** 0.8)
+            hx, hy = pts[0]
+            ux, uy = _dir(pts[1][0], pts[1][1], pts[0][0], pts[0][1]) if len(pts) > 1 else (0.0, -1.0)
+            n = 5
+            fp, fw, fc = [], [], []
+            for i in range(n):
+                f = inv_lerp(0.0, n - 1.0, i)
+                wob = math.sin(num10 * math.pi) * lerp(-0.3 + 1.3 * (f ** 0.5), f, num10) * -0.2
+                dx = ux + (-uy) * wob
+                dy = uy + (ux) * wob
+                d = math.hypot(dx, dy) or 1.0
+                ln = (FANG_LENGTH / 3.5) * (num10 ** 0.8)
+                hx += dx / d * ln
+                hy += dy / d * ln
+                fp.append((hx, hy))
+                fw.append(lerp((0.6 + 0.6 * blk) * 0.5, 0.25, f))
+                fc.append(_mix(c_root, c_tip, clampf(inv_lerp(0.1, 0.35 + 0.65 * blk, f), 0.0, 1.0) **
+                               (4.0 - 3.95 * (num10 * 3.0 + blk) * 0.25)))
+            ribbon(painter, fp, fw, fc)
+    # ── 眼睛（JetFishEyeB，NeedleWormGraphics.cs:475-483）──
+    if len(pts) > sn + 1:
+        mid_i = min(len(pts) - 1, sn + max(1, nw.body_n // 2))
+        axis = _dir(pts[mid_i][0], pts[mid_i][1], pts[sn][0], pts[sn][1])
+        v3 = _dir(pts[sn][0], pts[sn][1], pts[1][0], pts[1][1])
         t = inv_lerp(0.0, 0.7, v3[0] * axis[0] + v3[1] * axis[1])
+        hx = lerp(pts[sn][0], pts[0][0], 0.4)
+        hy = lerp(pts[sn][1], pts[0][1], 0.4)
         px, py = _perp(v3[0], v3[1])
         sc = 0.65 if nw.small else 1.0
         for i in (0, 1):
-            s = -1.0 if ((i == 0) != (v3[0] < 0.0)) else 1.0
-            off = 4.0 * sc * s * v3[1]
-            ex, ey = hx + px * off, hy + py * off
-            rot = _aim(v3[0] + axis[0], v3[1] + axis[1])
-            blit(painter, atlas, "JetFishEyeB", ex, ey, rot,
-                 lerp(0.8, 0.6, t) * sc, lerp(1.1, 1.5, t) * sc, BLACK_RGB)
+            sign = -1.0 if ((i == 0) != (v3[0] < 0.0)) else 1.0
+            off = 4.0 * sc * sign * v3[1]
+            blit(painter, atlas, "JetFishEyeB", hx + px * off, hy + py * off,
+                 _aim(v3[0] + axis[0], v3[1] + axis[1]),
+                 lerp(0.8, 0.6, t) * sc, lerp(1.1, 1.5, t) * sc, eye)
     painter.restore()

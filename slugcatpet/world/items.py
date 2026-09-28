@@ -26,7 +26,7 @@ from .lizard import BREEDS, Lizard, _ang_lerp
 from .lizard_gfx import draw_lizard
 from .squidcada import Squidcada
 from .squidcada_gfx import draw_squidcada
-from .needleworm import NeedleWorm, AGE_EGG
+from .needleworm import NeedleWorm, AGE_EGG, AGE_SMALL, AGE_BIG
 from .needleworm_gfx import draw_needleworm, draw_needle_egg
 from .pearl import Pearl
 from . import weaponphys
@@ -120,6 +120,13 @@ SHOVE_COOLDOWN = 12
 # 蝉乌贼 / 珍珠 / 矛 / 拾荒者
 SQUIDCADA_GRAB_PAD = 10.0
 NEEDLEWORM_GRAB_PAD = 12.0
+# 面条蝇成体的两段攻击（BigNeedleWorm.cs:168 獠牙戳 / :454 突刺）
+NW_STAB_DAMAGE = 1.22            # Violence(Stab, 1.22f, 60f) → 1.22 ≥ 蛞蝓猫即死阈值 1
+NW_STAB_STUN = 60.0
+NW_POKE_DAMAGE = 0.05            # Violence(Stab, 0.05f, 30f)：戳不致命，只晕 + 掉东西
+NW_POKE_STUN = 30.0
+NW_ATTEMPT_DIST = 120.0          # Weapon.cs:149 closestCritDist < 120f → AttackAttempt
+NW_HATCH_GAP = 14.0              # 卵孵出 2 只幼体时左右分开一点
 PEARL_GRAB_PAD = 6.0
 SPEAR_GRAB_PAD = 8.0
 SCAVENGER_GRAB_PAD = 14.0
@@ -200,6 +207,12 @@ def _pet_bite_death_mult(pet) -> float:
     """原版 Player.DeathByBiteMultiplier（故事模式 0.7 + 难度/5，这里取 0.75）。"""
     return PET_BITE_DEATH_MULT.get(getattr(pet, "variant", None),
                                    PET_BITE_DEATH_MULT_DEFAULT)
+
+
+def _weapon_owner(w):
+    """投掷物的掷出者 uid（原版 Weapon.thrownBy；成体面条蝇的 tempLike 记账用）。"""
+    owner = getattr(w, "thrower", None)
+    return None if owner is None else id(owner)
 
 
 def _seg_end(ball):
@@ -532,7 +545,9 @@ class ItemInteractionMixin:
                     continue
                 if math.hypot(s.x - small.x, s.y - small.y) >= s.rad + small.rad:
                     continue
-                small.hurt(STONE_DMG, kx=s.vx * 0.10, ky=min(s.vy * 0.10 - 1.0, -1.0))
+                small.hurt(STONE_DMG, kx=s.vx * 0.10,
+                           ky=min(s.vy * 0.10 - 1.0, -1.0),
+                           by=_weapon_owner(s), lethal=False)
                 s.deflect(self._stun_rng)
                 s.fling = False
                 break
@@ -1449,9 +1464,14 @@ class ItemInteractionMixin:
             obj.die()
             obj.state = ItemState.EATEN
             self._shake[1] += 0.3
-        elif isinstance(obj, NeedleWorm):         # 原版 Eats 0.25/0.3，比蝉乌贼更可口
-            obj.die()
-            obj.state = ItemState.EATEN
+        elif isinstance(obj, NeedleWorm):         # 原版 Eats 0.25(成)/0.3(幼)
+            if obj.age == AGE_SMALL:
+                if obj.bite():                    # SmallNeedleWorm.cs:356 一口一口啃
+                    obj.state = ItemState.EATEN
+            else:
+                obj.hurt(max(1.0, dmg), lethal=True)
+                if obj.dead:
+                    obj.state = ItemState.EATEN
             self._shake[1] += 0.3
 
     def _draw_lizards(self, p):
@@ -1791,6 +1811,8 @@ class ItemInteractionMixin:
     def place_needleworm(self, lx, ly):
         nw = NeedleWorm(lx, ly, seed=self._needleworm_seed)
         self._needleworm_seed += 1
+        if nw.age == AGE_SMALL:               # SmallNeedleWorm.PlaceInRoom：认最近的成体当妈
+            nw.mother = self._nearest_nw_adult(nw, self.needleworms)
         self.needleworms.append(nw)
         self.world_version += 1
         self._exit_place_mode()
@@ -1871,14 +1893,144 @@ class ItemInteractionMixin:
         self._dragged_needleworm = None
         return True
 
+    def _nearest_nw_adult(self, nw, pool=None):
+        """最近的成体面条蝇（母亲）——SmallNeedleWorm.PlaceInRoom 语义。"""
+        best, bd = None, 1e18
+        for m in (self.needleworms if pool is None else pool):
+            if m is nw or m.dead or m.age != AGE_BIG:
+                continue
+            d = math.hypot(m.x - nw.x, m.y - nw.y)
+            if d < bd:
+                best, bd = m, d
+        return best
+
+    def _needleworm_cats(self):
+        """组装面条蝇看到的「猫」：位置 + 两节体节 + 是否拿着幼体（BigNeedleWormAI）。"""
+        out = []
+        for pet in self.pets:
+            body = pet.body
+            c0, c1 = body.chunk0, body.chunk1
+            beh = getattr(pet, "behavior", None)
+            held = body.carried_fruit
+            out.append({
+                "uid": id(pet), "x": c0.x, "y": c0.y,
+                "chunks": ((c0.x, c0.y, c0.rad, c0.last_x, c0.last_y),
+                           (c1.x, c1.y, c1.rad, c1.last_x, c1.last_y)),
+                "dead": bool(beh is not None and beh.is_dead()),
+                "saint": getattr(pet, "variant", None) == "saint",
+                "body": body, "pet": pet, "other": None,
+                # BigNeedleWormAI.UpdateDynamicRelationship：拿着幼体/蛋 → Attacks
+                "holds_child": isinstance(held, NeedleWorm) and held.age == AGE_SMALL,
+                "holds_me": False, "small": False,
+            })
+        return out
+
+    def _flying_weapons(self):
+        """正在飞的投掷物 (物, 是否致命)：成体面条蝇要闪避 + 记 AttackAttempt。"""
+        out = []
+        for sp in self.spears:
+            if sp.state == ItemState.FREE and getattr(sp, "_thrown", False):
+                out.append((sp, True))
+        for st in self.stones:
+            if (st.state == ItemState.FREE
+                    and (getattr(st, "fling", False)
+                         or getattr(st, "thrown_by_saint", False))):
+                out.append((st, False))
+        return out
+
+    def _needleworm_dodge(self, nw, weapons):
+        """Weapon.cs:286-294：投掷物每 tick 通知成体（120px 内掠过记一次攻击事件）。"""
+        seen = getattr(self, "_nw_weapon_seen", None)
+        if seen is None:
+            seen = self._nw_weapon_seen = {}
+        live = set()
+        for w, lethal in weapons:
+            d = math.hypot(w.x - nw.x, w.y - nw.y)
+            if d > NW_ATTEMPT_DIST:
+                continue
+            key = id(w)
+            live.add(key)
+            logged = seen.setdefault(key, set())
+            if id(nw) not in logged:
+                logged.add(id(nw))
+                nw.weapon_attempt(_weapon_owner(w), lethal)
+            nw.on_flying_weapon(w.x, w.y, w.vx, w.vy)
+        for key in [k for k in seen if k not in live]:
+            del seen[key]                      # __slots__ 挂不了属性：用 id 字典
+
+    def _needleworm_hit(self, nw, ev, lethal):
+        """成体獠牙命中结算：刺 = 1.22 必死；戳 = 0.05 眩晕 + 掉手上东西。"""
+        cat, dmg, stun = ev
+        other = cat.get("other")
+        if other is not None:                  # 同族互刺（StaticWorld：Attacks 0.9）
+            other.hurt(dmg, by=id(nw), lethal=True)
+            self._shake[0] += 0.8
+            self._shake[1] += 0.5
+            return
+        pet = cat.get("pet")
+        beh = getattr(pet, "behavior", None) if pet is not None else None
+        if beh is None:
+            return
+        died, stun_ticks = _pet_stun_death(dmg, stun)
+        stun_ticks = int(stun_ticks * STUN_SCALE)
+        if died:
+            beh.kill()
+            self._shake[0] += 2.0 * (1.0 if nw.x >= pet.body.chunk0.x else -1.0)
+            self._shake[1] += 1.4
+            return
+        if beh.apply_stun(max(stun_ticks, LIZARD_STUN_TICKS)):   # apply_stun 自带掉手上东西
+            self._shake[0] += 1.2 * (1.0 if nw.x >= pet.body.chunk0.x else -1.0)
+            self._shake[1] += 0.8
+
+    def _needleworm_events(self, nw, born):
+        """收成体刺/戳事件 + 卵孵化（NeedleEgg：孵出 2 只幼体）。"""
+        ev, nw.attack_event = nw.attack_event, None
+        if ev is not None:
+            self._needleworm_hit(nw, ev, True)
+        ev, nw.poke_event = nw.poke_event, None
+        if ev is not None:
+            self._needleworm_hit(nw, ev, False)
+        if nw.hatch_spawn > 0:
+            n = nw.hatch_spawn
+            nw.hatch_spawn = 0
+            nw.state = ItemState.EATEN
+            for i in range(n):
+                baby = NeedleWorm(nw.x + (i * 2 - (n - 1)) * NW_HATCH_GAP, nw.y,
+                                  seed=self._needleworm_seed, age=AGE_SMALL)
+                self._needleworm_seed += 1
+                baby.follow_cat = True         # wiki：孵出的幼体先跟着蛞蝓猫
+                born.append(baby)
+            self._shake[1] -= 0.4
+            self._shake[0] += 0.6 * (1.0 if nw.x >= self._WL * 0.5 else -1.0)
+
     def _tick_needleworms(self):
         self._step_needleworm_drag()
         if not self.needleworms:
             return
-        threats = [(pet, pet.body.chunk0.x, pet.body.chunk0.y) for pet in self.pets]
+        cats = self._needleworm_cats()
+        adults = [nw for nw in self.needleworms if nw.age == AGE_BIG]
+        weapons = self._flying_weapons()
+        born = []
         for nw in self.needleworms:
             nw._impact_cb = self._shake_impact
-            nw.step(self._WL, self._HL, threats=threats)
+            if nw.age == AGE_SMALL:
+                if nw.mother is not None and nw.mother.dead:
+                    nw.mother = None
+                    nw.mom_seg = -1
+                if nw.mother is None:
+                    near = self._nearest_nw_adult(nw, adults)
+                    # wiki：孵出的幼体先跟着蛞蝓猫，遇到够近的成体才改跟成体；
+                    # 直接放置的幼体按 SmallNeedleWorm.PlaceInRoom 认最近的成体当妈。
+                    if near is not None and (not nw.follow_cat
+                            or math.hypot(near.x - nw.x, near.y - nw.y) < 260.0):
+                        nw.mother = near
+                        nw.follow_cat = False
+            elif nw.age == AGE_BIG:
+                self._needleworm_dodge(nw, weapons)
+            nw.step(self._WL, self._HL, cats=cats, adults=adults, weapons=weapons)
+            self._needleworm_events(nw, born)
+        for baby in born:
+            self.needleworms.append(baby)
         self._cull_flung_corpses()
         self.needleworms = [nw for nw in self.needleworms
                             if nw.state != ItemState.EATEN]
@@ -2256,7 +2408,7 @@ class ItemInteractionMixin:
                     continue
                 kx = sp.vx * 0.10
                 ky = min(sp.vy * 0.10 - 1.2, -1.0)
-                small.hurt(SPEAR_DMG, kx=kx, ky=ky)
+                small.hurt(SPEAR_DMG, kx=kx, ky=ky, by=_weapon_owner(sp), lethal=True)
                 sp.vx *= 0.55
                 self._shake[0] += 0.5 * (1.0 if kx >= 0.0 else -1.0)
                 break
