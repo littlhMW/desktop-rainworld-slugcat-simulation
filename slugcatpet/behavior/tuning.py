@@ -6,13 +6,11 @@ MOOD_NOISE_AMP = 0.20
 
 # 趴下休息：体力驱动的强制疲劳
 EXHAUST_ENTER_ENERGY = 0.1
-# 没饱食度（体力回不了）时低于这个值就主动去睡：醒来回满体力但掉一级业力
-STARVE_REST_ENERGY = 0.15
 EXHAUST_EXIT_ENERGY = 0.50
 LIE_SETTLE_TICKS = 40
 
 # 耗能玩法体力门
-PLAY_ENERGY_GATE = 0.30
+PLAY_ENERGY_GATE = 0.40
 
 # 性格接线全局旋钮
 PERS_ACT_SPREAD  = 1.0
@@ -287,11 +285,11 @@ PLAYCUR_DECAY = 0.0042
 PLAYCUR_RECOVER = 0.00110
 PLAYCUR_SF_FRESH = 1.25
 PLAYCUR_SF_TIRED = 0.12
-PLAYCUR_R = 320.0             # 光标在此半径内才会想过去
-CURSOR_NEAR_R      = 150.0   # 「鼠标停在猫附近」的判定半径
+PLAYCUR_R = 520.0             # 光标在此半径内才会想过去（范围调大：更注意到鼠标）
+CURSOR_NEAR_R      = 260.0   # 「鼠标停在猫附近」的判定半径（范围调大）
 CURSOR_POINT_DWELL = 150     # 鼠标在附近停留够这么多 tick 才会被指指点点（约 3.7s）
 DRAGGED_PEER_POINT_FAC = 0.45  # 有同伴正被鼠标拖着：被指指点点的门槛打这个折（更容易被指）
-CURSOR_NEAR_R      = 150.0   # 「鼠标停在猫附近」的判定半径
+CURSOR_NEAR_R      = 260.0   # 「鼠标停在猫附近」的判定半径（范围调大）
 CURSOR_POINT_DWELL = 150     # 鼠标在附近停留够这么多 tick 才会被指指点点（约 3.7s）
 DRAGGED_PEER_POINT_FAC = 0.45  # 有同伴正被鼠标拖着：被指指点点的门槛打这个折（更容易被指）
 PLAYCUR_ARRIVE = 46.0
@@ -410,11 +408,7 @@ SLEEP_CHECK_TICKS = 20           # 每隔这么久掷一次骰
 FOOD_URGE_RATE      = 1.0 / 2400.0    # 没吃饱：约 60s 攒满
 FOOD_URGE_RATE_FULL = 1.0 / 14400.0   # 吃饱了：约 360s（频率更低）
 FOOD_SEEK_P         = 0.75            # 攒满也只是这个命中率 → 找食频率整体略降
-# 代谢：体力每消耗满一条（energy 1.0）扣一格饱食
-METAB_FOOD_PER_BAR  = 1
-METAB_FOOD_PER_REC_BAR = 1     # 回一条体力也得吃一格（体力经济）
-
-# 玩耍式狩猎：不饿但手里有矛/石头时，也会拿手里的家伙打飞虫
+# 玩耍式狩猎：吃饱了也会去追飞虫玩（原版蛞蝓猫的捕猎本能，非进食目的）
 HUNT_PLAY_PROB      = 0.10     # 每次重算闸（每 8 tick）掷中的概率
 
 # 徒手抓飞虫（蝙蝠/蝉乌贼）：饿了吃掉，吃饱了抓着玩会儿再放走

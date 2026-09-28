@@ -646,9 +646,12 @@ class Lizard:
                 self.vy = 0.0
             self._contact_floor = True
             self.vx *= GROUND_FRICTION
-        elif self.y < r:
+        elif not self.dead and self.y < r:
+            # 尸体不挡顶边：被甩出去就飞走（活动物照旧撞顶）
             self.y = r
             self.vy = max(self.vy, 0.0)
+        if self.dead:
+            return                      # 尸体只剩地面这一面（左右不挡）
         if self.x < r:
             self.x = r
             self.vx = abs(self.vx) * WALL_BOUNCE

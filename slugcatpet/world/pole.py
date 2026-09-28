@@ -6,7 +6,7 @@ from .enums import ItemState
 VERTICAL = "vertical"
 HORIZONTAL = "horizontal"
 
-POLE_RAD = 2.0
+POLE_RAD = 1.4            # 杆体半宽（视觉）：细一点，贴原版像素粗细
 MIN_LENGTH = 40.0
 TOP_MARGIN = 48.0
 CROSS_TOL = 6.0          # 交点到端点/线心的容差（原版 tile 级判定）

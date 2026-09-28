@@ -553,7 +553,17 @@ class SlugcatBody:
             self.standing = False
 
     def put_spear_on_back(self, spear):
-        """把一支矛背到背上（原版 Player.spearOnBack）。"""
+        """把一支矛背到背上（原版 Player.spearOnBack）。
+
+        背上只能挂一支：被顶替的旧矛归还地面（state=FREE），
+        否则它会一直保持 CARRIED 却不再属于任何槽位（渲染/物理都会出错）。
+        """
+        old = self.back_spear
+        if old is not None and old is not spear:
+            old.state = ItemState.FREE
+            old.held_by = None
+            old.stuck = False
+            old.stuck_to = None
         self.back_spear = spear
         spear.state = ItemState.CARRIED
         spear.held_by = self

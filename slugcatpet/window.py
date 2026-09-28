@@ -297,6 +297,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             if state.get("dead") and pet.behavior is not None:
                 pet.behavior.enter_dead()
             self.pets.append(pet)
+            self._give_spawn_gear(pet)
 
     # ── 单猫兼容别名 ──
     @property
@@ -882,6 +883,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 b._impact_cb = self._shake_impact
                 b.step(self._WL, self._HL)
             self._step_batfly_shove()
+            self._cull_flung_corpses()
             self.batflies = [b for b in self.batflies if b.state != ItemState.EATEN]
 
     def _tick_lizards(self):
@@ -954,9 +956,22 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         spawn_x = clampf(random.uniform(lo, hi), 0.0, self._WL)
         pet = PetUnit(self, k, f"pet-{k}", variant, init_state, spawn_x=spawn_x)
         self.pets.append(pet)
+        self._give_spawn_gear(pet)
         self._prev_dirty = None
         self._after_pets_changed()
         return pet
+
+    def _give_spawn_gear(self, pet):
+        """出生自带装备（原版 Player 按角色带物品）：会背矛的猫背上先来一支。"""
+        from .world.spear import Spear
+        if not pet.cat.tuning.get("back_spear"):
+            return
+        if getattr(pet.body, "back_spear", None) is not None:
+            return
+        sp = Spear(pet.body.chunk0.x + 8.0, pet.body.chunk0.y - 4.0, seed=self._spear_seed)
+        self._spear_seed += 1
+        self.spears.append(sp)
+        pet.body.put_spear_on_back(sp)
 
     def remove_pet(self, pet):
         """移除一只猫，成功返回 True。"""

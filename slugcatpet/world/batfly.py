@@ -28,6 +28,9 @@ EATEN_COUNTDOWN = 3
 
 # 游走/力竭/卡住常量
 WANDER_REPICK_TICKS, WANDER_REACH, WANDER_MARGIN = 180, 30.0, 24.0
+LOW_BAND_TOP = 0.45        # 低于窗口高度这个比例＝低空
+LOW_GOAL_P = 0.75          # 重取落点时有多大概率选低空
+LOW_DWELL_TICKS = 420      # 到了低空原地赖着飞的时长（比高空的 180 长得多）
 STUCK_DIST, STUCK_TICKS, STUCK_KICK = 40.0, 40, 2.0
 EXHAUST_FLAPS, EXHAUST_RECOVER = 420, 60   # 体力条大幅拉长：几乎不用休息，蹭一下墙就缓过来
 
@@ -165,7 +168,8 @@ class BatFly:
                     self.room_gravity, self.air_friction)
         self.x += self.vx
         self.y += self.vy
-        aabb_wall_collide(self, WL, HL, impact=self._impact_cb)
+        # 死蝙蝠＝尸体：左右/顶边不挡，被甩出窗口即飞出去（由 items 层清除）
+        aabb_wall_collide(self, WL, HL, impact=self._impact_cb, open_sides=self.dead)
         if not self.dead and self.flap_speed > 0.0 and self._contact_x != 0:
             self.vx = self._contact_x * WALL_REFLECT_X    # 撞侧墙 x 反弹
         self._grounded = self._contact_floor
@@ -237,10 +241,13 @@ class BatFly:
                 self._exhausted = False
 
     def _wander(self, WL: float, HL: float) -> None:
-        """游走：到达/超时重取 goal + 卡住检测。"""
+        """游走：到达/超时重取 goal + 卡住检测；低空会赖着多飞一会儿。"""
         self._goal_timer += 1
-        if (_dist(self.x, self.y, self.goal[0], self.goal[1]) < WANDER_REACH
-                or self._goal_timer >= WANDER_REPICK_TICKS):
+        low = self.y >= HL * LOW_BAND_TOP
+        arrived = _dist(self.x, self.y, self.goal[0], self.goal[1]) < WANDER_REACH
+        if arrived and low and self._goal_timer < LOW_DWELL_TICKS:
+            self.goal = (self.x, self.y)       # 低空：原地悬停久一点
+        elif arrived or self._goal_timer >= WANDER_REPICK_TICKS:
             self._pick_goal(WL, HL)
         self._stuck_timer += 1
         if self._stuck_timer >= STUCK_TICKS:
@@ -252,10 +259,15 @@ class BatFly:
             self._stuck_timer = 0
 
     def _pick_goal(self, WL: float, HL: float) -> None:
-        """随机屏内落点。"""
+        """随机屏内落点；多数落在低空（原版蝙蝠贴地低飞）。"""
         m = WANDER_MARGIN
-        self.goal = (self._rng.uniform(m, max(m, WL - m)),
-                     self._rng.uniform(m, max(m, HL - m)))
+        x = self._rng.uniform(m, max(m, WL - m))
+        if self._rng.random() < LOW_GOAL_P:
+            lo = min(HL * LOW_BAND_TOP, HL - m)
+            y = self._rng.uniform(max(m, lo), max(m, HL - m))
+        else:
+            y = self._rng.uniform(m, max(m, HL - m))
+        self.goal = (x, y)
         self._goal_timer = 0
 
     def _eaten_countdown(self) -> None:

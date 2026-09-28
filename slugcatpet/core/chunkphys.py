@@ -266,8 +266,12 @@ def _oneway_platform(obj, r: float, bounce: float, tang: float, impact=None,
     return False
 
 
-def aabb_wall_collide(obj, WL, HL, impact=None):
-    """圆-墙 4 面碰撞，竖直优先。"""
+def aabb_wall_collide(obj, WL, HL, impact=None, open_sides=False):
+    """圆-墙 4 面碰撞，竖直优先。
+
+    open_sides=True：左右与顶边不挡（只有底边仍是地面）。
+    尸体用这个模式 —— 被甩出窗口就该飞出去，不再弹回来。
+    """
     r = obj.rad
     tang = clampf(obj.surface_friction * 2.0, 0.0, 1.0)   # 切向摩擦
     stop = 1.0 + 9.0 * (1.0 - obj.bounce)                 # 低弹性→高阈值，撞墙即停
@@ -288,7 +292,7 @@ def aabb_wall_collide(obj, WL, HL, impact=None):
         if obj.vy > -stop:
             obj.vy = 0.0
         obj.vx *= tang
-    elif obj.y - r < 0:
+    elif obj.y - r < 0 and not open_sides:
         # 顶边同底边一样是实体：被拖上来/顶上来也夹回窗口内
         obj.y = r
         if impact is not None and obj.vy < 0:
@@ -299,27 +303,28 @@ def aabb_wall_collide(obj, WL, HL, impact=None):
         if obj.vy < stop:
             obj.vy = 0.0
         obj.vx *= tang
-    # 水平其次
-    if obj.x + r > WL and obj.vx > 0:
-        obj.x = WL - r
-        if impact is not None:
-            _fire_impact(obj, (1, 0), abs(obj.vx), prev_x < 1, impact)
-        obj._contact_x = 1
-        obj.vx = -abs(obj.vx) * obj.bounce
-        if obj.vx > -stop:
-            obj.vx = 0.0
-        obj.vy *= tang
-    elif obj.x - r < 0 and obj.vx < 0:
-        obj.x = r
-        if impact is not None:
-            _fire_impact(obj, (-1, 0), abs(obj.vx), prev_x > -1, impact)
-        obj._contact_x = -1
-        obj.vx = abs(obj.vx) * obj.bounce
-        if obj.vx < stop:
-            obj.vx = 0.0
-        obj.vy *= tang
+    # 水平其次（open_sides：尸体不挡左右，直接飞出去）
+    if not open_sides:
+        if obj.x + r > WL and obj.vx > 0:
+            obj.x = WL - r
+            if impact is not None:
+                _fire_impact(obj, (1, 0), abs(obj.vx), prev_x < 1, impact)
+            obj._contact_x = 1
+            obj.vx = -abs(obj.vx) * obj.bounce
+            if obj.vx > -stop:
+                obj.vx = 0.0
+            obj.vy *= tang
+        elif obj.x - r < 0 and obj.vx < 0:
+            obj.x = r
+            if impact is not None:
+                _fire_impact(obj, (-1, 0), abs(obj.vx), prev_x > -1, impact)
+            obj._contact_x = -1
+            obj.vx = abs(obj.vx) * obj.bounce
+            if obj.vx < stop:
+                obj.vx = 0.0
+            obj.vy *= tang
     # 其它窗口顶边＝单向平台（从上方落下即站住）
-    if _oneway_platform(obj, r, obj.bounce, tang, impact, not prev_floor):
+    if not open_sides and _oneway_platform(obj, r, obj.bounce, tang, impact, not prev_floor):
         obj._contact_floor = True
 
 

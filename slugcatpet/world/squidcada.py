@@ -267,6 +267,10 @@ class Squidcada:
         self.blink -= 1
         if self.blink < -15 or (self.blink < -2 and self._rng.random() < 1.0 / 3.0):
             self.blink = self._rng.randrange(10, 300)
+        # 被吃掉的部分：每少一口就多收一对翅（原仓库「食物越吃越少、外观跟着变」）
+        eaten_fold = max(0, 3 - int(self.bites)) * 2
+        for idx in range(min(eaten_fold, 4)):
+            self.wing_dep[idx] = 0.0
         if self.dead:
             return                                   # 非清醒：原版不推进 deployment，保持原姿态
         if self.airborne and self.state == ItemState.FREE:
@@ -278,8 +282,8 @@ class Squidcada:
         for k in range(2):
             for l in range(2):
                 idx = k * 2 + l
-                if self.busted_wing == k + l + l:    # 断翅：永远收着
-                    continue
+                if idx < eaten_fold or self.busted_wing == k + l + l:
+                    continue                         # 被吃掉的部位/断翅：翅一直收着
                 if self._rng.random() < 1.0 / 30.0:
                     self.wing_dep_speed[idx] = self._rng.random() ** 2 * 0.3
                 if self.wing_dep_to == 1.0 and self.lazy_wing != k + l + l:
@@ -405,7 +409,9 @@ class Squidcada:
         self.dir_x, self.dir_y = dx, dy
 
     def _collide(self, WL, HL) -> None:
-        aabb_wall_collide(self, WL, HL, impact=self._impact_cb)
+        # 尸体：左右/顶边不挡，被甩出窗口即飞出去（由 items 层清除）
+        aabb_wall_collide(self, WL, HL, impact=self._impact_cb,
+                          open_sides=self.dead)
 
 
 def _dirvec(ax, ay, bx, by):

@@ -26,6 +26,7 @@ BOUNCE = 0.4
 SURFACE_FRICTION = 0.4
 BUOYANCY = 0.4
 WATER_FRICTION = 0.98
+SPEAR_MOVE_MIN = 1.0     # 单 tick 位移小于此值＝这矛没在动，不判定命中
 STUCK_SINK = 7.0         # 插进墙地的深度（原版 stuckInWall 取格心）
 FLOOR_EMBED_STEEP = 2.0  # 落地时竖向位移/横向位移超过此值 = 近乎垂直扎进地面（原版 ContactPoint == throwDir）
 
@@ -96,6 +97,10 @@ class Spear:
             return ()
         self.collide_with_objects = True
         return (self,)
+
+    def moving(self) -> bool:
+        """这一 tick 是否真的在动（原版 Weapon 只有 Thrown/飞行的段才判命中）。"""
+        return math.hypot(self.x - self.last_x, self.y - self.last_y) >= SPEAR_MOVE_MIN
 
     def tip(self):
         """尖端坐标（角度 0=上，y↓）。"""
@@ -186,8 +191,10 @@ class Spear:
                     self.room_gravity, self.air_friction)
         self.x += self.vx
         self.y += self.vy
-        self._seg_new = True                     # 这段位移留给命中判定吃
         self._seg_x, self._seg_y = self.x, self.y   # 插墙会把 x/y 拽回墙内，命中要用飞到的位置
+        # 这一帧的位移算不算「掷出去的那一段」（原版 Weapon.Update 只判 Mode.Thrown）：
+        # 刚出手/正在飞/这一帧刚插住的都算；躺地上漂移的、被捡起来的不算 → 不伤人。
+        self._seg_new = bool(self._thrown) and self.moving()
         step_x, step_y = self.x - self.last_x, self.y - self.last_y   # 本 tick 落地方向
         aabb_wall_collide(self, WL, HL, impact=self._impact_cb)
         if self._thrown:

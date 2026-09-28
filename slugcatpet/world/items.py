@@ -38,6 +38,8 @@ from ..behavior import tuning
 from ..rendering.pixelmode import aa_hint, pen_width
 
 
+CORPSE_OUT_MARGIN = 14.0     # 尸体整个离开窗口这么多＝被扔出屏幕，直接清除
+
 STALK_ROOT_W = 3.0
 STALK_TIP_W = 2.0
 STALK_COLOR = (0, 0, 0)
@@ -1089,6 +1091,11 @@ class ItemInteractionMixin:
         b = self._dragged_batfly
         if b is None:
             return False
+        if b.dead and self._out_of_window(b, b.rad):
+            b.state = ItemState.GONE           # 尸体被拖出窗口扔了：直接清除
+            self._dragged_batfly = None
+            self._batfly_drag_last = None
+            return True
         sp = math.hypot(b.vx, b.vy)
         if sp > self._BATFLY_FLING_CAP:
             k = self._BATFLY_FLING_CAP / sp
@@ -1308,6 +1315,10 @@ class ItemInteractionMixin:
         lz = self._dragged_lizard
         if lz is None:
             return False
+        if lz.dead and self._out_of_window(lz, lz.body_rad):
+            lz.state = ItemState.GONE          # 尸体被拖出窗口扔了：直接清除
+            self._dragged_lizard = None
+            return True
         sp = math.hypot(lz.vx, lz.vy)
         if sp > self._LIZARD_FLING_CAP:
             k = self._LIZARD_FLING_CAP / sp
@@ -1316,6 +1327,23 @@ class ItemInteractionMixin:
         lz.release(lz.vx, lz.vy)
         self._dragged_lizard = None
         return True
+
+    def _out_of_window(self, e, rad=None) -> bool:
+        """尸体是否已经被扔出窗口（左右/顶边都能出去；底边是地面，不会从下面跑掉）。"""
+        r = rad if rad is not None else (getattr(e, "rad", 0.0) or 0.0)
+        m = CORPSE_OUT_MARGIN
+        return (e.x < -r - m or e.x > self._WL + r + m or e.y < -r - m)
+
+    def _cull_flung_corpses(self):
+        """被甩出窗口的尸体直接清除（非蛞蝓猫的才算，猫死了另有守灵/转生逻辑）。"""
+        for e in (*self.lizards, *self.squidcadas, *self.batflies):
+            if (not getattr(e, "dead", False) or e.state != ItemState.FREE
+                    or e is self._dragged_lizard or e is self._dragged_squidcada
+                    or e is self._dragged_batfly):
+                continue
+            rad = getattr(e, "rad", None) or getattr(e, "body_rad", 0.0)
+            if self._out_of_window(e, rad):
+                e.state = ItemState.GONE
 
     def _step_lizards(self):
         """推进所有蜥蜴：物理/AI + 咬到猫结算。"""
@@ -1329,6 +1357,7 @@ class ItemInteractionMixin:
             lz.step(self._WL, self._HL, targets=targets, cursor=cur,
                     rivals=self._lizard_rivals(lz), prey=self._lizard_prey(lz))
             self._lizard_bite(lz)
+        self._cull_flung_corpses()
 
     def _lizard_rivals(self, lz):
         """同族竞争者 / 捕食对象：只有绿蜥蜴在关系表里有同族条目。"""
@@ -1676,6 +1705,10 @@ class ItemInteractionMixin:
         sc = self._dragged_squidcada
         if sc is None:
             return False
+        if sc.dead and self._out_of_window(sc, sc.rad):
+            sc.state = ItemState.GONE          # 尸体被拖出窗口扔了：直接清除
+            self._dragged_squidcada = None
+            return True
         if sc.state == ItemState.MOUSE:
             sc.state = ItemState.FREE
         self._dragged_squidcada = None
@@ -1689,6 +1722,7 @@ class ItemInteractionMixin:
         for sc in self.squidcadas:
             sc._impact_cb = self._shake_impact
             sc.step(self._WL, self._HL, threats=threats)
+        self._cull_flung_corpses()
         self.squidcadas = [sc for sc in self.squidcadas if sc.state != ItemState.EATEN]
 
     def _draw_squidcadas(self, p):
@@ -1979,7 +2013,7 @@ class ItemInteractionMixin:
                 if sp.state != ItemState.FREE:
                     continue
                 if sp.stuck and not sp._seg_new:              # 早先就停住/插住了：不再伤人
-                    continue
+                    continue                                  # （同帧刚插住的仍算这一掷）
                 if sp.thrower is b and sp.no_self_t > 0:      # 刚出手，别扎自己
                     continue
                 if not (sp._thrown or sp._seg_new):           # 原版只有 Mode.Thrown 才判定命中

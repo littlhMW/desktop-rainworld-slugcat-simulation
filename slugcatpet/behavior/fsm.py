@@ -140,14 +140,12 @@ HPOLE_NEAR_Y = 20.0
 HPOLE_REACH_FRAC = 0.85
 HPOLE_GRAB_REACH = 0.60
 
-# 精力 energy（tick）：除了站着发呆（歇气缓回），任何行动都耗体力；
-# 且恢复要烧饱食度（_metabolism），没饱食度就回不了、只能睡（醒来掉业力）。
-EN_DRAIN_VIGOROUS = 1.0 / 330.0     # 爬杆/游泳/扑击等剧烈动作（≈6s 耗完一条）
-EN_DRAIN_LIGHT = 1.0 / 1000.0        # 取果/逃跑/躲闪等轻度动作
-EN_DRAIN_MOVE = 1.0 / 1600.0        # 发呆态里来回走（走动就不算歇气）
-EN_DRAIN_BASE = 1.0 / 2000.0        # 兜底：其它任何行动
-EN_REC_REST = 1.0 / 700.0           # 趴下/睡觉恢复
-EN_REC_IDLE = 1.0 / 2200.0          # 站着发呆：慢慢喘回来（比耗得慢）
+# 精力 energy（tick）：原仓库的口径 —— 只有剧烈/轻度「玩法态」耗体力，
+# 其它行动不额外扣，也不吃饱食度（体力经济已移除）。
+EN_DRAIN_VIGOROUS = 1.0 / 1200.0
+EN_DRAIN_LIGHT = 1.0 / 4800.0
+EN_REC_REST = 1.0 / 800.0
+EN_REC_IDLE = 1.0 / 1600.0
 
 _STATE_TO_MOOD = {"PoleClimb": "pole_climb",
                   "SeekHPole": "hpole", "HPole": "hpole",
@@ -195,22 +193,17 @@ FLEE_COOLDOWN = 300       # 两次躲之间至少隔这么久（进场即计时�
 _FLEE_FROM = frozenset(("IdleStand", "PostThrowWander", "PostThrowStand", "MakeWay"))
 
 
-def _energy_delta(state: str, drain_fac: float = 1.0, moving: bool = False) -> float:
-    """本态本 tick 的体力变化；消耗按 drain_fac 缩放，恢复不缩。
-
-    原版没有这条（原作只有挨饿机制），这里是桌宠的体力经济：
-    任何行动都要耗体力，只有趴下/睡觉才回，回体力要靠饱食度垫。
-    """
+def _energy_delta(state: str, drain_fac: float = 1.0) -> float:
+    """本态本 tick 的体力变化：恢复不受体力影响，消耗按 drain_fac 缩放。"""
     if state in _EN_REST:
         return EN_REC_REST
     if state in _EN_IDLE:
-        # 站着发呆＝歇气（缓回）；在同一态里走动就是行动，算耗
-        return -EN_DRAIN_MOVE * drain_fac if moving else EN_REC_IDLE
+        return EN_REC_IDLE
     if state in _EN_VIGOROUS:
         return -EN_DRAIN_VIGOROUS * drain_fac
     if state in _EN_LIGHT:
         return -EN_DRAIN_LIGHT * drain_fac
-    return -EN_DRAIN_BASE * drain_fac
+    return 0.0
 
 
 def _spear_takeable(sp) -> bool:
@@ -458,9 +451,6 @@ class BehaviorFSM:
         # 觅食欲望：吃到东西归 0，慢慢涨回 1 才想再找吃的
         self._food_urge = 1.0
         self._food_prev = self.body.food
-        # 代谢：体力消耗累计（满一条扣一格饱食）
-        self._drain_acc = 0.0
-        self._rec_acc = 0.0
         self.anger = 0
         self.cursorlick = None
         self._cursor_prev = None
@@ -838,8 +828,7 @@ class BehaviorFSM:
         # 体力告急强制休息
         if (not self._exhausted and not self._hibernating and not self.grab.active
                 and not self._cold_urgent() and not self._zerog()
-                and (self.body.energy < tuning.EXHAUST_ENTER_ENERGY
-                     or self._famished())
+                and self.body.energy < tuning.EXHAUST_ENTER_ENERGY
                 and self.state not in _EXHAUST_BLOCKED):
             self._exhausted = True
             self._enter_exhaustion()
@@ -901,10 +890,10 @@ class BehaviorFSM:
         # 狩猎飞虫（原版：蝙蝠/蝉乌贼在空中 → 捡石/持矛预判投掷）
         if self._hunt_cd > 0:
             self._hunt_cd -= 1
-        has_weapon = (self.body.carried_stone is not None
-                      or self.body.carried_spear is not None)
-        hunting = (self.body.food < self.body.food_max and self._food_seek_ready())
-        playing = (has_weapon and self.rng.random() < tuning.HUNT_PLAY_PROB)
+        full = self.body.food >= self.body.food_max
+        hunting = (not full and self._food_seek_ready())          # 没饱：正经狩猎
+        # 饱了：捕食也算娱乐项目（空手也会先去捡石头/矛再打）
+        playing = (full and self.rng.random() < tuning.HUNT_PLAY_PROB)
         if (self._fetch_check == 0 and self._hunt_cd <= 0
                 and (hunting or playing)
                 and not self.grab.active and not self._exhausted
@@ -998,17 +987,13 @@ class BehaviorFSM:
         if handler:
             handler(cursor, disturbed)
         self._push_pose_tick()
-        e_delta = _energy_delta(self.state, self._drain_fac, self.body.is_moving())
+        e_delta = _energy_delta(self.state, self._drain_fac)
         if (self.state == "PoleClimb" and self.poleclimb is not None
                 and self.poleclimb.phase == "tip"):
             e_delta = -EN_DRAIN_LIGHT * self._drain_fac   # 站杆顶不算剧烈
         elif self.state == "Swimming" and self.body.swim_mode == "surface":
             e_delta = EN_REC_REST * tuning.SWIM_SURFACE_REST_FAC   # 浮水面歇气
-        if e_delta > 0.0 and self.body.food <= 0 and self.state != "Sleep":
-            e_delta = 0.0        # 恢复要烧饱食度：没吃的就回不了（只能去睡）
-        _en_before = self.body.energy
         self.body.energy_change(e_delta)
-        self._metabolism(_en_before)
         if self._force_energy is not None:
             self.body.energy = self._force_energy
         if self._force_temper is not None:
@@ -2016,10 +2001,6 @@ class BehaviorFSM:
             y = self.rng.uniform(WALL_MARGIN, self.HL - WALL_MARGIN)
         return (x, y)
 
-    def _famished(self) -> bool:
-        """饿着又没体力：恢复要烧饱食度、而饱食度是 0 ⇒ 怎么歇都回不来，只能去睡。"""
-        return self.body.food <= 0 and self.body.energy < tuning.STARVE_REST_ENERGY
-
     def _enter_exhaustion(self):
         """体力告急：中断当前动作、收舌，回地面准备趴下。"""
         self._break_active_controllers()
@@ -2042,9 +2023,6 @@ class BehaviorFSM:
             self._exhausted = False
             self._transition("WakeSequence")
             return
-        if self._famished():
-            # 没饱食度又没体力：趴着回不了（回体力要烧饱食度）→ 只能睡，醒来掉业力
-            self._hibernating = True
 
     def _st_sleep(self, cursor, disturbed):
         if not self.body.on_floor() and not self.body.ceil_cling:
@@ -2057,10 +2035,7 @@ class BehaviorFSM:
             self._transition("WakeSequence")
             return
         if self.timer >= self._sleep_left:
-            if self.body.food > 0:
-                self.body.karma_gain()                      # 吃饱了睡：涨业力
-            else:
-                self.body.karma_drop()                      # 饿着睡：回了体力但掉一级
+            self.body.karma_gain()                          # 睡一觉涨业力（原仓库口径）
             self.body.food_eat(-self.body.food_hibernate)
             self.body.energy = 1.0
             self._hibernating = False
@@ -3316,8 +3291,12 @@ class BehaviorFSM:
         return edgeqm.on_ceiling(self.body) or (c0.y - c0.rad <= tuning.CEIL_GRAB_REACH)
 
     def _can_ceil_cling(self) -> bool:
-        """屏幕顶端能否攀附：只有圣徒的舌头（原版普通蛞蝓猫吊不住天花板）。"""
-        return bool(self.win.cat.caps.tongue)
+        """屏幕顶端一律不许攀附（爪子吊顶取消）。
+
+        只有圣徒的**舌头**能挂在天花板上，那是 TongueClimb/CeilingHang 里的
+        舌头物理，与本判定无关；这里恒 False 表示没有猫用爪子扒住顶边。
+        """
+        return False
 
     def _peer_near(self) -> bool:
         c1 = self.body.chunk1
@@ -4950,21 +4929,6 @@ class BehaviorFSM:
     def _food_seek_ready(self) -> bool:
         """觅食闸：攒满 100 再掷一次骰，整体找食频率略降。"""
         return self._food_urge >= 1.0 and self.rng.random() < tuning.FOOD_SEEK_P
-
-    # ── 代谢：体力消耗累计满一条 → 扣一格饱食 ──
-    def _metabolism(self, before: float):
-        """体力经济结算：耗掉一条体力扣一格饱食，**回**一条体力也要扣一格。"""
-        e = self.body.energy
-        if e < before:
-            self._drain_acc += before - e
-        elif e > before:
-            self._rec_acc += e - before
-        while self._drain_acc >= 1.0:
-            self._drain_acc -= 1.0
-            self.body.food_eat(-tuning.METAB_FOOD_PER_BAR)
-        while self._rec_acc >= 1.0:
-            self._rec_acc -= 1.0
-            self.body.food_eat(-tuning.METAB_FOOD_PER_REC_BAR)
 
     # ── 叼着活的蝉乌贼：扑翅带起一点，下落被拖住 ──
     def _squid_lift_tick(self):
