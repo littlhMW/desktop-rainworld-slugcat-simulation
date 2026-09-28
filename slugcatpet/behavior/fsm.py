@@ -345,6 +345,11 @@ class BehaviorFSM:
         # 被鼠标抓住时自己够杆/够食物
         self._drag_cd = 0
         self._drag_pole = None
+        # 被鼠标抓着剧烈摇晃 → 抖掉手里的东西
+        self._shake_flips = 0
+        self._shake_dir = 0
+        self._shake_hold = 0
+        self._shake_cd = 0
         # 被指指点点后面对发起者匍匐
         self._crawl_point_to = None
         self.stonethrow = None
@@ -589,8 +594,20 @@ class BehaviorFSM:
         self.body.temper_shift(self.win.cat.tuning["temper_kill_cancel_saint"] if by_saint
                                else tuning.TEMPER_KILL_CANCEL_HUMAN)
 
+    def is_dead(self) -> bool:
+        return self.state == "Dead"
+
     def is_truly_dead(self) -> bool:
         return self.state == "Dead" and self._revive_timer <= 0
+
+    def begin_reincarnation(self) -> bool:
+        """全体转生：真死也一起走转世倒计时（环境致死同一通路）。"""
+        if self.state != "Dead":
+            return False
+        self._reincarnate = True
+        if self._revive_timer <= 0:
+            self._revive_timer = tuning.REINCARNATE_TICKS
+        return True
 
     def is_reincarnating(self) -> bool:
         return self.state == "Dead" and self._reincarnate and self._revive_timer > 0
@@ -672,6 +689,7 @@ class BehaviorFSM:
             self._transition("Dragged")
         if self.grab.active:
             self.grab.drag(cursor) if cursor is not None else None
+        self._shake_drop_tick()
 
         # 浸水优先级：溺爆/溺死/入水/出水
         if self.body.pyro_drown and self.state != "Dead":
@@ -1846,6 +1864,51 @@ class BehaviorFSM:
             self._drag_release()
             return
         self._struggle_tick(cursor)
+
+    def _shake_drop_tick(self):
+        """被鼠标抓着剧烈左右摇晃 → 每次抖掉一件（石头 < 果子 < 矛）。"""
+        if self._shake_cd > 0:
+            self._shake_cd -= 1
+        ch = self.grab.chunk
+        if ch is None or not self.body.hand_of:
+            self._shake_flips = 0
+            self._shake_hold = 0
+            return
+        if self._shake_hold > 0:
+            self._shake_hold -= 1
+        else:
+            self._shake_flips = 0
+            self._shake_dir = 0
+        vx = ch.vx
+        if abs(vx) < tuning.DRAG_SHAKE_SPEED:
+            return
+        d = 1 if vx > 0 else -1
+        if d != self._shake_dir:
+            if self._shake_dir != 0:
+                self._shake_flips += 1
+            self._shake_dir = d
+            self._shake_hold = tuning.DRAG_SHAKE_WINDOW
+        if self._shake_flips < tuning.DRAG_SHAKE_FLIPS:
+            return
+        if self._shake_cd > 0:
+            return                     # 冷却中：计数保留，冷却一过立刻掉
+        self._shake_flips = 0
+        self._shake_cd = tuning.DRAG_SHAKE_CD
+        self._drag_cd = max(self._drag_cd, tuning.DRAG_SHAKE_CD)   # 刚被摇掉，别再一把抓回
+        self._shake_drop_one(ch)
+
+    def _shake_drop_one(self, ch):
+        """甩掉优先级最低的一件，并带走摆动速度（同原版丢物品）。"""
+        b = self.body
+        kind = min(b.hand_of, key=lambda k: b.ITEM_PRIO.get(k, 0))
+        item = {"fruit": b.carried_fruit, "stone": b.carried_stone,
+                "spear": b.carried_spear}.get(kind)
+        b._release_item(kind, to_free=True)
+        if item is not None:
+            item.vx = ch.vx * tuning.DRAG_SHAKE_THROW
+            item.vy = ch.vy * tuning.DRAG_SHAKE_THROW - 1.0
+            self.win.add_spark(item.x, item.y, 0.0, -1.0, white=True, life=30)
+        b.temper_shift(tuning.DRAG_SHAKE_TEMPER)
 
     def _drag_reach_tick(self, cursor):
         """被鼠标抓着时：手碰到杆/食物就自己抓上去（松手就抓牢/把果子拽下来）。"""

@@ -79,6 +79,13 @@ REVIVE_TICKS = 50
 # 好感
 TEMPER_SWING_SPEED = 10.0
 TEMPER_SWING_RATE = -0.0008
+# 被鼠标抓着剧烈左右摇晃 → 手里的东西甩出去
+DRAG_SHAKE_SPEED  = 6.0        # 单帧横向速度门限（px/tick）
+DRAG_SHAKE_FLIPS  = 3          # 计数窗口内的反向次数
+DRAG_SHAKE_WINDOW = 90         # 反向计数的保持窗口（tick）
+DRAG_SHAKE_CD     = 40         # 甩掉一件后的冷却（tick）
+DRAG_SHAKE_THROW  = 0.6        # 甩出速度 = 摆动速度 × 该系数
+DRAG_SHAKE_TEMPER = -0.0005    # 被摇烦
 TEMPER_STUN = -0.25
 TEMPER_KILL_CANCEL_HUMAN = -0.10
 TEMPER_KILL_REVIVED = -0.50
@@ -101,6 +108,7 @@ COLD_DEATH_STUN      = 50
 COLD_WARMTH_INNER    = 70.0
 COLD_NATURAL_DECAY   = 0.001
 REINCARNATE_TICKS    = 600
+ALL_DEAD_GRACE_TICKS = 300     # 全员死亡后守灵等待（窗口内同伴仍可扒拉救回）
 
 # 自主趋暖与冻醒
 COLD_SEEK_ENTER  = 0.30

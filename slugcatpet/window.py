@@ -244,6 +244,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._fx_active = False
         self.follow_cursor = True
         self.pets = []
+        self._all_dead_t = 0        # 全员死亡守灵计时
+        self._reincarnate_fx_t = 0  # 转生灵光节流
         self._build_pets()
 
         self._clock = QElapsedTimer()
@@ -602,6 +604,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         for pet in self.pets:
             pet.step(cur, cycle_prog)
 
+        self._all_dead_tick()
+
         self._tick_fruits()
         self._tick_stones()
         self._tick_slimemolds()
@@ -623,6 +627,35 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             self._snow.step(self.cold_cycle_prog, self._WL, self._HL)
 
         self._update_fx()
+
+    def _all_dead_tick(self):
+        """全员死亡：守灵一段后集体转生（业力已在各自死亡时结算）。"""
+        pets = [p for p in self.pets if p.behavior is not None]
+        if not pets or not all(p.behavior.is_dead() for p in pets):
+            self._all_dead_t = 0
+            return
+        if all(p.behavior.is_reincarnating() for p in pets):
+            self._reincarnate_fx_tick(pets)
+            return
+        self._all_dead_t += 1
+        if self._all_dead_t < tuning.ALL_DEAD_GRACE_TICKS:
+            return
+        self._all_dead_t = 0
+        for p in pets:
+            p.behavior.begin_reincarnation()
+        self._reincarnate_fx_tick(pets)
+
+    def _reincarnate_fx_tick(self, pets):
+        """转生倒计时灵光：尸身冒白点，顶部中央光柱汇聚（4 帧一次）。"""
+        self._reincarnate_fx_t += 1
+        if self._reincarnate_fx_t % 4:
+            return
+        for p in pets:
+            c = p.body.chunk0
+            self.add_spark(c.x + random.uniform(-7.0, 7.0), c.y - 4.0,
+                           0.0, -1.6, white=True, life=40)
+        self.add_spark(self._WL * 0.5 + random.uniform(-10.0, 10.0), self._HL,
+                       0.0, -2.4, white=True, life=50)
 
     def set_zerog(self, on):
         """开/关无重力；开时摘掉所有果柄。"""
