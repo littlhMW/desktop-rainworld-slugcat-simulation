@@ -341,8 +341,18 @@ def collide_objects(entities) -> None:
                 _collide_pair(objs[i], objs[j], groups[i], groups[j])
 
 
+PEN_SLOP = 0.4          # 允许的浅重叠：贴在一起的两只猫不再抖
+MAX_PEN_PUSH = 3.0      # 单帧位置修正上限：深穿插时也不会一帧弹飞
+
+
 def _collide_pair(a, b, a_chunks, b_chunks) -> None:
-    """一对同层实体的 chunk 圆重叠推开。"""
+    """一对同层实体的 chunk 圆重叠推开。
+
+    位置：按质量分摊分离（带 slop 与单帧上限），**不再把修正量当冲量**——
+    原版 BodyChunk 互推只有位置分离，把穿透深度写进速度会让贴在一起的两只猫
+    越挤越快（顶端互挤→剧烈弹射）。
+    速度：只按完全非弹性消掉互相接近的分量（无弹性碰撞）。
+    """
     for ca in a_chunks:
         if not ca.collide_with_objects:
             continue
@@ -354,16 +364,40 @@ def _collide_pair(a, b, a_chunks, b_chunks) -> None:
             dist = math.hypot(dx, dy)
             if dist >= rad_sum:
                 continue
-            if dist < 1e-9:                     # 完全重合，退化取 (0,1)
-                ux, uy = 0.0, 1.0
+            # 果/石/矛等物件把自己当 chunk 暴露，没有 pinned 字段
+            pin_a = bool(getattr(ca, "pinned", False))
+            pin_b = bool(getattr(cb, "pinned", False))
+            if pin_a and pin_b:
+                continue
+            if dist < 1e-9:                     # 完全重合：退化取横向
+                ux, uy, dist = 1.0, 0.0, 0.0
             else:
                 ux, uy = dx / dist, dy / dist
             pen = rad_sum - dist                # 穿透深度
-            mr = cb.mass / (ca.mass + cb.mass)  # 对方质量占比，轻的位移多
-            ax, ay = ux * pen * mr, uy * pen * mr
-            bx, by = ux * pen * (1.0 - mr), uy * pen * (1.0 - mr)
-            ca.x -= ax; ca.y -= ay; ca.vx -= ax; ca.vy -= ay
-            cb.x += bx; cb.y += by; cb.vx += bx; cb.vy += by
-            if ca.x == cb.x:                    # 同 x 时加确定性微扰
-                ca.vx += 1e-4
-                cb.vx -= 1e-4
+            if pen > PEN_SLOP:
+                push = min(pen - PEN_SLOP, MAX_PEN_PUSH)
+                if pin_a:
+                    ka, kb = 0.0, 1.0
+                elif pin_b:
+                    ka, kb = 1.0, 0.0
+                else:
+                    tot = ca.mass + cb.mass
+                    ka, kb = cb.mass / tot, ca.mass / tot   # 轻的挪得多
+                ca.x -= ux * push * ka
+                ca.y -= uy * push * ka
+                cb.x += ux * push * kb
+                cb.y += uy * push * kb
+            rel = (cb.vx - ca.vx) * ux + (cb.vy - ca.vy) * uy
+            if rel >= 0.0:
+                continue
+            ma, mb = max(ca.mass, 1e-6), max(cb.mass, 1e-6)
+            inv_a = 0.0 if pin_a else 1.0 / ma
+            inv_b = 0.0 if pin_b else 1.0 / mb
+            inv = inv_a + inv_b
+            if inv <= 0.0:
+                continue
+            j = -rel / inv
+            ca.vx -= ux * j * inv_a
+            ca.vy -= uy * j * inv_a
+            cb.vx += ux * j * inv_b
+            cb.vy += uy * j * inv_b

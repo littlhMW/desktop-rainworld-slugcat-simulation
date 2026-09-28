@@ -311,6 +311,7 @@ class BehaviorFSM:
         self._fetch_watch = None
         self._sleep_urge = 0.0
         self._sleep_check = 0
+        self._sleep_left = tuning.HIBERNATE_TICKS   # 本次睡眠时长（入睡时掷）
         self._social_cd = 0
         self._help_cd = 0
         self._fight_cd = 0
@@ -329,6 +330,10 @@ class BehaviorFSM:
         self._push_x = None
         self._push_side = "r"
         self._blocker_target = None
+        self._last_blocker = None
+        self._hp_goal_x = None        # 上横杆去够的东西的 x（横杆可达食物）
+        self._hp_goal_obj = None
+        self._hp_jump_goal = None     # 杆上起跳后空中要摘的东西      # 上次挡我路的人（跳过去后可能回头指他）
         self._scold_left = 0
         self._scold_cd = 0
         self._pole_blocker = None
@@ -373,6 +378,7 @@ class BehaviorFSM:
         self._cursor_prev = None
         self._cursor_speed = 0.0
         self._dwell = 0
+        self._cursor_dwell = 0     # 鼠标停在猫附近的连续 tick 数
         self._relick_cooldown = 0
         self.cursorfx = getattr(window, "cursorfx", None)
         self._force_energy = None
@@ -777,6 +783,8 @@ class BehaviorFSM:
                 if take:
                     self._break_active_controllers()
                     self._act_or_wake("FetchFruit")
+            else:
+                self._hpole_food_trip()
 
         # 爆米花（原版外部食物源）：开荚的贴上去就能啃；饿了主动走过去
         if self._cob_cd > 0:
@@ -953,10 +961,14 @@ class BehaviorFSM:
             self.gfx.face_special = False     # 趴下睡觉：醒着的表情收掉
             b.set_posture(False)
             b.stop_walk()
+            self._settle_to_rest()
         elif st == "Sleep":
             self.gfx.face_special = False
             b.set_posture(False)
             b.stop_walk()
+            self._settle_to_rest()
+            self._sleep_left = int(tuning.HIBERNATE_TICKS * self.rng.uniform(
+                tuning.SLEEP_LEN_MULT_MIN, tuning.SLEEP_LEN_MULT_MAX))
         elif st == "WakeSequence":
             self._hibernating = False        # 起身就清掉睡眠意图，免得卡在半睡
             self.gfx.sleeping = False
@@ -1068,6 +1080,7 @@ class BehaviorFSM:
                           has_warm_lamp=self._warm_lamp_available(),
                           has_hpole=self._has_hpole_available(),
                           can_ceiling_play="RelocateToWall" in self._ext_states,
+                          can_ceil_hang=self._can_ceil_cling(),
                           submerged=self.body.swimming,
                           near_wall=self._near_wall(),
                           near_ceiling=self._ceiling_reachable(),
@@ -1199,12 +1212,18 @@ class BehaviorFSM:
         if blocker is not None:
             self._blocked_ticks += 1
             self._block_grace = 0
+            self._last_blocker = blocker
         else:
             # 跳起来的那几帧/擦身而过会短暂判不到阻挡，别就此清零（原版也是持续贴着硬顶）
             self._block_grace += 1
             if self._block_grace > tuning.BLOCK_GRACE_TICKS:
+                # 刚跳过一个人：小概率回头指指点点（性格说了算）
+                if (self._jump_tries > 0 and not self._scold_now(
+                        self._last_blocker, tuning.BLOCKED_POINT_AFTER_JUMP)):
+                    pass
                 self._blocked_ticks = 0
                 self._jump_tries = 0
+                self._last_blocker = None
 
         tx = self._makeway_target(self._makeway_of) \
             if self._shoved_ticks >= tuning.SHOVE_YIELD_TICKS else None
@@ -1217,16 +1236,42 @@ class BehaviorFSM:
         elif (blocker is not None and self._can_ground_blockreact()
               and self._blocked_ticks >= tuning.BLOCKED_JUMP_TICKS
               and self._jump_over_cd <= 0):
-            self.body.request_jump("stand", hold_ticks=tuning.JUMP_OVER_HOLD)   # 被挡满时长 → 跳越
-            self._jump_tries += 1
-            self._blocked_ticks = 0
-            self._jump_over_cd = tuning.JUMP_OVER_COOLDOWN
+            if self._scold_now(blocker, tuning.BLOCKED_POINT_FIRST_MAX):
+                self._blocked_ticks = 0        # 性格不好：懒得跳，先指着骂
+            else:                              # 默认先跳，跳不过再推/指
+                self.body.request_jump("stand", hold_ticks=tuning.JUMP_OVER_HOLD)
+                self._jump_tries += 1
+                self._blocked_ticks = 0
+                self._jump_over_cd = tuning.JUMP_OVER_COOLDOWN
         elif (blocker is not None and self._can_ground_blockreact() and self._jump_tries > 0
               and self._blocked_ticks >= tuning.BLOCKED_PUSH_TICKS
               and self._jump_over_cd <= 0):
             self._push_blocker(blocker)     # 跳不过去 → 上手推他（推完可能回头指指点点）
             self._jump_tries = 0
             self._blocked_ticks = 0
+
+    def _point_trait_fac(self) -> float:
+        """指指点点倾向系数：暴躁 + 爱指的性格更容易指（中性 ≈ 1.0）。"""
+        t = clampf(float(getattr(self.pers, "temper", 0.5)), 0.0, 1.0)
+        pl = clampf(float(getattr(self.pers, "point_like", 0.5)), 0.0, 1.0)
+        return ((tuning.POINT_TEMPER_LO
+                 + (tuning.POINT_TEMPER_HI - tuning.POINT_TEMPER_LO) * t)
+                * (0.6 + 0.8 * pl))
+
+    def _point_prob(self, base: float) -> float:
+        """按性格缩放一个指指点点概率。"""
+        return clampf(base * self._point_trait_fac(), 0.0, 1.0)
+
+    def _scold_now(self, o, base: float) -> bool:
+        """本次是否改用「指指点点」代替跳跃/推挤。返回 True=已进入指指点点。"""
+        if o is None or self._scold_cd > 0 or self.state not in _MAKEWAY_FROM:
+            return False
+        if self.rng.random() >= self._point_prob(base):
+            return False
+        self._blocker_target = o
+        self._break_active_controllers()
+        self._transition("ScoldBlocker")
+        return True
 
     def _can_ground_blockreact(self) -> bool:
         """地面挡路反应（跳/推）的公共门禁。"""
@@ -1285,11 +1330,7 @@ class BehaviorFSM:
         self._push_left = tuning.BLOCKED_PUSH_POSE
         self._push_side = "r" if s > 0 else "l"
         self._push_x = ob.chunk0.x
-        if (self._scold_cd <= 0 and self.state in _MAKEWAY_FROM
-                and self.rng.random() < tuning.BLOCKED_POINT_PROB):
-            self._blocker_target = o
-            self._break_active_controllers()
-            self._transition("ScoldBlocker")
+        self._scold_now(o, tuning.BLOCKED_POINT_PROB)
 
     def _push_pose_tick(self):
         """推人姿势：手臂朝被推者伸一下（很短）。"""
@@ -1782,6 +1823,9 @@ class BehaviorFSM:
         self._transition("LieDown" if self.body.on_floor() else "Airborne")
 
     def _st_liedown(self, cursor, disturbed):
+        if not self.body.on_floor() and not self.body.ceil_cling:
+            self._transition("Airborne")     # 悬空不能趴：先落地
+            return
         if self._hibernating:
             if self._too_cold_to_sleep():
                 self._hibernating = False
@@ -1795,13 +1839,16 @@ class BehaviorFSM:
             self._transition("WakeSequence")
 
     def _st_sleep(self, cursor, disturbed):
+        if not self.body.on_floor() and not self.body.ceil_cling:
+            self._transition("Airborne")     # 悬空睡不了（原版没有空中睡着）
+            return
         self.gfx.sleeping = True
         self.body.sleeping = True
         if self._too_cold_to_sleep():
             self._hibernating = False
             self._transition("WakeSequence")
             return
-        if self.timer >= tuning.HIBERNATE_TICKS:
+        if self.timer >= self._sleep_left:
             self.body.karma_gain()
             self.body.food_eat(-self.body.food_hibernate)
             self.body.energy = 1.0
@@ -1839,7 +1886,8 @@ class BehaviorFSM:
         elif self.phase == 2:
             self.gfx.look_at = cursor
             if not self._point_active():
-                self._point_begin(cursor, mode="cursor", enforce_side=True)
+                if self._cursor_point_ok():
+                    self._point_begin(cursor, mode="cursor", enforce_side=True)
             if self._point_step() or self.timer >= T_POINT_WAKE:
                 self._point_end()
                 self._transition("IdleStand")
@@ -1984,8 +2032,9 @@ class BehaviorFSM:
         if p is not None and p.kind == VERTICAL and p in getattr(self.win, "poles", ()):
             self._pole_handoff(("v", p, "climb"))    # 原版：贴杆松手即抓牢
             return
-        if self._ceiling_reachable() and self.body.wall_cd <= 0:
-            self._ceil_placed = True     # 鼠标放到顶边 → 吊住
+        if (self._can_ceil_cling() and self._ceiling_reachable()
+                and self.body.wall_cd <= 0):
+            self._ceil_placed = True     # 鼠标放到顶边 → 吊住（只有圣徒能）
             self._transition("CeilingHang")
             return
         self._transition("Airborne")
@@ -2038,14 +2087,17 @@ class BehaviorFSM:
 
     def _st_airborne(self, cursor, disturbed):
         b = self.body
+        self._hp_jump_grab()
         sp = math.hypot(b.chunk1.vx, b.chunk1.vy) + math.hypot(b.chunk0.vx, b.chunk0.vy)
         on_ceil = (not b.on_floor() and b.wall_cd <= 0 and sp < tuning.CEIL_SETTLE_SPEED
+                   and self._can_ceil_cling()
                    and (edgeqm.on_ceiling(b) or self._ceiling_reachable()))
         if (b.on_floor() and sp < 1.2 and b.chunk0.y < b.chunk1.y - 2) or on_ceil:
             self._settle += 1
         else:
             self._settle = 0
         if self._settle >= 4:
+            self._hp_jump_goal = None
             if on_ceil:
                 self._transition("CeilingHang")     # 窗口顶部当平地：吊住
                 return
@@ -2111,7 +2163,35 @@ class BehaviorFSM:
             self._dwell += 1
         else:
             self._dwell = 0
+        # 鼠标停在猫附近才算「值得指」：远处划过/扫过不算
+        c0 = self.body.chunk0
+        near = (cursor is not None
+                and math.hypot(cursor[0] - c0.x, cursor[1] - c0.y) <= tuning.CURSOR_NEAR_R)
+        if near and inst < LICK_DWELL_TOL:
+            self._cursor_dwell += 1
+        else:
+            self._cursor_dwell = 0
         self._cursor_prev = cursor
+
+    def _peer_dragged(self, peer=None) -> bool:
+        """同伴是否正被鼠标抓着（拖着别的猫时更容易被指指点点）。"""
+        if peer is not None:
+            gr = getattr(getattr(peer, "behavior", None), "grab", None)
+            return bool(gr is not None and gr.active)
+        for p in getattr(self.win, "pets", ()):
+            if p is self.win:
+                continue
+            gr = getattr(getattr(p, "behavior", None), "grab", None)
+            if gr is not None and gr.active:
+                return True
+        return False
+
+    def _cursor_point_ok(self) -> bool:
+        """鼠标得在猫附近停够久才允许指它；拖着别的猫时门槛降低。"""
+        need = float(tuning.CURSOR_POINT_DWELL)
+        if self._peer_dragged():
+            need *= tuning.DRAGGED_PEER_POINT_FAC
+        return self._cursor_dwell >= need
 
     def _pick_wander_target(self):
         lo = WALL_MARGIN if self.body.walk_min is None else max(self.body.walk_min, WALL_MARGIN)
@@ -2298,6 +2378,9 @@ class BehaviorFSM:
         self._hpole_start_x = None
         self.hpole = (HPoleController(self.win, pole, self.rng, start=start, start_x=start_x)
                       if pole is not None else None)
+        if self.hpole is not None and self._hp_goal_x is not None:
+            self.hpole.goal_x = max(min(pole.ax, pole.bx) + 2.0,
+                                    min(max(pole.ax, pole.bx) - 2.0, self._hp_goal_x))
 
     def _st_hpole(self, cursor, disturbed):
         if self.grab.active:
@@ -2312,6 +2395,8 @@ class BehaviorFSM:
             return
         if self._pole_eat():             # 手里有吃的：先在杆上吃完
             return
+        if self._hpole_goal_grab():      # 上杆来够的东西：够到就摘下来
+            return
         done = self.hpole.update()
         if done:
             ho = self.hpole.handoff
@@ -2321,7 +2406,126 @@ class BehaviorFSM:
                 return
             self._transition("IdleStand" if self.body.on_floor() else "Airborne")
 
+    def _hpole_food_trip(self) -> bool:
+        """地面/爬杆都够不到、但横杆杆面上够得到的食物：上杆去拿（原版 beam 上摘果）。
+
+        返回 True=已切到 SeekHPole。
+        """
+        if self.state not in _WANTS_FROM or self._hp_goal_x is not None:
+            return False
+        if not any(p.kind == "horizontal" for p in self.win.poles):
+            return False
+        b = self.body
+        best = None
+        for f in self.win.fetchables():
+            if getattr(f, "state", None) not in ("free", "hanging"):
+                continue
+            if not getattr(f, "fetch_ready", True):
+                continue
+            if getattr(f, "is_meat", False) and self.pers.diet in (DIET_VEGETARIAN, DIET_SPECIAL):
+                continue
+            g = None
+            for p in self.win.poles:
+                if p.kind != "horizontal" or not self._hpole_spans(p, x=f.x, r=tuning.HPOLE_GOAL_EPS):
+                    continue
+                if abs(f.y - p.ay) > tuning.HPOLE_GOAL_R:
+                    continue
+                g = p
+                break
+            if g is None:
+                continue
+            if self.planner.any_touch(obj_goal(f)):
+                continue                    # 正常路就能拿，不必上杆
+            d = abs(f.x - b.chunk1.x)
+            if best is None or d < best[0]:
+                best = (d, f)
+        if best is None:
+            return False
+        f = best[1]
+        self._hp_goal_x = f.x
+        self._hp_goal_obj = f
+        if self._hpole_entry() is None:      # 没有可行的上杆路线
+            self._hpole_goal_clear()
+            return False
+        self._break_active_controllers()
+        self._act_or_wake("SeekHPole")
+        return True
+
+    def _hpole_goal_clear(self):
+        self._hp_goal_x = None
+        self._hp_goal_obj = None
+        self._hp_jump_goal = None
+
+    def _hpole_goal_grab(self) -> bool:
+        """在杆上够到目标物就抓进手里（原版 beam 上伸手摘）。"""
+        f = self._hp_goal_obj
+        if f is None:
+            return False
+        st = getattr(f, "state", None)
+        if st is not None and st not in ("free", "hanging"):
+            self._hpole_goal_clear()
+            return False
+        c0 = self.body.chunk0
+        side = "r" if f.x >= c0.x else "l"
+        self.gfx.hand_aim[side] = (f.x, f.y)
+        self.gfx.hand_aim["l" if side == "r" else "r"] = None
+        if math.hypot(f.x - c0.x, f.y - c0.y) <= tuning.GRAB_REACH:
+            self.body.grab_fruit(f, side)
+            self._hpole_goal_clear()
+            return False                 # 抓到就交回普通流程（杆上啃）
+        if self._hpole_goal_jump(f):     # 手够不到但跳起来能碰到：起跳空中摘
+            return True                  # 已离开 HPole，调用方要立刻收手
+        if not self._hpole_reachable_now():
+            self._hpole_goal_clear()
+        return False
+
+    def _hpole_goal_jump(self, f) -> bool:
+        """站在横杆上跳起来能不能碰到目标：能就起跳（原版 beam 上跳抓）。"""
+        from ..planning.jump_arc import get_arc, sweep_hit
+        c0 = self.body.chunk0
+        dx = f.x - c0.x
+        if abs(dx) > tuning.HPOLE_JUMP_GRAB:
+            return False                      # 水平差太远：先在杆上走过去
+        stats = getattr(self.win.cat, "stats", None)
+        if stats is None:
+            return False
+        dy = f.y - c0.y
+        for hold in tuning.PLAN_JUMP_HOLD_GEARS:
+            if sweep_hit(get_arc(stats, hold, 0), dx, dy, tuning.GRAB_REACH) is None:
+                continue
+            self._hpole_release()          # 先收杆（会清 _hp_goal_*），再记空中目标
+            self._hp_jump_goal = f
+            self.body.tip_launch(hold_ticks=hold, move_dir=0)
+            self._transition("Airborne")
+            return True
+        return False
+
+    def _hp_jump_grab(self) -> None:
+        """空中伸手摘杆上跳起来够的东西。"""
+        f = self._hp_jump_goal
+        if f is None:
+            return
+        if getattr(f, "state", None) not in ("free", "hanging"):
+            self._hp_jump_goal = None
+            return
+        c0 = self.body.chunk0
+        side = "r" if f.x >= c0.x else "l"
+        self.gfx.hand_aim[side] = (f.x, f.y)
+        self.gfx.hand_aim["l" if side == "r" else "r"] = None
+        if math.hypot(f.x - c0.x, f.y - c0.y) <= tuning.GRAB_REACH:
+            self.body.grab_fruit(f, side)
+            self._hp_jump_goal = None
+
+    def _hpole_reachable_now(self) -> bool:
+        """目标是否仍在那条横杆线上。"""
+        h = getattr(self, "hpole", None)
+        p = h.pole if h is not None else None
+        if p is None:
+            return False
+        return self._hpole_spans(p, x=self._hp_goal_obj.x)
+
     def _hpole_release(self):
+        self._hpole_goal_clear()
         self._pole_nudge_pin = None
         self._pole_nudge = 0
         self._pole_nudge_point = False
@@ -2341,6 +2545,17 @@ class BehaviorFSM:
     def _has_hpole_available(self) -> bool:
         return self._hpole_entry() is not None
 
+    def _hpole_spans(self, p, x=None, r=None) -> bool:
+        """目标 x 是否落在这条横杆的杆面上（含端头余量）。"""
+        if x is None:
+            x = self._hp_goal_x
+        if x is None:
+            return True
+        if r is None:
+            r = tuning.HPOLE_GOAL_EPS
+        lo, hi = min(p.ax, p.bx), max(p.ax, p.bx)
+        return lo - r <= x <= hi + r
+
     def _hpole_entry(self):
         """横杆可达入口（原版三条路）：('tongue'|'climb'|'jump', 横杆[, 交叉竖杆])。
 
@@ -2348,6 +2563,8 @@ class BehaviorFSM:
         要么横杆够低时从地面跳起来抓杆端。
         """
         ps = [p for p in self.win.poles if p.kind == "horizontal"]
+        if self._hp_goal_x is not None:      # 有目的：只要够得到目标的那几条
+            ps = [p for p in ps if self._hpole_spans(p)]
         if not ps:
             return None
         if self.win.tongue is not None:
@@ -2363,10 +2580,21 @@ class BehaviorFSM:
         return None
 
     def _hpole_jumpable(self, p) -> bool:
-        """横杆够低：地面起跳能贴到杆。"""
-        b = self.body
-        apex = self.HL - b.H - tuning.HPOLE_JUMP_RISE
-        return p.ay >= apex - tuning.HPOLE_JUMP_GRAB
+        """横杆够低：地面起跳的弧线贴得到杆（用实测跳弧，别用估算——估算比真跳高十几像素）。"""
+        from ..planning.jump_arc import get_arc, sweep_hit
+        stats = getattr(self.win.cat, "stats", None)
+        c0 = self.body.chunk0
+        if stats is None or not self.body.on_floor():
+            return False
+        lo, hi = min(p.ax, p.bx), max(p.ax, p.bx)
+        if hi - lo < 16.0:                         # 杆面太短，站不到杆下
+            return False
+        dy = p.ay - c0.y
+        for md in (0, 1, -1):
+            for hold in tuning.PLAN_JUMP_HOLD_GEARS:
+                if sweep_hit(get_arc(stats, hold, md), 0.0, dy, tuning.HPOLE_JUMP_GRAB) is not None:
+                    return True
+        return False
 
     def _pick_hpole(self):
         best = None
@@ -2583,6 +2811,7 @@ class BehaviorFSM:
             self._transition("IdleStand")
 
     def _seekhpole_break(self):
+        self._hpole_goal_clear()
         self._break_tongue()
         self.body.stop_walk()
         self.climb = None
@@ -2815,6 +3044,10 @@ class BehaviorFSM:
         c0 = self.body.chunk0
         return edgeqm.on_ceiling(self.body) or (c0.y - c0.rad <= tuning.CEIL_GRAB_REACH)
 
+    def _can_ceil_cling(self) -> bool:
+        """屏幕顶端能否攀附：只有圣徒的舌头（原版普通蛞蝓猫吊不住天花板）。"""
+        return bool(self.win.cat.caps.tongue)
+
     def _peer_near(self) -> bool:
         c1 = self.body.chunk1
         for p in self._living_peers():
@@ -3036,6 +3269,13 @@ class BehaviorFSM:
                 self._start_protest(thief)
 
     # ── 睡眠欲望：吃饱后入睡概率从 0 缓慢升到 100 ──
+    def _settle_to_rest(self):
+        """趴/睡前先落地：解开吊顶与悬浮（原版没有挂在半空睡着的猫）。"""
+        b = self.body
+        if b.ceil_cling:
+            b.release_ceiling()
+        b.suspended = False
+
     def _sleep_drop_hands(self):
         """入睡前把手里攥着的东西放到地上（否则会攥着食物蜷着睡不着）。"""
         b = self.body
@@ -3228,9 +3468,14 @@ class BehaviorFSM:
         self._wall_left -= 1
         c0 = b.chunk0
         if self._wall_sliding or b.at_wall_top or (c0.y - c0.rad) <= self._wall_top_y + 0.5:
-            if self._wall_top_y <= tuning.WALL_TOP_GRAB_R:  # 这面墙直通顶边：转吊顶
+            if self._wall_top_y <= tuning.WALL_TOP_GRAB_R:  # 这面墙直通顶边
                 b.release_wall()
-                self._transition("CeilingHang")
+                if self._can_ceil_cling():                  # 圣徒的舌头才能上去吊顶
+                    self._transition("CeilingHang")
+                else:                                       # 普通猫：顶上没得抓，蹬墙跳开
+                    self._wall_cd = T_WALL_RETRY
+                    b.wall_jump()
+                    self._transition("Airborne")
                 return
             self._wall_ledge(cursor)                        # 够到墙头：抓沿
             return
@@ -3256,11 +3501,16 @@ class BehaviorFSM:
             self._ceil_left = self.rng.randint(tuning.CEIL_HANG_TICKS_MIN,
                                                tuning.CEIL_HANG_TICKS_MAX)
         self._ceil_walk_t = 0
+        self._hibernating = False        # 吊在顶上不算睡觉（免得蜷在半空）
         b.set_posture(True)
         b.stop_walk()
 
     def _st_ceilinghang(self, cursor, disturbed):
         b = self.body
+        if not self._can_ceil_cling():      # 顶端不许攀附（只有圣徒的舌头能）
+            b.release_ceiling()
+            self._transition("Airborne" if not b.on_floor() else "IdleStand")
+            return
         if self.grab.active:
             b.release_ceiling()
             self._transition("Dragged")
@@ -3315,7 +3565,7 @@ class BehaviorFSM:
             self._point_end()
         else:
             b.stop_walk()
-            if not self._point_active():
+            if not self._point_active() and self._cursor_point_ok():
                 self._point_begin(cursor, mode="cursor")   # 指着鼠标，一下一下
             self._point_step()
             # 鼠标落在跳跃够得到的一层：有概率跳起来拿身子碰它（原版跳抓）

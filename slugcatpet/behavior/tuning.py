@@ -108,6 +108,9 @@ COLD_DEATH_STUN      = 50
 COLD_WARMTH_INNER    = 70.0
 COLD_NATURAL_DECAY   = 0.001
 REINCARNATE_TICKS    = 600
+# 睡到自然醒的时长：原版 HIBERNATE_TICKS 的随机倍数（睡得更久更随机）
+SLEEP_LEN_MULT_MIN   = 3.0
+SLEEP_LEN_MULT_MAX   = 4.5
 ALL_DEAD_GRACE_TICKS = 300     # 全员死亡后守灵等待（窗口内同伴仍可扒拉救回）
 
 # 自主趋暖与冻醒
@@ -283,6 +286,12 @@ PLAYCUR_RECOVER = 0.00065
 PLAYCUR_SF_FRESH = 1.25
 PLAYCUR_SF_TIRED = 0.12
 PLAYCUR_R = 320.0             # 光标在此半径内才会想过去
+CURSOR_NEAR_R      = 150.0   # 「鼠标停在猫附近」的判定半径
+CURSOR_POINT_DWELL = 150     # 鼠标在附近停留够这么多 tick 才会被指指点点（约 3.7s）
+DRAGGED_PEER_POINT_FAC = 0.45  # 有同伴正被鼠标拖着：被指指点点的门槛打这个折（更容易被指）
+CURSOR_NEAR_R      = 150.0   # 「鼠标停在猫附近」的判定半径
+CURSOR_POINT_DWELL = 150     # 鼠标在附近停留够这么多 tick 才会被指指点点（约 3.7s）
+DRAGGED_PEER_POINT_FAC = 0.45  # 有同伴正被鼠标拖着：被指指点点的门槛打这个折（更容易被指）
 PLAYCUR_ARRIVE = 46.0
 PLAYCUR_TICKS_MIN = 120
 PLAYCUR_TICKS_MAX = 320
@@ -483,7 +492,14 @@ BLOCKED_PUSH_TICKS  = 60        # 跳越后又一直被挡满这么久 → 上�
 BLOCKED_PUSH_IMPULSE = 1.8      # 推对方的水平冲量
 BLOCKED_PUSH_RECOIL  = 0.4      # 自己的反冲
 BLOCKED_PUSH_POSE    = 14       # 推人姿势时长
-BLOCKED_POINT_PROB  = 0.55      # 推完回头指指点点的概率
+HPOLE_GOAL_EPS = 10.0          # 上横杆后离目标 x 多近算走到位
+HPOLE_GOAL_R   = 84.0          # 横杆线上离食物多近算「够得着」（上杆去拿）
+
+BLOCKED_POINT_PROB  = 0.55      # 推完回头指指点点的概率（再乘性格系数）
+BLOCKED_POINT_FIRST_MAX = 0.45  # 暴躁/爱指的猫被挡时「先指指点点不跳」的最大概率
+BLOCKED_POINT_AFTER_JUMP = 0.16 # 跳过去之后回头指指点点的小概率
+POINT_TEMPER_LO = 0.35          # 性格系数：最温顺时的乘子
+POINT_TEMPER_HI = 1.25          # 性格系数：最暴躁时的乘子
 SCOLD_TICKS         = 240       # 指指点点状态时长
 SCOLD_R             = 240.0     # 对方跑这么远就不指了
 SCOLD_CD            = 420       # 下一次挡路抗议的冷却

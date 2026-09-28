@@ -48,6 +48,7 @@ class HPoleController:
         self.disbalance = 0.0
         self._sway_c = 0.0
         self._wobble_target = 45.0
+        self.goal_x = None       # 非 None：站杆面上走到这个 x 就停住（去够东西）
         # 锚点固定到杆
         lo, hi = self._extent()
         if self.tongue is not None:
@@ -219,6 +220,14 @@ class HPoleController:
                     steer = -1 if c1.x <= xp.x else 1
             elif abs(c1.x - xp.x) > 2.0:
                 steer = 1 if xp.x > c1.x else -1
+        if self.goal_x is not None:      # 目的地优先：走到位就刹住等抓取
+            if abs(c1.x - self.goal_x) <= tuning.HPOLE_GOAL_EPS:
+                steer = None
+                self._walk_dir = 0
+                can_walk = False
+                self._pause = 6
+            else:
+                steer = 1 if self.goal_x > c1.x else -1
         if steer is not None:
             self._pause = 0
         # 低概率：翻到杆下再上来
@@ -271,7 +280,7 @@ class HPoleController:
         self.gfx.disbalance = self.disbalance
         self.gfx.balance_counter = self._sway_c
         self.gfx.look_at = (c0.x + b.facing * 60.0, c0.y)
-        if self._stand_t > STAND_TICKS:
+        if self._stand_t > STAND_TICKS and self.goal_x is None:
             self._jump_down()
             return True
         return False

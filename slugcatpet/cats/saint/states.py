@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from ...behavior import tuning
+from ...behavior.fsm import BehaviorFSM
 from .ascension import Ascension
 from .climb import TongueClimber, CeilingHanger
 from .cursorlick import CursorLicker, RELICK_COOLDOWN
@@ -78,10 +79,21 @@ def _mount_climb(fsm):
         fsm.climb = CeilingHanger(fsm.win, getattr(fsm, "_wall_side", -1), fsm.rng)
 
     def st_ceilinghang(cursor, disturbed):
-        if fsm.grab.active:
+        if fsm.grab.active and not fsm.body.ceil_cling:
             fsm._break_tongue()
             fsm.climb = None
             fsm._transition("Dragged")
+            return
+        tg = getattr(fsm.win, "tongue", None)
+        if tg is None or not tg.attached:
+            # 没靠舌头吊着（鼠标放到顶边 / 挂上去的）：交回通用顶边吊挂，
+            # 按 _ceil_left 计时再下来，别一挂上就撒手掉下去
+            if fsm._ceil_left <= 0:
+                fsm.body.wall_cd = 0
+                if not fsm.body.ceil_cling:
+                    fsm.body.grab_ceiling(fsm.body.chunk0.x)
+                fsm._ceiling_enter()
+            BehaviorFSM._st_ceilinghang(fsm, cursor, disturbed)
             return
         done = fsm.climb.update() if fsm.climb else True
         # 涨水期间赖着不下来（下面是水）

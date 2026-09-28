@@ -30,8 +30,26 @@ def enabled() -> bool:
     return os.environ.get("QT_QPA_PLATFORM") != "offscreen"
 
 
+def _cut_segments(segs, l: float, r: float):
+    """从若干区间里减掉 [l, r]（前面窗口盖住的部分）。"""
+    out = []
+    for a, b in segs:
+        if r <= a or l >= b:
+            out.append((a, b))
+            continue
+        if l > a:
+            out.append((a, l))
+        if r < b:
+            out.append((r, b))
+    return out
+
+
 def enumerate_tops(own_hwnds, screen_x: float, screen_y: float, scale: float):
-    """返回其它可见窗口顶边 [(x0, y0, x1)]，逻辑坐标（y0＝顶边 y）。"""
+    """返回其它可见窗口顶边 [(x0, y0, x1)]，逻辑坐标（y0＝顶边 y）。
+
+    被前面窗口挡住的顶边不算地面：只保留「露出来的」那几段
+    （桌宠永远画在最上层，挡住的段不能走，否则猫会悬在别人窗口上走）。
+    """
     if scale <= 0 or not enabled():
         return []
     try:
@@ -44,7 +62,7 @@ def enumerate_tops(own_hwnds, screen_x: float, screen_y: float, scale: float):
             own.add(int(h))
         except Exception:
             pass
-    out = []
+    rects = []          # 按 Z 序（前→后）收集窗口矩形，逻辑坐标
 
     def _visit(hwnd, _lparam):
         try:
@@ -70,7 +88,7 @@ def enumerate_tops(own_hwnds, screen_x: float, screen_y: float, scale: float):
             y0 = (rect.top - screen_y) / scale
             if y0 <= _TOP_EPS:                      # 最大化/全屏：顶边在屏幕外
                 return True
-            out.append((x0, y0, x1))
+            rects.append((x0, y0, x1, (rect.bottom - screen_y) / scale))
         except Exception:
             pass
         return True
@@ -79,4 +97,25 @@ def enumerate_tops(own_hwnds, screen_x: float, screen_y: float, scale: float):
         user32.EnumWindows(_ENUM_PROC(_visit), 0)
     except Exception:
         return []
+
+    return clip_tops(rects)
+
+
+def clip_tops(rects):
+    """按 Z 序（前→后）裁出「露出来的」顶边 [(x0, y0, x1)]，逻辑坐标。
+
+    rects: [(x0, y0, x1, y1)] 前→后。后面的窗口顶边被前面窗口竖直盖住的段不算地面。
+    """
+    out = []
+    for i, (x0, y0, x1, y1) in enumerate(rects):
+        segs = [(x0, x1)]
+        for j in range(i):                          # 前面的窗口若竖直盖住这条顶边就裁掉
+            fl, ft, fr, fb = rects[j]
+            if ft <= y0 <= fb:
+                segs = _cut_segments(segs, fl, fr)
+                if not segs:
+                    break
+        for a, b in segs:
+            if b - a >= _MIN_W:
+                out.append((a, y0, b))
     return out

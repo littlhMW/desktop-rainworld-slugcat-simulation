@@ -13,11 +13,11 @@ def _lerp(x, lo, hi, flo, fhi):
 
 class MoodContext:
     __slots__ = ("energy", "temper", "has_climbable_pole", "cold", "has_warm_lamp",
-                 "has_hpole", "can_ceiling_play", "submerged",
+                 "has_hpole", "can_ceiling_play", "can_ceil_hang", "submerged",
                  "near_wall", "near_ceiling", "peer_near", "cursor_close", "threat")
 
     def __init__(self, energy, temper, has_climbable_pole, cold=0.0, has_warm_lamp=False,
-                 has_hpole=False, can_ceiling_play=True, submerged=False,
+                 has_hpole=False, can_ceiling_play=True, can_ceil_hang=True, submerged=False,
                  near_wall=False, near_ceiling=False, peer_near=False,
                  cursor_close=False, threat=0.0):
         self.energy = energy
@@ -27,6 +27,7 @@ class MoodContext:
         self.has_warm_lamp = has_warm_lamp
         self.has_hpole = has_hpole
         self.can_ceiling_play = can_ceiling_play
+        self.can_ceil_hang = can_ceil_hang
         self.submerged = submerged
         # 五类欲望判据（常量见 tuning「五类欲望」段）
         self.near_wall = near_wall
@@ -179,7 +180,8 @@ def build_arbiter(rng, personality=None):
         "ceiling_hang", base=tuning.CEIL_BASE * _pm("ceiling_play"),
         start=tuning.CEIL_START, quit=tuning.CEIL_QUIT,
         decay=tuning.CEIL_DECAY, recover=tuning.CEIL_RECOVER,
-        gate=lambda ctx: ctx.near_ceiling and ctx.energy >= _gate and not ctx.submerged,
+        gate=lambda ctx: (ctx.near_ceiling and ctx.can_ceil_hang
+                          and ctx.energy >= _gate and not ctx.submerged),
         energy_factor=lambda e: _lerp(e, 0.0, 1.0, tuning.CEIL_SF_TIRED, tuning.CEIL_SF_FRESH),
         temper_factor=lambda t: 1.0,
         one_shot=True, init=tuning.CEIL_INIT))
