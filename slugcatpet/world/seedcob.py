@@ -21,6 +21,8 @@ STALK_SEG_MAX = 50
 SEED_N_MIN, SEED_N_MAX = 10, 70
 LEAF_N_MIN, LEAF_N_MAX = 4, 14
 COB_SEGMENTS = 10
+COB_FEED_PUSH = 1.2            # 原版 delayedPush = dir * 1.2f
+COB_FEED_PUSH_DELAY = 4        # 原版 pushDelay = 4
 
 PALETTE_BLACK = (27, 11, 33)   # 原版 palette.blackColor（与蜥蜴/矛同一取色）
 PLANT_COLOR = (86, 104, 58)    # 原版 palette.texture.GetPixel(0,5) 的近似：暗橄榄绿
@@ -137,7 +139,8 @@ class SeedCob:
                  "stalk_length", "stalk_segments", "cob_segments",
                  "seed_pos", "popped", "leaves", "open", "last_open",
                  "opened", "dead", "rotted", "pop_counter", "state", "rad",
-                 "p0", "p0l", "v0", "p1", "p1l", "v1", "_rng", "_id")
+                 "p0", "p0l", "v0", "p1", "p1l", "v1", "_rng", "_id",
+                 "push_delay", "delayed_push")
 
     def __init__(self, x: float, y: float, seed: int = 0):
         rng = _random.Random(seed)
@@ -176,6 +179,8 @@ class SeedCob:
         self.pop_counter = -1
         self.state = ItemState.FREE
         self.rad = 8.0            # SeedCob.cs:106-107 双 chunk rad 8
+        self.push_delay = 0           # 被啃时把豆荚往外弹（原版 delayedPush/pushDelay）
+        self.delayed_push = None
 
     @property
     def pos(self):
@@ -191,6 +196,32 @@ class SeedCob:
 
     def collision_chunks(self):
         return ()
+
+    # ── 外部食物源（原版 SeedCob.Update 里给 Player 的 handOnExternalFoodSource）──
+    def feed_point(self, x: float, y: float):
+        """ClosestPointOnLineSegment(bodyChunks[0], bodyChunks[1], pos)。"""
+        ax, ay = self.p0
+        bx, by = self.p1
+        dx, dy = bx - ax, by - ay
+        l2 = dx * dx + dy * dy
+        if l2 <= 1e-9:
+            return (ax, ay)
+        t = ((x - ax) * dx + (y - ay) * dy) / l2
+        t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+        return (ax + dx * t, ay + dy * t)
+
+    def can_feed(self) -> bool:
+        """原版 Update:313 的 `!dead && open > 0.8f` —— 开荚后才是可啃食物源。"""
+        return bool(self.opened and not self.dead and self.open > 0.8)
+
+    def push_from(self, x: float, y: float) -> None:
+        """原版 350-351：被啃时朝远离猫的方向弹一下（延迟 4 tick 生效）。"""
+        dx, dy = self.p0[0] - x, self.p0[1] - y
+        d = math.hypot(dx, dy)
+        if d < 1e-6:
+            return
+        self.delayed_push = (dx / d * COB_FEED_PUSH, dy / d * COB_FEED_PUSH)
+        self.push_delay = COB_FEED_PUSH_DELAY
 
     # ── 原版 Open / spawnUtilityFoods ──
     def open_cob(self) -> None:
@@ -242,6 +273,15 @@ class SeedCob:
 
     def step(self, WL: float, HL: float) -> None:
         self.p0l, self.p1l = self.p0, self.p1
+        if self.push_delay > 0:                       # 原版 301-311 delayedPush
+            self.push_delay -= 1
+        elif self.delayed_push is not None:
+            px, py = self.delayed_push
+            self.v0[0] += px
+            self.v0[1] += py
+            self.v1[0] += px
+            self.v1[1] += py
+            self.delayed_push = None
         # 原版 Update：两质点各自被弹回挂点（弹簧强度随偏离距离变化）
         for p, v, rest, k0, k1, e in ((self.p0, self.v0, self.placed, 2000.0, 150.0, 0.8),
                                       (self.p1, self.v1, (self.placed[0] + self.cob_dir[0] * self.conn_dist,

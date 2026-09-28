@@ -40,6 +40,7 @@ T_WALL_RETRY = 120        # 爬墙失败后的冷却
 T_SOCIAL_RETRY = 400      # 社交冷却
 T_HELP_RETRY = 600        # 帮取食冷却
 T_FIGHT_RETRY = 500       # 战斗冷却
+T_COB_RETRY = 300         # 爆米花放弃后的重试冷却
 T_CRAWL_RETRY = 300       # 匍匐躲避冷却
 T_PROTEST_RETRY = 900     # 抗议被抢东西的冷却
 T_REVIVE_RETRY = 200      # 复活失败重试
@@ -61,7 +62,7 @@ _WANTS_FROM = frozenset(("IdleStand", "PostThrowWander", "PostThrowStand", "Make
 # 这些态靠 _wants_break 收尾（释放墙/天花/手持、恢复行走边界）；
 # 必须保证「离开该态」时一定跑到一次，否则 walk_min/walk_max 会永久留 None
 _WANTS_STATES = frozenset(("WallClimb", "CeilingHang", "ChaseCursor", "Socialize",
-                           "HelpFeed", "FightThreat", "CrawlAway"))
+                           "HelpFeed", "FightThreat", "CrawlAway", "EatCob"))
 
 WALL_MARGIN = 40.0
 
@@ -278,6 +279,12 @@ class BehaviorFSM:
         self._ceil_walk_t = 0
         self._ceil_placed = False
         self._struggle_left = 0
+        self._cob = None              # 正在啃/要打的爆米花豆荚
+        self._cob_eat_t = 0           # 本口剩余 tick（原版 eatExternalFoodSourceCounter）
+        self._cob_cd = 0              # 两口之间的冷却（原版 dontEatExternalFoodSource…）
+        self._cob_left = 0            # 啃食态超时
+        self._cob_check = 0
+        self._cob_seek_cd = 0
         self._play_left = 0
         self._social_left = 0
         self._social_kind = "pet"
@@ -399,7 +406,7 @@ class BehaviorFSM:
         if self.state in ("Ascension", "Dead", "Dragged"):
             return False
         if self.state in ("WallClimb", "CeilingHang", "ChaseCursor", "Socialize",
-                          "HelpFeed", "FightThreat", "CrawlAway"):
+                          "HelpFeed", "FightThreat", "CrawlAway", "EatCob"):
             self._wants_break(self.state)
         self._break_tongue()
         self.climb = None
@@ -460,7 +467,7 @@ class BehaviorFSM:
         elif self.state == "SeekHPole":
             self._seekhpole_break()
         elif self.state in ("WallClimb", "CeilingHang", "ChaseCursor", "Socialize",
-                            "HelpFeed", "FightThreat", "CrawlAway"):
+                            "HelpFeed", "FightThreat", "CrawlAway", "EatCob"):
             self._wants_break(self.state)
         self._hibernating = False
         self.body.food_eat(-tuning.FOOD_KILL_PENALTY)
@@ -572,7 +579,7 @@ class BehaviorFSM:
         elif st == "Swimming":
             self.body.swim_target = None
         elif st in ("WallClimb", "CeilingHang", "ChaseCursor", "Socialize",
-                    "HelpFeed", "FightThreat", "CrawlAway"):
+                    "HelpFeed", "FightThreat", "CrawlAway", "EatCob"):
             self._wants_break(st)
 
     def _break_tongue(self):
@@ -700,6 +707,25 @@ class BehaviorFSM:
                 if take:
                     self._break_active_controllers()
                     self._act_or_wake("FetchFruit")
+
+        # 爆米花（原版外部食物源）：开荚的贴上去就能啃；饿了主动走过去
+        if self._cob_cd > 0:
+            self._cob_cd -= 1
+        if self._cob_seek_cd > 0:
+            self._cob_seek_cd -= 1
+        self._cob_check = (self._cob_check + 1) % tuning.COB_CHECK_TICKS
+        if (self._cob_check == 0 and self._cob_seek_cd <= 0
+                and self.body.food < self.body.food_max
+                and not self.grab.active and not self._exhausted
+                and not self._cold_urgent() and not self._zerog()
+                and self.state in _WANTS_FROM):
+            cb = self._nearest_cob(feedable=True)
+            if cb is None and self.body.carried_spear is not None:
+                cb = self._nearest_cob(feedable=False)     # 没开荚：拿矛打
+            if cb is not None:
+                self._cob = cb
+                self._break_active_controllers()
+                self._act_or_wake("EatCob")
 
         # 狩猎飞虫（原版：蝙蝠/蝉乌贼在空中 → 捡石/持矛预判投掷）
         if self._hunt_cd > 0:
@@ -851,6 +877,8 @@ class BehaviorFSM:
             self._fight_enter()
         elif st == "CrawlAway":
             self._crawl_enter()
+        elif st == "EatCob":
+            self._cob_enter()
         elif st == "PoleClimb":
             self._poleclimb_enter()
         elif st == "HPole":
@@ -2461,7 +2489,8 @@ class BehaviorFSM:
         self._sleep_check = (self._sleep_check + 1) % tuning.SLEEP_CHECK_TICKS
         if self._sleep_check:
             return False
-        return self.rng.random() < self._sleep_urge
+        # 睡意即概率：平方后刚吃饱几乎不睡、攒满必睡（避免吃饱几秒就倒头睡）
+        return self.rng.random() < self._sleep_urge * self._sleep_urge
 
     # ── 被同伴救：特殊表情扒拉一会儿就复活 ──
     def nuzzle(self, ticks: int = 1) -> bool:
@@ -2537,6 +2566,13 @@ class BehaviorFSM:
             self._fight_target = None
         elif st == "ChaseCursor":
             self._clear_hands()
+        elif st == "EatCob":
+            self.gfx.hand_aim["l"] = None
+            self.gfx.hand_aim["r"] = None
+            self.body.eat_raise = 0.0
+            self._cob = None
+            self._cob_eat_t = 0
+            self._cob_seek_cd = T_COB_RETRY
         self._restore_walk_limits()
 
     # ── 爬墙：窗口左右边缘＝墙（原版 ClimbOnBeam 位姿）──
@@ -2832,6 +2868,117 @@ class BehaviorFSM:
         b.release_fruit()
         tgt.behavior.accept_gift_food(fruit)
         self._help_end()
+
+    # ── 爆米花（原版外部食物源）：开荚后贴上去啃，每口 +1 饱食 ──
+    def _nearest_cob(self, feedable: bool = True):
+        """最近的爆米花豆荚；feedable=False 找还没开荚的（拿矛打）。"""
+        best, bd = None, tuning.COB_FEED_SEEK_R
+        c0 = self.body.chunk0
+        for cb in getattr(self.win, "seedcobs", ()):
+            if cb.state != ItemState.FREE or cb.dead:
+                continue
+            if feedable:
+                if not cb.can_feed():
+                    continue
+            elif cb.opened:
+                continue
+            px, py = cb.feed_point(c0.x, c0.y)
+            if feedable and py < c0.y - tuning.COB_REACH_DY:
+                continue                                  # 挂太高：跳起来也够不着
+            d = math.hypot(px - c0.x, py - c0.y)
+            if d < bd:
+                best, bd = cb, d
+        return best
+
+    def _cob_enter(self):
+        self._cob_left = tuning.COB_FEED_TICKS
+        self._cob_eat_t = 0
+        self.body.set_posture(True)
+        self.body.stop_walk()
+
+    def _cob_end(self):
+        self.gfx.hand_aim["l"] = None
+        self.gfx.hand_aim["r"] = None
+        self.body.eat_raise = 0.0
+        self.body.stop_walk()
+        self._cob = None
+        self._cob_eat_t = 0
+        self._cob_seek_cd = T_COB_RETRY
+        self._transition("IdleStand")
+
+    def _cob_chew(self, cb):
+        """原版 Player.cs:5168-5208：手搭豆荚啃 15 tick → AddFood(1)，再冷却 45 tick。"""
+        b = self.body
+        px, py = cb.feed_point(b.chunk0.x, b.chunk0.y)
+        side = "r" if px >= b.chunk0.x else "l"
+        b.stop_walk()
+        b.facing = 1 if px >= b.chunk0.x else -1
+        self.gfx.look_at = (px, py)
+        self.gfx.hand_aim[side] = (px, py)               # 原版 handOnExternalFoodSource
+        self.gfx.hand_aim["l" if side == "r" else "r"] = None
+        self._cob_eat_t -= 1
+        done = float(max(1, tuning.COB_EAT_TICKS))
+        phase = min(1.0, (done - self._cob_eat_t) / done)
+        b.eat_raise = EAT_HOLD_POSE + (EAT_CHOMP_POSE - EAT_HOLD_POSE) * math.sin(phase * math.pi)
+        if self._cob_eat_t > 0:
+            return
+        b.food_eat(tuning.COB_EAT_FOOD)                  # 原版 AddFood(1)
+        b.energy_change(tuning.EN_EAT_RESTORE)
+        self._cob_left = tuning.COB_FEED_TICKS           # 吃到东西就续上预算
+        b.temper_shift(tuning.TEMPER_FEED)
+        self._cob_cd = tuning.COB_EAT_CD                 # 原版 dontEat…Counter = 45
+        self.gfx.hand_aim[side] = None
+        b.eat_raise = 0.0
+        dx, dy = px - self.gfx.head.x, py - self.gfx.head.y
+        dd = math.hypot(dx, dy)
+        if dd > 1e-6:                                    # 咬一口头前探
+            self.gfx.head.vx += dx / dd * BITE_HEAD_NUDGE
+            self.gfx.head.vy += dy / dd * BITE_HEAD_NUDGE
+
+    def _st_eatcob(self, cursor, disturbed):
+        b = self.body
+        if self.grab.active:
+            self._transition("Dragged")
+            return
+        cb = self._cob
+        if (cb is None or cb.state != ItemState.FREE or cb.dead
+                or b.food >= b.food_max):
+            self._cob_end()
+            return
+        if self._cob_eat_t > 0:                          # 正啃着这一口：原地不动
+            self._cob_chew(cb)
+            return
+        px, py = cb.feed_point(b.chunk0.x, b.chunk0.y)
+        d = math.hypot(px - b.chunk0.x, py - b.chunk0.y)
+        self.gfx.look_at = (px, py)
+        self._cob_left -= 1
+        if cb.can_feed():
+            if d > tuning.COB_FEED_R:
+                if abs(px - b.chunk0.x) > tuning.COB_FEED_R * 0.5:
+                    b.walk_to(px)
+                else:
+                    b.stop_walk()
+                    b.facing = 1 if px >= b.chunk0.x else -1
+                    if py < b.chunk0.y and b.on_floor() and self._cob_left % 24 == 0:
+                        b.request_jump("stand")          # 豆荚挂得高：跳起来啃
+                if self._cob_left <= 0:
+                    self._cob_end()
+                return
+            b.stop_walk()
+            b.facing = 1 if px >= b.chunk0.x else -1
+            if self._cob_cd > 0:                         # 两口之间歇一下
+                return
+            self._cob_eat_t = tuning.COB_EAT_TICKS
+            cb.push_from(b.chunk0.x, b.chunk0.y)         # 原版 delayedPush
+            return
+        # 还没开荚：原版是用矛打一下才 Open()（空手打不开）
+        if b.carried_spear is None or d > tuning.COB_SPEAR_R:
+            self._cob_end()
+            return
+        b.stop_walk()
+        b.facing = 1 if px >= b.chunk0.x else -1
+        if self._cob_left <= 0 or self._throw_weapon_at(cb):
+            self._cob_end()
 
     # ── 战斗：反击（投石/投矛）──
     def _fight_enter(self):

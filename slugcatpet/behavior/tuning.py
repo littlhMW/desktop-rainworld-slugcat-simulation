@@ -251,6 +251,18 @@ CEIL_WALK_TICKS_MAX = 70
 CEIL_PLACED_TICKS_MIN = 600   # 鼠标放到顶边：愿意多挂一会（10s）
 CEIL_PLACED_TICKS_MAX = 1200
 
+# 爆米花（原版外部食物源）：开荚后贴上去啃，每口 +1 饱食
+COB_FEED_R = 25.0             # 原版 Custom.DistLess(mainBodyChunk, 最近点, 25f)
+COB_EAT_TICKS = 15            # 原版 eatExternalFoodSourceCounter = 15
+COB_EAT_CD = 45               # 原版 dontEatExternalFoodSourceCounter = 45
+COB_EAT_FOOD = 1              # 原版 AddFood(1)
+COB_FEED_SEEK_R = 300.0       # 饿了才会走这么远去啃
+COB_REACH_DY = 70.0           # 挂得比胸口高这么多就够不着（跳起来也啃不到）
+COB_FEED_TICKS = 600          # 没吃到东西就撤的预算（每吃一口重置）
+COB_CHECK_TICKS = 20          # 找豆荚的闸
+COB_SEEK_RETRY = 300          # 放弃后的重试冷却
+COB_SPEAR_R = 420.0           # 拿矛打未开荚爆米花的距离
+
 # 玩耍：追光标/抓光标（原版蛞蝓猫对移动物体的注意）
 PLAYCUR_BASE = 1.00
 PLAYCUR_START = 0.66
