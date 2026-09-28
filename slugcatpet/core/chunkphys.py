@@ -56,7 +56,7 @@ class BodyChunk:
     """BodyChunk：显式速度质点 + 圆-墙碰撞。坐标 y 向下。"""
     __slots__ = ("x", "y", "vx", "vy", "last_x", "last_y", "last_last_x", "last_last_y",
                  "rad", "mass", "index", "cx", "cy", "lcx", "lcy", "pinned",
-                 "collide_with_objects")
+                 "collide_with_objects", "support_y")
 
     def __init__(self, index: int, x: float, y: float, rad: float, mass: float):
         self.index = index
@@ -69,6 +69,7 @@ class BodyChunk:
         self.lcx = self.lcy = 0    # 上帧接触，边沿检测用
         self.pinned = False        # 外部定位，不积分不撞
         self.collide_with_objects = True   # 通用 chunk 碰撞开关
+        self.support_y = None      # 本 tick 脚下那块地的 y（地板 or 别人窗口顶边）
 
     @property
     def on_floor(self) -> bool:
@@ -117,9 +118,11 @@ class BodyChunk:
 
     def _collide(self, W: float, H: float, impact) -> None:
         r = max(self.rad, 1.0)
+        self.support_y = None
         # 竖直优先
         if self.y + r > H and self.vy > 0:
             self.y = H - r
+            self.support_y = H
             if self.vy > IMPACT_THRESHOLD and impact is not None:
                 _fire_impact(self, (0, 1), abs(self.vy), self.lcy < 1, impact)
             self.cy = 1
@@ -155,6 +158,9 @@ class BodyChunk:
             if self.vx < STOP_THRESH:
                 self.vx = 0.0
             self.vy *= TANGENTIAL
+        # 其它窗口顶边＝单向平台
+        if _oneway_platform(self, r, BOUNCE, TANGENTIAL, impact, self.lcy < 1):
+            self.cy = 1
 
 
 def _fire_impact(c: BodyChunk, direction, speed: float, first_contact: bool, impact) -> None:
@@ -222,6 +228,44 @@ def solve_conn(a: BodyChunk, b: BodyChunk, rest: float = DIST_STAND,
                 a.y = b.y - uy * limit
 
 
+# ── 其它窗口顶边＝单向平台（窗口本体不挡路，只能从上方落上去）──
+PLATFORMS: list = []          # [(x0, y0, x1)] 逻辑坐标，y0＝顶边
+
+
+def set_platforms(rects) -> None:
+    """由 window 定时刷新：其它窗口的顶边。"""
+    global PLATFORMS
+    PLATFORMS = list(rects or ())
+
+
+def platforms() -> list:
+    return PLATFORMS
+
+
+def _oneway_platform(obj, r: float, bounce: float, tang: float, impact=None,
+                     first_contact: bool = True) -> bool:
+    """落到某个窗口顶边就站住；只对「上一步还在顶边上方」生效。"""
+    if not PLATFORMS or obj.vy <= 0.0:
+        return False
+    prev_bottom = obj.y - obj.vy + r
+    for x0, y0, x1 in PLATFORMS:
+        if prev_bottom > y0 + 0.6 or obj.y + r <= y0:
+            continue
+        if obj.x <= x0 - r or obj.x >= x1 + r:
+            continue
+        obj.y = y0 - r
+        if hasattr(obj, "support_y"):
+            obj.support_y = y0
+        if impact is not None and abs(obj.vy) > IMPACT_THRESHOLD:
+            _fire_impact(obj, (0, 1), abs(obj.vy), first_contact, impact)
+        obj.vy = -abs(obj.vy) * bounce
+        if obj.vy > -(1.0 + 9.0 * (1.0 - bounce)):
+            obj.vy = 0.0
+        obj.vx *= tang
+        return True
+    return False
+
+
 def aabb_wall_collide(obj, WL, HL, impact=None):
     """圆-墙 4 面碰撞，竖直优先。"""
     r = obj.rad
@@ -274,6 +318,9 @@ def aabb_wall_collide(obj, WL, HL, impact=None):
         if obj.vx < stop:
             obj.vx = 0.0
         obj.vy *= tang
+    # 其它窗口顶边＝单向平台（从上方落下即站住）
+    if _oneway_platform(obj, r, obj.bounce, tang, impact, not prev_floor):
+        obj._contact_floor = True
 
 
 def collide_objects(entities) -> None:

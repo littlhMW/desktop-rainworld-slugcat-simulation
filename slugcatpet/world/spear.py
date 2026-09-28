@@ -40,7 +40,7 @@ class Spear:
                  "air_friction", "bounce", "surface_friction", "buoyancy", "water_friction",
                  "water_y", "room_gravity",
                  "state", "angle_deg", "last_angle", "spin", "spinning", "stuck", "stuck_angle",
-                 "_id", "_rng", "_contact_floor", "_contact_x", "_impact_cb",
+                 "_id", "_rng", "_contact_floor", "_contact_ceil", "_contact_x", "_impact_cb",
                  "_thrown", "_throw_dir", "_exit_spd", "_throw_x", "_throw_y",
                  "collide_with_objects", "held_by", "embedded", "stuck_to", "_still")
 
@@ -64,6 +64,7 @@ class Spear:
         self._id = int(seed)
         self._rng = _random.Random(int(seed) * 3571 + 11)
         self._contact_floor = False
+        self._contact_ceil = False
         self._contact_x = 0
         self._impact_cb = None
         self._thrown = False
@@ -153,6 +154,15 @@ class Spear:
         self.y += self.vy
         aabb_wall_collide(self, WL, HL, impact=self._impact_cb)
         if self._thrown:
+            if self._contact_floor:
+                # 撞到地面平面即停止物理（原地收势插地）；捡起时 unstuck() 恢复正常
+                self.rest_on_ground()
+                return
+            if self._contact_ceil:
+                # 顶边也是平面：不弹，直接清掉竖直速度交给重力落回
+                self.vy = 0.0
+                self._enter_free()
+                return
             if self._contact_x == self._throw_dir:  # Weapon.Update: ContactPoint == throwDir
                 if wp.stick_roll(self, self._rng):
                     self.stick(WL, HL, wall=self._throw_dir)

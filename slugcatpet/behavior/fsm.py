@@ -21,6 +21,7 @@ from ..cats.saint.cursorlick import (BAND_LO as LICK_BAND_LO, BAND_HI as LICK_BA
                                      DWELL_TICKS as LICK_DWELL, DWELL_TOL as LICK_DWELL_TOL,
                                      GATE_FRAC as LICK_GATE_FRAC)
 from ..world import weaponphys
+from ..world.pole import cross_partner
 from ..world.enums import ItemState
 from ..core import edges as edgeqm
 from ..core.units import clampf
@@ -48,8 +49,6 @@ T_PROTEST_RETRY = 900     # 抗议被抢东西的冷却
 T_REVIVE_RETRY = 200      # 复活失败重试
 SPEAR_AI_SPEED = 34.0     # 投矛初速（同 huntfly.SPEED_SPEAR）
 STONE_AI_SPEED = 26.0     # 投石初速（同 huntfly.SPEED_STONE）
-# 睡眠：单人时没有同伴拉一把，兜底自动醒
-REVIVE_SOLO_TICKS = 600
 # 被咬/被矛的致死判定：原版 Player.DeathByBiteMultiplier（故事模式 0.7 + 难度/5）
 DEATH_BY_BITE_MULT = 0.75
 MONK_DEATH_BY_BITE_MULT = 0.0     # 黄猫（僧侣）永不被咬死
@@ -277,6 +276,7 @@ class BehaviorFSM:
         self._wall_ready = False
         self._wall_top_y = 0.0        # 这面墙的可攀爬上沿 y
         self._wall_ledge_t = 0        # 抓沿悬停计时
+        self._wall_sliding = False    # 抓不住墙头：贴墙缓慢下滑中
         self._ceil_left = 0
         self._ceil_dir = 1
         self._ceil_walk_t = 0
@@ -514,12 +514,12 @@ class BehaviorFSM:
         self._hibernating = False
         self.body.food_eat(-tuning.FOOD_KILL_PENALTY)
         if self.body.karma > 0 or self.body.karma_bottomed():
-            self.body.karma_drop()    # 工匠锁底也照常空转复活
+            self.body.karma_drop()    # 工匠锁底也照常计入
             self.body.temper_shift(tuning.TEMPER_KILL_REVIVED)
             self.body.die()
             self.gfx.dead = True
             self._transition("Dead")
-            self._revive_timer = tuning.REVIVE_TICKS
+            self._revive_timer = 0    # 真死：不再自行计时复活，只有同伴 nuzzle 才回来
         else:
             self.body.die()
             self._transition("Dead")
@@ -776,9 +776,12 @@ class BehaviorFSM:
         # 狩猎飞虫（原版：蝙蝠/蝉乌贼在空中 → 捡石/持矛预判投掷）
         if self._hunt_cd > 0:
             self._hunt_cd -= 1
+        has_weapon = (self.body.carried_stone is not None
+                      or self.body.carried_spear is not None)
+        hunting = (self.body.food < self.body.food_max and self._food_seek_ready())
+        playing = (has_weapon and self.rng.random() < tuning.HUNT_PLAY_PROB)
         if (self._fetch_check == 0 and self._hunt_cd <= 0
-                and self.body.food < self.body.food_max
-                and self._food_seek_ready()
+                and (hunting or playing)
                 and not self.grab.active and not self._exhausted
                 and not self._cold_urgent() and not self._zerog()
                 and not self._hibernating and not self.body.swimming
@@ -1028,8 +1031,7 @@ class BehaviorFSM:
                           self._climbable_pole_available(),
                           cold=self.body.cold,
                           has_warm_lamp=self._warm_lamp_available(),
-                          has_hpole=(self._has_hpole_available()
-                                     and self.win.tongue is not None),
+                          has_hpole=self._has_hpole_available(),
                           can_ceiling_play="RelocateToWall" in self._ext_states,
                           submerged=self.body.swimming,
                           near_wall=self._near_wall(),
@@ -1987,10 +1989,8 @@ class BehaviorFSM:
     def _st_dead(self, cursor, disturbed):
         self._clear_hands()
         self.gfx.face_special = False
-        if (self._revive_timer <= 0 and not self._reincarnate
-                and not self._has_living_peer()):
-            # 没有同伴在场拉一把：兜底自动复活（原版是读档/合作救人）
-            self._revive_timer = REVIVE_SOLO_TICKS
+        # 死亡不再自行复活：只有同伴用特殊表情扒拉（_nuzzle 触碰累计）或
+        # 环境致死转世（_reincarnate）才会回来。
         if self._revive_timer > 0:
             self._revive_timer -= 1
             if self._revive_timer <= 0:
@@ -2108,6 +2108,19 @@ class BehaviorFSM:
                 best = p
         return best
 
+    def _pole_eat(self) -> bool:
+        """杆上进食：手里的东西跟着手走，饿了就在杆上咬几口（原版 beam 上也能咬）。"""
+        b = self.body
+        f = b.carried_fruit
+        if f is None:
+            return False
+        b._apply_carry()                    # 跟手：爬杆时手里的东西不能掉在半空
+        if b.food >= b.food_max or not getattr(f, "is_edible", True):
+            return False
+        self.gfx.face_special = False
+        self._carry_chew(b)
+        return True
+
     def _poleclimb_enter(self):
         from .pole_climb import PoleClimber
         self.gfx.hand_aim["l"] = None
@@ -2132,6 +2145,8 @@ class BehaviorFSM:
             self._transition("IdleStand" if on_floor else "Airborne")
             return
         if self._pole_nudge_tick():      # 被同伴挡在杆上：停住扒拉/指指点点
+            return
+        if self._pole_eat():             # 手里有吃的：先在杆上吃完
             return
         want_dismount = self.body.energy <= tuning.TIP_TIRED_ENERGY
         done = self.poleclimb.update(want_dismount)
@@ -2213,6 +2228,8 @@ class BehaviorFSM:
             return
         if self._pole_nudge_tick():      # 被同伴挡在杆上：停住扒拉/指指点点
             return
+        if self._pole_eat():             # 手里有吃的：先在杆上吃完
+            return
         done = self.hpole.update()
         if done:
             ho = self.hpole.handoff
@@ -2240,7 +2257,34 @@ class BehaviorFSM:
 
     # 自主上横杆 SeekHPole
     def _has_hpole_available(self) -> bool:
-        return any(p.kind == "horizontal" for p in self.win.poles)
+        return self._hpole_entry() is not None
+
+    def _hpole_entry(self):
+        """横杆可达入口（原版三条路）：('tongue'|'climb'|'jump', 横杆[, 交叉竖杆])。
+
+        舌（Saint）直接舔；普通猫要么爬交叉竖杆到交点按 上 换杆，
+        要么横杆够低时从地面跳起来抓杆端。
+        """
+        ps = [p for p in self.win.poles if p.kind == "horizontal"]
+        if not ps:
+            return None
+        if self.win.tongue is not None:
+            p = self._pick_hpole()
+            return ("tongue", p) if p is not None else None
+        for p in ps:
+            cv = cross_partner(p, self.win.poles)
+            if cv is not None and cv.kind == "vertical":
+                return ("climb", p, cv)
+        for p in ps:
+            if self._hpole_jumpable(p):
+                return ("jump", p)
+        return None
+
+    def _hpole_jumpable(self, p) -> bool:
+        """横杆够低：地面起跳能贴到杆。"""
+        b = self.body
+        apex = self.HL - b.H - tuning.HPOLE_JUMP_RISE
+        return p.ay >= apex - tuning.HPOLE_JUMP_GRAB
 
     def _pick_hpole(self):
         best = None
@@ -2260,13 +2304,30 @@ class BehaviorFSM:
         self.climb = None
         self._hp_tries = 0
         self._hp_climbs = 0
-        p = self._pick_hpole() if self.win.tongue is not None else None
+        self._hp_jumps = 0
+        self._hp_jump_cd = 0
+        self._hp_air = False
+        self._hp_cv = None
+        entry = self._hpole_entry()
+        self._hp_entry = entry[0] if entry is not None else None
+        p = entry[1] if entry is not None else None
         self._hp = p
         if p is None:
             self._hp_phase = "done"
             return
         self._hp_lo = min(p.ax, p.bx)
         self._hp_hi = max(p.ax, p.bx)
+        if self._hp_entry == "climb":       # 无舌：爬交叉竖杆，交点换横杆
+            self._hp_cv = entry[2]
+            self._hp_kind = "climb"
+            self._hp_phase = "to_climb"
+            return
+        if self._hp_entry == "jump":        # 无舌：横杆够低，跳起来抓
+            self._hp_kind = "jump"
+            self._hp_ux = max(self._hp_lo + 6.0, min(self._hp_hi - 6.0, b.chunk1.x))
+            self._hp_phase = "walk_under_jump"
+            b.walk_to(self._hp_ux)
+            return
         mox, moy = self.gfx.mouth_world()
         reach = self.win.tongue.total * HPOLE_REACH_FRAC
         if p.ay >= moy - reach:    # 低杆直舔，高杆先到锚墙脚再爬
@@ -2316,6 +2377,57 @@ class BehaviorFSM:
         lo, hi = self._hp_lo, self._hp_hi
         self.gfx.look_at = ((lo + hi) * 0.5, p.ay)
         ph = self._hp_phase
+
+        if ph == "to_climb":         # 无舌：交给竖杆攀爬，交点处自动换横杆
+            cv = self._hp_cv
+            self._seekhpole_break()
+            if cv is None or cv not in self.win.poles:
+                self._transition("IdleStand")
+                return
+            self._poleclimb_pole = cv
+            self._poleclimb_start = None
+            self._transition("PoleClimb")
+            return
+
+        if ph == "walk_under_jump":  # 无舌：走到杆下
+            if not b.is_moving() or abs(b.chunk1.x - self._hp_ux) < 8.0:
+                b.stop_walk()
+                self._hp_phase = "jump_grab"
+            return
+
+        if ph == "jump_grab":        # 无舌：起跳贴杆转 HPole
+            c0 = b.chunk0
+            ax = max(self._hp_lo + 2.0, min(self._hp_hi - 2.0, c0.x))
+            self.gfx.look_at = (ax, p.ay)
+            if math.hypot(ax - c0.x, p.ay - c0.y) <= tuning.HPOLE_JUMP_GRAB:
+                self._hpole_pole = p
+                self._hpole_start = "hang"
+                self._hpole_start_x = c0.x
+                self._hp = None
+                self._transition("HPole")
+                return
+            if self._hp_jump_cd > 0:
+                self._hp_jump_cd -= 1
+                return
+            if not b.on_floor():     # 空中朝杆端微调
+                if ax > c0.x + 1.0:
+                    b.move_dir = 1
+                elif ax < c0.x - 1.0:
+                    b.move_dir = -1
+                return
+            if abs(c0.x - ax) > 12.0:
+                b.walk_to(ax)
+                return
+            if self._hp_jumps >= tuning.HPOLE_JUMP_TRIES:
+                self._seekhpole_break()
+                self._transition("IdleStand")
+                return
+            b.stop_walk()
+            b.move_dir = 0
+            b.request_jump("stand")
+            self._hp_jumps += 1
+            self._hp_jump_cd = tuning.HPOLE_JUMP_CD
+            return
 
         if ph == "walk_under":       # 低杆走到杆下
             if not b.is_moving() or abs(b.chunk1.x - self._hp_ux) < 8.0:
@@ -2394,6 +2506,8 @@ class BehaviorFSM:
         self.climb = None
         self._hp = None
         self._hp_phase = None
+        self._hp_cv = None
+        self._hp_entry = None
         self.gfx.hand_aim["l"] = None
         self.gfx.hand_aim["r"] = None
 
@@ -2672,7 +2786,7 @@ class BehaviorFSM:
         return best
 
     def _dead_peer_near(self):
-        """附近倒地的同伴（真死或正在自动复活都会去扒拉）。"""
+        """附近倒地的同伴（死了就去扒拉救活）。"""
         best, bd = None, tuning.HELPFEED_SEEK_R
         c1 = self.body.chunk1
         for p in self._peers():
@@ -2696,6 +2810,16 @@ class BehaviorFSM:
             if d < bd:
                 best, bd = f, d
         return best
+
+    def _weapon_ready(self) -> bool:
+        """手里拿着家伙，或脚边地上有能马上捡起来的。"""
+        b = self.body
+        if b.carried_spear is not None or b.carried_stone is not None:
+            return True
+        w = self._nearest_ground_weapon()
+        if w is None:
+            return False
+        return math.hypot(w.x - b.chunk1.x, w.y - b.chunk1.y) < tuning.FIGHT_ARM_R
 
     def _nearest_ground_weapon(self):
         """地上能捡的石头/矛（原版捡起投掷物）。"""
@@ -2763,9 +2887,11 @@ class BehaviorFSM:
                 self._start_protest(th)
                 return
         # 4) 反击：被咬/被砸后（anger>0）仇人还在附近
-        if self._fight_cd <= 0 and self.anger > 0:
-            lz = self._nearest_lizard(tuning.FIGHT_R)
-            if lz is not None:
+        #    手里/脚边有家伙时也会主动迎战（原版持械的猫）
+        if self._fight_cd <= 0:
+            ranged = self.anger > 0
+            lz = self._nearest_lizard(tuning.FIGHT_R if ranged else tuning.FIGHT_ARM_R)
+            if lz is not None and (ranged or self._weapon_ready()):
                 self._fight_target = lz
                 self._fight_left = tuning.FIGHT_TICKS
                 self._break_active_controllers()
@@ -2945,35 +3071,43 @@ class BehaviorFSM:
         need = int(max(0.0, b.chunk0.y - self._wall_top_y) / max(0.1, WALL_CLIMB_SPEED)) + 60
         self._wall_left = max(self._wall_left, need)
         self._wall_ledge_t = 0
+        self._wall_sliding = False
         self._save_walk_limits()
         b.set_posture(True)
         b.stop_walk()
         b.release_ceiling()
 
     def _roll_wall_top(self, b):
-        """这面墙的可攀爬上沿 y：多数墙够不着顶边，少数直通顶边（原版墙高矮不一）。"""
-        if self.rng.random() < tuning.WALL_TOP_FULL_PROB:
-            return 0.0                                  # 直通窗口顶边 → 可转吊顶
-        frac = self.rng.uniform(tuning.WALL_TOP_MIN_FRAC, tuning.WALL_TOP_MAX_FRAC)
-        frac *= tuning.WALL_TOP_TIRED_FRAC + (1.0 - tuning.WALL_TOP_TIRED_FRAC) * b.energy
-        top = self.HL * (1.0 - frac)
-        hi = self.HL - tuning.WALL_CLIMB_MIN_SPAN
-        lo = tuning.WALL_TOP_GRAB_R + 4.0
-        return max(lo, min(hi if hi > lo else lo, top))
+        """这面墙的可攀爬上沿 y：最高只到「一只蹬辜猫的高度」（力竭更短）。"""
+        frac = tuning.WALL_TOP_TIRED_FRAC + (1.0 - tuning.WALL_TOP_TIRED_FRAC) * b.energy
+        top = b.chunk0.y - tuning.WALL_CLIMB_MAX_H * frac
+        return max(tuning.WALL_TOP_GRAB_R + 4.0, top)
 
     def _wall_ledge(self, cursor):
-        """够到墙头上沿：抓沿悬一下（原版 LedgeGrab），再蹬墙跳或松手。"""
+        """够到墙头上沿：抓沿悬一下（原版 LedgeGrab），再蹬墙跳或贴墙缓慢滑下。"""
         b = self.body
-        b.wall_climb_dir = 0
         self.gfx.look_at = cursor if cursor is not None else (b.chunk0.x, b.chunk0.y - 30.0)
+        if self._wall_sliding:                          # 已决定下滑：贴墙缓降到地
+            b.wall_climb_dir = 1
+            b.wall_slide = True
+            if b.on_floor():
+                b.release_wall()
+                self._wall_cd = T_WALL_RETRY
+                self._transition("IdleStand")
+            return
+        b.wall_climb_dir = 0
         self._wall_ledge_t += 1
         if self._wall_ledge_t < tuning.WALL_LEDGE_HOLD:
             return
-        b.release_wall()
-        self._wall_cd = T_WALL_RETRY
         if self.rng.random() < tuning.WALL_LEDGE_JUMP_PROB:
+            b.release_wall()
+            self._wall_cd = T_WALL_RETRY
             b.wall_jump(up=True)                        # 蹬墙跳离开这面墙
-        self._transition("Airborne")
+            self._transition("Airborne")
+            return
+        self._wall_sliding = True                       # 抓不住：缓慢滑下
+        b.wall_climb_dir = 1
+        b.wall_slide = True
 
     def _st_wallclimb(self, cursor, disturbed):
         b = self.body
@@ -2993,7 +3127,7 @@ class BehaviorFSM:
             return
         self._wall_left -= 1
         c0 = b.chunk0
-        if b.at_wall_top or (c0.y - c0.rad) <= self._wall_top_y + 0.5:
+        if self._wall_sliding or b.at_wall_top or (c0.y - c0.rad) <= self._wall_top_y + 0.5:
             if self._wall_top_y <= tuning.WALL_TOP_GRAB_R:  # 这面墙直通顶边：转吊顶
                 b.release_wall()
                 self._transition("CeilingHang")
@@ -3120,6 +3254,9 @@ class BehaviorFSM:
         ob = tgt.body
         self._social_left -= 1
         d = math.hypot(ob.chunk1.x - b.chunk1.x, ob.chunk1.y - b.chunk1.y)
+        if self._social_kind == "revive":
+            # 必须贴进扒拉半径（_nuzzle_peer 量的是最近 chunk 对），否则永远救不活
+            d = self._touch_dist(ob)
         if d > tuning.SOCIAL_ARRIVE:
             b.walk_to(ob.chunk1.x)
             self.gfx.look_at = (ob.chunk0.x, ob.chunk0.y)
@@ -3215,6 +3352,18 @@ class BehaviorFSM:
         ob.chunk0.vy -= 0.25
         self.body.temper_shift(tuning.TEMPER_FEED * 0.05)
 
+    def _touch_dist(self, ob) -> float:
+        """本猫与该身体最近的两个 chunk 间距（倒地的同伴躺着，得按最近点算）。"""
+        mine = (self.body.chunk0, self.body.chunk1)
+        theirs = (ob.chunk0, ob.chunk1)
+        best = 1e9
+        for a in mine:
+            for c in theirs:
+                d = math.hypot(c.x - a.x, c.y - a.y)
+                if d < best:
+                    best = d
+        return best
+
     def _nuzzle_peer(self, peer):
         """特殊表情扒拉：累计触碰，够了让同伴复活。"""
         beh = getattr(peer, "behavior", None)
@@ -3223,8 +3372,7 @@ class BehaviorFSM:
         ob = peer.body
         self.gfx.face_special = True
         self._point_at_peer(peer)
-        if math.hypot(ob.chunk1.x - self.body.chunk0.x,
-                      ob.chunk1.y - self.body.chunk0.y) > tuning.REVIVE_TOUCH_R:
+        if self._touch_dist(ob) > tuning.REVIVE_TOUCH_R:
             return
         if self.timer % 12 == 0:
             self._poke(ob)
@@ -3453,8 +3601,12 @@ class BehaviorFSM:
                         b.grab_spear(o, side)
                     else:
                         b.grab_stone(o, side)
+                    self._fight_throw_t = tuning.FIGHT_THROW_CD
                 return
             # 空手：贴上去拍打指指点点（原版空手打不动蜥蜴）
+            if self.anger <= 0:           # 主动迎战但家伙没了：退回躲避
+                self._fight_end()
+                return
             if d > tuning.FIGHT_MELEE_R:
                 b.walk_to(tgt.x)
                 self._point_end()
@@ -3467,7 +3619,10 @@ class BehaviorFSM:
             return
         # 持械：预判弹道投掷（这里是指哪打哪，保持连续瞄准）
         self._fight_throw_t += 1
-        b.stop_walk()
+        if d < tuning.FIGHT_ARM_KEEP:                # 太近会被咬：边打边拉开
+            b.walk_to(b.chunk1.x - (tgt.x - b.chunk1.x))
+        else:
+            b.stop_walk()
         self._point_end()
         self._point_at_peer(tgt)
         if self._fight_throw_t >= tuning.FIGHT_THROW_CD:

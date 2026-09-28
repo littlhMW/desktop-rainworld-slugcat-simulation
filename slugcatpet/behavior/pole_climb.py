@@ -118,12 +118,28 @@ class PoleClimber:
         c1.vx = c1.vy = 0.0
         c0.pinned = True
         c0.vx = c0.vy = 0.0
+        self._snap_axis()
         self.disbalance = 0.0
         self.balance_counter = 0.0
         self.gfx.disbalance = 0.0
         self.gfx.balance_counter = 0.0
         self.phase = "tip"
         self.tip_ticks = 0
+
+    def _snap_axis(self):
+        """两 chunk 摆回杆轴（上身顶端正上方 ARC_R 处）。
+
+        原版 BeamTip/StandOnBeam 靠速度驱动，从不瞬移位置；本实现是脚本位姿，
+        若不先归位就解钉，距离约束会把「修正量」当冲量吃下去 → 杆顶被大力发射。
+        """
+        b = self.body
+        c0, c1 = b.chunk0, b.chunk1
+        c1.x = self.pole.x
+        c1.y = self.pole.top_y
+        c1.vx = c1.vy = 0.0
+        c0.x = self.pole.x
+        c0.y = self.pole.top_y - ARC_R
+        c0.vx = c0.vy = 0.0
 
     def _drive_tip(self, want_dismount):
         b = self.body
@@ -191,18 +207,23 @@ class PoleClimber:
         """最近的可跳目标竖杆。"""
         if self.win is None:
             return None
-        best, bd = None, tuning.POLE_HOP_SEEK_R
+        best, bd = None, tuning.POLE_HOP_MAX_DX
         for p in self.win.poles:
             if p is self.pole or p.kind != VERTICAL:
                 continue
-            d = math.hypot(p.bx - self.pole.x, p.by - self.pole.top_y)
-            if d < bd:
-                best, bd = p, d
+            dx = abs(p.x - self.pole.x)
+            if dx >= bd:                      # 滞空射程外，跳过去只会摔
+                continue
+            lo, hi = min(p.ay, p.by), max(p.ay, p.by)
+            if not (lo - tuning.POLE_AIRGRAB_PAD <= self.pole.top_y <= hi):
+                continue                      # 下落弧贴不到杆身
+            best, bd = p, dx
         return best
 
     def _hop_to(self, other):
         b = self.body
         c0, c1 = b.chunk0, b.chunk1
+        self._snap_axis()
         c0.pinned = False
         c1.pinned = False
         b.on_pole = False
@@ -217,6 +238,7 @@ class PoleClimber:
 
     def _begin_descend(self):
         b = self.body
+        self._snap_axis()
         b.chunk0.pinned = False
         b.chunk1.pinned = False
         b.animation = "ClimbOnBeam"
@@ -239,19 +261,21 @@ class PoleClimber:
     def _fall(self, lean):
         b = self.body
         c0, c1 = b.chunk0, b.chunk1
+        self._snap_axis()
         c0.pinned = False
         c1.pinned = False
         b.on_pole = False
         b.animation = None
         d = 1.0 if lean >= 0 else -1.0
-        c0.vx += d * 3.5
-        c1.vx += d * 1.5
-        c0.vy -= 0.5
+        c0.vx = d * tuning.TIP_FALL_VX
+        c1.vx = d * tuning.TIP_FALL_VX * 0.5
+        c0.vy = tuning.TIP_FALL_VY
         self._reset_pose()
 
     def _jump_down(self):
         b = self.body
         c0, c1 = b.chunk0, b.chunk1
+        self._snap_axis()
         c0.pinned = False
         c1.pinned = False
         b.on_pole = False

@@ -17,7 +17,7 @@ HANG_TICKS = 28
 PULLUP_TICKS = 22
 STAND_HOVER = 5.0
 STAND_TICKS = 200
-WALK_SPEED = 1.4
+WALK_SPEED = 2.1        # 原版 StandOnBeam: dynamicRunSpeed = 2.1 × runspeedFac
 WALK_MARGIN = 14.0
 TURN_PERIOD = 20
 TURN_PROB = 0.5

@@ -141,7 +141,7 @@ class SeedCob:
                  "seed_pos", "popped", "leaves", "open", "last_open",
                  "opened", "dead", "rotted", "pop_counter", "state", "rad",
                  "p0", "p0l", "v0", "p1", "p1l", "v1", "_rng", "_id",
-                 "push_delay", "delayed_push")
+                 "push_delay", "delayed_push", "drag_point")
 
     def __init__(self, x: float, y: float, seed: int = 0, root_y: float | None = None):
         rng = _random.Random(seed)
@@ -183,6 +183,7 @@ class SeedCob:
         self.rad = 8.0            # SeedCob.cs:106-107 双 chunk rad 8
         self.push_delay = 0           # 被啃时把豆荚往外弹（原版 delayedPush/pushDelay）
         self.delayed_push = None
+        self.drag_point = None        # 鼠标拖拽目标（None＝未拖）
 
     @property
     def pos(self):
@@ -284,6 +285,10 @@ class SeedCob:
             self.v1[0] += px
             self.v1[1] += py
             self.delayed_push = None
+        if self.drag_point is not None:               # 鼠标拖拽：软弹簧拉豆荚，植株不动
+            tx, ty = self.drag_point
+            self.v0[0] += (tx - self.p0[0]) * 0.12
+            self.v0[1] += (ty - self.p0[1]) * 0.12
         # 原版 Update：两质点各自被弹回挂点（弹簧强度随偏离距离变化）
         for p, v, rest, k0, k1, e in ((self.p0, self.v0, self.placed, 2000.0, 150.0, 0.8),
                                       (self.p1, self.v1, (self.placed[0] + self.cob_dir[0] * self.conn_dist,
@@ -295,14 +300,22 @@ class SeedCob:
             if inv > 1e-6:
                 v[0] += dx / inv
                 v[1] += dy / inv
-        # 原版：chunk1 与 rootPos 距离不得超过 stalkLength
-        dx, dy = self.p1[0] - self.root_pos[0], self.p1[1] - self.root_pos[1]
-        d = math.hypot(dx, dy)
-        if d > self.stalk_length and d > 1e-6:
-            k = (d - self.stalk_length) * 0.2
-            self.p1 = (self.p1[0] - dx / d * k, self.p1[1] - dy / d * k)
-            self.v1[0] -= dx / d * k
-            self.v1[1] -= dy / d * k
+        # 原版：chunk 与 rootPos 距离不得超过茎长（拖拽时只能来回荡，甩不飞）
+        for idx, lim in ((0, self.stalk_length + self.conn_dist),
+                         (1, self.stalk_length)):
+            pp = self.p0 if idx == 0 else self.p1
+            vv = self.v0 if idx == 0 else self.v1
+            dx, dy = pp[0] - self.root_pos[0], pp[1] - self.root_pos[1]
+            d = math.hypot(dx, dy)
+            if d > lim and d > 1e-6:
+                k = (d - lim) * 0.2
+                np_ = (pp[0] - dx / d * k, pp[1] - dy / d * k)
+                vv[0] -= dx / d * k
+                vv[1] -= dy / d * k
+                if idx == 0:
+                    self.p0 = np_
+                else:
+                    self.p1 = np_
         for p, v in ((self.p0, self.v0), (self.p1, self.v1)):
             v[0] *= 0.9
             v[1] *= 0.9
@@ -354,6 +367,31 @@ class SeedCob:
             gx, gy = _deg_to_vec(ang)
             lf[2][0] += gx
             lf[2][1] += gy
+        self._collide_bounds(WL, HL)
+
+    def _collide_bounds(self, WL: float, HL: float) -> None:
+        """边界弹性碰撞：左右墙 + 地面 + 其它窗口顶边。"""
+        from ..core.chunkphys import platforms
+        tops = platforms()
+        r = self.rad
+        for name, v in (("p0", self.v0), ("p1", self.v1)):
+            p = getattr(self, name)
+            if p[0] - r < 0.0 and v[0] < 0.0:
+                p = (r, p[1]); v[0] *= -0.4
+            elif p[0] + r > WL and v[0] > 0.0:
+                p = (WL - r, p[1]); v[0] *= -0.4
+            if p[1] + r > HL and v[1] > 0.0:
+                p = (p[0], HL - r); v[1] *= -0.4
+            if v[1] > 0.0:
+                for x0, y0, x1 in tops:
+                    if p[1] - v[1] + r > y0 + 0.6 or p[1] + r <= y0:
+                        continue
+                    if p[0] <= x0 - r or p[0] >= x1 + r:
+                        continue
+                    p = (p[0], y0 - r)
+                    v[1] *= -0.4
+                    break
+            setattr(self, name, p)
 
 
 def _int_clamp(v, lo, hi):

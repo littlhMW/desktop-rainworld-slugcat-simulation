@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 import random
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QApplication, QWidget
 from PySide6.QtCore import Qt, QTimer, QElapsedTimer, QRect, QPoint, QPointF, QRectF
 from PySide6.QtGui import QImage, QPainter, QColor, QGuiApplication, QCursor
 
@@ -28,6 +28,9 @@ GRAV_EASE = 0.08              # 重力缓动率（~1s 过渡）
 
 # 地板下渲染余量
 GROUND_INSET = 16.0
+
+# 其它窗口顶边＝单向平台：多久重新枚举一次
+PLATFORM_REFRESH_TICKS = 30
 
 # 窗口抖动
 SHAKE_DECAY = 0.8
@@ -129,6 +132,9 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self.bubbles = []
         self._bubble_rng = random.Random(0xB0BB1E)
         self.cursor_hijack = None
+        self._plat_tick = 0
+        self._platforms_on = bool(self._params.get("window_platforms", True))
+        self._refresh_platforms()
         self._hud = None
         self._pets_changed_cb = None
         self._open_settings_cb = None
@@ -549,8 +555,30 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                     *self.spears, *self.scavengers):
             _clamp_item_to_bounds(obj, WL, HL)
 
+    def _refresh_platforms(self):
+        """其它可见窗口的顶边＝一块平地（窗口本体不挡路）。"""
+        from .platform.winplat import enumerate_tops, enabled
+        if not self._platforms_on or not enabled():
+            return
+        own = set()
+        try:
+            app = QApplication.instance()
+            for w in app.topLevelWidgets():
+                try:
+                    own.add(int(w.winId()))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        chunkphys.set_platforms(enumerate_tops(own, self._area.x(), self._area.y(),
+                                               self._scale))
+
     def _do_tick(self):
         """推进一个物理 tick。"""
+        self._plat_tick -= 1
+        if self._plat_tick <= 0:
+            self._plat_tick = PLATFORM_REFRESH_TICKS
+            self._refresh_platforms()
         # 抖动衰减，须在 impact 前
         self._shake[0] *= SHAKE_DECAY
         self._shake[1] *= SHAKE_DECAY

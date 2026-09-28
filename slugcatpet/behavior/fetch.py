@@ -238,7 +238,7 @@ class FruitFetcher:
         # 悬空卡死兜底超时
         if self.timer > CARRY_FALL_TIMEOUT and f.stalk is not None:
             f.stalk = None
-        if self.body.on_floor():
+        if self.body.on_floor() or self.body.on_pole:
             self.phase = "eat"
             self.timer = 0
             self.eat_counter = 0

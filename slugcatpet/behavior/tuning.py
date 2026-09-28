@@ -29,6 +29,11 @@ POLE_SF_FRESH = 1.50
 POLE_SF_TIRED = 0.10
 
 # 横杆权重与新鲜度
+# 横杆（原版 horizontal beam）：无舌猫走「爬交叉竖杆换杆」或「地面起跳抓杆」
+HPOLE_JUMP_RISE = 37.0        # 站立跳胸心上升量（实测），杆再高就跳不到
+HPOLE_JUMP_GRAB = 22.0        # 空中贴杆转 HPole 的距离
+HPOLE_JUMP_TRIES = 4          # 起跳尝试次数上限
+HPOLE_JUMP_CD = 48            # 每次起跳后的等待 tick（等落地/判失败）
 HPOLE_BASE = 1.00
 HPOLE_START = 0.72
 HPOLE_QUIT = 0.30
@@ -215,13 +220,10 @@ WALL_CLIMB_TICKS_MIN = 120    # 单次爬墙时长下限
 WALL_CLIMB_TICKS_MAX = 420
 WALL_WALLJUMP_PROB = 0.02     # 贴墙时每次蹬墙跳的抽样概率
 WALL_TOP_GRAB_R = 26.0        # 胸离顶边这么近就转吊顶
-WALL_TOP_FULL_PROB = 0.22     # 这面墙直通窗口顶边（能转吊顶）的概率
-WALL_TOP_MIN_FRAC = 0.28      # 墙的可攀爬上沿：至少离地这么高（占窗高比例）
-WALL_TOP_MAX_FRAC = 0.62      # 最多能爬到这么高：多数墙够不着顶边
-WALL_CLIMB_MIN_SPAN = 90.0    # 墙再矮也留这么高的可爬段
-WALL_TOP_TIRED_FRAC = 0.45    # 力竭时上沿更低（爬不动这么远）
+WALL_CLIMB_MAX_H = 30.0       # 墙最多只能攀爬「一只蛞蝓猫的高度」
+WALL_TOP_TIRED_FRAC = 0.55    # 力竭时上沿更低（爬不动这么远）
 WALL_LEDGE_HOLD = 26          # 够到墙头后抓沿悬住的 tick
-WALL_LEDGE_JUMP_PROB = 0.55   # 抓沿后蹬墙跳（否则松手掉下）
+WALL_LEDGE_JUMP_PROB = 0.55   # 抓沿后蹬墙跳（否则贴墙缓慢滑下）
 
 # 被抓：偶尔挣扎（原版 Player 被叼住时蹬腿乱蹬）
 DRAG_STRUGGLE_PROB = 0.012    # 每 tick 起挣扎的概率
@@ -308,11 +310,13 @@ PROTEST_R = 240.0
 FIGHT_R = 320.0
 FIGHT_TICKS = 900
 FIGHT_THROW_CD = 26
+FIGHT_ARM_R = 170.0           # 手里/脚边有家伙时主动迎战的距离
 FIGHT_MELEE_R = 40.0          # 够近就用身子撞/抓咬
+FIGHT_ARM_KEEP = 72.0         # 持械时与威胁保持的距离（拉开了才好扔）
 FIGHT_RECOVER_TICKS = 40      # 反击的迟疑
 
 # 复活同伴：特殊表情（吐舌/舔）扒拉一会儿
-REVIVE_TOUCH_R = 26.0
+REVIVE_TOUCH_R = 34.0        # 最近 chunk 对间距：挨着尸体就算摸到（原 26 一直够不着）
 REVIVE_TOUCH_TICKS = 150
 REVIVE_APPROACH_TICKS = 900
 
@@ -332,6 +336,9 @@ FOOD_URGE_RATE_FULL = 1.0 / 14400.0   # 吃饱了：约 360s（频率更低）
 FOOD_SEEK_P         = 0.75            # 攒满也只是这个命中率 → 找食频率整体略降
 # 代谢：体力每消耗满一条（energy 1.0）扣一格饱食
 METAB_FOOD_PER_BAR  = 1
+
+# 玩耍式狩猎：不饿但手里有矛/石头时，也会拿手里的家伙打飞虫
+HUNT_PLAY_PROB      = 0.05     # 每次重算闸（每 8 tick）掷中的概率
 
 # 徒手抓飞虫（蝙蝠/蝉乌贼）：饿了吃掉，吃饱了抓着玩会儿再放走
 CATCH_SEEK_R        = 150.0    # 飞虫进这个半径才想起来抓
@@ -392,9 +399,11 @@ POLE_TIP_HOP_PROB = 0.006      # 杆顶站着时每 tick 想跳到另一根杆�
 POLE_AIRGRAB_R = 12.0          # 空中贴杆即抓（jump-pole-hopping）
 POLE_AIRGRAB_PAD = 10.0        # 杆端外这点范围仍算够得着
 POLE_HOP_PROB = 0.30           # 下杆时改为跳向另一根杆的概率
-POLE_HOP_SEEK_R = 220.0        # 愿意跳过去的杆间最大距离
+POLE_HOP_MAX_DX = 46.0        # 杆顶跳另一根竖杆的最大横距（≈一次起跳滞空射程）
 POLE_HOP_VX = 4.0              # 跳向另一根杆的横冲量
 POLE_HOP_VY = 4.2              # 跳向另一根杆的上抛
+TIP_FALL_VX = 1.2             # 杆顶失衡滑落横速（原版失衡只是视觉量，不带发射冲量）
+TIP_FALL_VY = 0.4             # 杆顶失衡滑落初速（y↓）
 HP_WOBBLE_MIN = 30.0
 HP_WOBBLE_MAX = 60.0
 HP_RETARGET_TICKS = 40

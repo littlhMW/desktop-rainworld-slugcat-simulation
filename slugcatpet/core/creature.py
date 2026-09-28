@@ -45,6 +45,8 @@ WALL_CLIMB_SPEED = 2.2 * K_VEL      # 爬墙垂直速度
 WALL_JUMP_VX = 5.6 * K_VEL          # 蹬墙跳离墙横速
 WALL_JUMP_VY = 6.4 * K_VEL          # 蹬墙跳上抛
 WALL_JUMP_LOCK = 14                 # 蹬墙后硬直，期内不再吸附
+WALL_CLIMB_MAX_H = 30.0             # 墙最多只能攀爬「一只蛞蝓猫的高度」
+WALL_LEDGE_SLIDE = 0.5 * K_VEL      # 抓不住墙头时贴墙缓慢下滑速度
 CEIL_HANG_PAD = 22.0                # 吊顶时胸心离上边缘：伸手够顶、整只猫不出画面
 CEIL_SHIMMY_SPEED = 1.6 * K_VEL     # 吊顶横向挪动速度
 
@@ -227,6 +229,8 @@ class SlugcatBody:
         self.wall_cd = 0                # 蹬墙跳硬直
         self.wall_top_y = None          # 这面墙的可攀爬上沿 y（原版墙有高有低）
         self.at_wall_top = False        # 是否已抓在墙上沿
+        self.wall_grab_y = None         # 抓上墙那一刻的胸心 y（单次攀爬高度起点）
+        self.wall_slide = False         # 抓不住墙头：贴墙缓慢下滑
         self.ceil_cling = False         # 上边缘吊挂
         self.ceil_x = 0.0
         self.ceil_y = 0.0
@@ -427,6 +431,8 @@ class SlugcatBody:
         self.wall_climb_dir = 0
         self.wall_top_y = None
         self.at_wall_top = False
+        self.wall_grab_y = None
+        self.wall_slide = False
         self.ceil_cling = False
         self.crawl_want = False
         self.animation = None
@@ -458,6 +464,8 @@ class SlugcatBody:
         self.wall_climb_dir = 0
         self.wall_top_y = None if top_y is None else float(top_y)
         self.at_wall_top = False
+        self.wall_grab_y = self.chunk0.y
+        self.wall_slide = False
         self.feet_stuck = None
         self.crawl_anchor = None
         self.crawl_pose = 0.0
@@ -481,6 +489,8 @@ class SlugcatBody:
         self.wall_climb_dir = 0
         self.wall_top_y = None
         self.at_wall_top = False
+        self.wall_grab_y = None
+        self.wall_slide = False
         if self.animation == "ClimbOnBeam":
             self.animation = None
 
@@ -1157,10 +1167,10 @@ class SlugcatBody:
         if self.feet_stuck is not None and not flag:
             self.feet_stuck = None
         elif self.feet_stuck is None and flag:
-            self.feet_stuck = [c1.x, self._floor_h - c1.rad]
+            self.feet_stuck = [c1.x, self.support_y() - c1.rad]
         if self.feet_stuck is not None:
             self.feet_stuck[0] += (c1.x - self.feet_stuck[0]) * FEET_EASE
-            self.feet_stuck[1] = self._floor_h - c1.rad
+            self.feet_stuck[1] = self.support_y() - c1.rad
             if not c1.pinned:
                 c1.x = self.feet_stuck[0]
                 c1.y = self.feet_stuck[1]
@@ -1237,13 +1247,25 @@ class SlugcatBody:
                 elif c.x > self.walk_max:
                     c.x = self.walk_max
 
+    def support_y(self) -> float:
+        """脚下那块地的 y（工作区地板 or 别人窗口顶边）。"""
+        s = self.chunk1.support_y
+        return self._floor_h if s is None else s
+
     def _wall_update(self):
         """贴墙：钉 x、按墙爬方向驱动 y（原版 ClimbOnBeam 位姿）。"""
         x = self.wall_hold_x(self.wall_side)
         g = 0.9 * self.room_gravity
-        climb = WALL_CLIMB_SPEED * self.wall_climb_dir   # dir=-1 → 向上
+        if self.wall_slide and self.wall_climb_dir > 0:
+            climb = WALL_LEDGE_SLIDE                     # 抓不住：贴墙缓慢下滑
+        else:
+            climb = WALL_CLIMB_SPEED * self.wall_climb_dir   # dir=-1 → 向上
         c0 = self.chunk0
         top = self.wall_top_y                            # 墙面不是无限高：到上沿就抓沿
+        if self.wall_grab_y is not None:                 # 单次攀爬最多一只蛞蝓猫的高度
+            cap = self.wall_grab_y - WALL_CLIMB_MAX_H
+            if top is None or top < cap:
+                top = cap
         self.at_wall_top = bool(top is not None and climb < 0.0 and c0.y - c0.rad <= top)
         if self.at_wall_top:
             climb = 0.0
@@ -1322,10 +1344,10 @@ class SlugcatBody:
             self.crawl_anchor = c1.x
         self.crawl_pose = min(1.0, self.crawl_pose + 0.025)
         c1.x += (self.crawl_anchor - c1.x) * 0.06
-        c1.y = self._floor_h - c1.rad
+        c1.y = self.support_y() - c1.rad
         c1.vx *= 0.75
         c1.vy = 0.0
-        low_y = self._floor_h - c0.rad
+        low_y = self.support_y() - c0.rad
         high_y = c1.y - max(self.conn_rest, 8.0)
         target_y = high_y + (low_y - high_y) * self.crawl_pose
         dy = max(1.0, abs(target_y - c1.y))

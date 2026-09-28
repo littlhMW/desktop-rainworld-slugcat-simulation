@@ -745,9 +745,10 @@ class SlugcatGraphics(GraphicsDrawMixin):
             b_fp = (flip == 1)
             f = math.cos(ph) if (b_j1 != b_fp) else math.sin(ph)
             cond = (b_j1 == b_fp)
-            off_y_up = (-3.0 if cond else 3.0) + 6.0 * f
+            # SlugcatHand.cs:EngageInMovement：absoluteHuntPos.y += (cond ? -3 : 3) + 6f
+            off_y = (-3.0 if cond else 3.0) + 6.0 * f
             hx = px + (-flip if cond else flip)
-            hy = c0.y - off_y_up
+            hy = c0.y + off_y
             return (hx, hy), HUNT_SPEED, HAND_QUICKNESS
         if anim in ("HangFromBeam", "GetUpOnBeam"):
             beam_y = getattr(b, "pole_y", c0.y)

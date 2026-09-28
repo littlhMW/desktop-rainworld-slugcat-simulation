@@ -2174,12 +2174,14 @@ class ItemInteractionMixin:
         cur = self.cursor_logical()
         if cur is None:
             return
-        cb.retarget(clampf(cur[0], 20.0, self._WL - 20.0),
-                    clampf(cur[1], 40.0, self._HL - 10.0))
+        # 只拖不改植株：给豆荚一个拖拽目标，由弹簧自己弹回
+        cb.drag_point = (clampf(cur[0], 20.0, self._WL - 20.0),
+                         clampf(cur[1], 40.0, self._HL - 10.0))
 
     def _end_seedcob_drag(self) -> bool:
         if self._dragged_seedcob is None:
             return False
+        self._dragged_seedcob.drag_point = None
         self._dragged_seedcob = None
         return True
 

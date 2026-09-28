@@ -66,7 +66,7 @@ class Squidcada:
         self.state = ItemState.FREE
         self.held_by_hand = None
         self.stalk = None                  # 接口占位，恒 None
-        self.bites = 1
+        self.bites = 3                     # 活体肉食：3 口才吃完（合计 3 格食物）
         self.dead = False
         self.eaten = 0
         self.is_meat = True                # 原版：蝉乌贼是肉食（3 口 = 3 格食物）
@@ -154,7 +154,7 @@ class Squidcada:
 
     def die(self) -> None:
         self.dead = True
-        self.bites = 1
+        self.bites = 3                     # 刚死的蝉乌贼同样是 3 口
         self.surface_friction = 0.4
 
     # ── 主循环 ──

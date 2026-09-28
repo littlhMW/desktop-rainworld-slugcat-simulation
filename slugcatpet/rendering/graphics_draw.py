@@ -302,8 +302,9 @@ class GraphicsDrawMixin:
             else:
                 element = "LegsAVerticalPole"
                 self._legs_scale_x = facing_sx
-                d1y = _lerp(self._last_draw1[1], self.draw1[1], ts)
-                y = clampf(y, d1y - 4.0, d1y + 6.0)
+                # 原版 PlayerGraphics.cs:3090：腿 y 夹在胸绘点 -6 ~ +4
+                d0y = _lerp(self._last_draw0[1], self.draw0[1], ts)
+                y = clampf(y, d0y - 6.0, d0y + 4.0)
         elif self.bodyMode == "Stand":
             if self.is_moving():
                 n = len(self._leg_walk_frames)
