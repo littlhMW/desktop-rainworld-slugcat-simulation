@@ -127,6 +127,20 @@ python run_slugcatpet.py
 - **圣徒吃荤会眩晕**：对照 `Player.SaintStagger`（`Stun(time / 5)`，肉食的 `staggerTime` 220~800），素食 / 特殊食谱（圣徒）吃到 `is_meat` 的东西会 `Stun(44)`，走 Stunned 态并掉下手上的东西；吃果子不晕，杂食猫（白猫）吃荤也不晕。
 - 复核：`work/scratch/e2e_r47.py`（23 项：躯干/吻/尾 20 段逐段对拍、矮豆荚两侧都能敲开、爬杆同高投矛、吃荤眩晕）。
 
+**面条蝇攻击欲望 / 禅乌贼 / 蜥蜴 AI / 猫的攻击欲望 / 尸体与橡皮（第 48 轮）**：
+
+- **成体面条蝇真的会追猫了**：静态关系 `BigNeedleWorm → Slugcat = Eats 0.25`，但 `AI.cs UncomfortableToAfraidRelationshipModifier` 会在 `Lerp(150, 450, nervous)` 以内把 `Attacks` 改判成 `Afraid`。之前只落地了「拿着幼体 → Attacks 1.0」那一条（`BigNeedleWormAI.cs:333-413`），于是成体几乎从不出手。现在按 `nervous` 性格插出畏惧距离：比它远就把猫当猎物主动扑，一进圈立刻掉头跑；尸体既不追也不躲。恐惧距离随每只个体的性格不同（`nervous` 0~1 → 150~450px）。
+- **面条蝇的准度**（`BigNeedleWormAI.cs:325-349`）：进攻点不再是「偏差 >60px 才重挑」，而是每 tick 在「当前进攻点 / 目标点」周围撒一个 300px 内的候选点，`AttackPosScore` 更低就换过去；提前量用 `LerpMap(到进攻点的距离, 80, 400, 0, 30, 0.35)` 放大目标速度估计（每 tick 先衰减 1%，:154）；体轴朝向改取「体节中点 → 头」（:520，取错源会让蓄力条件几乎永远不成立）；贴住阈值 60 → 40（:533）。
+- **禅乌贼整条链路重写**（`Cicada.cs` / `CicadaAI.cs` / `CicadaGraphics.cs`）：体力按 1/70 每 tick 回升（原来几乎飞不动）；冲撞是 21 帧蓄势 → 21..38 直线突进（`CHARGE_THRUST = 4`/tick）→ 收招归零；触须 4 节半宽 `(1.6, 1.2, 0.9, 0.8)`，根部照 `CicadaGraphics.cs:553-555` 随 `lookDir` 偏移（`+lookDir*6` 与 `2*|p.x|*(1-|lookDir|)` 一起算，净位移 4px）；翅膀按 `|p.x|` 折算成「整片画 / 不画」，不留半透明毛边；**被吃**改成逐 tick 递减 `eaten`、归零才消失（把原仓库「吃东西有渐变外观」这一套还原到乌贼上）。
+- **蜥蜴 AI 照 `LizardAI.DetermineBehavior` 重排优先级**：Flee > 叼尸体 > Injured > Anger/Fight > casual 撕咬 > Hunt > InvestigateSound > Pack > wander。
+  - 品种关系表逐条照抄 `StaticWorld.cs:3691-3726`（绿→蓝 `Eats 0.25`、蓝→绿 `Afraid 0.25`、红→红 `Attacks 1.0`、黄→黄 `Pack 0.2`……），基表 `StaticWorld.cs:3668-3689`（→拾荒者 `Eats 0.8`、→蝉乌贼 `Eats 0.05`、→成体面条蝇 `Eats 0.25`）。
+  - 视野锥按 `LizardBreeds.cs` 的 `perfectVisionAngle / periferalVisionAngle = Lerp(1, -1, t)`，锥外只留 40% 视野。
+  - 侵略追踪器 `AgressionTracker`（`angerSpeedUp/Down = 0.001`，`Utility = InverseLerp(0.35, 1, anger)`）越过 0.35 转 Fighting，会真的互相撕咬掉血（`_lizard_bite` 现在也认拾荒者）；残血 `LizardInjuryTracker` 退向角落躲起来；`LurkTracker` 让白蜥 / 蝾螈原地潜伏 ×4；地面/地形被砸出的响声 320px 内会去查（砸中地面能引开蜥蜴）；黄蜥 `Pack` 结伴。
+- **蛞蝓猫的攻击欲望**：`FIGHT_UNARMED_R = 150` / `FIGHT_UNARMED_BRAVE = 0.70`（空手也敢主动扑上去的距离与胆量阈值）；敌对**拾荒者**（没交易过、`like` 低）进投掷目标列表——珍珠交易过的友好拾荒者不算。圣徒仍不肯为打猎用矛。
+- **尸体**：拖动非蛞蝓猫的尸体（含拾荒者）丢出窗口外就当场清除；活着的对象不会被误清。
+- **删除模式**：工具栏新增橡皮按钮，进去以后点谁删谁——13 类物件/生物（果子、石头、黏菌、蝠蝇、蜥蜴、蝉乌贼、面条蝇、珍珠、矛、拾荒者、豆荚、种子、杆）都能单点删除，蛞蝓猫不在此模式下被删；Esc / 右键退出。
+- 复核：`work/scratch/e2e_r48.py`（29 项：面条蝇远近关系与出手、乌贼蓄势三段 / 推力 / 体力 / 触须偏移 / 被吃、蜥蜴关系表与视野锥与受伤与响声与同类互咬、投掷目标与友好拾荒者、尸体出屏、删除模式含鼠标事件）。
+
 **社交动作**（第六类欲望「社交」攒满后凑到同伴身边做；动作词表见 `slugcatpet/behavior/social.py`）：
 
 | 动作 | 手势 | 含义 |
@@ -206,7 +220,7 @@ python run_slugcatpet.py
   - **两段攻击**：戳（0.05 伤害 / 30 帧眩晕，会打掉猫手上的东西）与突刺（1.22 伤害 / 60 帧眩晕，按原版口径 ≥ 蛞蝓猫即死阈值 1 所以必死）；突刺是 6 帧的蓄力挑刺，撞地形时按入射角分流——**顶进去就卡住**（`Stun(60)` + `stuckTime` 0.0125/帧，晕着的时候涨得极慢，合计约 3~4 秒拔不出来），擦着地面滑过只是"瘸" 30 帧。
   - **闪避**：任何朝它飞来的矛/石头都会触发一次侧移（12 的速度加到最近那节上，10 帧冷却），所以远距离很难打中；成体的血只有 0.4，一矛就是一条。
   - **接线**：成体每次刺/戳到猫都由窗口结算（刺死 / 戳晕 + 掉手上东西），卵到了时间就孵，幼体被吃掉改成逐口啃。
-- **测试可复现**：debug 模式下首次开窗会 `random.seed(...)`，整套行为链变得可复现（`work/scratch/run_all19.ps1` 现在 30 个脚本、连跑多次 `fails=0`）。
+- **测试可复现**：debug 模式下首次开窗会 `random.seed(...)`，整套行为链变得可复现（`work/scratch/run_all19.ps1` 现在 40 个脚本、连跑多次 `fails=0`）。
 
 ## 素材与版权说明
 
@@ -324,6 +338,20 @@ Nothing has a count limit any more - place as many as you like.
 - **The Saint is staggered by meat**: matching `Player.SaintStagger` (`Stun(time / 5)` with the meat `staggerTime` values of 220-800), a vegetarian / special diet (the Saint) eating something with `is_meat` gets `Stun(44)`, goes through the Stunned state and drops what it is holding; fruit does not stagger it, and an omnivore (the Survivor) is never staggered by meat.
 - Verification: `work/scratch/e2e_r47.py` (23 checks: all 20 torso/snout/tail radii against an independent recomputation, both sides of a low cob opened, same-height pole throw, meat stagger).
 
+**Noodlefly aggression / squidcada / lizard AI / slugcat aggression / corpses and the eraser (round 48)**:
+
+- **Adult noodleflies actually hunt the slugcat now**: the static relationship is `BigNeedleWorm -> Slugcat = Eats 0.25`, but `AI.cs UncomfortableToAfraidRelationshipModifier` rewrites `Attacks` into `Afraid` inside `Lerp(150, 450, nervous)`. Only the "holds an infant -> Attacks 1.0" branch (`BigNeedleWormAI.cs:333-413`) used to be implemented, so adults almost never attacked. The afraid range is now interpolated from the per-creature `nervous` personality: beyond it the cat is prey and gets chased, inside it the worm turns and flees; corpses are neither hunted nor feared.
+- **Noodlefly accuracy** (`BigNeedleWormAI.cs:325-349`): the attack-from point is no longer re-rolled only when off by more than 60px - every tick drops a candidate point within 300px of the current point or the target and keeps it if `AttackPosScore` is lower; the lead multiplies the target's velocity estimate by `LerpMap(dist to attack point, 80, 400, 0, 30, 0.35)` (the estimate itself decays 1% per tick, :154); the body-axis term now goes from the torso midpoint to the head (:520 - the old source made the charge condition almost never true); the "hugging the attack point" threshold went 60 -> 40 (:533).
+- **Squidcada rewritten end to end** (`Cicada.cs` / `CicadaAI.cs` / `CicadaGraphics.cs`): stamina regenerates at 1/70 per tick (it used to be nearly unable to fly); the charge is 21 frames of wind-up, then a straight 21..38 dash (`CHARGE_THRUST = 4`/tick), then a recovery that zeroes the counter; the four tentacle nodes have half-widths `(1.6, 1.2, 0.9, 0.8)` and the root follows `lookDir` per `CicadaGraphics.cs:553-555` (`+lookDir*6` combined with `2*|p.x|*(1-|lookDir|)`, so the net shift is 4px); wings are collapsed from `|p.x|` alpha into fully drawn or not drawn, with no half-transparent fringing; **being eaten** now ticks `eaten` down and only vanishes at zero - the original repo's gradual "food shrinks as it is eaten" look, ported to the squidcada.
+- **Lizard AI reordered to `LizardAI.DetermineBehavior`**: Flee > carry a corpse > Injured > Anger/Fight > casual bite > Hunt > InvestigateSound > Pack > wander.
+  - Breed relationship tables copied line by line from `StaticWorld.cs:3691-3726` (green->blue `Eats 0.25`, blue->green `Afraid 0.25`, red->red `Attacks 1.0`, yellow->yellow `Pack 0.2`, ...) and the base table from `StaticWorld.cs:3668-3689` (-> scavenger `Eats 0.8`, -> squidcada `Eats 0.05`, -> adult noodlefly `Eats 0.25`).
+  - Vision cones use `LizardBreeds.cs`'s `perfectVisionAngle / periferalVisionAngle = Lerp(1, -1, t)`, keeping 40% of the sight range outside the cone.
+  - The `AgressionTracker` (`angerSpeedUp/Down = 0.001`, `Utility = InverseLerp(0.35, 1, anger)`) flips to Fighting above 0.35 and the lizards really bite chunks out of each other (`_lizard_bite` now accepts scavengers too); a wounded lizard flees to a corner (`LizardInjuryTracker`); `LurkTracker` keeps whites and salamanders lurking 4x longer; terrain impacts within 320px are investigated (throwing something at the ground pulls lizards away); yellow lizards travel in packs.
+- **Slugcat aggression**: `FIGHT_UNARMED_R = 150` / `FIGHT_UNARMED_BRAVE = 0.70` (the radius and the bravery threshold for charging in bare-handed); hostile **scavengers** (no trade history, low `like`) join the throw-target list, while scavengers you traded a pearl with do not. The Saint still refuses to use spears for hunting.
+- **Corpses**: dragging a non-slugcat corpse (scavengers included) off the window removes it on the spot; living creatures are never mis-culled.
+- **Erase mode**: a new eraser button in the toolbar - click anything to delete just that one object. Thirteen pools (fruit, stones, slime mould, batflies, lizards, squidcadas, noodleflies, pearls, spears, scavengers, seed cobs, seeds, poles) are erasable and slugcats are never touched by it; Esc / right click leaves the mode.
+- Verification: `work/scratch/e2e_r48.py` (29 checks: noodlefly near/far relationship and firing, squidcada charge phases / thrust / stamina / tentacle offset / being eaten, the lizard relationship table, vision cone, injury, noise and same-species bites, throw targets and friendly scavengers, corpse-out-of-screen culling, and erase mode including the real mouse event).
+
 **Social actions** (the sixth desire, "social", sends a cat over to a companion once it fills up; the vocabulary lives in `slugcatpet/behavior/social.py`):
 
 | Action | Gesture | Meaning |
@@ -369,7 +397,7 @@ The same vocabulary also drives **everyday** gestures (when the social urge has 
 - **Missing the popcorn plant fixed (round 28)**: first, the same-frame wall stick - when a spear hit the window's side wall on the very frame it flew past the cob, it was snapped back to its stuck pose and that flight segment was lost to hit detection; the swept segment now uses **the position it actually flew to before the collision** (`_seg_end`, matching `Weapon.Update`, which checks hits before `StuckInWall`). Second, ballistic preview - before throwing, the cat replays the exact `Spear.step` trajectory and only throws when the preview says it connects. Third, **climbing the stalk** - when the cob hangs above the throw line and is out of jumping reach, the cat climbs the popcorn plant and spears it level with the cob (that stalk pole is virtual: never drawn, never blocks, and it is **not allowed to hand off to other poles at crossings**). Measured: 40/40 cob seeds and 17/17 placements open, with the spear stuck in the cob every time.
 - **Faster stamina (round 28)**: drain is now about 1.5x the previous values (vigorous 1/330, light 1/1000, pacing 1/1600, fallback 1/2000) while standing still recovers more slowly (1/2200), so the difference between acting and resting is far more visible. The "no food and no stamina" sleep gate also dropped from 0.35 to 0.15 - the cat only sleeps off a karma level when it genuinely has **no satiety and almost no stamina**, instead of lying down all the time.
 - **Status panel background (fixed again in round 28)**: the previous round only fixed the panel itself; the scroll viewport holding the rows still painted the palette's default light grey, showing up as a grey band. Viewport and row host are transparent now, so the whole panel is one dark colour.
-- **Reproducible tests**: in debug mode the first window seeds the global `random`, making the whole behaviour chain reproducible (`work/scratch/run_all19.ps1` now runs 25 scripts and reports `fails=0` repeatedly).
+- **Reproducible tests**: in debug mode the first window seeds the global `random`, making the whole behaviour chain reproducible (`work/scratch/run_all19.ps1` now runs 40 scripts and reports `fails=0` repeatedly).
 
 ## Origin
 

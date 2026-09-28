@@ -243,6 +243,5 @@ class FlyCatcher:
         f.held_by_hand = None
         f.vx = (1.0 if f.x >= b.chunk0.x else -1.0) * tuning.SPIT_AWAY_VX
         f.vy = tuning.SPIT_UP_VY
-        if hasattr(f, "flaps"):
-            f.flaps = max(int(getattr(f, "flaps", 0)), 20)
-            f.rest = 0
+        if hasattr(f, "stamina"):
+            f.stamina = max(f.stamina, 0.34)     # 放生的蝉乌贼给一点体力好飞走

@@ -22,7 +22,7 @@ from .slimemold import (SlimeMold, _dirvec as _slime_dir, _lerp_map as _slime_le
                         TENDRIL_JAG_K)
 from .stone import Stone
 from .batfly import BatFly
-from .lizard import BREEDS, Lizard, _ang_lerp
+from .lizard import BREEDS, Lizard, _ang_lerp, lizard_rel, lizard_rel_kind
 from .lizard_gfx import draw_lizard
 from .squidcada import Squidcada
 from .squidcada_gfx import draw_squidcada
@@ -41,6 +41,8 @@ from ..rendering.pixelmode import aa_hint, pen_width
 
 
 CORPSE_OUT_MARGIN = 14.0     # 尸体整个离开窗口这么多＝被扔出屏幕，直接清除
+ERASE_PICK_PAD = 6.0         # 删除模式命中放宽（与拖拽的 GRAB_PAD 同量级）
+LAMP_PICK_R = 12.0           # 灯笼按灯泡心算命中半径
 
 STALK_ROOT_W = 3.0
 STALK_TIP_W = 2.0
@@ -55,15 +57,8 @@ LAMP_BULB_FLESH = (255, 255, 255)
 LAMP_BULB_OUTLINE = (255, 51, 0)
 LAMP_GLOW_COLOR = (255, 51, 0)
 LAMP_GLOW_ALPHA = 130
-# ── 蜥蜴之间的关系（原版 StaticWorld.EstablishRelationship）──
-#   GreenLizard → GreenLizard AgressiveRival 0.8 / PinkLizard 0.2 / WhiteLizard 0.05
-#   GreenLizard → BlueLizard Eats 0.25（绿蜥会捕食蓝蜥）
-#   LizardTemplate → CicadaA Eats 0.05；BlueLizard / WhiteLizard → CicadaA Eats 0.7
-#   （关系表里没有蜥蜴 → Fly，所以蜥蜴不主动猎蝙蝠）
-_LIZ_RIVAL_W = {"green": {"green": 0.8, "pink": 0.2, "white": 0.05, "blue": 0.25}}
-_LIZ_PREY_W = {"blue": 0.7, "white": 0.7}
-_LIZ_PREY_DEFAULT = 0.05
-
+# 蜥蜴之间的关系表现在 lizard.py 的 LIZ_REL / LIZ_BASE_REL（照抄 StaticWorld.cs:3668-3726），
+# 由 _lizard_relations 分组后喂给 Lizard.step。
 LAMP_TILT_MAX_DEG = 25.0
 LAMP_STICK_OUTSET = 40.0
 STONE_STUN_SPEED = 8.0
@@ -119,6 +114,7 @@ SHOVE_COOLDOWN = 12
 
 # 蝉乌贼 / 珍珠 / 矛 / 拾荒者
 SQUIDCADA_GRAB_PAD = 10.0
+SQUID_LOOK_R = 320.0          # 蝉乌贼「看谁」的视距（CicadaGraphics.creatureLooker）
 NEEDLEWORM_GRAB_PAD = 12.0
 # 面条蝇成体的两段攻击（BigNeedleWorm.cs:168 獠牙戳 / :454 突刺）
 NW_STAB_DAMAGE = 1.22            # Violence(Stab, 1.22f, 60f) → 1.22 ≥ 蛞蝓猫即死阈值 1
@@ -1357,11 +1353,12 @@ class ItemInteractionMixin:
     def _cull_flung_corpses(self):
         """被甩出窗口的尸体直接清除（非蛞蝓猫的才算，猫死了另有守灵/转生逻辑）。"""
         for e in (*self.lizards, *self.squidcadas, *self.batflies,
-                  *self.needleworms):
+                  *self.needleworms, *self.scavengers):
             if (not getattr(e, "dead", False) or e.state != ItemState.FREE
                     or e is self._dragged_lizard or e is self._dragged_squidcada
                     or e is self._dragged_batfly
-                    or e is self._dragged_needleworm):
+                    or e is self._dragged_needleworm
+                    or e is self._dragged_scavenger):
                 continue
             rad = getattr(e, "rad", None) or getattr(e, "body_rad", 0.0)
             if self._out_of_window(e, rad):
@@ -1382,35 +1379,50 @@ class ItemInteractionMixin:
             targets.append((pet, pet.body.chunk0.x, pet.body.chunk0.y,
                             beh.is_dead(), beh.state == "Stunned"))
         for lz in self.lizards:
+            prey, threats, others, pack = self._lizard_relations(lz)
             lz.step(self._WL, self._HL, targets=targets, cursor=cur,
-                    rivals=self._lizard_rivals(lz), prey=self._lizard_prey(lz),
-                    cats=targets)
+                    prey=prey, cats=targets, threats=threats, others=others, pack=pack)
             self._lizard_bite(lz)
         self._cull_flung_corpses()
 
-    def _lizard_rivals(self, lz):
-        """同族竞争者 / 捕食对象：只有绿蜥蜴在关系表里有同族条目。"""
-        table = _LIZ_RIVAL_W.get(lz.breed.key)
-        if not table:
-            return ()
-        out = []
+    def _lizard_relations(self, lz):
+        """按原版关系表（StaticWorld.cs:3668-3726 + LizardAI.ModuleToTrackRelationship）
+        把场上对象分成四组：prey(Eats/Attacks) / threats(Afraid) / others(AgressiveRival)
+        / pack(Pack)。返回 (prey, threats, others, pack)，每项是 [(obj, 权重)]。"""
+        prey, threats, others, pack = [], [], [], []
+
+        def route(kind, w, obj):
+            if kind in ("Eats", "Attacks"):
+                prey.append((obj, w))
+            elif kind == "Afraid":
+                threats.append((obj, w))
+            elif kind == "Pack":
+                pack.append((obj, w))
+            elif kind == "AgressiveRival":
+                others.append((obj, w))
+
         for other in self.lizards:
-            if other is lz or other.dead or other.state != ItemState.FREE:
+            if other is lz or other is self._dragged_lizard:
                 continue
-            w = table.get(other.breed.key)
-            if w:
-                out.append((other, w))
-        return tuple(out)
+            if other.dead or other.state != ItemState.FREE:
+                continue
+            route(*lizard_rel(lz.breed.key, other.breed.key), other)
+        for sq in self.squidcadas:
+            if not sq.dead and sq.state == ItemState.FREE:
+                route(*lizard_rel_kind(lz.breed.key, "squidcada"), sq)
+        for nw in self.needleworms:
+            if nw.dead or nw.state != ItemState.FREE or nw.age not in ("small", "big"):
+                continue
+            route(*lizard_rel_kind(lz.breed.key,
+                                   "noodle_big" if nw.age == "big" else "noodle_small"), nw)
+        for sc in self.scavengers:
+            if not sc.dead and sc.state == ItemState.FREE:
+                route(*lizard_rel_kind(lz.breed.key, "scavenger"), sc)
+        return tuple(prey), tuple(threats), tuple(others), tuple(pack)
 
     def _lizard_prey(self, lz):
-        """小猎物：原版 LizardTemplate → CicadaA Eats 0.05（蓝/白蜥 0.7）。"""
-        w = _LIZ_PREY_W.get(lz.breed.key, _LIZ_PREY_DEFAULT)
-        out = [(sq, w) for sq in self.squidcadas
-               if not sq.dead and sq.state == ItemState.FREE]
-        out += [(nw, 0.25 if nw.age == "big" else 0.3) for nw in self.needleworms
-                if not nw.dead and nw.state == ItemState.FREE
-                and nw.age in ("small", "big")]
-        return tuple(out)
+        """兼容旧签名：只取猎物那一组。"""
+        return self._lizard_relations(lz)[0]
 
     def _lizard_death_fx(self, lz):
         """蜥蜴被击杀：重震一下（原版会有血花，这里只用震动表示）。"""
@@ -1464,6 +1476,10 @@ class ItemInteractionMixin:
             obj.die()
             obj.state = ItemState.EATEN
             self._shake[1] += 0.3
+        elif isinstance(obj, Scavenger):          # 原版 LizardTemplate→Scavenger Eats 0.8
+            if dmg > 0.0 and obj.hurt(dmg):
+                self._shake[0] += 1.2 * lz.facing
+                self._shake[1] += 0.8
         elif isinstance(obj, NeedleWorm):         # 原版 Eats 0.25(成)/0.3(幼)
             if obj.age == AGE_SMALL:
                 if obj.bite():                    # SmallNeedleWorm.cs:356 一口一口啃
@@ -1560,6 +1576,115 @@ class ItemInteractionMixin:
         self.unsetCursor()
         self._passthrough = None
 
+    # ── 删除模式：点哪个非蛞蝓猫对象就删哪个 ──
+    ERASE_POOLS = ("fruits", "stones", "slimemolds", "batflies", "lizards",
+                   "squidcadas", "needleworms", "pearls", "spears",
+                   "scavengers", "seedcobs", "seeds", "poles")
+
+    def enter_erase_mode(self):
+        """删除模式（复用放置模式的光标/ESC/鼠标捕获机制）。
+
+        复刻原版沙箱的「橡皮」：点中哪个物件删哪个；蛞蝓猫不在此模式下被删。
+        """
+        self._place_mode = True
+        self._place_kind = "erase"
+        self._begin_place_capture()
+        return True
+
+    @staticmethod
+    def _erase_dist(obj, cx, cy):
+        """命中距离（<=0 表示光标在物体内部）；无法定位的返回 None。"""
+        if hasattr(obj, "bulb_x"):
+            return math.hypot(cx - obj.bulb_x, cy - obj.bulb_y) - LAMP_PICK_R
+        if hasattr(obj, "body_path"):                  # 蜥蜴这类多节身体
+            return _dist_to_path(obj.body_path(), cx, cy) - obj.body_rad
+        if hasattr(obj, "ax") and hasattr(obj, "bx"):  # 杆：到线段
+            return _seg_dist(obj.ax, obj.ay, obj.bx, obj.by, cx, cy) - POLE_RAD
+        if getattr(obj, "x", None) is None:
+            return None
+        return (math.hypot(cx - obj.x, cy - getattr(obj, "y", 0.0))
+                - (getattr(obj, "rad", 0.0) or 0.0))
+
+    def erase_target(self, cx, cy):
+        """光标下最该删的那个对象 → (对象, 所在池名)；没有则 None。"""
+        best, bestd, bestname = None, 1e9, None
+        pools = [(n, getattr(self, n)) for n in self.ERASE_POOLS]
+        if self.lamp is not None:
+            pools.append(("lamp", (self.lamp,)))
+        for name, pool in pools:
+            for obj in pool:
+                d = self._erase_dist(obj, cx, cy)
+                if d is None or d > ERASE_PICK_PAD or d >= bestd:
+                    continue
+                best, bestd, bestname = obj, d, name
+        return None if best is None else (best, bestname)
+
+    def erase_at(self, pos) -> bool:
+        """删除模式点击：删掉光标下那一个对象（蛞蝓猫不在删除范围内）。"""
+        if pos is None:
+            return False
+        hit = self.erase_target(pos[0], pos[1])
+        if hit is None:
+            return False
+        obj, name = hit
+        if name == "lamp":
+            self.clear_lamp()
+        else:
+            pool = getattr(self, name)
+            try:
+                pool.remove(obj)
+            except ValueError:
+                pass
+            if getattr(obj, "state", None) is not None:
+                obj.state = ItemState.GONE
+        for attr in ("_dragged_fruit", "_dragged_stone", "_dragged_slimemold",
+                     "_dragged_batfly", "_dragged_lizard", "_dragged_squidcada",
+                     "_dragged_needleworm", "_dragged_pearl", "_dragged_spear",
+                     "_dragged_scavenger", "_dragged_seedcob"):
+            if getattr(self, attr, None) is obj:
+                setattr(self, attr, None)
+        for pet in self.pets:                  # 猫手里/嘴里的引用一并放开
+            b = pet.body
+            for slot, rel in (("carried_fruit", "release_fruit"),
+                              ("carried_stone", "release_stone"),
+                              ("carried_spear", "release_spear")):
+                if getattr(b, slot, None) is obj:
+                    getattr(b, rel)()
+        self.world_version += 1
+        self.geometry_version += 1
+        self.update()
+        return True
+
+    def _draw_erase_hint(self, p):
+        """删除模式光标：准星 + 将被删除对象的外圈。"""
+        from PySide6.QtGui import QPen
+        cur = self.cursor_logical()
+        if cur is None:
+            return
+        cx, cy = cur
+        if not (0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL):
+            return
+        p.save()
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QColor(232, 74, 74, 235), 2.0))
+        hit = self.erase_target(cx, cy)
+        if hit is not None:
+            obj = hit[0]
+            if hasattr(obj, "bulb_x"):
+                p.drawEllipse(QPointF(obj.bulb_x, obj.bulb_y), LAMP_PICK_R, LAMP_PICK_R)
+            else:
+                ox = getattr(obj, "x", None)
+                if ox is None:
+                    ox, oy = obj.ax, obj.ay
+                else:
+                    oy = getattr(obj, "y", 0.0)
+                rr = max(6.0, float(getattr(obj, "rad", 0.0)
+                                    or getattr(obj, "body_rad", 0.0) or 6.0) + 4.0)
+                p.drawEllipse(QPointF(ox, oy), rr, rr)
+        p.drawLine(QPointF(cx - 7.0, cy), QPointF(cx + 7.0, cy))
+        p.drawLine(QPointF(cx, cy - 7.0), QPointF(cx, cy + 7.0))
+        p.restore()
+
     def _draw_fruit_ropes(self, p):
         ts = self._ts
         for f in self.fruits:
@@ -1611,6 +1736,10 @@ class ItemInteractionMixin:
 
     def _draw_place_hint(self, p):
         from PySide6.QtGui import QPen
+
+        if self._place_kind == "erase":
+            self._draw_erase_hint(p)
+            return
 
         if self._place_kind in ("vpole", "hpole"):
             self._draw_pole_hint(p)
@@ -1768,12 +1897,37 @@ class ItemInteractionMixin:
         self._step_squidcada_drag()
         if not self.squidcadas:
             return
-        threats = [(pet, pet.body.chunk0.x, pet.body.chunk0.y) for pet in self.pets]
+        threats = [(pet, pet.body.chunk0.x, pet.body.chunk0.y, self._pet_armed(pet))
+                   for pet in self.pets]
         for sc in self.squidcadas:
             sc._impact_cb = self._shake_impact
-            sc.step(self._WL, self._HL, threats=threats)
+            sc.step(self._WL, self._HL, threats=threats,
+                    look_at=self._squid_look_at(sc))
         self._cull_flung_corpses()
         self.squidcadas = [sc for sc in self.squidcadas if sc.state != ItemState.EATEN]
+
+    @staticmethod
+    def _pet_armed(pet) -> bool:
+        """这只猫手上有没有武器（CicadaAI.cs:645 armed）。"""
+        b = pet.body
+        return (getattr(b, "carried_spear", None) is not None
+                or getattr(b, "carried_stone", None) is not None)
+
+    def _squid_look_at(self, sc):
+        """CicadaGraphics.creatureLooker：看向视距内最近的生物。"""
+        best, bd = None, SQUID_LOOK_R
+        for pet in self.pets:
+            c0 = pet.body.chunk0
+            d = math.hypot(c0.x - sc.x, c0.y - sc.y)
+            if d < bd:
+                best, bd = (c0.x, c0.y), d
+        for lz in self.lizards:
+            if lz.dead or lz.state != ItemState.FREE:
+                continue
+            d = math.hypot(lz.x - sc.x, lz.y - sc.y)
+            if d < bd:
+                best, bd = (lz.x, lz.y), d
+        return best
 
     def _draw_squidcadas(self, p):
         ts = self._ts
@@ -2579,6 +2733,10 @@ class ItemInteractionMixin:
         sc = self._dragged_scavenger
         if sc is None:
             return False
+        if sc.dead and self._out_of_window(sc, sc.rad):
+            sc.state = ItemState.GONE          # 尸体被拖出窗口扔了：直接清除
+            self._dragged_scavenger = None
+            return True
         sc.release(0.0, 0.0)
         self._dragged_scavenger = None
         return True

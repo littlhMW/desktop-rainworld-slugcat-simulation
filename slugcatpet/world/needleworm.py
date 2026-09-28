@@ -90,6 +90,12 @@ TILE = 20.0
 CLOSE_TILES = 5.0               # NeedleWormAI.cs:306 起：<5 tiles 视为贴脸
 UNCLOSE_TILES = 10.0            # 同处：>10 tiles 且空间开阔才解除
 HOSTILE_TEMP = -0.25            # BigNeedleWormAI.cs:404 tempLike < -0.25 → Attacks
+# 静态关系（StaticWorld：BigNeedleWorm → Slugcat = Eats 0.25）让成体远远地就把
+# 猫当猎物扑上去；但 AI.cs UncomfortableToAfraidRelationshipModifier 会在
+# Lerp(150, 450, nervous) 以内把 Attacks 改判成 Afraid —— 贴脸反而掉头跑。
+PREY_W = 0.25                   # StaticWorld：BigNeedleWorm → Slugcat = Eats
+AFRAID_MIN = 150.0              # UncomfortableToAfraidRelationshipModifier minDist
+AFRAID_MAX = 450.0              # 同处 maxDist（按 nervous 性格插值）
 TEMP_EVEN_SPEED = 0.0005        # BigNeedleWormAI.cs:121 EvenOutAllTemps(0.0005f)
 # SocialEventRecognizer.EventID → 扣 tempLike 的量（BigNeedleWormAI.cs:415-455）
 SOCIAL_INFLUENCE = {
@@ -233,6 +239,7 @@ class NeedleWorm:
                  "target_vel", "target_chunk", "respond_cry", "keep_close",
                  "follow", "fleeing", "threat", "prey", "focus", "attack_event",
                  "poke_event", "last_stuck_tip", "ideal_dist",
+                 "nervous",
                  # 幼体 / 卵
                  "mother", "mom_seg", "follow_cat", "hatch_t", "hatched",
                  "hatch_spawn", "_wobble", "_goal", "_goal_timer",
@@ -283,6 +290,7 @@ class NeedleWorm:
         self.hold_child = {}                # NeedleWormTrackState.holdingChild
         # ── 成体攻击 ──
         self.ideal_dist = IDEAL_ATTACK_DIST
+        self.nervous = rng.random()         # personality.nervous：决定「多近就怂」
         self.attack_counter = 0
         self.attack_ready = 0.0
         self.charging_attack = 0.0
@@ -770,7 +778,12 @@ class NeedleWorm:
             if self.respond_cry == 0:
                 self.scream = max(self.scream, 0.5)
 
-        # 关系（BigNeedleWormAI.UpdateDynamicRelationship:333-413）
+        # 关系（BigNeedleWormAI.UpdateDynamicRelationship:333-413 +
+        # AI.cs UncomfortableToAfraidRelationshipModifier）：静态关系是
+        # Eats 0.25，所以成体在 afraid_range 之外会主动扑向猫；一进
+        # afraid_range 就改判 Afraid 掉头跑。旧版只认「拿着幼体」，
+        # 于是成体几乎从不出手 —— 这正是「攻击欲望」的缺口。
+        afraid_range = lerp(AFRAID_MIN, AFRAID_MAX, self.nervous)
         threat = prey = None
         best_t = best_p = 1e18
         for c in cats:
@@ -786,8 +799,13 @@ class NeedleWorm:
             if self.hostile_to(c):
                 if d < best_p:
                     best_p, prey = d, c
-            elif self.close_flags.get(uid) and d < best_t:
-                best_t, threat = d, c
+            elif c.get("dead"):
+                pass                        # 尸体既不追也不躲
+            elif self.close_flags.get(uid) or d < afraid_range:
+                if d < best_t:
+                    best_t, threat = d, c
+            elif d < best_p:
+                best_p, prey = d, c         # 静态 Eats 0.25：远远地就开始追
         for other in adults:            # StaticWorld.cs:4007 同族 Attacks 0.9
             if other is self or other.dead:
                 continue
@@ -859,25 +877,34 @@ class NeedleWorm:
         ch = chunks[self.target_chunk % len(chunks)]
         tx, ty = ch[0], ch[1]
         vel = (ch[0] - ch[3], ch[1] - ch[4])
+        # BigNeedleWormAI.cs:154：目标速度估计每 tick 衰减 1%。
+        self.target_vel = (self.target_vel[0] * 0.99, self.target_vel[1] * 0.99)
         self.target_vel = _move_towards(self.target_vel, vel, 0.075)
-        # attackFromPos：以目标为圆心、理想距离为半径重挑进攻点
+        # attackFromPos：每 tick 在「当前进攻点 / 目标点」周围撒一个候选点，
+        # 分数更低就换过去（BigNeedleWormAI.cs:299-306）。这是它「凑上去打」
+        # 的欲望来源：之前只在偏差 >60px 且 1/60 概率才换，几乎不挪窝。
         ax, ay = self.attack_from
-        if (self.charging_attack < 0.5
-                and (abs(math.hypot(tx - ax, ty - ay) - self.ideal_dist) > 60.0
-                     or self._rng.random() < 1.0 / 60.0)):
+        if self.charging_attack < 0.5:
+            bx, by = (ax, ay) if self._rng.random() < 0.5 else (tx, ty)
+            r = 300.0 * self._rng.random()
             ang = self._rng.uniform(0.0, math.tau)
-            ax = tx + math.cos(ang) * self.ideal_dist
-            ay = ty + math.sin(ang) * self.ideal_dist * 0.6
-            ax = clampf(ax, WALL_PAD, max(WALL_PAD, WL - WALL_PAD))
-            ay = clampf(ay, WALL_PAD, max(WALL_PAD, HL - self.rad - WALL_PAD))
+            tst = (bx + math.cos(ang) * r, by + math.sin(ang) * r)
+            if (self._attack_pos_score(tst[0], tst[1], tx, ty, WL, HL)
+                    < self._attack_pos_score(ax, ay, tx, ty, WL, HL)):
+                ax, ay = tst
+        ax = clampf(ax, WALL_PAD, max(WALL_PAD, WL - WALL_PAD))
+        ay = clampf(ay, WALL_PAD, max(WALL_PAD, HL - self.rad - WALL_PAD))
         self.attack_from = (ax, ay)
-        lead = self.target_vel
+        # 预判提前量（BigNeedleWormAI.cs:203）：距离进攻点越远，目标速度放得越大
+        # （80px→0 倍，400px→30 倍，指数 0.35）。少了这一项就总是打在目标身后。
+        lead_k = _lerp_map(math.hypot(ax - tx, ay - ty), 80.0, 400.0, 0.0, 30.0, 0.35)
+        lead = (self.target_vel[0] * lead_k, self.target_vel[1] * lead_k)
         smooth = inv_lerp(0.9, 0.5, self.charging_attack)
         self.attack_target = (
             lerp(self.attack_target[0], tx + lead[0], smooth),
             lerp(self.attack_target[1], ty + lead[1], smooth))
         d = math.hypot(self.x - ax, self.y - ay)
-        if d < ATTACK_DIST_300:
+        if charge and d < ATTACK_DIST_300:      # 只在 Attack 行为里加（原版 :307）
             self.attack_counter += 1
         if d < ATTACK_DIST_800:
             self.attack_counter += 1
@@ -888,17 +915,38 @@ class NeedleWorm:
                     ay - uy * (self.charging_attack * 100.0))
         return (ax, ay)
 
+    def _attack_pos_score(self, tx, ty, px, py, WL, HL) -> float:
+        """BigNeedleWormAI.cs:325-349 AttackPosScore 的可移植部分。
+
+        原版＝不可达/没视线→MaxValue、贴地<2→MaxValue、|理想距离-到目标距离|
+        -50 起步、减去地形贴近度×20、加上离身体的距离/10，够近（<60）时按
+        attackCounter 打折，出房间 +1000。宠物里没有寻路与视线网格，保留
+        距离项与越界惩罚（越低越好）。
+        """
+        diag = math.hypot(tx - px, ty - py)
+        num = max(0.0, abs(self.ideal_dist - diag) - 50.0)
+        num += math.hypot(tx - self.x, ty - self.y) / 10.0
+        if math.hypot(tx - self.x, ty - self.y) < 60.0:
+            num -= float(self.attack_counter) * 5.0
+        if tx < 0.0 or ty < 0.0 or tx > WL or ty > HL:
+            num += 1000.0
+        return num
+
     def _attack_charge(self, prey) -> None:
         """BigNeedleWorm.cs:477-581 AttackCharge：蓄力 → 满蓄且看得见獠牙 → Swish。"""
         ax, ay = self.attack_from
         tx, ty = self.attack_target
         ux, uy = _dirvec(ax, ay, tx, ty)
         # 身体指向与进攻方向一致 & 目标在视野内（原版 num3/num4）
-        bx, by = _dirvec(self.attack_from[0], self.attack_from[1], self.x, self.y)
+        # :520 身体朝向取「体节中点 → 头」而不是「进攻点 → 身体」：取错源会让
+        # num4 几乎永远为 0，蓄力条件不成立 → 成体几乎不出手。
+        mid = self.seg[len(self.seg) // 2] if self.seg else None
+        bx, by = _dirvec(mid.x if mid is not None else self.x,
+                         mid.y if mid is not None else self.y, self.x, self.y)
         num3 = inv_lerp(0.5, 0.95, self.attack_ready)
         num4 = (inv_lerp(0.2, 0.9, ux * bx + uy * by)
                 * inv_lerp(20.0, 50.0, math.hypot(tx - self.x, ty - self.y)))
-        near = math.hypot(self.x - ax, self.y - ay) < 60.0
+        near = math.hypot(self.x - ax, self.y - ay) < 40.0     # 原版 :533 是 40f
         if self.charging_attack > 0.0 or (near and num4 > 0.5):
             if num3 >= 1.0:
                 self.charging_attack = min(1.0, self.charging_attack

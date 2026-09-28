@@ -20,7 +20,7 @@ BLACK_RGB = (27, 11, 33)          # same as palette.blackColor
 CHUNK_GAP = 14.0                  # Cicada.cs bodyChunkConnections[0].distance
 BODY_MID = CHUNK_GAP * 0.5        # sprites sit on the midpoint of the two chunks
 TENT_REACH = (24.0, 19.0)         # ConnectToPoint length, n == 0 / n == 1
-TENT_HALF = (1.6, 1.0, 0.8)       # tube half widths per segment
+TENT_HALF = (1.6, 1.2, 0.9, 0.8)  # tube half widths per node（CicadaGraphics.cs:566-598 的 num14/num11）
 FLAP_PERIOD = 3.0                 # wingTimeAdd 0..3
 
 
@@ -64,8 +64,11 @@ def palette(sc):
 def _tent_points(sc, ux, uy, px, py, zx, zy, ax, m, l, ts):
     """One tentacle: 3-segment polyline from the body front to the limb tip."""
     x, y = lerp(sc.last_x, sc.x, ts), lerp(sc.last_y, sc.y, ts)
-    v3x = x + ux * (8.0 + 2.0 * ax) + px * (zx * 3.0)
-    v3y = y + uy * (8.0 + 2.0 * ax) + py * (zx * 3.0)
+    # CicadaGraphics.cs:553-555 —— 触须根部随 lookDir 一起偏
+    ldx, ldy = sc.look_dir
+    lm = min(1.0, math.hypot(ldx, ldy))
+    v3x = x + ux * (8.0 + 2.0 * ax * (1.0 - lm)) + px * (zx * (3.0 - 2.0 * lm)) + ldx * 6.0
+    v3y = y + uy * (8.0 + 2.0 * ax * (1.0 - lm)) + py * (zx * (3.0 - 2.0 * lm)) + ldy * 6.0
     sx, sy = v3x, v3y
     if l == 0:
         sx, sy = v3x + ux * (3.0 * ax), v3y + uy * (3.0 * ax)
@@ -132,17 +135,25 @@ def draw_squidcada(painter, atlas, sc, ts) -> None:
         for l in (0, 1):
             pts = _tent_points(sc, ux, uy, px, py, zx, zy, ax, m, l, ts)
             w = sc.tent_thick
-            draw_rope(painter, pts, [TENT_HALF[0] * 2.0 * w, TENT_HALF[1] * 2.0 * w,
-                                     TENT_HALF[2] * 2.0 * w, 0.6 * w], body)
-    blit(painter, atlas, "Cicada%dhead" % n, mx, my, rot, sfx, 1.0, body)
-    blit(painter, atlas, "Cicada%dshield" % n, mx, my, rot, sfx, 1.0, shield)
+            draw_rope(painter, pts, [h * 2.0 * w for h in TENT_HALF], body)
+    # CicadaGraphics.cs:486-497 —— 头/眼/盾各自偏 lookDir，并按 lookRotation 微转
+    ldx, ldy = sc.look_dir
+    lrot = sc.look_rot
+    blit(painter, atlas, "Cicada%dhead" % n, mx + ldx, my + ldy,
+         rot + lrot * 0.1, sfx, 1.0, body)
+    blit(painter, atlas, "Cicada%dshield" % n, mx, my,
+         rot + lrot * 0.05, sfx, 1.0, shield)
     blink = getattr(sc, "blink", 1)
-    blit(painter, atlas, "Cicada%deyes1" % n, mx, my, rot, sfx, 1.0,
+    blit(painter, atlas, "Cicada%deyes1" % n, mx + ldx * 2.0, my + ldy * 2.0,
+         rot + lrot * 0.1, sfx, 1.0,
          eyes_a if blink > 0 else shield)
     if blink >= 0:
-        blit(painter, atlas, "Cicada%deyes2" % n, mx, my, rot, sfx, 1.0, eyes_b)
+        blit(painter, atlas, "Cicada%deyes2" % n, mx + ldx * 3.0, my + ldy * 3.0,
+             rot + lrot * 0.1, sfx, 1.0, eyes_b)
     dep = getattr(sc, "wing_dep", [1.0, 1.0, 1.0, 1.0])
     wph = getattr(sc, "wing_offset", 0.0) + _inv(0.0, 3.0, getattr(sc, "flap_t", 0.0) + ts)
+    cv = clampf(getattr(sc, "charging_vis", 0.0), 0.0, 1.0)     # CicadaGraphics.cs:45/174-178
+    charging = getattr(sc, "charge_counter", 0) > 0
     for j in (0, 1):
         num7 = (5.0 if j == 0 else 11.0) + 3.0 * ax
         num8 = -20.0 if j == 0 else 24.0
@@ -157,9 +168,12 @@ def draw_squidcada(painter, atlas, sc, ts) -> None:
             off = num9 * ks + zx * lerp(-3.0, -5.0, _inv(0.5, 0.0, d))
             wx = mx + ux * num7 + px * off
             wy = my + uy * num7 + py * off
+            wx += ldx * (1.0 if j == 0 else 3.0)      # CicadaGraphics.cs:509
+            wy += ldy * (1.0 if j == 0 else 3.0)
             a = ax
             if d < 1.0:
                 a = max(_inv(30.0, 18.0, math.dist((c1x, c1y), (wx, wy))), _inv(1.0, 0.5, d))
+            a = lerp(a, 1.0, cv)                       # :517
             wcol = _mix(BLACK_RGB, shield, abs(a) + 0.2)
             # 原版翅膀 alpha = |p.x|^3 是连续渐变；本项目要干净像素 ⇒ 折算成
             # 「够看得见就整片画，几乎侧对镜头就不画」，不留半透明毛边。
@@ -167,8 +181,11 @@ def draw_squidcada(painter, atlas, sc, ts) -> None:
             if d >= 1.0:
                 frac = wph if j == 0 else wph + 0.8
                 frac = frac - math.floor(frac)          # Custom.Decimal
-                g = (0.5 + 0.5 * math.sin(frac ** (0.75 if j == 0 else 1.3) * math.tau)) ** 0.7
+                g = (0.5 + 0.5 * math.sin(frac ** (0.75 if j == 0 else 1.3) * math.tau)
+                     * lerp(1.0, 0.3, cv)) ** 0.7       # :537
                 ang = lerp(-65.0, 40.0, g) if j == 0 else lerp(-45.0, 75.0, g)
+                if cv > 0.0:                            # :539-542
+                    ang = ang - 60.0 * cv if charging else ang + 30.0 * cv
                 wrot = num - 180.0 + (num8 + ang) * km
                 # 原版：扑翅到两端时翅膀接近侧对镜头 ⇒ 用 scaleX 收窄
                 wsc = (max(0.0, lerp(abs(zy), 1.0, abs(0.5 - ang) * 1.4))

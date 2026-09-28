@@ -21,23 +21,41 @@ SURFACE_FRICTION = 0.4    # Cicada.cs:138
 BUOYANCY = 0.95           # Cicada.cs:141
 WATER_FRICTION = 0.96     # Cicada.cs:140
 
-HOVER_H = 78.0            # 巡航高度（离地，窗口很矮时的下限）
-HOVER_TOP = 104.0         # 巡航高度（离窗口上边；原版在房间上半部悬停）
-HOVER_BAND = 18.0         # 高度带：出带才修正
-HOVER_PULL = 3.0          # 掉得太低时的额外拉升倍率
-TAKEOFF_VY = 2.6          # 落地后再起飞的上冲速度（原版扑翅起飞）
-HOVER_VY_MAX = 1.9        # 巡航期垂直速度上限（平滑悬停）
-FLAP_PERIOD = 34          # 扑翅周期 tick
-FLAP_THRUST = 3.4         # 每周期上冲
-DRIFT_ACCEL = 0.10
-DRIFT_REPICK = 150
+# ── 原版 Cicada 飞行模型（数字全部取自 Cicada.cs / CicadaAI.cs）──
+STAMINA_REGEN = 1.0 / 70.0          # :234 没被抓/没黏住时每 tick 回 1/70（约 1.75 s 回满）
+STAMINA_FLY = 1.0 / 3.0             # :587 flying = stamina > 1/3
+LIFT_DRAIN_M = 1.0 / 190.0          # :591 雄：托着猫飞时每 tick 掉这么多
+LIFT_DRAIN_F = 1.0 / 120.0          # :591 雌
+FLY_DRAG0, FLY_DRAG1 = 0.98, 0.94   # :305-306 两个 bodyChunk 各自的阻尼
+FLY_LIFT0, FLY_LIFT1 = 0.8, 1.2     # :309-310 两个 bodyChunk 各自的升力
+FLY_SIN = 0.05                      # :303-304 正弦抖动的幅度
+FLY_SIN_PERIOD = (45.0, 85.0)       # :298 抖动周期
+STEER0, STEER1 = 1.1, 0.65          # :512-513 朝路径目标推进
+CONTACT_PUSH = 8.0                  # :369 贴地/贴墙时的顶开力
+TAKEOFF_V0, TAKEOFF_V1 = 9.0, 7.0   # :764-765 起飞初速
+LAND_WAIT = 30                      # :531 落地后等这么久才起飞
+CHARGE_SPINUP = 21                  # :540 <21 蓄势后仰；>=21 直线突进
+CHARGE_END = 38                     # :550 >38 收招
+CHARGE_THRUST = 4.0                 # :559 突进每 tick 的推力
+CHARGE_BACK = 0.8                   # :544 蓄势时后仰
+CHARGE_WINDUP_DECAY = 0.8           # :542-543 蓄势阻尼
+CHARGE_EXIT_DECAY = 0.5             # :553-554 收招阻尼
+CHARGE_VIS_UP, CHARGE_VIS_DOWN = 0.1, 0.05   # CicadaGraphics.cs:174-178
+ANTAGONIZE_LIKE = -0.1              # CicadaAI.cs:640 num < -0.1 → 敌意
+AFRAID_LIKE = -0.5                  # CicadaAI.cs:645 num < -0.5 且对方带武器 → 畏惧
+IGNORE_LIKE = 0.5                   # CicadaAI.cs:652 num > 0.5 → 无视
+CHARGE_RANGE = 40.0                 # CicadaAI.cs:485 贴到 40px 内才顶
+CHARGE_CHANCE = 1.0 / 30.0          # CicadaAI.cs:485 每 tick 掷 1/30
+LIKE_HURT = 0.5                     # 被矛/石头打中：关系直接恶化
+LIKE_CARRIED = 0.002                # 被拎在手里持续恶化（原版 Cicada.cs:614 是 0.00025，按桌宠节奏放大）
+CICADA_STUN = 10                    # :866 顶完自己的硬直
+TILE = 20.0                         # 原版一格 20px（terrainProximity 换算）
+STUN_KNOCK = 5.0                    # :852 撞到生物时的击退量级
 
-FLEE_R = 82.0             # 猫进此圈即逃
-FLEE_ACCEL = 0.34
-PANIC_R = 34.0            # 休息时贴脸才炸飞
-FLAPS_MAX = 60            # 体力：可连续扑翅次数（大幅拉长，几乎不用休息）
-REST_TICKS = 70           # 力竭落地休息时长（歇一会儿就能再飞）
-FLEE_FLAP_COST = 6        # 逃命时每扑一次翅多耗几格体力（巡航不耗）
+DRIFT_REPICK = 150        # 闲时多久换一个漂移目标
+DRIFT_TOP = 0.5           # 漂移目标的高度上限（占窗口高度的比例）
+FLAPS_MAX = 60            # 兼容旧字段：体力条的刻度数
+REST_TICKS = 70           # 兼容旧字段：rest>0 表示落着没飞
 EATEN_COUNTDOWN = 3
 
 WALL_MARGIN = 20.0
@@ -64,7 +82,12 @@ class Squidcada:
                  "wing_offset", "lazy_wing", "busted_wing", "wing_dep",
                  "wing_dep_to", "wing_dep_speed", "blink", "flap_t",
                  # 渲染用体轴 / zRotation（平滑）/ 4 条触须的自由点
-                 "hd", "zx", "zy", "lzx", "lzy", "tent", "tent_last")
+                 "hd", "zx", "zy", "lzx", "lzy", "tent", "tent_last",
+                 # 原版 Cicada / CicadaGraphics 状态
+                 "stamina", "flying", "flying_power", "sin_counter", "wait_fly",
+                 "charge_counter", "charge_dir", "like", "stun", "armed_threat",
+                 "look_at", "look_dir", "look_rot", "charging_vis",
+                 "threat_mode", "threat_pos", "_contact_ceil")
 
     def __init__(self, x: float, y: float, seed: int = 0):
         self.x = self.last_x = float(x)
@@ -94,9 +117,26 @@ class Squidcada:
         self.hue = 0.55 + rng.uniform(-0.1, 0.1)   # 原版个体色相（蓝紫）
         self.flap = rng.random()
         self.flap_ph = rng.random() * math.tau
+        self.wings = [self.flap, self.flap]
+        # ── 原版 Cicada 状态（Cicada.cs）──
+        self.stamina = 1.0                  # :73 初始满体力
+        self.flying = True                  # :145 出生就在飞
+        self.flying_power = 0.5
+        self.sin_counter = rng.random()     # :143
+        self.wait_fly = 0                   # waitToFlyCounter
+        self.charge_counter = 0             # :539 <21 蓄势 / 21..38 突进
+        self.charge_dir = (0.0, 0.0)
+        self.like = 0.0                     # LikeOfPlayer：-1..1（CicadaAI.cs:627）
+        self.stun = 0
+        self.armed_threat = False           # 最近那只猫手上有没有武器
+        self.threat_mode = None             # None / "antagonize" / "afraid"
+        self.threat_pos = None
+        self.look_at = None                 # 这一 tick 看向哪儿（CicadaGraphics.creatureLooker）
+        self.look_dir = (0.0, 0.0)          # :17
+        self.look_rot = 0.0                 # :19
+        self.charging_vis = 0.0             # :45
         self.rest = 0
         self.flaps = FLAPS_MAX
-        self.wings = [self.flap, self.flap]
         self.dir_x, self.dir_y = (1.0 if rng.random() < 0.5 else -1.0), 0.0
         self.facing = 1 if self.dir_x >= 0 else -1
         self.rotation = self.last_rotation = (0.0, -1.0)
@@ -130,6 +170,7 @@ class Squidcada:
         self._goal = (self.x + rng.uniform(-60.0, 60.0), self.y)
         self._goal_timer = 0
         self._contact_floor = False
+        self._contact_ceil = False
         self._contact_x = 0
 
     # ── 查询 ──
@@ -139,13 +180,14 @@ class Squidcada:
 
     @property
     def resting(self) -> bool:
-        return self.rest > 0
+        """落在地上没飞（原版 flying == false）。"""
+        return not self.flying
 
     @property
     def fetch_ready(self) -> bool:
-        """走过去的取食路径：力竭落地才够得到。"""
+        """走过去的取食路径：落在地上才够得到。"""
         return (self.state == ItemState.FREE and self.held_by_hand is None
-                and (self.dead or self.rest > 0))
+                and (self.dead or not self.flying))
 
     @property
     def catchable(self) -> bool:
@@ -156,7 +198,12 @@ class Squidcada:
     @property
     def airborne(self) -> bool:
         """是否在飞。"""
-        return not self.dead and self.state == ItemState.FREE and self.rest <= 0
+        return not self.dead and self.state == ItemState.FREE and self.flying
+
+    @property
+    def lift_power(self) -> float:
+        """托举猫的力气：Cicada.cs:107 SCurve(stamina, 0.15) * (0.4 + playerJumpBoost*0.6)。"""
+        return _scurve(clampf(self.stamina, 0.0, 1.0), 0.15) * 0.4
 
     def collision_chunks(self):
         self.collide_with_objects = self.state not in (
@@ -187,15 +234,21 @@ class Squidcada:
         """
         self.vx += kx
         self.vy += ky
+        self.like = max(-1.0, self.like - LIKE_HURT)      # 被打：关系恶化（CicadaAI 社会记忆）
         if self.health > 0.0:
             self.health -= dmg / self.DAMAGE_RESISTANCE
         if self.health <= 0.0 and not self.dead:
             self.die()
             return True
+        # Cicada.cs:176-183 残血时会时不时被打懵一下
+        if self.health < 0.5 and self._rng.random() > self.health and self._rng.random() < 1.0 / 3.0:
+            self.stun = 4
         return self.dead
 
     def die(self) -> None:
         self.dead = True
+        self.flying = False
+        self.charge_counter = 0
         self.bites = 3                     # 刚死的蝉乌贼同样是 3 口
         self.surface_friction = 0.4
 
@@ -259,6 +312,17 @@ class Squidcada:
         dd = math.hypot(self.zx, self.zy)
         if dd > 1e-6:
             self.zx, self.zy = self.zx / dd, self.zy / dd
+        if self.charge_counter > 0:                  # CicadaGraphics.cs:204-205
+            self.blink = -5
+            self.zy -= 0.5
+        # ── CicadaGraphics.cs:247-264 lookDir / lookRotation ──
+        if not self.dead and self.look_at is not None and self.blink > 0:
+            lx, ly = _dirvec(self.x, self.y, self.look_at[0], self.look_at[1])
+            self.look_dir = (lx, ly)
+            self.look_rot = _aimd(lx, ly) - _aimd(ux, uy)
+        else:
+            self.look_dir = (self.look_dir[0] * 0.9, self.look_dir[1] * 0.9)
+            self.look_rot *= 0.8
         self._tent_tick(ux, uy)
         self.flap_t += 1.0
         if self.flap_t >= 3.0:
@@ -275,8 +339,8 @@ class Squidcada:
             self.wing_dep[idx] = 0.0
         if self.dead:
             return                                   # 非清醒：原版不推进 deployment，保持原姿态
-        if self.airborne and self.state == ItemState.FREE:
-            self.wing_dep_to = 1.0
+        if self.flying:
+            self.wing_dep_to = 1.0                   # CicadaGraphics.cs:201 飞着就一直展开
         elif self.wing_dep_to == 1.0:
             self.wing_dep_to = 0.9
         elif self._rng.random() < 1.0 / 14.0:
@@ -298,9 +362,11 @@ class Squidcada:
                                              self.wing_dep_to)
 
     # ── 主循环 ──
-    def step(self, WL: float, HL: float, threats=()) -> None:
+    def step(self, WL: float, HL: float, threats=(), look_at=None) -> None:
+        self.look_at = look_at
         self.gfx_tick()
         if self.state in (ItemState.MOUSE, ItemState.CARRIED):
+            self._stamina_tick(grabbed=True)      # 位置由手每 tick 写入，只推进体力
             return
         self.last_x, self.last_y = self.x, self.y
         if self.state == ItemState.GONE:
@@ -312,103 +378,206 @@ class Squidcada:
                 return
 
         if self.dead:                        # 尸体：普通坠落
+            self.flying = False
             self.vy += self.gravity * self.room_gravity
             apply_water(self, self.water_y, self.buoyancy, self.water_friction,
                         self.room_gravity, self.air_friction)
-            self.vx *= self.air_friction
             self.x += self.vx
             self.y += self.vy
             self._collide(WL, HL)
+            self._flags_sync()
             return
 
+        self._stamina_tick(grabbed=False)
         self._flight(WL, HL, threats)
+        self._flags_sync()
+
+    # ── 体力（Cicada.cs:232-235 / :587-592）──
+    def _stamina_tick(self, grabbed: bool) -> None:
+        if self.dead:
+            self.flying = False
+            return
+        if self.state == ItemState.CARRIED:
+            # 被拎在手里：托举它要花体力，同时关系变差（:591 / :611-615）
+            self.stamina -= LIFT_DRAIN_M if self.male else LIFT_DRAIN_F
+            self.stamina = clampf(self.stamina, 0.0, 1.0)
+            self.flying = self.stamina > STAMINA_FLY
+            self.like = max(-1.0, self.like - LIKE_CARRIED)
+        elif not grabbed:
+            self.stamina = min(1.0, self.stamina + STAMINA_REGEN)
+
+    def _flags_sync(self) -> None:
+        """新模型映射回旧字段：flaps = 体力刻度，rest > 0 表示落着没飞。"""
+        self.flaps = int(round(clampf(self.stamina, 0.0, 1.0) * FLAPS_MAX))
+        self.rest = 0 if self.flying else REST_TICKS
+
+    def _charge(self, px: float, py: float) -> None:
+        """Cicada.cs:694-704 Charge(pos)：锁定方向，起手蓄势。"""
+        if self.charge_counter > 0:
+            return
+        self.charge_dir = _dirvec(self.x, self.y, px, py)
+        self.charge_counter = 1
+
+    def _charge_tick(self) -> None:
+        """Cicada.cs:537-573：<21 蓄势后仰 → 21..38 直线突进 → >38 收招。"""
+        self.charge_counter += 1
+        ux, uy = self.charge_dir
+        if self.charge_counter < CHARGE_SPINUP:
+            self.vx *= CHARGE_WINDUP_DECAY
+            self.vy *= CHARGE_WINDUP_DECAY
+            self.vx -= ux * CHARGE_BACK
+            self.vy -= uy * CHARGE_BACK
+        elif self.charge_counter > CHARGE_END:
+            self.charge_counter = 0
+            self.vx *= CHARGE_EXIT_DECAY
+            self.vy *= CHARGE_EXIT_DECAY
+        else:
+            self.vx += ux * CHARGE_THRUST
+            self.vy += uy * CHARGE_THRUST
+        self.flying = True
 
     def _flight(self, WL, HL, threats) -> None:
-        """悬停巡航 / 逃 / 力竭歇；贴地后自然落地。"""
-        floor = HL
-        want_y = min(floor - HOVER_H, HOVER_TOP)
-        tx, ty, flee = None, None, False
-        bestd = FLEE_R
-        for obj, ox, oy in threats:
-            d = math.hypot(ox - self.x, oy - self.y)
+        """原版 Cicada.Act 的飞行段（:296-418）。"""
+        tx = ty = None
+        bestd = 1e9
+        armed = False
+        for pt in threats:
+            d = math.hypot(pt[1] - self.x, pt[2] - self.y)
             if d < bestd:
-                bestd, tx, ty = d, ox, oy
-                flee = True
-        self.flap += 0.06
-        if self.flap > 1.0:
-            self.flap -= 1.0
-        airborne = self.rest <= 0 and self.flaps > 0
-
-        self.vx *= AIR_FRICTION
-        self.vy *= AIR_FRICTION
-        if airborne:
-            if flee:
-                # 逃：朝远离猫 + 略向上
-                ux, uy = _dirvec(tx, ty, self.x, self.y)
-                self.vx += ux * FLEE_ACCEL * 3.0
-                self.vy += min(0.0, uy) * FLEE_ACCEL * 2.0 - 0.16
-                self.flap_ph += 0.55
-                if self.flap_ph > math.tau:
-                    self.flap_ph -= math.tau
-                    self.flaps -= FLEE_FLAP_COST  # 逃命的扑翅格外费体力
-                    if self.flaps <= 0:
-                        self.flaps = 0
-                        self.rest = REST_TICKS
-            else:
-                self.flap_ph += 0.35
-                if self.flap_ph > math.tau:
-                    self.flap_ph -= math.tau
-                    self.flaps = max(0, self.flaps - 1)     # 巡航也慢慢耗体力
-                self.vy += self.gravity * self.room_gravity * 0.55
-                if self.y > want_y + HOVER_BAND:
-                    # 掉得越低拉得越猛：原版扑翅几下就回到巡航高度
-                    k = clampf((self.y - (want_y + HOVER_BAND)) / 60.0, 0.0, 1.0)
-                    self.vy -= FLAP_THRUST / FLAP_PERIOD * 6.0 * (1.0 + HOVER_PULL * k)
-                self._drift(WL, HL)
-                # 巡航垂直速度夹一下：否则扑翅升力会把巡飞变成上下弹跳
-                self.vy = clampf(self.vy, -HOVER_VY_MAX, HOVER_VY_MAX)
+                bestd, tx, ty = d, pt[1], pt[2]
+                armed = bool(pt[3]) if len(pt) > 3 else False
+        self.armed_threat = armed
+        if self.charge_counter > 0:              # CicadaGraphics.cs:172-179
+            self.charging_vis = min(self.charging_vis + CHARGE_VIS_UP, 1.0)
         else:
-            self.vy += self.gravity * self.room_gravity
-            if flee and bestd < PANIC_R and self.flaps > 0 and self.rest > 0:
-                self.rest = 0                     # 贴脸炸飞
-                ux, uy = _dirvec(tx, ty, self.x, self.y)
-                self.vx += ux * 3.0
-                self.vy -= 3.0
-            self.vx *= 0.9
-            if self.rest > 0:
-                self.rest -= 1
-                if self.rest == 0:
-                    self.flaps = FLAPS_MAX
-                    self.vy = min(self.vy, -TAKEOFF_VY)     # 歇完起身再飞
+            self.charging_vis = max(self.charging_vis - CHARGE_VIS_DOWN, 0.0)
 
+        if self.charge_counter > 0:
+            self._charge_tick()
+        elif self.stun > 0:
+            self.stun -= 1
+            self.flying_power = lerp(self.flying_power, 0.0, 0.05)
+        else:
+            self._decide(tx, ty, bestd)
+            if self.flying:
+                self._fly_tick(WL, HL, tx, ty)
+            else:
+                self._sit_tick(WL, HL, tx, ty)
+
+        self.vy += self.gravity * self.room_gravity          # :158 base.Update 的重力
+        apply_water(self, self.water_y, self.buoyancy, self.water_friction,
+                    self.room_gravity, self.air_friction)
         self.x += self.vx
         self.y += self.vy
         self._collide(WL, HL)
+        if self._contact_floor and self.charge_counter > 0:
+            self.charge_counter = 0              # 撞到地面/墙就收招（:569 narrowSpace）
+
+    def _decide(self, tx, ty, bestd) -> None:
+        """CicadaAI.cs:627-660：< -0.1 敌意 / < -0.5 且对方持械 → 畏惧 / > 0.5 无视。"""
+        self.threat_mode = None
+        if tx is None or self.like > IGNORE_LIKE:
+            return
+        if self.like < AFRAID_LIKE and self.armed_threat:
+            self.threat_mode = "afraid"
+            self.threat_pos = (tx, ty)
+            return
+        if self.like < ANTAGONIZE_LIKE:
+            self.threat_mode = "antagonize"
+            self.threat_pos = (tx, ty)
+            if (self.charge_counter <= 0 and bestd < CHARGE_RANGE
+                    and self._rng.random() < CHARGE_CHANCE):
+                self._charge(tx, ty)
+
+    def _fly_tick(self, WL, HL, tx, ty) -> None:
+        """Cicada.cs:296-418：正弦抖动 + 阻尼 + 升力 + 朝目标推进 + 贴墙顶开。"""
+        fp = self.flying_power = lerp(self.flying_power, 1.0, 0.1)     # :417
+        st = clampf(self.stamina, 0.0, 1.0)
+        self.sin_counter += 1.0 / lerp(FLY_SIN_PERIOD[0], FLY_SIN_PERIOD[1],
+                                       self._rng.random())             # :298
+        if self.sin_counter > 1.0:
+            self.sin_counter -= 1.0
+        self.vy += math.sin(self.sin_counter * math.tau) * FLY_SIN * fp * st * 2.0   # :303-304
+        drag = lerp(1.0, (FLY_DRAG0 + FLY_DRAG1) * 0.5, fp * st)       # :305-306
+        self.vx *= drag
+        self.vy *= drag
+        self.vy -= (FLY_LIFT0 + FLY_LIFT1) * 0.5 * fp * st             # :309-310
+        gx, gy = self._fly_goal(WL, HL, tx, ty)
+        if gx is not None:
+            dx, dy = gx - self.x, gy - self.y
+            d = math.hypot(dx, dy)
+            if d > 1e-6:
+                a = self._openness(WL, HL, dx / d, dy / d, math.hypot(self.vx, self.vy))
+                k = min(d, 40.0) / 40.0
+                self.vx += dx / d * (STEER0 * k * a * fp * st)         # :512
+                self.vy += dy / d * (STEER1 * k * a * fp * st)         # :513
+        if abs(self.vx) > 0.08:
+            self.facing = 1 if self.vx > 0 else -1
+        for cx, cy in self._contacts():                                # :365-371
+            self.vx += cx * CONTACT_PUSH * fp * st * self._rng.random()
+            self.vy += cy * CONTACT_PUSH * fp * st * self._rng.random()
+
+    def _fly_goal(self, WL, HL, tx, ty):
+        """敌意 → 贴到对方身边 30px 好顶；畏惧 → 掉头逃；否则闲逛。"""
+        if self.threat_pos is not None and self.threat_mode is not None:
+            gx, gy = self.threat_pos
+            dx, dy = self.x - gx, self.y - gy
+            d = math.hypot(dx, dy) or 1.0
+            if self.threat_mode == "antagonize":
+                return (gx + dx / d * 30.0, gy + dy / d * 30.0)
+            return (self.x + dx / d * 160.0, self.y + dy / d * 160.0)
+        self._drift(WL, HL)
+        return self._goal
+
+    def _openness(self, WL, HL, ux, uy, spd) -> float:
+        """Cicada.cs:505-507 的 a：朝去路越挤，推进越弱（三次方）。"""
+        ahead = clampf(spd * 5.0, 5.0, 15.0)
+        cur = _wall_dist(self.x, self.y, WL, HL)
+        nxt = _wall_dist(self.x + ux * ahead, self.y + uy * ahead, WL, HL)
+        return min(cur / max(nxt, 1.0), 1.0) ** 3
+
+    def _contacts(self):
+        out = []
         if self._contact_floor:
-            if self.flaps > 0:
-                self.rest = 0                      # 落地只是踉跄一下，立刻扑翅再起
-                self.vy = min(self.vy, -TAKEOFF_VY)
-                self.vy -= 0.35
-            else:
-                self.rest = max(self.rest, REST_TICKS // 3)
-                if abs(self.vx) < 0.25:
-                    self.vx = 0.0
+            out.append((0.0, -1.0))
+        if self._contact_ceil:
+            out.append((0.0, 1.0))
+        if self._contact_x:
+            out.append((-float(self._contact_x), 0.0))
+        return out
+
+    def _sit_tick(self, WL, HL, tx, ty) -> None:
+        """落地歇着（Cicada.cs:420-434 / :530-534）：等 30 tick 攒够体力再起飞。"""
+        self.flying_power = lerp(self.flying_power, 0.0, 0.05)
+        self.vx *= 0.9
+        self.wait_fly += 1
+        if self.wait_fly > LAND_WAIT and self.stamina > STAMINA_FLY:
+            gx, gy = self._fly_goal(WL, HL, tx, ty)
+            self._takeoff(gx - self.x, gy - self.y)
+
+    def _takeoff(self, dx, dy) -> None:
+        """Cicada.cs:747-768 TakeOff(dir)：带初速的蹬地起飞。"""
+        self.wait_fly = 0
+        self.flying = True
+        ux, uy = _dirvec(0.0, 0.0, dx, dy)
+        if ux == 0.0 and uy == 0.0:
+            ux, uy = 0.0, -1.0
+        v = self._rng.random() * (TAKEOFF_V0 + TAKEOFF_V1) * 0.5
+        self.vx += ux * v
+        self.vy += uy * v
+        self.flying_power = 0.5
+
 
     def _drift(self, WL, HL) -> None:
-        """闲时随机漂移。"""
+        """闲时随机换一个漂移目标（原版由 CicadaPather 提供路径点）。"""
         self._goal_timer += 1
         if (self._goal_timer > DRIFT_REPICK
                 or math.hypot(self._goal[0] - self.x, self._goal[1] - self.y) < 24.0):
             m = WALL_MARGIN
             self._goal = (self._rng.uniform(m, max(m, WL - m)),
-                          self._rng.uniform(m, max(m, HL - HOVER_H - 40.0)))
+                          self._rng.uniform(m, max(m, HL * DRIFT_TOP)))
             self._goal_timer = 0
-        dx, dy = _dirvec(self.x, self.y, self._goal[0], self._goal[1])
-        self.vx += dx * DRIFT_ACCEL
-        self.vy += dy * DRIFT_ACCEL * 0.6
-        if abs(self.vx) > 0.08:
-            self.facing = 1 if self.vx > 0 else -1
-        self.dir_x, self.dir_y = dx, dy
+        self.dir_x, self.dir_y = _dirvec(self.x, self.y, self._goal[0], self._goal[1])
 
     def _collide(self, WL, HL) -> None:
         # 尸体：左右/顶边不挡，被甩出窗口即飞出去（由 items 层清除）
@@ -422,3 +591,25 @@ def _dirvec(ax, ay, bx, by):
     if d < 1e-9:
         return (0.0, 0.0)
     return (dx / d, dy / d)
+
+
+def _wall_dist(x: float, y: float, WL: float, HL: float) -> float:
+    """到最近一面窗口墙的距离（换算成原版的格：20px/格）。"""
+    return max(0.0, min(x, y, WL - x, HL - y) / TILE)
+
+
+def _aimd(ux: float, uy: float) -> float:
+    """AimFromOneVectorToAnother：0 = 上，正 = 右（与 squidcada_gfx._aim 同）。"""
+    return math.degrees(math.atan2(ux, -uy))
+
+
+def _scurve(x: float, k: float) -> float:
+    """Custom.SCurve（Custom.cs:1177）。"""
+    x = x * 2.0 - 1.0
+    if x < 0.0:
+        x = abs(1.0 + x)
+        return k * x / (k - x + 1.0) * 0.5
+    k = -1.0 - k
+    return 0.5 + k * x / (k - x + 1.0) * 0.5
+
+

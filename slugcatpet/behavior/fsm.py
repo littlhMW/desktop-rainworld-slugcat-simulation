@@ -3860,7 +3860,7 @@ class BehaviorFSM:
             return False
 
     def _nearest_throw_target(self, r):
-        """最近的投掷/对抗目标：蜥蜴 或 愤怒的面条蝇成体（r 之内）。"""
+        """最近的投掷/对抗目标：蜥蜴 / 愤怒的面条蝇成体 / 敌对拾荒者（r 之内）。"""
         c1 = self.body.chunk1
         best = self._nearest_lizard(r)
         bd = float(r) if best is None else math.hypot(best.x - c1.x, best.y - c1.y)
@@ -3870,7 +3870,20 @@ class BehaviorFSM:
             d = math.hypot(f.x - c1.x, f.y - c1.y)
             if d < bd:
                 best, bd = f, d
+        for sc in getattr(self.win, "scavengers", ()):
+            if not self._hostile_scavenger(sc):
+                continue
+            d = math.hypot(sc.x - c1.x, sc.y - c1.y)
+            if d < bd:
+                best, bd = sc, d
         return best
+
+    @staticmethod
+    def _hostile_scavenger(sc) -> bool:
+        """会朝猫扔矛的拾荒者（珍珠交易过的 friendly 不再算威胁）。"""
+        return (not getattr(sc, "dead", False)
+                and getattr(sc, "state", None) == ItemState.FREE
+                and not getattr(sc, "friendly", False))
 
     def _threat_present(self) -> bool:
         return self._threat_lizard() is not None
@@ -3951,7 +3964,11 @@ class BehaviorFSM:
         return best
 
     def _weapon_ready(self) -> bool:
-        """手里拿着家伙、脚边有能马上捡的，或（猎手）背上还备着一支。"""
+        """手里拿着家伙、脚边有能马上捡的，或（猎手）背上还备着一支。
+
+        纯查询：不许在这里动背包里的矛 —— 原版是「真要动手时」才
+        CanRetrieveSpearFromBack 抽出来（见 _st_fightthreat）。
+        """
         b = self.body
         if b.carried_spear is not None or b.carried_stone is not None:
             return True
@@ -3959,9 +3976,8 @@ class BehaviorFSM:
         if w is not None and math.hypot(w.x - b.chunk1.x,
                                         w.y - b.chunk1.y) < tuning.FIGHT_ARM_R:
             return True
-        # 猎手：附近没矛可捡 → 把背上的矛抽到主手（原版 CanRetrieveSpearFromBack）
         if b.back_spear is not None:
-            return b.take_back_spear("r") is not None
+            return True
         return False
 
     def _nearest_ground_weapon(self):
@@ -4119,11 +4135,16 @@ class BehaviorFSM:
         #    手里/脚边有家伙时也会主动迎战（原版持械的猫）
         if self._fight_cd <= 0:
             ranged = self.anger > 0
-            arm_r = tuning.FIGHT_ARM_R * (0.55 + 0.90 * brave)   # 越勇敢迎战越远
-            lz = self._nearest_lizard(tuning.FIGHT_R if ranged else arm_r)
-            can_rip = (brave >= tuning.RIP_SPEAR_BRAVE
+            armed = self._weapon_ready()
+            brave_melee = brave >= tuning.FIGHT_UNARMED_BRAVE
+            # 越勇敢迎战越远；够勇敢的猫空手也会在近身范围内扑上去
+            r = tuning.FIGHT_R if ranged else max(
+                tuning.FIGHT_ARM_R if armed else 0.0,
+                tuning.FIGHT_UNARMED_R if brave_melee else 0.0) * (0.55 + 0.90 * brave)
+            lz = self._nearest_throw_target(r) if r > 0.0 else None
+            can_rip = (brave >= tuning.RIP_SPEAR_BRAVE and lz is not None
                        and self._nearest_rip_spear(lz) is not None)
-            if lz is not None and (ranged or self._weapon_ready() or can_rip):
+            if lz is not None and (ranged or armed or can_rip or brave_melee):
                 self._fight_target = lz
                 self._fight_left = tuning.FIGHT_TICKS
                 self._break_active_controllers()
@@ -5475,6 +5496,11 @@ class BehaviorFSM:
                     if b.grab_spear(rip, side):        # 拔出来（grab_spear 清 stuck）
                         self._fight_throw_t = tuning.FIGHT_THROW_CD
                 return
+            if b.back_spear is not None:
+                # 原版 CanRetrieveSpearFromBack：手空了但背上还备着矛 → 抽到主手
+                if b.take_back_spear("r") is not None:
+                    self._fight_throw_t = tuning.FIGHT_THROW_CD
+                    return
             o = self._nearest_ground_weapon()
             if o is not None:
                 od = math.hypot(o.x - b.chunk1.x, o.y - b.chunk1.y)
@@ -5495,7 +5521,9 @@ class BehaviorFSM:
                     self._fight_throw_t = tuning.FIGHT_THROW_CD
                 return
             # 空手：贴上去拍打指指点点（原版空手打不动蜥蜴）
-            if self.anger <= 0:           # 主动迎战但家伙没了：退回躲避
+            # 只有「刚被打过（anger>0）」或「够勇敢主动上」才继续贴着打
+            if (self.anger <= 0
+                    and getattr(self.pers, "bravery", 0.5) < tuning.FIGHT_UNARMED_BRAVE):
                 self._fight_end()
                 return
             if d > tuning.FIGHT_MELEE_R:
@@ -5738,9 +5766,13 @@ class BehaviorFSM:
         f = self.body.carried_fruit
         if f is None or not getattr(f, "is_tame_food", False) or getattr(f, "dead", True):
             return
+        # Cicada.cs:107 LiftPlayerPower：体力越低托举越弱，耗尽就托不动了
+        power = clampf(getattr(f, "lift_power", 0.4) / 0.4, 0.0, 1.0)
+        if power <= 0.0:
+            return
         c0 = self.body.chunk0
         if c0.vy > -tuning.SQUID_LIFT_MAX:
-            c0.vy -= tuning.SQUID_LIFT
+            c0.vy -= tuning.SQUID_LIFT * power
         c0.vx *= tuning.SQUID_DRAG
 
     # ── 徒手抓飞虫（蝙蝠/蝉乌贼）──

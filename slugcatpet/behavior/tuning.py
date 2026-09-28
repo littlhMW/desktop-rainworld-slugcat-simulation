@@ -408,6 +408,8 @@ FEAR_JUMP_MIN_GAIN = 26.0     # 反方向也挪不动 → 判定被逼到角落
 FEAR_JUMP_PUSH = 1.15         # 跳过敌人时的额外水平初速
 RIP_SPEAR_R = 74.0            # 够得着蜥蜴身上的矛才敢拔
 RIP_SPEAR_BRAVE = 0.70        # 勇敢度超过它才敢去拔矛重投
+FIGHT_UNARMED_R = 150.0       # 空手也敢主动扑上去的距离（只有勇敢的猫用）
+FIGHT_UNARMED_BRAVE = 0.70    # 勇敢度超过它，空手也会主动迎战敌对威胁
 CRAWL_FEAR_SPEED = 0.55       # 匍匐速度比例
 CRAWL_AWAY_TICKS = 260
 

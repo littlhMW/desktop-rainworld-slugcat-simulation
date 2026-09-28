@@ -79,6 +79,101 @@ WALK_TURN = 0.14              # 游走时速度趋近速率
 BLINK_RATE = 0.0125           # 头部呼吸闪烁推进速率（同游戏 LizardGraphics.breath 步长）
 MAX_SEG_SPEED = 24.0
 
+# ── 原版关系表（StaticWorld.InitStaticWorldRelationships，decomp_full/StaticWorld.cs:3668-3726）──
+# 值 = (关系类型, 强度)。类型 -> AI 模块的映射照抄 LizardAI.ModuleToTrackRelationship
+# （LizardAI.cs:1346-1361）：
+#   Eats / Attacks   -> PreyTracker（CreatureTemplate.Relationship.GoForKill：这两类且强度>0）
+#   Afraid           -> ThreatTracker（逃跑）
+#   AgressiveRival   -> AgressionTracker（anger 缓慢累积，够高才争夺；平时只 casual 撕咬）
+#   Pack / Ignores / SocialDependent -> 不追踪
+LIZ_REL = {
+    "pink": {"pink": ("AgressiveRival", 0.4), "green": ("AgressiveRival", 0.15),
+             "blue": ("AgressiveRival", 0.2), "white": ("AgressiveRival", 0.25)},
+    "green": {"pink": ("AgressiveRival", 0.2), "green": ("AgressiveRival", 0.8),
+              "white": ("AgressiveRival", 0.05), "blue": ("Eats", 0.25)},
+    "blue": {"pink": ("AgressiveRival", 0.3), "blue": ("AgressiveRival", 0.45),
+             "green": ("Afraid", 0.25), "white": ("Afraid", 0.1),
+             "cyan": ("Afraid", 0.2), "squidcada": ("Eats", 0.7)},
+    "white": {"pink": ("AgressiveRival", 0.15), "green": ("AgressiveRival", 0.05),
+              "blue": ("AgressiveRival", 0.35), "white": ("AgressiveRival", 0.25),
+              "squidcada": ("Eats", 0.7)},
+    "cyan": {"cyan": ("AgressiveRival", 0.075), "blue": ("Eats", 0.15)},
+    "black": {"black": ("AgressiveRival", 0.05)},
+    "yellow": {"yellow": ("Pack", 0.2)},
+    "red": {"red": ("Attacks", 1.0)},
+    "salamander": {},
+}
+# LizardTemplate 基表（StaticWorld.cs:3668-3689），只列本作场上存在的对象。
+# 注意蛞蝓猫基表是 SocialDependent 0.5 —— 真正的捕食判定走动态关系
+# （RelationshipTracker.cs:1460：like<0.5 → Eats，强度 = Pow(InverseLerp(0.5,-1,like),0.925)），
+# 本工程即"未被驯服就捕食"。
+LIZ_BASE_REL = {
+    "lizard": ("AgressiveRival", 0.1),
+    "squidcada": ("Eats", 0.05),
+    "noodle_small": ("Eats", 0.3),
+    "noodle_big": ("Eats", 0.25),
+    "scavenger": ("Eats", 0.8),
+}
+# 视野锥：LizardBreeds.cs 里 perfectVisionAngle / periferalVisionAngle = Mathf.Lerp(1f,-1f,t)
+# （LizardAI.VisualScore.cs:1184 用它把偏轴目标的得分线性扣掉）。
+LIZ_VISION = {
+    "pink": (0.0, 7.0 / 12.0),
+    "green": (0.0, 5.0 / 18.0),
+    "blue": (1.0 / 18.0, 11.0 / 24.0),
+    "yellow": (1.0 / 12.0, 19.0 / 36.0),
+    "white": (1.0 / 6.0, 19.0 / 36.0),
+    "red": (4.0 / 9.0, 7.0 / 9.0),
+    "black": (0.0, 0.0),                 # 全盲：只靠近身/声音（visualRadius=0）
+    "salamander": (0.0, 31.0 / 36.0),
+    "cyan": (1.0 / 12.0, 11.0 / 24.0),
+}
+TILE = 20.0                   # 原版一格 = 20px（AgressionTracker 的格距换算用）
+VIS_BACK_FAC = 0.4            # 锥外残余视野：偏轴时等效视距压到 40%（原版扣分近似）
+
+# ── 威胁 / 逃跑（Behavior.Flee）──
+THREAT_NOTICE_FAC = 1.25      # 对 Afraid 对象的警觉半径放大（原版威胁阈值低于猎物）
+FLEE_TICKS = 80               # 单次逃跑持续 tick
+FLEE_SPEED = 1.12             # 逃跑速度 × base_speed
+FLEE_ACCEL = 0.18
+FLEE_HOP = 0.03
+
+# ── 侵略追踪器（AgressionTracker，LizardAI.cs:628 / AgressionTracker.cs）──
+ANGER_UP = 0.001              # 原版 angerSpeedUp
+ANGER_DOWN = 0.001            # 原版 angerSpeedDown
+ANGER_FIGHT = 0.35            # 原版 Utility() = InverseLerp(0.35,1,anger) 的下限
+ANGER_W = 0.5                 # 原版 utilityComparer 里 agressionTracker 的权重（LizardAI.cs:648）
+PREY_W = 0.6                  # 原版 preyTracker 权重（LizardAI.cs:644）
+CASUAL_BITE_CHANCE = 0.5      # 原版 LizardAI.cs:1092 / DoIWantToBiteThisCreature:1678
+CASUAL_PANIC_CHANCE = 0.1     # 原版 DoIWantToBiteThisCreature 第一行：残血时乱咬
+
+# ── 受伤 / 潜伏 / 声音 ──
+INJURY_UTIL = 0.3             # LizardInjuryTracker.Utility 超过此值 → Behavior.Injured
+INJURY_SPEED = 0.7            # 受伤躲避的移动速度系数
+LURK_IDLE_MULT = 4.0          # LurkTracker：白蜥/蝾螈原地待机时间 ×4（伏击）
+NOISE_R = 320.0               # 听到地形撞击的半径
+NOISE_TICKS = 240             # 声音记忆时长
+PACK_GAP = 96.0               # 黄蜥结群保持的距离
+
+
+def lizard_rel(mine: str, other: str):
+    """两只蜥蜴之间的关系：品种专属表优先，否则退回 LizardTemplate 基表。"""
+    r = LIZ_REL.get(mine, {}).get(other)
+    if r is not None:
+        return r
+    return LIZ_BASE_REL["lizard"]
+
+
+def lizard_rel_kind(mine: str, kind: str):
+    """蜥蜴对非蜥蜴对象的关系（kind ∈ {"cat","squidcada","noodle_small",
+    "noodle_big","scavenger"}）。"""
+    if kind == "cat":
+        return ("Eats", 1.0)      # 动态关系：like<0.5 才是 Eats（RelationshipTracker.cs:1460）
+    r = LIZ_REL.get(mine, {}).get(kind)     # 品种专属覆盖优先（蓝/白蜥对蝉乌贼 0.7）
+    if r is not None:
+        return r
+    return LIZ_BASE_REL.get(kind, ("Ignores", 0.0))
+
+
 # ── 配色（同游戏 LizardGraphics.ApplyPalette / BodyColor）──
 TAME_LIKE = 0.5                # 原版：like 超过 0.5 即认主跟随
 FOLLOW_GAP = 46.0              # 驯服后与朋友保持的距离
@@ -156,7 +251,7 @@ class LizardBreed:
                  "hide_eyes", "toughness", "stun_toughness", "bite_chance",
                  "attempt_bite_radius", "taming_difficulty", "head_shield_angle",
                  "danger", "visual_radius", "tongue", "tongue_range", "body_mass",
-                 "flips_from_rock", "bite_damage_chance",
+                 "flips_from_rock", "bite_damage_chance", "bite_dominance",
                  # 步态（LizardBreedParams 同名参数，原版腿 IK 的行为参数）
                  "step_length", "lift_feet", "feet_down", "limb_speed",
                  "limb_quickness", "smooth_legs", "leg_pair_disp", "walk_bob",
@@ -177,6 +272,7 @@ class LizardBreed:
                  attempt_bite_radius=80.0, taming_difficulty=1.0,
                  head_shield_angle=100.0, danger=0.45, visual_radius=900.0,
                  tongue=False, tongue_range=0.0, body_mass=2.1,
+                 bite_dominance=0.5,
                  flips_from_rock=True,
                  step_length=0.5, lift_feet=0.3, feet_down=0.5, limb_speed=5.0,
                  limb_quickness=0.5, smooth_legs=True, leg_pair_disp=0.2,
@@ -226,6 +322,7 @@ class LizardBreed:
         self.tongue = tongue
         self.tongue_range = tongue_range
         self.body_mass = body_mass
+        self.bite_dominance = bite_dominance      # 原版 biteDominance：同族嘶咬时的支配度
         self.flips_from_rock = flips_from_rock   # 原版红蜥不吃石头转身
         # 步态：照抄 LizardBreedParams（步幅 / 抬脚 / 落脚 / 腿速 / 腿灵巧度 /
         # 腿部是否平滑 / 前后腿错位 / 走动上下颠 / 冲刺倾向）
@@ -263,6 +360,12 @@ class LizardBreed:
     def stun_resistance(self) -> float:
         """原版 CreatureTemplate.baseStunResistance = stunToughness（不乘 2）。"""
         return max(0.05, self.stun_toughness)
+
+    @property
+    def vision(self) -> tuple[float, float]:
+        """原版 (perfectVisionAngle, periferalVisionAngle)：Lerp(1,-1,t) 展开。"""
+        tp, tq = LIZ_VISION.get(self.key, (0.0, 7.0 / 12.0))
+        return 1.0 - 2.0 * tp, 1.0 - 2.0 * tq
 
     def color(self, rng) -> tuple[int, int, int]:
         """出生时随机化个体色：逐字照抄 Lizard.cctor 里 effectColor 的赋值。
@@ -438,6 +541,9 @@ class Lizard:
                  "max_health", "health", "stun", "hurt_flash", "dead_t",
                  "rock_push", "rock_push_dir",
                  "fear_t", "fear_x", "fear_y", "fear_seen", "wall_dir",
+                 "anger", "anger_obj", "submitted_to",
+                 "threat", "threat_obj", "threat_t",
+                 "noise_x", "noise_y", "noise_t", "lurk",
                  "bob", "bob_front", "bob_hind",
                  "carry_obj", "carry_body", "carry_corner", "sprint",
                  "depth", "last_depth", "head_depth", "last_head_depth", "turn_lift",
@@ -487,6 +593,19 @@ class Lizard:
         self.fear_y = 0.0
         self.fear_seen = 0
         self.wall_dir = 0        # 贴在左右墙时记墙侧（窗口边缘＝墙）
+        # 原版 AgressionTracker：对 AggressiveRival 对象的怒气（0..1，涨落各 0.001/tick）
+        self.anger = 0.0
+        self.anger_obj = None
+        self.submitted_to = None     # 原版 RecieveCommunication：认怂对象 id
+        # 原版 ThreatTracker：对 Afraid 对象的逃跑
+        self.threat = None
+        self.threat_obj = None
+        self.threat_t = 0
+        # 原版 NoiseTracker：最后听到的响声位置
+        self.noise_x = 0.0
+        self.noise_y = 0.0
+        self.noise_t = 0
+        self.lurk = False        # 原版 LurkTracker：伏击待机中
         # 走动上下颠（原版 drawPositions[i].y += frontBob/hindBob * walkBob）
         self.bob = [0.0, 0.0, 0.0]
         self.bob_front = 0.0
@@ -616,6 +735,10 @@ class Lizard:
         self.jaw = 0.0
         self.target = self.target_obj = None
         self.look_at = None
+        self.threat = self.threat_obj = None
+        self.anger = 0.0
+        self.anger_obj = None
+        self.lurk = False
         self.state = ItemState.FREE
 
     # ── 受击：Lizard.Violence / HitHeadShield / HitInMouth 的移植 ──
@@ -713,14 +836,19 @@ class Lizard:
 
     # ── 主循环 ──
     def step(self, WL: float, HL: float, targets=(), cursor=None,
-             rivals=(), prey=(), cats=()) -> None:
+             prey=(), cats=(), threats=(), others=(), pack=(), rivals=()) -> None:
         """推进一 tick。
 
-        targets: [(obj, x, y)] 蛞蝓猫（原版关系 Eats 1.0）
-        rivals:  [(obj, weight)] 同族竞争者（原版 AgressiveRival，只有绿蜥有）
-        prey:    [(obj, weight)] 小猎物（原版 LizardTemplate → CicadaA Eats 0.05）
+        targets: [(obj, x, y, dead, fainted)] 蛞蝓猫（动态关系：like<0.5 → Eats）
+        prey:    [(obj, weight)] 原版 Eats/Attacks（蝉乌贼 / 面条蝇 / 拾荒者 / 被吃的蜥蜴）
+        threats: [(obj, weight)] 原版 Afraid（蓝蜥怕绿/白/青蜥）
+        others:  [(obj, weight)] 原版 AgressiveRival（anger 累积 + casual 撕咬）
+        pack:    [(obj, weight)] 原版 Pack（黄蜥结群）
+        rivals:  旧参数名，等价于 others（保留兼容）
+        cats:    同 targets（叼走 / 咬死流程用）
         cursor:  鼠标逻辑坐标
         """
+        others = tuple(others) + tuple(rivals)
         self.last_x, self.last_y = self.x, self.y
         self.last_head_angle = self.head_angle
         self.last_jaw = self.jaw
@@ -743,7 +871,7 @@ class Lizard:
         elif self.state == ItemState.MOUSE:
             self._step_held(WL, HL, cursor)
         else:
-            self._step_ai(WL, HL, targets, cursor, rivals, prey, cats)
+            self._step_ai(WL, HL, targets, cursor, prey, cats, threats, others, pack)
             self._integrate(WL, HL)
 
         self._step_chain(HL)
@@ -814,7 +942,14 @@ class Lizard:
             self.wall_dir = 1         # 窗口右边缘＝墙
 
     # ── AI ──
-    def _step_ai(self, WL, HL, targets, cursor, rivals=(), prey=(), cats=()) -> None:
+    def _step_ai(self, WL, HL, targets, cursor, prey=(), cats=(),
+                 threats=(), others=(), pack=()) -> None:
+        """行为仲裁，照抄原版 LizardAI.DetermineBehavior 的优先级
+        （LizardAI.cs:681-753 + utilityComparer 权重 642-651）：
+
+        Flee(威胁) > ReturnPrey(叼猎物) > Injured(残血躲藏) > Fight(怒气)
+        > Hunt(猎物) > InvestigateSound > FollowFriend(pack) > Idle。
+        """
         if self.rock_push > 0:
             # 原版 Lizard.cs：turnedByRockCounter 期间 WeightedPush(0, 2, (dir,0), 6f)
             self.rock_push -= 1
@@ -832,10 +967,25 @@ class Lizard:
             self._release_carry()
             self._follow(WL, HL, targets)
             return
+        # 原版 Behavior.Flee（ThreatTracker，utility 权重 1.0 最高）
+        self._pick_threat(threats)
+        if self.threat is not None:
+            self.threat_t = max(self.threat_t, 10)      # 看得见就续上逃跑计时
+        if self._threat_tick(HL):
+            self._release_carry()
+            return
         # 优先级①：先把死猫/昏迷猫叼到屏幕两侧角落；到了就原地咬死它
         if self._carry_tick(WL, HL, cats):
             return
-        self._pick_target(targets, rivals, prey)
+        # 原版 Behavior.Injured（LizardInjuryTracker，权重 0.9）
+        if self._injured_tick(WL, HL, targets, threats):
+            return
+        # 原版 AgressionTracker（权重 0.5）：怒气够高且没有猎物时才转去争夺
+        fight = self._anger_tick(others)
+        # 原版 casualAggressionTarget（LizardAI.cs:1084-1095）
+        if self._casual_bite(others):
+            return
+        self._pick_target(targets, prey, fight)
         if self.bite_hold > 0:                       # 咬合保持
             self.vx *= 0.84
             self.jaw = clampf(self.jaw + JAW_OPEN_RATE * 0.4, 0.0, 0.34)
@@ -850,6 +1000,12 @@ class Lizard:
             d = math.hypot(dx, dy)
             if d > 1e-6:
                 self._lunge(dx / d, dy / d, d, HL)
+            return
+        # 原版 Behavior.InvestigateSound（NoiseTracker，权重 0.2 最低）
+        if self._noise_tick(WL, HL):
+            return
+        # 原版 Pack（黄蜥）：待机时跟着同伴走
+        if self._pack_tick(WL, HL, pack):
             return
         self._wander(WL, HL)
 
@@ -909,12 +1065,191 @@ class Lizard:
         self.fear_x, self.fear_y = cursor[0], cursor[1]
         return True
 
-    def _pick_target(self, targets, rivals=(), prey=()) -> None:
+    # ── 原版关系追踪器（LizardAI.ModuleToTrackRelationship，LizardAI.cs:1346-1361）──
+    @property
+    def injured(self) -> float:
+        """原版 LizardInjuryTracker.Utility（LizardAI.cs:75-82）：
+        SCurve(InverseLerp(0.2, 0.9, 1 - health), 0.01)。health 越高越接近 0。"""
+        return _scurve(inv_lerp(0.2, 0.9, 1.0 - clampf(self.health, 0.0, 1.0)), 0.01)
+
+    def _visual_fac(self, tx, ty) -> float:
+        """原版 LizardAI.VisualScore（LizardAI.cs:1184-1192）：
+        目标偏出视野锥（perfectVisionAngle→periferalVisionAngle）时得分线性扣减。
+        返回 1=正前方、0=身后。"""
+        perfect, perif = self.breed.vision
+        dx, dy = tx - self.x, ty - self.y
+        n = math.hypot(dx, dy)
+        if n < 1e-6:
+            return 1.0
+        a = math.radians(self.head_angle)
+        dot = clampf((dx * math.sin(a) - dy * math.cos(a)) / n, -1.0, 1.0)
+        return clampf(1.0 - inv_lerp(perfect, perif, dot), 0.0, 1.0)
+
+    def sees(self, tx, ty, target=None) -> bool:
+        """可见性：锥内按满视距，锥外只留 VIS_BACK_FAC 倍（原版按 VisualScore 扣分的近似）。
+        已锁定的目标不重新判（原版 forgetCounter 期间继续追）。"""
+        d = math.hypot(tx - self.x, ty - self.y)
+        if target is not None and target is self.target_obj:
+            return d <= self.notice_r
+        v = self._visual_fac(tx, ty)
+        return d <= self.notice_r * (VIS_BACK_FAC + (1.0 - VIS_BACK_FAC) * v)
+
+    def hear_noise(self, x: float, y: float) -> None:
+        """原版 ReactToNoise（LizardAI.cs:1741-1763）：记住最近一次响声的位置。"""
+        if self.dead or self.tamed:
+            return
+        if math.hypot(x - self.x, y - self.y) > NOISE_R:
+            return
+        self.noise_x, self.noise_y, self.noise_t = float(x), float(y), NOISE_TICKS
+
+    def _pick_threat(self, threats) -> None:
+        """原版 ThreatTracker（Afraid 关系）：挑最近/最重的威胁。"""
+        notice = self.notice_r * THREAT_NOTICE_FAC
+        best, bestscore, bestobj = None, None, None
+        for obj, w in threats:
+            if getattr(obj, "dead", False) or getattr(obj, "state", None) != ItemState.FREE:
+                continue
+            ox, oy = obj.x, obj.y
+            d = math.hypot(ox - self.x, oy - self.y)
+            if d > notice:
+                continue
+            score = d / max(0.05, w)
+            if bestscore is None or score < bestscore:
+                best, bestscore, bestobj = (ox, oy), score, obj
+        self.threat, self.threat_obj = best, bestobj
+
+    def _threat_tick(self, HL) -> bool:
+        """原版 Behavior.Flee（LizardAI.cs:797-822）：背对威胁全速逃、闭颌、不咬任何人。"""
+        if self.threat_t <= 0:
+            return False
+        self.threat_t -= 1
+        tx, ty = self.threat if self.threat is not None else (self.x, self.y)
+        dx, dy = self.x - tx, self.y - ty
+        d = math.hypot(dx, dy) or 1.0
+        sp = self.breed.base_speed * FLEE_SPEED
+        self.vx += (dx / d * sp - self.vx) * FLEE_ACCEL
+        self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE)
+        self.target = self.target_obj = None
+        self.look_at = (tx, ty)
+        if self._contact_floor and self.rng.random() < FLEE_HOP:
+            self.vy = CLIMB_HOP * 0.7
+        return True
+
+    def _anger_tick(self, others):
+        """原版 AgressionTracker（AgressionTracker.cs，ctor angerSpeedUp/Down = 0.001）：
+        anger 缓慢趋向 baseAnger × 距离系数（InverseLerp(10+base*70, 5, 格距)）；
+        Utility = InverseLerp(0.35, 1, anger)。Utility×0.5 压过猎物权重 0.6 才转 Fighting，
+        所以有猎物在场时永远先打猎物，只有没猎物时才去争夺领地。"""
+        target, base = None, 0.0
+        for obj, w in others:
+            if getattr(obj, "dead", False) or getattr(obj, "state", None) != ItemState.FREE:
+                continue
+            if math.hypot(obj.x - self.x, obj.y - self.y) > self.notice_r * THREAT_NOTICE_FAC:
+                continue
+            tiles = (abs(obj.x - self.x) + abs(obj.y - self.y)) / TILE
+            num = w * inv_lerp(10.0 + w * 70.0, 5.0, tiles)
+            if num > base:
+                target, base = obj, num
+        if target is None:
+            self.anger = max(0.0, self.anger - ANGER_DOWN)
+            self.anger_obj = None
+            return None
+        if self.anger_obj is not target:
+            self.anger_obj, self.anger = target, 0.0
+        if self.anger < base:
+            self.anger = min(base, self.anger + ANGER_UP)
+        else:
+            self.anger = max(base, self.anger - ANGER_DOWN)
+        if inv_lerp(ANGER_FIGHT, 1.0, self.anger) * ANGER_W > 0.0:
+            return target
+        return None
+
+    def _casual_bite(self, others) -> bool:
+        """原版 casualAggressionTarget（LizardAI.cs:1084-1095）+ DoIWantToBiteThisCreature
+        （LizardAI.cs:1667-1683）：对可见的 AgressiveRival 按 50% 概率咬一口；
+        残血（Random>health）时另有 10% 概率对可见对象乱咬。"""
+        if self.bite_cd > 0 or self.bite_hold > 0:
+            return False
+        for obj, _w in others:
+            if getattr(obj, "dead", False) or getattr(obj, "state", None) != ItemState.FREE:
+                continue
+            dx, dy = obj.x - self.x, obj.y - self.y
+            if math.hypot(dx, dy) > self.breed.attempt_bite_radius:
+                continue
+            if not self.sees(obj.x, obj.y):
+                continue
+            if self.rng.random() < CASUAL_BITE_CHANCE:
+                self.look_at = (obj.x, obj.y)
+                self._start_bite(obj)
+                return True
+            if self.rng.random() < CASUAL_PANIC_CHANCE and self.rng.random() > self.health:
+                self.look_at = (obj.x, obj.y)
+                self._start_bite(obj)
+                return True
+        return False
+
+    def _injured_tick(self, WL, HL, targets, threats) -> bool:
+        """原版 Behavior.Injured（LizardAI.cs:977-988）：残血时全速逃回巢穴并躲起来。
+        宠物里没有巢穴，改成「远离最近的威胁/猫，缩到最远的地面角落」。"""
+        if self.injured < INJURY_UTIL:
+            return False
+        danger = [(obj.x, obj.y) for obj, _w in threats]
+        for row in targets:
+            _obj, ox, oy, dead, _faint = _cat_row(row)
+            if not dead:
+                danger.append((ox, oy))
+        corners = ((WANDER_MARGIN, HL - self.body_rad * 2.0),
+                   (WL - WANDER_MARGIN, HL - self.body_rad * 2.0))
+        best, bestd = corners[0], -1.0
+        for cx, cy in corners:
+            d = min((math.hypot(cx - px, cy - py) for px, py in danger), default=0.0)
+            if d > bestd:
+                best, bestd = (cx, cy), d
+        self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE)
+        self.target = self.target_obj = None
+        self.look_at = best
+        want = clampf((best[0] - self.x) * 0.05, -2.0, 2.0) * INJURY_SPEED
+        self.vx += (want - self.vx) * WALK_TURN
+        return True
+
+    def _noise_tick(self, WL, HL) -> bool:
+        """原版 Behavior.InvestigateSound（LizardAI.cs:1038-1042）：朝最后听到的响声走。"""
+        if self.noise_t <= 0:
+            return False
+        self.noise_t -= 1
+        dx, dy = self.noise_x - self.x, self.noise_y - self.y
+        if math.hypot(dx, dy) < 24.0:
+            self.noise_t = 0
+            return False
+        self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE)
+        self.look_at = (self.noise_x, self.noise_y)
+        want = clampf(dx * 0.06, -2.0, 2.0)
+        self.vx += (want - self.vx) * WALK_TURN
+        return True
+
+    def _pack_tick(self, WL, HL, pack) -> bool:
+        """原版 Pack 关系（黄蜥→黄蜥 0.2 / YellowAI）：待机时跟住同伴。"""
+        best, bd = None, 1e9
+        for obj, _w in pack:
+            if obj is self or getattr(obj, "dead", False):
+                continue
+            d = math.hypot(obj.x - self.x, obj.y - self.y)
+            if d < bd:
+                best, bd = obj, d
+        if best is None or bd <= PACK_GAP:
+            return False
+        self.look_at = (best.x, best.y)
+        want = clampf((best.x - self.x) * 0.05, -2.0, 2.0)
+        self.vx += (want - self.vx) * WALK_TURN
+        return True
+
+    def _pick_target(self, targets, prey=(), fight=None) -> None:
         """按「关系强度 / 距离」选目标（原版 Creature.Relationship + 猎物追踪器）。
 
-        权重来自 StaticWorld.EstablishRelationship：
-        蛞蝓猫 1.0；绿蜥对绿/粉/白的 AgressiveRival 0.8/0.2/0.05；
-        蝉乌贼 LizardTemplate 0.05（蓝蜥/白蜥 0.7）。
+        权重来自 StaticWorld.EstablishRelationship + LizardAI.UpdateDynamicRelationship：
+        蛞蝓猫 Eats(Pow(InverseLerp(0.5,-1,like),0.925))（未被驯服时 ≈1.0）；
+        面条蝇/蝉乌贼/拾荒者走 LizardTemplate 基表；绿蜥吃蓝蜥 0.25。
+        fight 是 AgressionTracker 的争夺目标，只在没有猎物时才顶上。
         """
         notice = self.notice_r
         best, bestscore, bestobj = None, None, None
@@ -922,7 +1257,7 @@ class Lizard:
         def consider(obj, ox, oy, w):
             nonlocal best, bestscore, bestobj
             d = math.hypot(ox - self.x, oy - self.y)
-            if d > notice:
+            if d > notice or not self.sees(ox, oy, obj):
                 return
             score = d / max(0.05, w)          # 权重越高越优先
             if bestscore is None or score < bestscore:
@@ -937,10 +1272,10 @@ class Lizard:
             # 匍匐潜行：更难被盯上（原版 Crawl 姿态降低被发现概率）
             consider(obj, ox, oy,
                      1.0 if not _cat_crouching(obj) else 1.0 / CROUCH_TARGET_MULT)
-        for obj, w in rivals:
-            consider(obj, obj.x, obj.y, w)
         for obj, w in prey:
             consider(obj, obj.x, obj.y, w)
+        if best is None and fight is not None:
+            best, bestobj = (fight.x, fight.y), fight
         if best is not None:
             if bestobj is not self.target_obj:
                 self.sprint = 1.0 if self.rng.random() < self.breed.lounge_tendency else 0.55
@@ -1118,8 +1453,13 @@ class Lizard:
             self.jaw = 0.0
             self.bite_event = None
 
-    def _start_bite(self) -> None:
-        """原版 Lizard.cs:1238：按 biteDamageChance 掷骰，命中则 biteDamage * Lerp(0.8,1.2,rand)。"""
+    def _start_bite(self, obj=None) -> None:
+        """原版 Lizard.cs:1238：按 biteDamageChance 掷骰，命中则 biteDamage * Lerp(0.8,1.2,rand)。
+
+        obj 给 casual 撕咬用（原版 casualAggressionTarget 不是当前猎物目标）。
+        """
+        if obj is None:
+            obj = self.target_obj
         self.bite_hold = BITE_HOLD
         self.bite_cd = COOLDOWN_TICKS
         self.jaw = 1.0
@@ -1127,13 +1467,18 @@ class Lizard:
         dmg = 0.0
         if b.bite_damage_chance >= 1.0 or self.rng.random() < b.bite_damage_chance:
             dmg = b.bite_damage * lerp(0.8, 1.2, self.rng.random())
-        self.bite_event = (self.target_obj, dmg)
+        self.bite_event = (obj, dmg)
         self.vx *= 0.2
 
     def _wander(self, WL, HL) -> None:
-        """游走：定一个近处落点，走到／超时就换，再歇一会儿。"""
+        """游走：定一个近处落点，走到／超时就换，再歇一会儿。
+
+        白蜥/蝾螈走原版 LurkTracker（LizardAI.cs:85-216，utility 权重 0.3-0.4）：
+        伏击型，原地待机时间是别人的 LURK_IDLE_MULT 倍。
+        """
         self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE)
-        self.idle_timer -= 1
+        self.lurk = self.breed.key in ("white", "salamander")
+        self.idle_timer -= (1.0 / LURK_IDLE_MULT) if self.lurk else 1.0
         if self.idle_timer <= 0:
             span = self.rng.uniform(-1.0, 1.0) * 120.0
             self.goal_x = clampf(self.x + span, WANDER_MARGIN,

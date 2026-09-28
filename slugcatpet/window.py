@@ -861,6 +861,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         """地形硬撞回调，累加抖动偏移。"""
         self._shake[0] = clampf(self._shake[0] + ix, -SHAKE_MAX, SHAKE_MAX)
         self._shake[1] = clampf(self._shake[1] + iy, -SHAKE_MAX, SHAKE_MAX)
+        # 原版 NoiseTracker / ReactToNoise（LizardAI.cs:1741）：撞击地形的响声会引来蜥蜴
+        if strength > 0.0 and self.lizards:
+            x, y = getattr(chunk, "x", None), getattr(chunk, "y", None)
+            if x is not None and y is not None:
+                for lz in self.lizards:
+                    lz.hear_noise(x, y)
 
     def _cold_update_world(self):
         """暴风雪三角计时推进，返回 cycle_prog。"""
@@ -1371,7 +1377,9 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if self._place_mode:
             if e.button() == Qt.MouseButton.LeftButton:
                 lx, ly = self.to_logical(e.position().x(), e.position().y())
-                if self._place_kind in ("vpole", "hpole"):
+                if self._place_kind == "erase":
+                    self.erase_at((lx, ly))       # 删除模式：删完继续留着，可连点
+                elif self._place_kind in ("vpole", "hpole"):
                     self.place_pole(lx, ly, self._place_kind)
                 elif self._place_kind == "stone":
                     self.place_stone(lx, ly)

@@ -282,7 +282,8 @@ class Scavenger:
     __slots__ = ("x", "y", "vx", "vy", "last_x", "last_y", "rad", "mass", "gravity",
                  "air_friction", "surface_friction", "bounce", "water_y", "room_gravity",
                  "state", "facing", "walk_phase", "state_t", "idle_timer", "goal_x",
-                 "spear", "aim", "aim_t", "throw_event", "throw_cd", "dead", "held_by_hand",
+                 "spear", "aim", "aim_t", "throw_event", "throw_cd", "dead", "health",
+                 "held_by_hand",
                  "_contact_floor", "_rng", "seed", "id", "body_rgb", "head_rgb", "eye_rgb",
                  "belly_rgb", "pupil_rgb", "deco_rgb", "mask_rgb", "ivar",
                  "pearl", "like", "bring_pearl_home", "gift_t", "gift_event",
@@ -306,6 +307,7 @@ class Scavenger:
         self.walk_phase = 0.0
         self.state_t = 0
         self.dead = False
+        self.health = 1.0          # 原版 Scavenger HealthState.health（无伤害抗性）
         self.seed = int(seed)
         self.id = int(id)
         self._rng = _random.Random(seed * 3571 + 11)
@@ -382,6 +384,17 @@ class Scavenger:
     def die(self) -> None:
         self.dead = True
         self.state = ItemState.GONE
+
+    def hurt(self, damage: float) -> bool:
+        """被咬 / 被矛击中：原版 Scavenger 的 HealthState（health 1.0，无抗性）。
+        返回本次是否致死。"""
+        if self.dead:
+            return True
+        self.health -= damage
+        if self.health <= 1e-6:
+            self.die()
+            return True
+        return False
 
     def grab(self, cursor=None) -> None:
         self.held_by_hand = True

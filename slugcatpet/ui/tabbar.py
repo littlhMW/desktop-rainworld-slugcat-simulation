@@ -239,6 +239,18 @@ def _paint_place_icon(p, kind, r, atlas=None):
         _paint_scavenger_icon(p, r)
     elif kind == "seedcob":
         _paint_seedcob_icon(p, r)
+    elif kind == "erase":
+        # 橡皮：右下角一个小物件轮廓 + 压在上面的红叉
+        d = min(w, h) * 0.52
+        obj = QRectF(0, 0, d, d)
+        obj.moveCenter(QPointF(cx - w * 0.10, cy + h * 0.10))
+        p.setPen(_pen(_ICON_GREY, max(1.4, w * 0.09)))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(obj)
+        p.setPen(_pen(_ICON_RED, max(2.2, w * 0.16)))
+        q = min(w, h) * 0.34
+        p.drawLine(QPointF(cx - q, cy - q), QPointF(cx + q, cy + q))
+        p.drawLine(QPointF(cx + q, cy - q), QPointF(cx - q, cy + q))
     elif kind == "clear":
         # 禁止圈 ⊘
         d = min(w, h) * 0.90
@@ -570,6 +582,7 @@ class TabBar(QWidget):
                        ("pearl", t("tip_pearl"), self._place_pearl),
                        ("spear", t("tip_spear"), self._place_spear),
                        ("seedcob", t("tip_seedcob"), self._place_seedcob),
+                       ("erase", t("tip_erase"), self._erase_mode),
                        ("clear", t("tip_clear"), self._clear_all)]
         for i, (kind, tip, cb) in enumerate(place_items):
             ib = QPushButton()
@@ -783,6 +796,10 @@ class TabBar(QWidget):
 
     def _place_seedcob(self):
         self.pet.enter_place_seedcob_mode()
+        self._collapse()
+
+    def _erase_mode(self):
+        self.pet.enter_erase_mode()
         self._collapse()
 
     def _clear_all(self):
