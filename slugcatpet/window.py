@@ -1,6 +1,7 @@
 """全屏透明置顶桌宠窗，固定步长物理+插值渲染。"""
 from __future__ import annotations
 import os
+_DEBUG_SEEDED = False
 import random
 from PySide6.QtWidgets import QApplication, QWidget
 from PySide6.QtCore import Qt, QTimer, QElapsedTimer, QRect, QPoint, QPointF, QRectF
@@ -99,6 +100,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if debug is None:
             debug = os.environ.get("SLUGCATPET_DEBUG") not in (None, "", "0")
         self.debug = debug
+        global _DEBUG_SEEDED
+        if debug and not _DEBUG_SEEDED:
+            # 调试/测试：只在本进程第一次开窗时固定全局随机流（行为可复现；
+            # 之后开的窗口继续同一条流，作息/睡眠时长才不会千篇一律）
+            _DEBUG_SEEDED = True
+            random.seed(20260928)
 
         flags = (Qt.WindowType.FramelessWindowHint
                  | Qt.WindowType.WindowStaysOnTopHint

@@ -57,6 +57,7 @@ def throw_velocity(c0, dir_x: float, is_spear: bool, frc_value: float):
 def begin_thrown(obj, dir_x: float, frc_value: float) -> None:
     """进入 Mode.Thrown：记投掷方向、退出阈值与投掷起点。"""
     obj._thrown = True
+    obj._f1 = True               # 第一帧的扫掠起点＝出手前的位置（原版 firstFrameTraceFromPos）
     obj._throw_dir = 1 if dir_x >= 0.0 else -1
     obj._exit_spd = exit_thrown_speed(frc_value)
     obj._throw_x = obj.x

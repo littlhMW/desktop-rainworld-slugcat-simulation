@@ -7,7 +7,7 @@ MOOD_NOISE_AMP = 0.20
 # 趴下休息：体力驱动的强制疲劳
 EXHAUST_ENTER_ENERGY = 0.1
 # 没饱食度（体力回不了）时低于这个值就主动去睡：醒来回满体力但掉一级业力
-STARVE_REST_ENERGY = 0.35
+STARVE_REST_ENERGY = 0.15
 EXHAUST_EXIT_ENERGY = 0.50
 LIE_SETTLE_TICKS = 40
 
@@ -317,7 +317,7 @@ SOCIAL_POKE_TICKS = 90        # 扒拉/抚摸/指指点点动作时长
 SOCIAL_POKE_INTERVAL = 22     # 每次伸手的间隔
 # ── 社交欲望（第六类：进食/恐惧/战斗/玩耍/睡眠/社交）──
 # 动作词表见 behavior/social.py；这里只放手势参数与抽取权重
-SOCIAL_URGE_RATE = 1.0 / 7200.0   # 每 tick 累积（约 120s 攒满才想找人）
+SOCIAL_URGE_RATE = 1.0 / 4200.0   # 每 tick 累积（约 105s 攒满才想找人）
 PET_BASE = 1.00                   # 抚摸
 PAT_BASE = 0.85                   # 拍拍
 POINTHOLD_BASE = 0.70             # 指向（举着不放）
@@ -337,7 +337,7 @@ PET_SOOTHE = 0.05                 # 一次抚摸/拍拍的安抚量（双方 tem
 IDLE_SOCIAL_CHECK = 90            # 每隔这么多 tick 掷一次骰
 IDLE_SOCIAL_P = 0.45              # 附近有同伴时的触发概率（再乘性格）
 IDLE_SOCIAL_CURSOR_P = 0.35       # 鼠标在附近停够久时对鼠标做动作的概率
-IDLE_SOCIAL_CD = 300              # 一次平时小动作后的冷却（约 10s）
+IDLE_SOCIAL_CD = 220              # 一次平时小动作后的冷却（约 5.5s）
 IDLE_SOCIAL_TICKS_MIN = 40        # 单次小动作时长
 IDLE_SOCIAL_TICKS_MAX = 130
 IDLE_SOCIAL_HOLD = 30             # 做完歇一拍再重抽
@@ -393,7 +393,7 @@ METAB_FOOD_PER_BAR  = 1
 METAB_FOOD_PER_REC_BAR = 1     # 回一条体力也得吃一格（体力经济）
 
 # 玩耍式狩猎：不饿但手里有矛/石头时，也会拿手里的家伙打飞虫
-HUNT_PLAY_PROB      = 0.05     # 每次重算闸（每 8 tick）掷中的概率
+HUNT_PLAY_PROB      = 0.10     # 每次重算闸（每 8 tick）掷中的概率
 
 # 徒手抓飞虫（蝙蝠/蝉乌贼）：饿了吃掉，吃饱了抓着玩会儿再放走
 CATCH_SEEK_R        = 150.0    # 飞虫进这个半径才想起来抓
@@ -402,7 +402,7 @@ CATCH_UP_MAX        = 150.0    # 比嘴高太多就够不到
 CATCH_JUMP_GAP      = 26.0     # 比嘴高这么多就起跳去够
 CATCH_JUMP_CD       = 36       # 连跳间隔
 CATCH_CHASE_TIMEOUT = 420      # 追不到就放弃
-CATCH_RETRY         = 600      # 两次抓虫之间的冷却
+CATCH_RETRY         = 420      # 两次抓虫之间的冷却
 FLY_PLAY_TICKS      = 260      # 吃饱了抓着玩多久
 FLY_PLAY_POKE       = 36       # 玩的时候每隔这么久拨一下（虫挣扎、自己也晃）
 SPIT_UP_VY          = -2.8     # 放走时把飞虫往上送
@@ -416,10 +416,10 @@ ITEMPLY_SEEK_R      = 170.0
 ITEMPLY_REACH       = 22.0
 ITEMPLY_TICKS_MIN   = 150
 ITEMPLY_TICKS_MAX   = 320
-ITEMPLY_RETRY       = 700
-ITEMPLY_PRANCE_CD   = 70       # 玩得高兴时每隔这么久蹦一下
+ITEMPLY_RETRY       = 480
+ITEMPLY_PRANCE_CD   = 55       # 玩得高兴时每隔这么久蹦一下
 ITEMPLY_FLING_P     = 0.55     # 收手时按 temper 加权，暴躁的猫把家伙甩出去
-ITEMPLY_P           = 0.40     # 闲下来时每次抽查愿意去玩的概率
+ITEMPLY_P           = 0.55     # 闲下来时每次抽查愿意去玩的概率
 
 # 觅食时拿矛打爆米花：没矛就去地上捡一根
 COB_SPEAR_FETCH_R   = 240.0

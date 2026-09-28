@@ -16,6 +16,7 @@ from .fruit import Fruit
 from .enums import ItemState
 from ..rendering.pixelmode import aa_hint
 
+MIN_CLEAR = 70.0               # 豆荚最低点离地面至少留这么多（原版豆荚不会埋进地里）
 ROOT_Y = -10.0                 # 原版 rootPos = (placedPos.x, -10)：锚在房顶之上；
                                # 宠物里改为锚在窗口底边（地面），从地上长起来
 STALK_SEG_MAX = 50
@@ -148,7 +149,7 @@ class SeedCob:
         self._rng = rng
         self._id = int(seed)
         self.root_y = ROOT_Y if root_y is None else float(root_y)
-        self.placed = (float(x), float(y))
+        self.placed = (float(x), min(float(y), self.root_y - MIN_CLEAR))
         self.root_pos = (float(x), self.root_y)
         d = lerp(60.0, math.dist(self.root_pos, self.placed) / 2.0, 0.3)
         self.conn_dist = d
@@ -239,7 +240,7 @@ class SeedCob:
         rng 由目标点派生 → 同一位置形状稳定，拖动时不会每帧抖动。
         """
         rng = _random.Random(self._id * 7919 + int(x) * 131 + int(y) * 17)
-        self.placed = (float(x), float(y))
+        self.placed = (float(x), min(float(y), self.root_y - MIN_CLEAR))
         self.root_pos = (float(x), self.root_y)
         d = lerp(60.0, math.dist(self.root_pos, self.placed) / 2.0, 0.3)
         self.conn_dist = d

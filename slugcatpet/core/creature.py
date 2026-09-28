@@ -1693,7 +1693,8 @@ class SlugcatBody:
         c0, c1 = self.chunk0, self.chunk1
         sx = c0.x + float(dir_x) * THROW_ORIGIN_DX
         sy = c0.y - THROW_ORIGIN_DY
-        sp.last_x, sp.last_y = sp.x, sp.y
+        sp.last_x = c0.x - float(dir_x) * THROW_ORIGIN_DX   # 原版 firstFrameTraceFromPos
+        sp.last_y = c0.y
         sp.x = sx
         sp.y = sy
         if toss:

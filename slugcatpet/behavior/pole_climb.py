@@ -18,8 +18,10 @@ ARC_R = 17.0
 
 
 class PoleClimber:
-    def __init__(self, win, pole, rng=None, start=None):
+    def __init__(self, win, pole, rng=None, start=None, no_handoff=False):
         self.win = win
+        # 爆米花植株这种「临时竖杆」不允许换到别的杆上（原版作物不是真杆）
+        self.no_handoff = no_handoff
         self.body = win.body
         self.gfx = win.gfx
         self.pole = pole
@@ -62,7 +64,7 @@ class PoleClimber:
 
         if self.phase == "climb":
             self._drive_climb()
-            hp = self._cross_hpole()
+            hp = None if self.no_handoff else self._cross_hpole()
             if hp is None:
                 self._cross_t = 0
             else:

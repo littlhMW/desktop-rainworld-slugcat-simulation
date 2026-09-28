@@ -38,6 +38,7 @@ class Spear:
     collision_layer = 2
 
     __slots__ = ("x", "y", "vx", "vy", "last_x", "last_y", "rad", "mass", "gravity",
+                 "_f1", "_seg_new", "_seg_x", "_seg_y",
                  "air_friction", "bounce", "surface_friction", "buoyancy", "water_friction",
                  "water_y", "room_gravity",
                  "state", "angle_deg", "last_angle", "spin", "spinning", "stuck", "stuck_angle",
@@ -51,6 +52,9 @@ class Spear:
         self.y = self.last_y = float(y)
         self.vx = self.vy = 0.0
         self.rad, self.mass, self.gravity = RAD, MASS, GRAVITY
+        self._f1 = False             # 掷出后的第一帧：last_* 保留出手前的位置
+        self._seg_new = False        # 本帧这段位移还没判过命中
+        self._seg_x, self._seg_y = float(x), float(y)   # 本帧真正飞到的位置（插墙回摆之前）
         self.air_friction, self.bounce, self.surface_friction = AIR_FRICTION, BOUNCE, SURFACE_FRICTION
         self.buoyancy, self.water_friction = BUOYANCY, WATER_FRICTION
         self.water_y = None
@@ -167,7 +171,10 @@ class Spear:
             return
         if self.state == ItemState.GONE:
             return
-        self.last_x, self.last_y = self.x, self.y
+        if self._f1:
+            self._f1 = False             # 原版 firstFrameTraceFromPos：第一帧从出手前扫起
+        else:
+            self.last_x, self.last_y = self.x, self.y
         self.last_angle = self.angle_deg
         if self.no_self_t > 0:
             self.no_self_t -= 1
@@ -179,6 +186,8 @@ class Spear:
                     self.room_gravity, self.air_friction)
         self.x += self.vx
         self.y += self.vy
+        self._seg_new = True                     # 这段位移留给命中判定吃
+        self._seg_x, self._seg_y = self.x, self.y   # 插墙会把 x/y 拽回墙内，命中要用飞到的位置
         step_x, step_y = self.x - self.last_x, self.y - self.last_y   # 本 tick 落地方向
         aabb_wall_collide(self, WL, HL, impact=self._impact_cb)
         if self._thrown:

@@ -197,13 +197,21 @@ def _pet_bite_death_mult(pet) -> float:
                                    PET_BITE_DEATH_MULT_DEFAULT)
 
 
+def _seg_end(ball):
+    """本帧扫掠线段终点：插墙/插地会把 x/y 拽回墙内，命中要用真正飞到的位置。
+
+    原版 Weapon.Update 是先逐 chunk 判命中、再 StuckInWall；同帧插墙不该吞掉命中。
+    """
+    return (getattr(ball, "_seg_x", ball.x), getattr(ball, "_seg_y", ball.y))
+
+
 def _ball_hit(creature, ball, pad: float = 0.0):
     """球体命中生物判定：头 + 各链节；返回命中点或 None。
 
     用上一帧→本帧的扫掠线段，投掷物 40px/帧时逐帧点判定会直接穿过去。
     """
     ax, ay = getattr(ball, "last_x", ball.x), getattr(ball, "last_y", ball.y)
-    bx, by = ball.x, ball.y
+    bx, by = _seg_end(ball)
     if _seg_dist(ax, ay, bx, by, creature.x, creature.y) < ball.rad + creature.head_rad + pad:
         return (bx, by)
     for s in creature.seg:
@@ -228,9 +236,10 @@ def _cob_hit(cb, sp, pad: float = 0.0):
     """
     r = sp.rad + cb.rad + pad
     ax, ay = getattr(sp, "last_x", sp.x), getattr(sp, "last_y", sp.y)
+    ex, ey = _seg_end(sp)
     for px, py in (cb.p0, cb.p1):
-        if _seg_dist(ax, ay, sp.x, sp.y, px, py) < r:
-            return (sp.x, sp.y)
+        if _seg_dist(ax, ay, ex, ey, px, py) < r:
+            return (ex, ey)
     return None
 
 
@@ -1948,11 +1957,13 @@ class ItemInteractionMixin:
                 continue
             b = pet.body
             for sp in self.spears:
-                if sp.stuck or sp.state != ItemState.FREE:
+                if sp.state != ItemState.FREE:
+                    continue
+                if sp.stuck and not sp._seg_new:              # 早先就停住/插住了：不再伤人
                     continue
                 if sp.thrower is b and sp.no_self_t > 0:      # 刚出手，别扎自己
                     continue
-                if not sp._thrown:                            # 原版只有 Mode.Thrown 才判定命中
+                if not (sp._thrown or sp._seg_new):           # 原版只有 Mode.Thrown 才判定命中
                     continue
                 for c in (b.chunk0, b.chunk1):
                     if _seg_dist(sp.last_x, sp.last_y, sp.x, sp.y,
@@ -1971,9 +1982,11 @@ class ItemInteractionMixin:
                         sp.vx = sp.vy = 0.0
                         break
         for sp in self.spears:
-            if sp.stuck_to is not None or sp.stuck or sp.state != ItemState.FREE:
+            if sp.stuck_to is not None or sp.state != ItemState.FREE:
                 continue
-            if not sp._thrown:                  # HitWall 后进 Free，不再伤人（原版 Weapon.Update）
+            if sp.stuck and not sp._seg_new:    # 早先就停住/插住了：不再伤人
+                continue
+            if not (sp._thrown or sp._seg_new):  # HitWall 后进 Free，不再伤人（原版 Weapon.Update）
                 continue
             for lz in self.lizards:
                 if lz.dead:
@@ -2029,6 +2042,8 @@ class ItemInteractionMixin:
                 sp.vx *= 0.55
                 self._shake[0] += 0.5 * (1.0 if kx >= 0.0 else -1.0)
                 break
+        for sp in self.spears:
+            sp._seg_new = False          # 这段位移判过了
 
     def _tick_spears(self):
         self._step_spear_drag()

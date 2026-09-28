@@ -33,11 +33,15 @@ class Stone:
                  "thrown_by_saint", "frame", "collide_with_objects",
                  "_rng", "_thrown", "_throw_dir", "_exit_spd", "_throw_x", "_throw_y",
                  "_id", "_contact_floor", "_contact_ceil", "_contact_x", "_impact_cb",
-                 "unfetchable", "fetch_fails", "thrower", "no_self_t")
+                 "unfetchable", "fetch_fails", "thrower", "no_self_t",
+                 "_f1", "_seg_new", "_seg_x", "_seg_y")
 
     def __init__(self, x: float, y: float, seed: int = 0):
         self.x = self.last_x = float(x)
         self.y = self.last_y = float(y)
+        self._f1 = False             # 掷出后的第一帧：last_* 保留出手前的位置
+        self._seg_new = False        # 本帧这段位移还没判过命中
+        self._seg_x, self._seg_y = float(x), float(y)
         self.vx = 0.0
         self.vy = 0.0
         self.rad = RAD
@@ -108,6 +112,8 @@ class Stone:
                     self.room_gravity, self.air_friction)
         self.x += self.vx
         self.y += self.vy
+        self._seg_new = True
+        self._seg_x, self._seg_y = self.x, self.y   # 撞墙回摆前飞到的位置
 
         self._collide(WL, HL)
 

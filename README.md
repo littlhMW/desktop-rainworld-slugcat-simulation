@@ -87,6 +87,10 @@ python run_slugcatpet.py
 - **猎手背上的备用矛**画在猫身后（原来压在猫身上）。
 - **状态面板**底板修好了（普通 QWidget 要开 `WA_StyledBackground` 才会画 QSS 底色，之前是透的）。
 - **跳跃高度已核对**：我们的物理 1 逻辑单位 = 原版 1 像素（身体 17），实测站立跳峰高 43.7，与按 `Player.cs` 常数独立复刻的结果（44.0）一致；相对画出来的猫高（约 37）是 1.18 倍，和原版观感一致，所以这里不需要按画面再缩放。
+- **打不中爆米花修好了（第 28 轮）**：一是「一帧插墙」——矛在飞过豆荚的同一帧撞到窗口侧墙时，会被拽回插墙姿势，命中判定就看不到那一段飞行了；现在扫掠线段用的是**撞墙之前真正飞到的位置**（`_seg_end`，对照 `Weapon.Update` 先判命中、后 StuckInWall 的顺序）。二是预演弹道——蛞蝓猫掷矛前会按 `Spear.step` 逐帧预演一遍，预演说能中才出手。三是**顺植株爬**——豆荚挂得比掷矛线高、跳也够不着时，猫会顺着爆米花植株爬上去，爬到和豆荚同高再插一矛（这截「植株杆」是虚拟的，不画出来、不挡路，也**不许在交点换到别的杆上**）。实测：40 个豆荚种子全中、17 个不同位置全中，且矛都插在豆荚上。
+- **体力更快（第 28 轮）**：消耗整体提高到原来的约 1.5 倍（剧烈 1/330、轻度 1/1000、走动 1/1600、兜底 1/2000），站着喘气反而更慢（1/2200），所以「行动 vs 歇气」的差更明显。另外把「没吃没体力才去睡」的门槛从 0.35 降到 0.15——只有**真的没饱食度又几乎没体力**时才会去睡掉一级业力，不再动不动就趴下。
+- **状态面板底色（第 28 轮再修）**：上一版只修了面板本体，行区所在的滚动视口还在用调色板默认浅灰铺满，看起来像一条浅灰带；现在视口/行容器都设成透明，整块面板是同一种深色。
+- **测试可复现**：debug 模式下首次开窗会 `random.seed(...)`，整套行为链变得可复现（`work/scratch/run_all19.ps1` 现在 25 个脚本、连跑多次 `fails=0`）。
 
 ## 素材与版权说明
 
@@ -183,6 +187,10 @@ The same vocabulary also drives **everyday** gestures (when the social urge has 
 - **The hunter's spare spear on its back** is drawn behind the cat instead of on top of it.
 - **The status panel background** is fixed (a plain QWidget needs `WA_StyledBackground` to paint its QSS background; it used to be see-through).
 - **Jump height verified**: one logical unit is one original-game pixel (body = 17), and the measured standing jump peak is 43.7, matching an independent replay of the `Player.cs` constants (44.0) - 1.18x the drawn cat height, the same look as the game, so no pixel-ratio rescaling is needed.
+- **Missing the popcorn plant fixed (round 28)**: first, the same-frame wall stick - when a spear hit the window's side wall on the very frame it flew past the cob, it was snapped back to its stuck pose and that flight segment was lost to hit detection; the swept segment now uses **the position it actually flew to before the collision** (`_seg_end`, matching `Weapon.Update`, which checks hits before `StuckInWall`). Second, ballistic preview - before throwing, the cat replays the exact `Spear.step` trajectory and only throws when the preview says it connects. Third, **climbing the stalk** - when the cob hangs above the throw line and is out of jumping reach, the cat climbs the popcorn plant and spears it level with the cob (that stalk pole is virtual: never drawn, never blocks, and it is **not allowed to hand off to other poles at crossings**). Measured: 40/40 cob seeds and 17/17 placements open, with the spear stuck in the cob every time.
+- **Faster stamina (round 28)**: drain is now about 1.5x the previous values (vigorous 1/330, light 1/1000, pacing 1/1600, fallback 1/2000) while standing still recovers more slowly (1/2200), so the difference between acting and resting is far more visible. The "no food and no stamina" sleep gate also dropped from 0.35 to 0.15 - the cat only sleeps off a karma level when it genuinely has **no satiety and almost no stamina**, instead of lying down all the time.
+- **Status panel background (fixed again in round 28)**: the previous round only fixed the panel itself; the scroll viewport holding the rows still painted the palette's default light grey, showing up as a grey band. Viewport and row host are transparent now, so the whole panel is one dark colour.
+- **Reproducible tests**: in debug mode the first window seeds the global `random`, making the whole behaviour chain reproducible (`work/scratch/run_all19.ps1` now runs 25 scripts and reports `fails=0` repeatedly).
 
 ## Origin
 

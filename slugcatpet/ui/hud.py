@@ -67,8 +67,13 @@ class HudPanel(QWidget):
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        # 滚动区视口/内容默认用调色板底色（浅灰）铺满，会把面板底色盖掉 → 全部透明
+        self._rows_host.setAutoFillBackground(False)
+        self._scroll.setAutoFillBackground(False)
+        self._scroll.viewport().setAutoFillBackground(False)
         self._scroll.setStyleSheet(
             "QScrollArea{background:transparent;border:none;}"
+            "QScrollArea > QWidget > QWidget{background:transparent;}"
             "QScrollBar:vertical{background:transparent;width:8px;margin:0;}"
             "QScrollBar::handle:vertical{background:rgba(150,180,120,150);"
             "border-radius:4px;min-height:24px;}"
