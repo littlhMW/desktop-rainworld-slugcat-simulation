@@ -209,6 +209,18 @@ class HPoleController:
                     and self._roll() < tuning.CROSS_SWITCH_PROB):
                 self.handoff = ("v", vp, "climb")  # 站在交点上：转到竖杆
                 return True
+        # 换杆意图（原版要走到交叉格上再按键）：刚换过来的先走离交点，
+        # 之后主动走回交点换杆，避免站在交点上乱走到超时掉下杆
+        steer = None
+        xp, xnear = self._vp_near(c1.x, ay)
+        if can_walk and xp is not None and lo <= xp.x <= hi:
+            if not self._cross_armed:
+                if xnear:
+                    steer = -1 if c1.x <= xp.x else 1
+            elif abs(c1.x - xp.x) > 2.0:
+                steer = 1 if xp.x > c1.x else -1
+        if steer is not None:
+            self._pause = 0
         # 低概率：翻到杆下再上来
         if (can_walk and self._pause <= 0 and self.rng is not None
                 and self.rng.random() < tuning.HP_HANG_PROB):
@@ -228,6 +240,8 @@ class HPoleController:
             if (self._stand_t % TURN_PERIOD == 0 and self.rng is not None
                     and self.rng.random() < TURN_PROB):
                 self._walk_dir = -self._walk_dir
+            if steer is not None:            # 换杆意图优先于随机掉头
+                self._walk_dir = steer
             nx = c1.x + WALK_SPEED * self._walk_dir
             if nx <= lo:
                 nx, self._walk_dir = lo, 1
@@ -265,18 +279,22 @@ class HPoleController:
     def _roll(self):
         return self.rng.random() if self.rng is not None else 0.5
 
-    def _cross_vpole(self, x, y):
-        """该处是否压在竖杆交点上（原版 tile 的 verticalBeam）。"""
+    def _vp_near(self, x, y):
+        """(交叉的竖杆, 是否压在交点上)；没有交叉竖杆时 (None, False)。"""
         if self.win is None or self.pole is None:
-            return None
+            return None, False
         vp = cross_partner(self.pole, self.win.poles)
         if vp is None or vp.kind != VERTICAL:
-            self._cross_armed = True
-            return None
+            return None, False
         near = (abs(x - vp.x) <= tuning.CROSS_PAD
                 and min(vp.ay, vp.by) - tuning.CROSS_PAD <= y
                 <= max(vp.ay, vp.by) + tuning.CROSS_PAD)
-        if not near:
+        return vp, near
+
+    def _cross_vpole(self, x, y):
+        """该处是否压在竖杆交点上（原版 tile 的 verticalBeam）。"""
+        vp, near = self._vp_near(x, y)
+        if vp is None or not near:
             self._cross_armed = True     # 离开交点，重新允许换杆
             return None
         return vp if self._cross_armed else None
