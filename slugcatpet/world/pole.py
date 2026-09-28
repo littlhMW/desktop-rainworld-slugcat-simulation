@@ -47,7 +47,8 @@ def cross_partner(pole, poles, tol=CROSS_TOL):
 class Pole:
     """单根杆子：端点+攀爬标记（ax/ay=锚边端，bx/by=光标端）。"""
 
-    __slots__ = ("kind", "ax", "ay", "bx", "by", "state", "has_been_climbed", "_id")
+    __slots__ = ("kind", "ax", "ay", "bx", "by", "state", "has_been_climbed", "_id",
+                 "from_spear")
 
     def __init__(self, kind, ax, ay, bx, by, seed=0):
         self.kind = kind
@@ -58,6 +59,7 @@ class Pole:
         self.state = ItemState.FREE
         self.has_been_climbed = False
         self._id = int(seed)
+        self.from_spear = None      # 由插进墙/地的矛变成的杆（非 None 时指向那枝矛）
 
     # ── 竖杆便捷访问 ──
     @property

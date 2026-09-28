@@ -99,6 +99,8 @@ class FlyHunter:
         for s in self.win.spears:
             if s.state != "free" or s.stuck_to is not None:
                 continue
+            if getattr(s, "pinned", False):      # 钉成杆的矛：拔不动
+                continue
             if s.stuck or (abs(s.vx) < 0.4 and abs(s.vy) < 0.4):
                 out.append(s)
         return out

@@ -551,6 +551,9 @@ class ItemInteractionMixin:
 
     def clear_poles(self):
         from .enums import ItemState as _IS
+        for sp in self.spears:            # 矛钉成的杆一并清掉，矛本身回到可拾取
+            sp.pinned = False
+            sp.pole = None
         for pl in self.poles:
             pl.state = _IS.GONE
         if self.poles:
@@ -2028,6 +2031,39 @@ class ItemInteractionMixin:
                 sp.step(self._WL, self._HL)
             self._step_spear_hit()
             self.spears = [sp for sp in self.spears if sp.state != ItemState.GONE]
+        self._sync_spear_poles()
+
+    # ── 钉住的矛＝对应长度的杆（原版 Spear.cs:435 stuckInWall → horizontal/verticalBeam）──
+    def _make_spear_pole(self, sp):
+        """给钉住的矛注册一截同长的杆：竖着钉的成竖杆，横着钉的成横杆。"""
+        from .pole import Pole, VERTICAL, HORIZONTAL
+        tx, ty = sp.tip()
+        bx, by = sp.butt()
+        if abs(ty - by) >= abs(tx - bx):
+            lo, hi = (ty, by) if ty <= by else (by, ty)
+            pl = Pole(VERTICAL, sp.x, hi, sp.x, lo, seed=self._pole_seed)
+        else:
+            lo, hi = (tx, bx) if tx <= bx else (bx, tx)
+            pl = Pole(HORIZONTAL, lo, sp.y, hi, sp.y, seed=self._pole_seed)
+        self._pole_seed += 1
+        pl.from_spear = sp
+        self.poles.append(pl)
+        self.world_version += 1
+        self.geometry_version += 1
+        return pl
+
+    def _sync_spear_poles(self):
+        """钉住的矛与杆实体保持一致（猫随时能爬上去；拔出/清除即消失）。"""
+        for sp in self.spears:
+            pl = sp.pole
+            if pl is not None and (not sp.pinned or sp.state != ItemState.FREE):
+                if pl in self.poles:
+                    self.poles.remove(pl)
+                pl.state = ItemState.GONE
+                sp.pole = None
+                self.geometry_version += 1
+            elif pl is None and sp.pinned and sp.state == ItemState.FREE:
+                sp.pole = self._make_spear_pole(sp)
 
     def _draw_spears(self, p):
         ts = self._ts

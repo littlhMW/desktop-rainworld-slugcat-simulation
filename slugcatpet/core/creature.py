@@ -42,8 +42,10 @@ WALK_STOP_EPS = 2.0
 
 # 窗口边缘＝墙/天花：吸附、攀爬、蹬墙跳、吊顶（手感对齐原版攀杆）
 WALL_CLIMB_SPEED = 2.2 * K_VEL      # 爬墙垂直速度
-WALL_JUMP_VX = 5.6 * K_VEL          # 蹬墙跳离墙横速
-WALL_JUMP_VY = 6.4 * K_VEL          # 蹬墙跳上抛
+WALL_JUMP_VX = 6.0 * K_VEL          # Player.WallJump：胸 6、胯 5
+WALL_JUMP_VX_FEET = 5.0 * K_VEL
+WALL_JUMP_VY = 8.0 * K_VEL          # Player.WallJump：胸 8、胯 7
+WALL_JUMP_VY_FEET = 7.0 * K_VEL
 WALL_JUMP_LOCK = 14                 # 蹬墙后硬直，期内不再吸附
 WALL_CLIMB_MAX_H = 30.0             # 墙最多只能攀爬「一只蛞蝓猫的高度」
 WALL_LEDGE_SLIDE = 0.5 * K_VEL      # 抓不住墙头时贴墙缓慢下滑速度
@@ -496,9 +498,9 @@ class SlugcatBody:
         c0, c1 = self.chunk0, self.chunk1
         c0.pinned = c1.pinned = False
         c0.vx = -side * WALL_JUMP_VX
-        c1.vx = -side * WALL_JUMP_VX * 0.7
+        c1.vx = -side * WALL_JUMP_VX_FEET
         c0.vy = -WALL_JUMP_VY
-        c1.vy = -WALL_JUMP_VY * 0.8
+        c1.vy = -WALL_JUMP_VY_FEET
         if up:
             self.jump_boost = 4
         return True
@@ -1190,7 +1192,8 @@ class SlugcatBody:
 
         dyn0 = RUN_UPPER * self.stats.runspeed_fac      # 顶速×种族因子，不乘加速度
         dyn1 = RUN_LOWER * self.stats.runspeed_fac
-        if self.bodyMode == "Stand":
+        if self.bodyMode == "Stand" and self.jump_boost <= 0.0:
+            # 起跳期间不施加（原版 Stand 分离力净值为 0，本式净向下 3，会吃掉升力）
             c0.vy += STAND_HEAD
             c1.vy += STAND_FEET
         elif self.bodyMode == "Default" and self.standing:
@@ -1234,10 +1237,8 @@ class SlugcatBody:
             self._jump_pending = None
             self._jump_hold = None
 
-        # 持跳可变跳高，离地才逐档施力
-        if on_ground:
-            pass
-        elif self.jump_boost > 0:
+        # 持跳可变跳高：原版 Player.cs:12188 只要求 jumpBoost>0 且按住跳键
+        if self.jump_boost > 0:
             if self._jump_hold_left is not None and self._jump_hold_left <= 0:
                 self.jump_boost = 0.0
             else:
@@ -1640,7 +1641,12 @@ class SlugcatBody:
 
     # ── 矛（原版 Spear：玩家持矛时杆斜指前上方，掷出后走弹道）──
     def grab_spear(self, spear, side):
-        """Grab a spear with one hand; convert to carried (kinematic)."""
+        """Grab a spear with one hand; convert to carried (kinematic).
+
+        钉进墙/地变成杆子的矛（spear.pinned）拔不动，拾取直接失败。
+        """
+        if getattr(spear, "pinned", False):
+            return False
         side = self._take_hand("spear", side)
         if side is None:
             return False

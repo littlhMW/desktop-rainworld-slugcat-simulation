@@ -523,6 +523,10 @@ DRAG_REACH_R  = 34.0            # 手够得着就抓（原版手碰到就抓）
 DRAG_REACH_CD = 24
 DRAG_POLE_R   = 46.0            # 贴到这么近算抱上杆了
 
+# 空中投矛（wiki Throwing midair：在空中也能把矛/石头掷出去）
+AIR_THROW_R  = 190.0            # 空中锁定目标半径
+AIR_THROW_CD = 55               # 两次空中投掷的最小间隔 tick
+
 # 被指指点点：有概率面对发起者匍匐
 POINTED_CROUCH_PROB  = 0.5
 POINTED_CROUCH_TICKS = 150

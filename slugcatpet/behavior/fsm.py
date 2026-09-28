@@ -315,6 +315,7 @@ class BehaviorFSM:
         self._social_cd = 0
         self._help_cd = 0
         self._fight_cd = 0
+        self._air_throw_cd = 0
         self._crawl_cd = 0
         self._protest_cd = 0
         self._revive_cd = 0
@@ -1987,6 +1988,8 @@ class BehaviorFSM:
             for it in items:
                 if getattr(it, "state", None) not in (ItemState.FREE, ItemState.HANGING):
                     continue
+                if getattr(it, "pinned", False):   # 钉住的矛拉不动
+                    continue
                 if getattr(it, "held_by_hand", None) is not None:
                     continue
                 d = min(self._reach_dist(b.chunk0, it), self._reach_dist(b.chunk1, it))
@@ -2088,6 +2091,7 @@ class BehaviorFSM:
     def _st_airborne(self, cursor, disturbed):
         b = self.body
         self._hp_jump_grab()
+        self._air_throw()                # 空中投矛
         sp = math.hypot(b.chunk1.vx, b.chunk1.vy) + math.hypot(b.chunk0.vx, b.chunk0.vy)
         on_ceil = (not b.on_floor() and b.wall_cd <= 0 and sp < tuning.CEIL_SETTLE_SPEED
                    and self._can_ceil_cling()
@@ -2308,6 +2312,8 @@ class BehaviorFSM:
             return
         if self._pole_nudge_tick():      # 被同伴挡在杆上：停住扒拉/指指点点
             return
+        if self._pole_throw():           # 杆上持械遇敌：就地掷出（原版杆上可投掷）
+            return
         if self._pole_eat():             # 手里有吃的：先在杆上吃完
             return
         want_dismount = self.body.energy <= tuning.TIP_TIRED_ENERGY
@@ -2393,6 +2399,8 @@ class BehaviorFSM:
             return
         if self._pole_nudge_tick():      # 被同伴挡在杆上：停住扒拉/指指点点
             return
+        if self._pole_throw():           # 杆上持械遇敌：就地掷出（原版杆上可投掷）
+            return
         if self._pole_eat():             # 手里有吃的：先在杆上吃完
             return
         if self._hpole_goal_grab():      # 上杆来够的东西：够到就摘下来
@@ -2450,6 +2458,34 @@ class BehaviorFSM:
         self._break_active_controllers()
         self._act_or_wake("SeekHPole")
         return True
+
+    def _pole_throw(self) -> bool:
+        """杆上投矛：手里有矛/石头且近处有蜥蜴，就在杆上原地掷出去。
+
+        wiki「Throwing midair」/原版：投掷不要求落地，站在杆上照样能投。
+        """
+        b = self.body
+        if b.carried_spear is None and b.carried_stone is None:
+            return False
+        lz = self._nearest_lizard(tuning.FIGHT_ARM_R)
+        if lz is None or lz.dead:
+            return False
+        self._aim_target(lz)
+        return self._throw_weapon_at(lz)
+
+    def _air_throw(self) -> None:
+        """空中投矛：起跳/落地过程中手里有家伙且蜥蜴够近就掷（wiki Throwing midair）。"""
+        b = self.body
+        if self._air_throw_cd > 0:
+            self._air_throw_cd -= 1
+            return
+        if (b.carried_spear is None and b.carried_stone is None) or self._exhausted:
+            return
+        lz = self._nearest_lizard(tuning.AIR_THROW_R)
+        if lz is None or lz.dead or self._carrying_gift():
+            return
+        if self._throw_weapon_at(lz):
+            self._air_throw_cd = tuning.AIR_THROW_CD
 
     def _hpole_goal_clear(self):
         self._hp_goal_x = None
@@ -3150,6 +3186,8 @@ class BehaviorFSM:
                 best, bd = s, d
         for s in self.win.spears:
             if s.state != ItemState.FREE or getattr(s, "stuck_to", None) is not None:
+                continue
+            if getattr(s, "pinned", False):      # 钉成杆的矛：拔不动也捡不走
                 continue
             if not (getattr(s, "stuck", False) or (abs(s.vx) < 0.4 and abs(s.vy) < 0.4)):
                 continue
@@ -4003,10 +4041,9 @@ class BehaviorFSM:
             return False
         dx = tgt.x - c0.x
         dy = tgt.y - c0.y                       # y↓：<0 目标在上方
-        if abs(dy) > THROW_JUMP_DY:
-            if b.on_floor():
-                b.request_jump("stand")         # 跳到那一层再水平掷出
-            return False
+        if abs(dy) > THROW_JUMP_DY and b.on_floor():
+            b.request_jump("stand")             # 站在地上：跳到那一层再水平掷出
+            return False                        # 已经在空中就直接掷（原版空中投矛）
         dir_x = 1 if dx >= 0.0 else -1
         weak, toss = weaponphys.player_throw_mode(
             getattr(self.win, "variant", ""), self._exhausted,
@@ -4190,6 +4227,8 @@ class BehaviorFSM:
         for sp in self.win.spears:
             if sp.state != "free" or sp.stuck_to is not None:
                 continue
+            if getattr(sp, "pinned", False):      # 钉成杆的矛：拔不动也捡不走
+                continue
             if not (sp.stuck or (abs(sp.vx) < 0.4 and abs(sp.vy) < 0.4)):
                 continue
             d = math.hypot(sp.x - c0.x, sp.y - c0.y)
@@ -4218,6 +4257,8 @@ class BehaviorFSM:
             cands.append((o, math.hypot(o.x - c0.x, o.y - c0.y)))
         for sp in self.win.spears:
             if sp.state != "free" or sp.stuck_to is not None:
+                continue
+            if getattr(sp, "pinned", False):      # 钉成杆的矛：拔不动也捡不走
                 continue
             if not (sp.stuck or (abs(sp.vx) < 0.4 and abs(sp.vy) < 0.4)):
                 continue
@@ -4345,6 +4386,8 @@ class BehaviorFSM:
         best, bd = None, tuning.COB_SPEAR_FETCH_R
         for sp in self.win.spears:
             if sp.state != "free" or sp.stuck_to is not None:
+                continue
+            if getattr(sp, "pinned", False):      # 钉成杆的矛：拔不动也捡不走
                 continue
             if not (sp.stuck or (abs(sp.vx) < 0.4 and abs(sp.vy) < 0.4)):
                 continue

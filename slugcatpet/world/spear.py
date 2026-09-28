@@ -27,6 +27,7 @@ SURFACE_FRICTION = 0.4
 BUOYANCY = 0.4
 WATER_FRICTION = 0.98
 STUCK_SINK = 7.0         # 插进墙地的深度（原版 stuckInWall 取格心）
+FLOOR_EMBED_STEEP = 2.0  # 落地时竖向位移/横向位移超过此值 = 近乎垂直扎进地面（原版 ContactPoint == throwDir）
 
 SPEAR_SHAFT = (94, 78, 60)
 SPEAR_TIP = (206, 206, 198)
@@ -43,7 +44,7 @@ class Spear:
                  "_id", "_rng", "_contact_floor", "_contact_ceil", "_contact_x", "_impact_cb",
                  "_thrown", "_throw_dir", "_exit_spd", "_throw_x", "_throw_y",
                  "collide_with_objects", "held_by", "embedded", "stuck_to", "_still",
-                 "thrower", "no_self_t")
+                 "thrower", "no_self_t", "pinned", "pole")
 
     def __init__(self, x: float, y: float, seed: int = 0, angle_deg: float = 90.0):
         self.x = self.last_x = float(x)
@@ -77,6 +78,8 @@ class Spear:
         self.no_self_t = 0
         self.held_by = None            # 拾荒者手上
         self.stuck_to = None           # 插在生物身上的 (obj, dx, dy)；由 items 层维护
+        self.pinned = False            # 钉成杆子（原版 stuckInWall → beam），不能再被拾取
+        self.pole = None               # 由 items 层注册的杆实体（钉住时非 None）
 
     @property
     def pos(self):
@@ -100,8 +103,9 @@ class Spear:
         return (self.x - math.sin(a) * LEN * 0.5, self.y + math.cos(a) * LEN * 0.5)
 
     def stick(self, WL: float, HL: float, wall: int = 0) -> None:
-        """插入地面（wall=0）或左右墙（wall=±1）。"""
+        """插入地面（wall=0）或左右墙（wall=±1）。钉住的矛＝一截同长的杆。"""
         self.stuck = True
+        self.pinned = True                         # 原版：stuckInWall 的格子标成 beam
         self._thrown = False
         self.vx = self.vy = 0.0
         self.spin = 0.0
@@ -116,6 +120,7 @@ class Spear:
 
     def unstuck(self) -> None:
         self.stuck = False
+        self.pinned = False                        # 拔出来就恢复成普通矛
         self.embedded = STUCK_SINK
 
     def _enter_free(self) -> None:
@@ -140,6 +145,23 @@ class Spear:
         self.vx = self.vy = 0.0
         self.stuck = True
 
+    def embed_vertical(self, HL: float) -> None:
+        """杆身竖直钉进地面（原版 Spear 撞地：ContactPoint == throwDir 才插住）。
+
+        原版把这种矛所在的格子标成 verticalBeam —— 即「对应长度的竖杆」，
+        所以这里把杆摆正、扎进地里，由 items 层注册成一截竖杆；钉住后不再能拾取。
+        """
+        self.stuck = True
+        self._thrown = False
+        self.vx = self.vy = 0.0
+        self.spin = 0.0
+        self.spinning = False
+        self._still = 0
+        self.pinned = True
+        self.angle_deg = self.last_angle = 180.0     # 杆尖朝下
+        self.stuck_angle = 180.0
+        self.y = HL - LEN * 0.5 + self.embedded
+
     def step(self, WL: float, HL: float) -> None:
         if self.stuck or self.state in (ItemState.MOUSE, ItemState.CARRIED):
             return
@@ -157,11 +179,16 @@ class Spear:
                     self.room_gravity, self.air_friction)
         self.x += self.vx
         self.y += self.vy
+        step_x, step_y = self.x - self.last_x, self.y - self.last_y   # 本 tick 落地方向
         aabb_wall_collide(self, WL, HL, impact=self._impact_cb)
         if self._thrown:
             if self._contact_floor:
-                # 撞到地面平面即停止物理（原地收势插地）；捡起时 unstuck() 恢复正常
-                self.rest_on_ground()
+                # 撞到地面平面即停止物理（原地收势插地）；捡起时 unstuck() 恢复正常。
+                # 近乎垂直落下（原版 ContactPoint == throwDir）→ 钉住成竖杆，不再可拾取。
+                if step_y > abs(step_x) * FLOOR_EMBED_STEEP:
+                    self.embed_vertical(HL)
+                else:
+                    self.rest_on_ground()
                 return
             if self._contact_ceil:
                 # 顶边也是平面：不弹，直接清掉竖直速度交给重力落回
