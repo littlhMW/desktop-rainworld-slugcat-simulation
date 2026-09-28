@@ -861,15 +861,18 @@ class Lizard:
 
         if self.hurt_flash > 0:
             self.hurt_flash -= 1
-        if self.dead:
+        # 被鼠标拎着的分支必须排在尸体之前：死蜥也要能被拖。
+        # 之前 dead 先命中，尸体每帧只做自由落体（vx *= 0.9 + _integrate），
+        # 拎起来就原地往下掉 —— 表现就是「蜥蜴尸体拖不动」。
+        if self.state == ItemState.MOUSE:
+            self._step_held(WL, HL, cursor)
+        elif self.dead:
             self._release_carry()
             self.dead_t += 1
             if self.dead_t > CORPSE_TTL:
                 self.state = ItemState.GONE
             self.vx *= 0.9
             self._integrate(WL, HL)
-        elif self.state == ItemState.MOUSE:
-            self._step_held(WL, HL, cursor)
         else:
             self._step_ai(WL, HL, targets, cursor, prey, cats, threats, others, pack)
             self._integrate(WL, HL)
@@ -902,7 +905,8 @@ class Lizard:
         self.vx = clampf(dx, -MAX_SEG_SPEED, MAX_SEG_SPEED)
         self.vy = clampf(dy, -MAX_SEG_SPEED, MAX_SEG_SPEED)
         self.x, self.y = px, py
-        self.jaw = clampf(self.jaw + JAW_OPEN_RATE * 0.6, 0.0, 0.5)
+        if not self.dead:                       # 尸体不会张合下巴
+            self.jaw = clampf(self.jaw + JAW_OPEN_RATE * 0.6, 0.0, 0.5)
 
     def _integrate(self, WL, HL) -> None:
         """自由态：重力积分 + 地面 / 侧墙。"""
