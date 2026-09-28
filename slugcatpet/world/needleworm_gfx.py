@@ -67,17 +67,6 @@ def _dir(ax, ay, bx, by):
     return (dx / d, dy / d) if d > 1e-6 else (0.0, -1.0)
 
 
-def _slerp(ax, ay, bx, by, t):
-    """Vector3.Slerp 的 2D 版（原版翅膀朝向插值用）。"""
-    dot = clampf(ax * bx + ay * by, -1.0, 1.0)
-    if dot > 0.9995 or dot < -0.9995:
-        return (ax + (bx - ax) * t, ay + (by - ay) * t)
-    th = math.acos(dot)
-    s = math.sin(th)
-    return (ax * math.sin((1.0 - t) * th) / s + bx * math.sin(t * th) / s,
-            ay * math.sin((1.0 - t) * th) / s + by * math.sin(t * th) / s)
-
-
 def palette(nw):
     """NeedleWormGraphics.cs:722-787 ApplyPalette → (body, highlight, details, eye)。"""
     num = nw.hue + 0.478
@@ -155,7 +144,7 @@ def _wing_push_dir(bdir, l: int, m: int):
 
 
 def _draw_wings(painter, atlas, nw, ts, pts, seg_dir, l: int, layer: int,
-                vec14, body, hi, det, eye) -> None:
+                body, hi, det, eye) -> None:
     """NeedleWormGraphics.cs:549-582：l=0/1 是身体两侧，layer 是原版 num8 图层。
 
     原版用 `WingSprite(num8, m)`，`num8 = (l == 0) != (zrot.x > 0)`——朝屏幕里那
@@ -185,18 +174,64 @@ def _draw_wings(painter, atlas, nw, ts, pts, seg_dir, l: int, layer: int,
         p = (p[0], p[1] - (18.0 + 18.0 * math.sin(phase * math.tau)) * flying * nw.wings_size)
         d = _dir(base[0], base[1], p[0], p[1])
         ln = lerp(40.0, 60.0, flying) * nw.wings_size
-        tip = (base[0] + d[0] * ln, base[1] + d[1] * ln)
-        v15 = _slerp(-bdir[1] * sign, bdir[0] * sign, sign, 0.0, flying)
-        v16 = (v15[0] * 2.0 * nw.wings_size, v15[1] * 2.0 * nw.wings_size)
         root_col = _mix(FOG_RGB, det, 0.5)
         tip_col = _mix(eye if cb[1] else FOG_RGB, (255, 255, 255), 0.35 if cb[1] else 0.5)
-        ribbon(painter, [base, tip], [2.4 * nw.wings_size, 1.2 * nw.wings_size],
-               [root_col, tip_col])
+        # 原版翅是 CustomFSprite("CentipedeWing")：8×52 的白色叶片贴图。CustomFSprite
+        # 的 uv 序是 0=左上 1=右上 2=右下 3=左下，而翅顶点 0/1 在尖、2/3 在根
+        # （:566-569）→ 贴图上缘 = 翅尖、下缘 = 翅根。半宽一律 2*wingsSize（:565），
+        # 贴图逐行宽 2,4,6,6,8×20,6×8,4×9,2×11（行 0 在翅尖、行 51 在翅根）换成
+        # 「根→尖」的半宽比 = 0.25,0.5,0.75,1.0,0.75,0.25（翅尖外半段最宽，像蝉翅）。
+        # 之前画成 2.4→1.2 的锥条，所以翅又细又小。
+        prof = ((0.0, 0.25), (0.2, 0.5), (0.5, 0.75), (0.78, 1.0),
+                (0.93, 0.75), (1.0, 0.25))
+        ribbon(painter,
+               [(base[0] + d[0] * ln * t, base[1] + d[1] * ln * t) for t, _ in prof],
+               [k * 2.0 * nw.wings_size for _, k in prof],
+               [_mix(root_col, tip_col, t) for t, _ in prof])
         if not nw.small:
             blit(painter, atlas, "JetFishEyeB", base[0], base[1],
                  _aim(bdir[0], bdir[1]), 0.9, 1.2,
                  body if layer == 0 else _mix(body, hi, abs(zx) * 0.6))
-        del v16
+
+
+def _wing_side(layer: int, zx: float) -> int:
+    """原版 num8 图层 → l 侧：`num8 = (l == 0) != (zrot.x > 0)`（:564）。"""
+    return 0 if ((layer == 0) == (zx > 0.0)) else 1
+
+
+def _draw_fang(painter, nw, ts, pts, zx) -> None:
+    """成体獠牙（NeedleWormGraphics.cs:615-655）：口器前伸、白尖淡红根、见风转黑。"""
+    if nw.small:
+        return
+    fo = lerp(nw.last_fang_out, nw.fang_out, ts)
+    num10 = inv_lerp(0.5, 1.0, fo)
+    if num10 <= 0.0:
+        return
+    blk = clampf(nw.fang_black, 0.0, 1.0)
+    c_root = _mix((255, 0, 0), BLACK_RGB, blk ** 3)
+    c_tip = _mix((255, 255, 255), BLACK_RGB, inv_lerp(0.4, 0.55, blk) ** 0.8)
+    hx, hy = pts[0]
+    ux, uy = _dir(pts[1][0], pts[1][1], pts[0][0], pts[0][1]) if len(pts) > 1 else (0.0, -1.0)
+    hw0 = 0.6 + 0.6 * blk
+    n = 5
+    # 原版 mesh 的第 0 组顶点就在 vector5（= 口腔根部）上，必须先放根点再逐段前伸，
+    # 否则整根獠牙会凭空往前挪一段（fangLength/3.5 ≈ 14px），看着像「飘在嘴前面」。
+    fp, fw, fc = [(hx, hy)], [hw0], [c_root]
+    for i in range(n):
+        f = inv_lerp(0.0, n - 1.0, i)
+        # 原版这一项末尾还有 * vector2.x（zRot 的 x 分量），漏了獠牙就不随朝向摆动
+        wob = math.sin(num10 * math.pi) * lerp(-0.3 + 1.3 * (f ** 0.5), f, num10) * -0.2 * zx
+        dx = ux + (-uy) * wob
+        dy = uy + (ux) * wob
+        d = math.hypot(dx, dy) or 1.0
+        ln = (FANG_LENGTH / 3.5) * (num10 ** 0.8)
+        hx += dx / d * ln
+        hy += dy / d * ln
+        fp.append((hx, hy))
+        fw.append(lerp(hw0, 0.5, f))                   # 原版 num14 就是半宽
+        fc.append(_mix(c_root, c_tip, clampf(inv_lerp(0.1, 0.35 + 0.65 * blk, f), 0.0, 1.0) **
+                       (4.0 - 3.95 * (num10 * 3.0 + blk) * 0.25)))
+    ribbon(painter, fp, fw, fc)
 
 
 def draw_needleworm(painter, atlas, nw, ts) -> None:
@@ -233,6 +268,14 @@ def draw_needleworm(painter, atlas, nw, ts) -> None:
             return _dir(pts[1][0], pts[1][1], pts[0][0], pts[0][1]) if len(pts) > 1 else (0.0, -1.0)
         return _dir(pts[i][0], pts[i][1], pts[i - 1][0], pts[i - 1][1])
 
+    # 图层顺序照原版 InitiateSprites（NeedleWormGraphics.cs:423-453）：
+    #   翅(远侧层,0/1) < 獠牙(FangMesh=5) < 身体(BodyMesh=6) < 腿(7+) < 高光(13)
+    #   < 翅(近侧层,17/18) < 眼 —— 以前獠牙画在身体之后（浮在脸上）、两层翅都在
+    #   身体之上，所以獠牙「位置」看着不对。
+    zx = lerp(nw.lzrot[0], nw.zrot[0], ts)
+    _draw_wings(painter, atlas, nw, ts, pts, seg_dir,
+                _wing_side(0, zx), 0, body, hi, det, eye)
+    _draw_fang(painter, nw, ts, pts, zx)
     # ── 身体（BodyMesh：吻+躯干+尾，尾端渐暗）──
     cols = []
     for i in range(len(pts)):
@@ -254,20 +297,17 @@ def draw_needleworm(painter, atlas, nw, ts) -> None:
         f = inv_lerp(0.0, hl_n - 1.0, k)
         hc.append(_mix(body, hi, math.sin((f ** 0.4) * math.pi)))
     ribbon(painter, hp, hr, hc)
-    # ── 翅膀：原版 WingSprite(num8, m)，num8 = ((l == 0) != (zrot.x > 0)) ──
-    #    先画 num8=0 那层（在下）再画 num8=1 那层（在上）；腿精灵排在所有翅之后。
-    zx = lerp(nw.lzrot[0], nw.zrot[0], ts)
-    for layer in (0, 1):
-        l = 0 if ((layer == 0) == (zx > 0.0)) else 1
-        _draw_wings(painter, atlas, nw, ts, pts, seg_dir, l, layer,
-                    pts[sn], body, hi, det, eye)
     # ── 腿：幼体 1 对（退化）、成体 3 对（NeedleWormGraphics.cs:583-600）──
+    #    原版 LegConPos 挂在 OnBodyPos(0.03/0.066/0.1) 上，而 OnBodyPos 用的
+    #    TotalSegments **不含 snout**（成体躯干 15 节，NeedleWorm.cs:70,983）→ 腿长在
+    #    躯干最前 1~1.4 节。以前漏了 +snout_n 这个偏移，腿被挂到吻部，看着像胡须。
     n_legs = 1 if nw.small else 3
     zy = lerp(nw.lzrot[1], nw.zrot[1], ts)
+    tot_body = total - sn
     for side in (-1.0, 1.0):
         for i in range(n_legs):
             f = _lerp_map(float(i), 0.0, 2.0, 0.03, 0.1, 2.0)
-            bi = clampf(f * (total - 1.1), 0.0, len(pts) - 1.0)
+            bi = clampf(sn + f * (tot_body - 1.1), 0.0, len(pts) - 1.0)
             i0 = int(bi)
             i1 = min(i0 + 1, len(pts) - 1)
             t = bi - i0
@@ -278,39 +318,20 @@ def draw_needleworm(painter, atlas, nw, ts) -> None:
             px, py = _perp(bd[0], bd[1])
             k = (i == 1) and 16.0 or 11.0
             ln = k * nw.legs_fac
-            ox = ax + px * ar * side * zy
-            oy = ay + py * ar * side * zy
-            tx = ox + px * side * zy * ln + px * side * 0.2 * ln
-            ty = oy + py * side * zy * ln + abs(py * ln) * 0.25
-            ribbon(painter, [(ox, oy), (tx, ty)],
-                   [2.6 * nw.legs_fac, 1.2 * nw.legs_fac],
-                   [body, _mix(body, det, clampf(abs(ln) / (9.0 * nw.legs_fac), 0.0, 1.0))])
-    # ── 獠牙（成体，NeedleWormGraphics.cs:615-655）──
-    if not nw.small:
-        fo = lerp(nw.last_fang_out, nw.fang_out, ts)
-        num10 = inv_lerp(0.5, 1.0, fo)
-        if num10 > 0.0:
-            blk = clampf(nw.fang_black, 0.0, 1.0)
-            c_root = _mix((255, 0, 0), BLACK_RGB, blk ** 3)
-            c_tip = _mix((255, 255, 255), BLACK_RGB, inv_lerp(0.4, 0.55, blk) ** 0.8)
-            hx, hy = pts[0]
-            ux, uy = _dir(pts[1][0], pts[1][1], pts[0][0], pts[0][1]) if len(pts) > 1 else (0.0, -1.0)
-            n = 5
-            fp, fw, fc = [], [], []
-            for i in range(n):
-                f = inv_lerp(0.0, n - 1.0, i)
-                wob = math.sin(num10 * math.pi) * lerp(-0.3 + 1.3 * (f ** 0.5), f, num10) * -0.2
-                dx = ux + (-uy) * wob
-                dy = uy + (ux) * wob
-                d = math.hypot(dx, dy) or 1.0
-                ln = (FANG_LENGTH / 3.5) * (num10 ** 0.8)
-                hx += dx / d * ln
-                hy += dy / d * ln
-                fp.append((hx, hy))
-                fw.append(lerp((0.6 + 0.6 * blk) * 0.5, 0.25, f))
-                fc.append(_mix(c_root, c_tip, clampf(inv_lerp(0.1, 0.35 + 0.65 * blk, f), 0.0, 1.0) **
-                               (4.0 - 3.95 * (num10 * 3.0 + blk) * 0.25)))
-            ribbon(painter, fp, fw, fc)
+            # 根 = LegConPos（体侧）；腿本体被 11/16*legsFac 的连接半径拉住，再被
+            # 重力(vel.y-=0.9)与 LegConDir*0.55 往外拽 → 挂在体侧外下方的小短腿
+            rx = ax + px * ar * side * zy
+            ry = ay + py * ar * side * zy
+            gx = px * side * zy * 0.55
+            gy = py * side * zy * 0.55 + 0.9
+            gd = math.hypot(gx, gy) or 1.0
+            tx, ty = rx + gx / gd * ln, ry + gy / gd * ln
+            tcol = _mix(body, det, clampf(abs(ln) / (9.0 * nw.legs_fac), 0.0, 1.0))
+            ribbon(painter, [(rx, ry), ((rx + tx) * 0.5, (ry + ty) * 0.5), (tx, ty)],
+                   [0.8 * nw.legs_fac, 2.2 * nw.legs_fac, 1.5 * nw.legs_fac],
+                   [body, body, tcol])
+    _draw_wings(painter, atlas, nw, ts, pts, seg_dir,
+                _wing_side(1, zx), 1, body, hi, det, eye)
     # ── 眼睛（JetFishEyeB，NeedleWormGraphics.cs:475-483）──
     if len(pts) > sn + 1:
         mid_i = min(len(pts) - 1, sn + max(1, nw.body_n // 2))

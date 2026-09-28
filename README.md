@@ -105,6 +105,17 @@ python run_slugcatpet.py
 - **灰 / 白 / 黑那一档补上了（关键）**：原版 `Custom.HSL2RGB` 的 `switch` 只写了 `case 0..5`，`(int)(h*6)` 落到 6 以上时一个分支都不匹配，直接返回 `r = g = b = l` 的**灰**。面条蝇 `num = hue + 0.478` 有 **15.3%** 的个体 > 1 → 这些个体在原版里就是灰的。之前我们对 hue 取过 `% 1.0`（错），把这 15% 全画成了饱和红。现在按原版不取模：成体灰个体 = `#29222C`，与 wiki 图右侧那根灰柱**逐像素同值**（灰柱宽度 15% ↔ 灰个体占比 15.3%）。
 - 复核脚本 `work/scratch/pal_audit.py`：按同一套个体随机采样 4 万只，画成 wiki 那种「行高 ∝ 明度概率、列宽 ∝ 色相概率」的调色板图 → `outputs/noodlefly_palette_vs_wiki.png`（左 wiki / 右本作）。抽查：主体 `#440719` vs wiki `#440718`、灰柱 `#29222C` vs `#29222C`、顶黑 `#1B091F` vs `#1B0A20`。
 
+**面条蝇的腿 / 獠牙 / 翅膀照原版修正（第 46 轮）**（对照你给的 [Noodlefly_kiss.gif](https://static.wikitide.net/rainworldwiki/3/3b/Noodlefly_kiss.gif) 与反编译 `NeedleWormGraphics.cs`）：
+
+- **腿（原版就叫 legs，画出来正是你说的「胡须」）原本挂在了吻部上 → 挂回躯干**：原版 `LegConPos` 用 `OnBodyPos(0.03 / 0.066 / 0.1)`，而 `OnBodyPos` 里的 `TotalSegments` **不含 snout**（成体是 15 节躯干，`NeedleWorm.cs:70,983`），所以三对腿全长在躯干最前面 1~1.4 节、紧贴头部后侧。我们换算到自己的 `seg` 数组时漏了 `+snout_n` 这个偏移，腿被挂到吻部最前端 —— 看上去就是脸上一撮须子。
+- **腿的形状一起改了**：原版是一条 4 顶点的小蹼 —— 根在体侧，尖被 `ConnectToPoint(…, 11/16·legsFac)` 的连接半径拉住，同时吃重力（`vel.y -= 0.9`）和 `LegConDir * 0.55` 往外拽，所以是**挂在体侧外下方的小短腿**（长 11~16·`legsFac`、中点全宽约 4.4·`legsFac`），尖端染 `detailsColor`。之前画成 2.6 宽的细绦，才像胡须。
+- **獠牙起点整体前移了一段 → 挪回口腔根部**：原版 `FangMesh` 的第 0 组顶点就落在 `vector5`（口/吻根部）上；我们的循环是先前进再记点，整根獠牙凭空往前挪了 `fangLength / 3.5`（≈14 px），看着就是「针飘在嘴前面」。现在根点先入表、再逐段前伸（5 段 = 6 个节点）。
+- **獠牙图层**：照 `InitiateSprites` 的精灵序，`FangMesh = 5 < BodyMesh = 6` —— 獠牙画在**身体之下**（从嘴里伸出来的样子）。我们原先画在身体之后，整根浮在脸上。
+- **獠牙半宽**：原版 `num14 = Lerp(0.6 + 0.6·fangBlack, 0.5, num13)` 本身就是半宽（根 1.2、尖 0.5），我们额外乘了 0.5，针细了一半。
+- **獠牙摆动补上 `zRot.x`**：`DrawSprites` 里那一项末尾是 `* vector2.x`；少了它獠牙不会随左右朝向摆动（`fangOut = 1` 时 `Sin(num10·π) = 0`，原版本来也就是直的）。
+- **翅膀宽度照原版 `CentipedeWing` 贴图**：翅是 `CustomFSprite("CentipedeWing")` —— 一张 8×52 的白色叶片贴图，贴到「根 / 尖各半宽 `2*wingsSize`」的四边形上（`NeedleWormGraphics.cs:565`）。CustomFSprite 的 uv 序是 0=左上 1=右上 2=右下 3=左下，而翅的顶点 0/1 在尖、2/3 在根 ⇒ **贴图上缘 = 翅尖**。贴图逐行宽 2,4,6,6,8×20,6×8,4×9,2×11，换成「根→尖」的半宽比就是 **0.25 / 0.5 / 0.75 / 1.0 / 0.75 / 0.25**（外侧半段最宽，像蝉翅）。我们原来固定画成 2.4→1.2 的锥条，两端都不对。
+- 复核：`work/scratch/e2e_r46.py`（24 项；用 `ribbon` 探针直接量每条折线的端点、半宽与绘制顺序）与 `outputs/noodlefly_parts_r46.png`（左 = wiki kiss 动图里的原版成体，右 = 本作：成体闭口 / 成体张口 / 幼体）。
+
 **社交动作**（第六类欲望「社交」攒满后凑到同伴身边做；动作词表见 `slugcatpet/behavior/social.py`）：
 
 | 动作 | 手势 | 含义 |
@@ -279,6 +290,17 @@ Nothing has a count limit any more - place as many as you like.
   - Light band (1/17): `lightness = 1 − 0.6·rand^5`, the pink-white strip along the bottom.
 - **The grey / white / black band is the fix that mattered**: the original `Custom.HSL2RGB` only writes `case 0..5`, so when `(int)(h*6)` lands on 6 or more no branch matches and it returns the flat `r = g = b = l` **grey**. A noodlefly's `num = hue + 0.478` exceeds 1 for **15.3%** of individuals, so in game those really are grey. We had been taking `h % 1.0` (wrong), which painted all 15% as saturated red. Now, as in the original: a grey adult comes out `#29222C`, **pixel-identical** to the grey column on the right of the wiki chart (column width 15% vs 15.3% of individuals).
 - Recheck script `work/scratch/pal_audit.py`: samples 40k individuals through the same individual-randomisation and draws a wiki-style chart (row height proportional to lightness probability, column width to hue probability) into `outputs/noodlefly_palette_vs_wiki.png` (wiki left, ours right). Spot checks: body `#440719` vs wiki `#440718`, grey column `#29222C` vs `#29222C`, top black `#1B091F` vs `#1B0A20`.
+
+**Noodlefly legs / needle / wings fixed against the original (round 46)** (checked against the [Noodlefly_kiss.gif](https://static.wikitide.net/rainworldwiki/3/3b/Noodlefly_kiss.gif) you gave and the decompiled `NeedleWormGraphics.cs`):
+
+- **The legs (the original calls them legs — they are the "whiskers" you meant) were attached to the snout; they are back on the torso now**: the original `LegConPos` sits on `OnBodyPos(0.03 / 0.066 / 0.1)`, and `OnBodyPos` multiplies by `TotalSegments`, which **excludes the snout** (a 15-segment torso, `NeedleWorm.cs:70,983`). All three pairs therefore live in the first 1-1.4 torso segments, right behind the head. We missed the `+snout_n` conversion when mapping onto our own `seg` array, so they ended up at the very tip of the snout — a tuft of whiskers on the face.
+- **Leg shape fixed as well**: the original is a 4-vertex flipper — root on the body side, tip held by `ConnectToPoint(…, 11/16·legsFac)` and pulled outward/down by gravity (`vel.y -= 0.9`) plus `LegConDir * 0.55`, i.e. a **short stub hanging out and down** (11-16·`legsFac` long, ~4.4·`legsFac` wide at the midpoint) with a `detailsColor` tip. Ours was a 2.6-wide sliver, which is why it read as whiskers.
+- **The needle started one segment ahead; it now starts at the mouth**: the original `FangMesh` puts its first ring of vertices on `vector5` (the mouth root). Our loop advanced first and only then recorded a point, shifting the whole needle forward by `fangLength / 3.5` (≈14 px) so it looked detached from the head. The root goes in first now, then the five segments follow (5 segments, 6 nodes).
+- **Needle layer**: per `InitiateSprites`, `FangMesh = 5 < BodyMesh = 6` — the needle is drawn **under the body**, the way a needle coming out of the mouth should be. We had it after the body, floating over the face.
+- **Needle half-width**: the original `num14 = Lerp(0.6 + 0.6·fangBlack, 0.5, num13)` *is* the half-width (1.2 at the root, 0.5 at the tip); we multiplied by an extra 0.5 and halved the thickness.
+- **Needle wobble now includes `zRot.x`**: that term ends in `* vector2.x` in `DrawSprites`; without it the needle never sways with facing (at `fangOut = 1`, `Sin(num10·π) = 0`, so the original is straight there too).
+- **Wing width taken from the original `CentipedeWing` texture**: the wing is a `CustomFSprite("CentipedeWing")` — an 8x52 white leaf texture mapped onto a quad with half-width `2*wingsSize` at both root and tip (`NeedleWormGraphics.cs:565`). CustomFSprite's uv order is 0=top-left 1=top-right 2=bottom-right 3=bottom-left while the wing's vertices 0/1 are at the tip and 2/3 at the root, so **the texture's top edge is the wing tip**. Its rows are 2,4,6,6,8x20,6x8,4x9,2x11 pixels wide, which as root-to-tip half-width ratios is **0.25 / 0.5 / 0.75 / 1.0 / 0.75 / 0.25** (widest in the outer half, like a cicada wing). Ours was a fixed 2.4-to-1.2 taper, wrong at both ends.
+- Verification: `work/scratch/e2e_r46.py` (24 checks; a `ribbon` probe measures every polyline's endpoints, half-widths and draw order) and `outputs/noodlefly_parts_r46.png` (wiki kiss gif on the left, ours on the right: adult closed / adult fang-out / infant).
 
 **Social actions** (the sixth desire, "social", sends a cat over to a companion once it fills up; the vocabulary lives in `slugcatpet/behavior/social.py`):
 
