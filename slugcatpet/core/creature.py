@@ -39,6 +39,14 @@ HIP_SINK_EASE = 0.06
 
 WALK_STOP_EPS = 2.0
 
+# 窗口边缘＝墙/天花：吸附、攀爬、蹬墙跳、吊顶（手感对齐原版攀杆）
+WALL_CLIMB_SPEED = 2.2 * K_VEL      # 爬墙垂直速度
+WALL_JUMP_VX = 5.6 * K_VEL          # 蹬墙跳离墙横速
+WALL_JUMP_VY = 6.4 * K_VEL          # 蹬墙跳上抛
+WALL_JUMP_LOCK = 14                 # 蹬墙后硬直，期内不再吸附
+CEIL_HANG_PAD = 2.0                 # 吊顶时胸心离上边缘
+CEIL_SHIMMY_SPEED = 1.6 * K_VEL     # 吊顶横向挪动速度
+
 # 零重力蹬窗边推力/速度上限
 ZEROG_KICK = 5.4 * K_VEL
 ZEROG_HIP_KICK = 5.0 * K_VEL
@@ -209,6 +217,15 @@ class SlugcatBody:
         self.arm_full_reach = 24.0
         self.eat_raise = 0.0
 
+        # 窗口边缘当墙：-1 左墙 / +1 右墙 / 0 未吸附
+        self.wall_side = 0
+        self.wall_climb_dir = 0         # -1 上 / +1 下
+        self.wall_cd = 0                # 蹬墙跳硬直
+        self.ceil_cling = False         # 上边缘吊挂
+        self.ceil_x = 0.0
+        self.ceil_y = 0.0
+        self.crawl_want = False         # 匍匐欲望（移动时压低身姿）
+
     @property
     def total_mass(self):
         """两 chunk 质量和。"""
@@ -247,6 +264,8 @@ class SlugcatBody:
 
     def set_posture(self, standing: bool):
         self.standing = bool(standing)
+        if standing:
+            self.crawl_want = False
 
     def request_jump(self, kind="stand", hold_ticks=None):
         self._jump_pending = kind
@@ -366,6 +385,10 @@ class SlugcatBody:
             c.last_last_x += dx; c.last_last_y += dy
             if not keep_vel:
                 c.vx = c.vy = 0.0
+        self.wall_side = 0
+        self.wall_climb_dir = 0
+        self.ceil_cling = False
+        self.chunk0.pinned = False
         for f in (self.lfoot, self.rfoot):
             f[0] += dx
         self.feet_stuck = None
@@ -394,6 +417,11 @@ class SlugcatBody:
             self.release_spear(to_free=True)
         self.stun = 0
         self.zerog_pole = None
+        self.wall_side = 0
+        self.wall_climb_dir = 0
+        self.ceil_cling = False
+        self.crawl_want = False
+        self.animation = None
 
     def revive(self):
         self.dead = False
@@ -402,6 +430,121 @@ class SlugcatBody:
         self.lungs_exhausted = False
         self.submerged = False
         self.pyro_drown = False
+        self.wall_side = 0
+        self.wall_climb_dir = 0
+        self.wall_cd = 0
+        self.ceil_cling = False
+
+    # ── 窗口边缘＝实体墙/天花（原版房间边界）──
+    def wall_hold_x(self, side: int) -> float:
+        from .edges import wall_hold_x
+        return wall_hold_x(side, self.W)
+
+    def grab_wall(self, side: int) -> bool:
+        """吸附到左右墙；side=-1 左 / +1 右。"""
+        if self.dead or self.wall_cd > 0 or not side:
+            return False
+        self.wall_side = int(side)
+        self.wall_climb_dir = 0
+        self.feet_stuck = None
+        self.crawl_anchor = None
+        self.crawl_pose = 0.0
+        self.walk_target_x = None
+        self.move_dir = 0
+        self.on_pole = False
+        self.ceil_cling = False
+        self.animation = "ClimbOnBeam"
+        self.standing = True
+        self.facing = 1 if side > 0 else -1
+        x = self.wall_hold_x(self.wall_side)
+        for c in (self.chunk0, self.chunk1):
+            c.pinned = False
+            c.x = x
+            c.vx = 0.0
+            c.vy = 0.0
+        return True
+
+    def release_wall(self):
+        self.wall_side = 0
+        self.wall_climb_dir = 0
+        if self.animation == "ClimbOnBeam":
+            self.animation = None
+
+    def wall_jump(self, up: bool = True) -> bool:
+        """蹬墙跳：朝离墙方向弹开，up=带一次上抛助力。"""
+        side = self.wall_side
+        if not side:
+            return False
+        self.release_wall()
+        self.wall_cd = WALL_JUMP_LOCK
+        c0, c1 = self.chunk0, self.chunk1
+        c0.pinned = c1.pinned = False
+        c0.vx = -side * WALL_JUMP_VX
+        c1.vx = -side * WALL_JUMP_VX * 0.7
+        c0.vy = -WALL_JUMP_VY
+        c1.vy = -WALL_JUMP_VY * 0.8
+        if up:
+            self.jump_boost = 4
+        return True
+
+    def grab_ceiling(self, x=None) -> bool:
+        """吊挂到上边缘（＝把上边缘当地面/天花）。"""
+        if self.dead or self.wall_cd > 0:
+            return False
+        from .edges import CEIL_EDGE_PAD
+        if x is None:
+            x = self.chunk0.x
+        self.release_wall()
+        c0, c1 = self.chunk0, self.chunk1
+        self.ceil_cling = True
+        self.ceil_x = clampf(float(x), CEIL_EDGE_PAD, self.W - CEIL_EDGE_PAD)
+        self.ceil_y = c0.rad + CEIL_HANG_PAD
+        self.on_pole = False
+        self.suspended = False
+        self.animation = "HangFromBeam"
+        self.walk_target_x = None
+        self.move_dir = 0
+        self.feet_stuck = None
+        self.crawl_anchor = None
+        c0.pinned = True
+        c0.x, c0.y = self.ceil_x, self.ceil_y
+        c0.vx = c0.vy = 0.0
+        c1.pinned = False
+        c1.x = self.ceil_x
+        c1.y = self.ceil_y + CONN_STAND
+        c1.vx = c1.vy = 0.0
+        return True
+
+    def ceil_shimmy(self, d: float):
+        from .edges import CEIL_EDGE_PAD
+        self.ceil_x = clampf(self.ceil_x + d * CEIL_SHIMMY_SPEED,
+                             CEIL_EDGE_PAD, self.W - CEIL_EDGE_PAD)
+
+    def release_ceiling(self):
+        if not self.ceil_cling:
+            return
+        self.ceil_cling = False
+        self.chunk0.pinned = False
+        self.animation = None
+
+    # ── 匍匐 ──
+    def set_crawl(self, want: bool):
+        """匍匐欲望：移动时压低身姿（bodyMode=Crawl）。"""
+        self.crawl_want = bool(want)
+        if self.crawl_want:
+            self.standing = False
+
+    def drop_all(self):
+        """丢掉手上所有东西（原版丢物品）。"""
+        if self.carried_fruit is not None:
+            self.carried_fruit.stalk = None
+            self.carried_fruit.state = "free"
+            self.carried_fruit.held_by_hand = None
+            self.release_fruit()
+        if self.carried_stone is not None:
+            self.release_stone(to_free=True)
+        if self.carried_spear is not None:
+            self.release_spear(to_free=True)
 
     def set_control_input(self, pkg):
         """push 当前帧进控制输入历史环。"""
@@ -442,7 +585,13 @@ class SlugcatBody:
             self.stun -= 1
             self._step_stunned()
             return
-        if self.on_pole:
+        if self.wall_cd > 0:
+            self.wall_cd -= 1
+        if self.wall_side:
+            self._wall_update()
+        elif self.ceil_cling:
+            self._ceiling_update()
+        elif self.on_pole:
             self._pole_update()
         elif not self.suspended:
             self._movement_update()
@@ -950,6 +1099,8 @@ class SlugcatBody:
             # 控制态覆盖口，惰性 import 防环导
             from ..control.moves import ctrl_movement_update
             return ctrl_movement_update(self)
+        if self.crawl_want:
+            self.standing = False       # 匍匐欲望：压低身姿爬行
         c0, c1 = self.chunk0, self.chunk1
         if self.animation == "Flip" and self._flip_spin != 0:
             # AI 翻跳力矩，触物退出
@@ -1071,6 +1222,42 @@ class SlugcatBody:
                     c.x = self.walk_min
                 elif c.x > self.walk_max:
                     c.x = self.walk_max
+
+    def _wall_update(self):
+        """贴墙：钉 x、按墙爬方向驱动 y（原版 ClimbOnBeam 位姿）。"""
+        x = self.wall_hold_x(self.wall_side)
+        g = 0.9 * self.room_gravity
+        climb = WALL_CLIMB_SPEED * self.wall_climb_dir   # dir=-1 → 向上
+        for c in (self.chunk0, self.chunk1):
+            c.pinned = False
+            c.x = x
+            c.vx = 0.0
+            c.vy = climb - g
+        self.bodyMode = "ClimbingOnBeam"
+        self.animation = "ClimbOnBeam"
+        self.feet_stuck = None
+        self.crawl_anchor = None
+        self.crawl_pose = 0.0
+        self.standing = True
+        self.facing = 1 if self.wall_side > 0 else -1
+        self._floor_h = self.H
+
+    def _ceiling_update(self):
+        """吊挂上边缘：胸心钉顶边，下身垂挂，可横向挪动。"""
+        c0, c1 = self.chunk0, self.chunk1
+        self.ceil_y = c0.rad + CEIL_HANG_PAD
+        c0.pinned = True
+        c0.x = self.ceil_x
+        c0.y = self.ceil_y
+        c0.vx = c0.vy = 0.0
+        c1.pinned = False
+        self.bodyMode = "ClimbingOnBeam"
+        self.animation = "HangFromBeam"
+        self.on_pole = False
+        self.feet_stuck = None
+        self.crawl_anchor = None
+        self.crawl_pose = 0.0
+        self._floor_h = self.H
 
     def _pole_update(self):
         self.bodyMode = "ClimbingOnBeam"

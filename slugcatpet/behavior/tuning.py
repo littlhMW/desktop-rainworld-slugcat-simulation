@@ -200,6 +200,97 @@ SOCIAL_WANDER_CROSS_W = 0.8
 SOCIAL_WANDER_STAY_GAIN = 0.05
 SOCIAL_WANDER_STAY_SPAN_FRAC = 0.06
 
+# ── 五类欲望（进食/恐惧/战斗/玩耍/睡眠）──
+# 爬墙（窗口左右边缘＝墙）
+WALL_BASE = 1.00
+WALL_START = 0.68
+WALL_QUIT = 0.30
+WALL_INIT = 0.30
+WALL_DECAY = 0.0038
+WALL_RECOVER = 0.00058
+WALL_SF_FRESH = 1.30
+WALL_SF_TIRED = 0.10
+WALL_SEEK_R = 90.0            # 墙在这么近内才想起来爬
+WALL_CLIMB_TICKS_MIN = 120    # 单次爬墙时长下限
+WALL_CLIMB_TICKS_MAX = 420
+WALL_WALLJUMP_PROB = 0.02     # 贴墙时每次蹬墙跳的抽样概率
+WALL_TOP_GRAB_R = 26.0        # 胸离顶边这么近就转吊顶
+
+# 吊顶（窗口上边缘＝地面/天花）
+CEIL_BASE = 1.00
+CEIL_START = 0.70
+CEIL_QUIT = 0.30
+CEIL_INIT = 0.20
+CEIL_DECAY = 0.0030
+CEIL_RECOVER = 0.00060
+CEIL_HANG_TICKS_MIN = 160
+CEIL_HANG_TICKS_MAX = 480
+CEIL_SHIMMY_PROB = 0.02
+CEIL_GRAB_REACH = 96.0        # 跳起来够顶边的判定距离
+
+# 玩耍：追光标/抓光标（原版蛞蝓猫对移动物体的注意）
+PLAYCUR_BASE = 1.00
+PLAYCUR_START = 0.66
+PLAYCUR_QUIT = 0.30
+PLAYCUR_INIT = 0.30
+PLAYCUR_DECAY = 0.0042
+PLAYCUR_RECOVER = 0.00065
+PLAYCUR_SF_FRESH = 1.25
+PLAYCUR_SF_TIRED = 0.12
+PLAYCUR_R = 320.0             # 光标在此半径内才会想过去
+PLAYCUR_ARRIVE = 46.0
+PLAYCUR_TICKS_MIN = 120
+PLAYCUR_TICKS_MAX = 320
+PLAYCUR_GRAB_R = 26.0         # 够得着就伸手抓
+PLAYCUR_CHASE_SPEED = 0.7     # 走速比例
+
+# 社交：靠近同伴 / 抚摸同伴 / 指指点点
+SOCIAL_BASE = 1.00
+SOCIAL_START = 0.62
+SOCIAL_QUIT = 0.30
+SOCIAL_INIT = 0.25
+SOCIAL_DECAY = 0.0030
+SOCIAL_RECOVER = 0.00062
+SOCIAL_SF_FRESH = 1.20
+SOCIAL_SF_TIRED = 0.12
+SOCIAL_R = 220.0              # 同伴在此半径内才想凑过去
+SOCIAL_ARRIVE = 30.0
+SOCIAL_TICKS_MIN = 160
+SOCIAL_TICKS_MAX = 420
+SOCIAL_POKE_TICKS = 90        # 扒拉/抚摸/指指点点动作时长
+SOCIAL_POKE_INTERVAL = 22     # 每次伸手的间隔
+
+# 帮别的猫取食（自己饱了别人没饱）
+HELPFEED_SEEK_R = 900.0
+HELPFEED_TICKS = 1600
+HELPFEED_DROP_R = 40.0
+
+# 被抢东西后的扒拉指指点点
+PROTEST_TICKS = 260
+PROTEST_R = 240.0
+
+# 战斗（攻击/反击）
+FIGHT_R = 320.0
+FIGHT_TICKS = 900
+FIGHT_THROW_CD = 26
+FIGHT_MELEE_R = 40.0          # 够近就用身子撞/抓咬
+FIGHT_RECOVER_TICKS = 40      # 反击的迟疑
+
+# 复活同伴：特殊表情（吐舌/舔）扒拉一会儿
+REVIVE_TOUCH_R = 26.0
+REVIVE_TOUCH_TICKS = 150
+REVIVE_APPROACH_TICKS = 900
+
+# 恐惧：匍匐潜行躲避
+CRAWL_FEAR_R = 150.0          # 蜥蜴进这个半径 → 趴下潜行
+CRAWL_FEAR_SPEED = 0.55       # 匍匐速度比例
+CRAWL_AWAY_TICKS = 260
+
+# 睡眠：吃饱后入睡概率从 0 缓慢升到 100
+SLEEP_URGE_RATE = 1.0 / 3600.0   # 每 tick 累积（约 90s 到满）
+SLEEP_URGE_DECAY = 1.0 / 1800.0  # 没吃饱时回落
+SLEEP_CHECK_TICKS = 20           # 每隔这么久掷一次骰
+
 # 站杆顶/横杆面平衡
 BAL_FLAIL_PROB = 0.15
 BAL_FLAIL_TIP = 6.0
@@ -222,6 +313,18 @@ HP_PAUSE_MIN = 20
 HP_PAUSE_MAX = 80
 HP_HANG_PROB = 0.0015
 HP_HANG_TICKS = 70
+# 交叉杆横↔竖切换 + 杆间跳跃（原版 Controls/Pole_Movement：HangFromBeam+上→ClimbOnBeam、
+# ClimbOnBeam+侧→HangFromBeam、jump-pole-hopping）
+CROSS_DWELL = 3                # 在交点附近待够这么多 tick 才「看见」交叉杆
+CROSS_SWITCH_PROB = 0.40       # 看见后每 tick 决定换横/竖的概率
+CROSS_PAD = 22.0               # 胸心离交点这么近算「站在交点上」（≈爬杆 10 tick 窗口）
+POLE_TIP_HOP_PROB = 0.006      # 杆顶站着时每 tick 想跳到另一根杆的概率
+POLE_AIRGRAB_R = 12.0          # 空中贴杆即抓（jump-pole-hopping）
+POLE_AIRGRAB_PAD = 10.0        # 杆端外这点范围仍算够得着
+POLE_HOP_PROB = 0.30           # 下杆时改为跳向另一根杆的概率
+POLE_HOP_SEEK_R = 220.0        # 愿意跳过去的杆间最大距离
+POLE_HOP_VX = 4.0              # 跳向另一根杆的横冲量
+POLE_HOP_VY = 4.2              # 跳向另一根杆的上抛
 HP_WOBBLE_MIN = 30.0
 HP_WOBBLE_MAX = 60.0
 HP_RETARGET_TICKS = 40

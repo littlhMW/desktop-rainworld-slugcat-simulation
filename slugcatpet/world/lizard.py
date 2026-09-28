@@ -32,7 +32,15 @@ TURN_VX = 0.35                # 判定「真的转身」的横向速度阈值（
 LEG_SIDE_FAC = 0.55           # 腿根挂在躯干侧下方 = 半径 * 此值
 
 # ── AI ──
-NOTICE_R = 150.0              # 视野半径：注意到猫 / 光标
+NOTICE_R = 150.0              # 视野半径：注意到猫（原版关系 Eats 1.0）
+
+# 光标恐惧（原版蜥蜴对秃鹫面具的 fear 反应；宠物里把鼠标当作同级威胁源）
+CURSOR_FEAR_R = 90.0          # 光标进入此半径开始害怕
+CURSOR_FEAR_ARM = 3           # 连续贴脸这么久才真正受惊（防误触）
+CURSOR_FEAR_TICKS = 110       # 单次受惊逃跑时长（≈2.8s）
+CURSOR_FEAR_SPEED = 1.05      # 逃跑速度 × base_speed
+CURSOR_FEAR_ACCEL = 0.16
+CURSOR_FEAR_HOP = 0.02        # 逃跑时回头跳的概率
 LOST_R = 230.0                # 超出即失去兴趣
 LUNGE_ACCEL = 0.20            # 扑咬时朝目标的加速度比例
 CLIMB_HOP = -6.4              # 目标在上方时的蹬地（y↓ 取负）
@@ -309,7 +317,8 @@ class Lizard:
                  "held_by_hand", "water_y", "room_gravity", "_contact_floor",
                  "dead", "spacing", "spikes", "like", "tamed", "friend_id",
                  "max_health", "health", "stun", "hurt_flash", "dead_t",
-                 "rock_push", "rock_push_dir")
+                 "rock_push", "rock_push_dir",
+                 "fear_t", "fear_x", "fear_y", "fear_seen", "wall_dir")
 
     def __init__(self, x: float, y: float, breed: LizardBreed | None = None,
                  seed: int = 0, id: int = 0):
@@ -348,6 +357,12 @@ class Lizard:
         self.rock_push_dir = 0
         self.hurt_flash = 0      # 受击白闪（渲染用）
         self.dead_t = 0          # 尸体已躺 tick
+        # 光标恐惧（原版 LizardAI 的 fear 状态）
+        self.fear_t = 0
+        self.fear_x = 0.0
+        self.fear_y = 0.0
+        self.fear_seen = 0
+        self.wall_dir = 0        # 贴在左右墙时记墙侧（窗口边缘＝墙）
 
         # 链体：躯干 N_BODY 节 + 尾若干节；dist 为到前一节的固定距离
         n_tail = max(2, min(int(b.tail_segs), MAX_TAIL_SEGS))
@@ -621,6 +636,7 @@ class Lizard:
         r = self.head_rad
         floor = HL - self.body_rad * HEAD_STAND_FAC
         self._contact_floor = False
+        self.wall_dir = 0
         if self.y > floor:
             self.y = floor
             if self.vy > 0.0:
@@ -633,9 +649,11 @@ class Lizard:
         if self.x < r:
             self.x = r
             self.vx = abs(self.vx) * WALL_BOUNCE
+            self.wall_dir = -1        # 窗口左边缘＝墙
         elif self.x > WL - r:
             self.x = WL - r
             self.vx = -abs(self.vx) * WALL_BOUNCE
+            self.wall_dir = 1         # 窗口右边缘＝墙
 
     # ── AI ──
     def _step_ai(self, WL, HL, targets, cursor, rivals=(), prey=()) -> None:
@@ -648,10 +666,12 @@ class Lizard:
             self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE)
             self.vx *= 0.90
             return
+        if self._fear_tick(cursor, HL):           # 光标恐惧优先于捕猎
+            return
         if self.tamed:                           # 认主的蜥蜴不再咬人，只跟着走
             self._follow(WL, HL, targets)
             return
-        self._pick_target(targets, cursor, rivals, prey)
+        self._pick_target(targets, rivals, prey)
         if self.bite_hold > 0:                       # 咬合保持
             self.vx *= 0.84
             self.jaw = clampf(self.jaw + JAW_OPEN_RATE * 0.4, 0.0, 0.34)
@@ -691,7 +711,40 @@ class Lizard:
         else:
             self.vx -= self.vx * 0.22
 
-    def _pick_target(self, targets, cursor=None, rivals=(), prey=()) -> None:
+    def _fear_tick(self, cursor, HL) -> bool:
+        """光标恐惧：原版蜥蜴对秃鹫面具的逃跑反应，这里把鼠标当威胁源。
+
+        受惊期间背对光标加速逃开、闭颌、不咬任何人；结束后回到正常 AI。
+        """
+        if self.fear_t > 0:
+            self.fear_t -= 1
+            if cursor is not None:
+                self.fear_x, self.fear_y = cursor[0], cursor[1]
+            dx, dy = self.x - self.fear_x, self.y - self.fear_y
+            d = math.hypot(dx, dy) or 1.0
+            sp = self.breed.base_speed * CURSOR_FEAR_SPEED
+            self.vx += (dx / d * sp - self.vx) * CURSOR_FEAR_ACCEL
+            self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE)
+            self.target = None
+            self.target_obj = None
+            self.look_at = (self.fear_x, self.fear_y)
+            if self._contact_floor and self.rng.random() < CURSOR_FEAR_HOP:
+                self.vy = CLIMB_HOP * 0.7
+            return True
+        if cursor is None or self.dead:
+            self.fear_seen = 0
+            return False
+        if math.hypot(cursor[0] - self.x, cursor[1] - self.y) > CURSOR_FEAR_R:
+            self.fear_seen = 0
+            return False
+        self.fear_seen += 1
+        if self.fear_seen < CURSOR_FEAR_ARM:
+            return False
+        self.fear_t = CURSOR_FEAR_TICKS
+        self.fear_x, self.fear_y = cursor[0], cursor[1]
+        return True
+
+    def _pick_target(self, targets, rivals=(), prey=()) -> None:
         """按「关系强度 / 距离」选目标（原版 Creature.Relationship + 猎物追踪器）。
 
         权重来自 StaticWorld.EstablishRelationship：
@@ -718,8 +771,6 @@ class Lizard:
             consider(obj, obj.x, obj.y, w)
         for obj, w in prey:
             consider(obj, obj.x, obj.y, w)
-        if best is None and cursor is not None:
-            consider(None, cursor[0], cursor[1], 1.0)   # 光标只作兜底（原版无此行为）
         if best is not None:
             self.target, self.target_obj = best, bestobj
             self.look_at = best

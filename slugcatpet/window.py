@@ -45,28 +45,44 @@ def compute_geometry(area: QRect, geo: QRect, canvas_scale: int) -> dict:
 
 
 def _clamp_chunk_to_bounds(c, WL, HL):
-    """chunk 夹进边界。"""
+    """chunk 夹进边界（四边都是实体：左右墙 + 上顶 + 下地）。"""
     r = max(c.rad, 1.0)
     if c.x < r:
         c.x = r
+        if c.vx < 0:
+            c.vx = 0.0
     elif c.x > WL - r:
         c.x = WL - r
+        if c.vx > 0:
+            c.vx = 0.0
     if c.y + r > HL:
         c.y = HL - r
         if c.vy > 0:
             c.vy = 0.0
+    elif c.y - r < 0:
+        c.y = r
+        if c.vy < 0:
+            c.vy = 0.0
 
 
 def _clamp_item_to_bounds(o, WL, HL):
-    """物体夹进边界。"""
+    """物体夹进边界（四边都是实体）。"""
     r = getattr(o, "rad", 0.0)
     if o.x < r:
         o.x = r
+        if o.vx < 0:
+            o.vx = 0.0
     elif o.x > WL - r:
         o.x = WL - r
+        if o.vx > 0:
+            o.vx = 0.0
     if o.y + r > HL:
         o.y = HL - r
         if o.vy > 0:
+            o.vy = 0.0
+    elif o.y - r < 0:
+        o.y = r
+        if o.vy < 0:
             o.vy = 0.0
 
 

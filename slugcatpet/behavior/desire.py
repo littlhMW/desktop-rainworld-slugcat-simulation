@@ -13,10 +13,13 @@ def _lerp(x, lo, hi, flo, fhi):
 
 class MoodContext:
     __slots__ = ("energy", "temper", "has_climbable_pole", "cold", "has_warm_lamp",
-                 "has_hpole", "can_ceiling_play", "submerged")
+                 "has_hpole", "can_ceiling_play", "submerged",
+                 "near_wall", "near_ceiling", "peer_near", "cursor_close", "threat")
 
     def __init__(self, energy, temper, has_climbable_pole, cold=0.0, has_warm_lamp=False,
-                 has_hpole=False, can_ceiling_play=True, submerged=False):
+                 has_hpole=False, can_ceiling_play=True, submerged=False,
+                 near_wall=False, near_ceiling=False, peer_near=False,
+                 cursor_close=False, threat=0.0):
         self.energy = energy
         self.temper = temper
         self.has_climbable_pole = has_climbable_pole
@@ -25,6 +28,12 @@ class MoodContext:
         self.has_hpole = has_hpole
         self.can_ceiling_play = can_ceiling_play
         self.submerged = submerged
+        # 五类欲望判据（常量见 tuning「五类欲望」段）
+        self.near_wall = near_wall
+        self.near_ceiling = near_ceiling
+        self.peer_near = peer_near
+        self.cursor_close = cursor_close
+        self.threat = threat
 
 
 def _one(_):
@@ -156,6 +165,45 @@ def build_arbiter(rng, personality=None):
         energy_factor=lambda e: _lerp(e, 0.0, 1.0, tuning.CEIL_SF_TIRED, tuning.CEIL_SF_FRESH),
         temper_factor=lambda t: 1.0,
         one_shot=False, init=tuning.CEIL_INIT))
+    # 玩耍：窗口边缘爬墙（左右边缘＝墙）
+    arb.add(Candidate(
+        "wall_climb", base=tuning.WALL_BASE * _pm("pole_climb"),
+        start=tuning.WALL_START, quit=tuning.WALL_QUIT,
+        decay=tuning.WALL_DECAY, recover=tuning.WALL_RECOVER,
+        gate=lambda ctx: ctx.near_wall and ctx.energy >= _gate and not ctx.submerged,
+        energy_factor=lambda e: _lerp(e, 0.0, 1.0, tuning.WALL_SF_TIRED, tuning.WALL_SF_FRESH),
+        temper_factor=lambda t: 1.0,
+        one_shot=True, init=tuning.WALL_INIT))
+    # 玩耍：上边缘吊挂
+    arb.add(Candidate(
+        "ceiling_hang", base=tuning.CEIL_BASE * _pm("ceiling_play"),
+        start=tuning.CEIL_START, quit=tuning.CEIL_QUIT,
+        decay=tuning.CEIL_DECAY, recover=tuning.CEIL_RECOVER,
+        gate=lambda ctx: ctx.near_ceiling and ctx.energy >= _gate and not ctx.submerged,
+        energy_factor=lambda e: _lerp(e, 0.0, 1.0, tuning.CEIL_SF_TIRED, tuning.CEIL_SF_FRESH),
+        temper_factor=lambda t: 1.0,
+        one_shot=True, init=tuning.CEIL_INIT))
+    # 玩耍：追/抓光标（威胁在场时不玩）
+    arb.add(Candidate(
+        "play_cursor", base=tuning.PLAYCUR_BASE * _pm("cursor_play"),
+        start=tuning.PLAYCUR_START, quit=tuning.PLAYCUR_QUIT,
+        decay=tuning.PLAYCUR_DECAY, recover=tuning.PLAYCUR_RECOVER,
+        gate=lambda ctx: (ctx.cursor_close and ctx.threat <= 0.0
+                          and ctx.energy >= _gate and not ctx.submerged),
+        energy_factor=lambda e: _lerp(e, 0.0, 1.0, tuning.PLAYCUR_SF_TIRED,
+                                      tuning.PLAYCUR_SF_FRESH),
+        temper_factor=lambda t: 1.0,
+        one_shot=True, init=tuning.PLAYCUR_INIT))
+    # 社交：靠近/抚摸同伴
+    arb.add(Candidate(
+        "socialize", base=tuning.SOCIAL_BASE * _pm("socialize"),
+        start=tuning.SOCIAL_START, quit=tuning.SOCIAL_QUIT,
+        decay=tuning.SOCIAL_DECAY, recover=tuning.SOCIAL_RECOVER,
+        gate=lambda ctx: ctx.peer_near and ctx.energy >= _gate and not ctx.submerged,
+        energy_factor=lambda e: _lerp(e, 0.0, 1.0, tuning.SOCIAL_SF_TIRED,
+                                      tuning.SOCIAL_SF_FRESH),
+        temper_factor=lambda t: 1.0,
+        one_shot=True, init=tuning.SOCIAL_INIT))
     # idle 兜底候选
     arb.add(Candidate(
         "idle", base=tuning.IDLE_BASE, start=0.0, quit=0.0,

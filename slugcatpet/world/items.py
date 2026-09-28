@@ -62,7 +62,14 @@ LAMP_TILT_MAX_DEG = 25.0
 LAMP_STICK_OUTSET = 40.0
 STONE_STUN_SPEED = 8.0
 STONE_STUN_TICKS = 80
-LIZARD_STUN_TICKS = 60            # 被蜥蜴咬到的眩晕 tick
+LIZARD_STUN_TICKS = 60            # 被蜥蜴咬到的眩晕 tick（兜底）
+# 原版 Lizard.Bite 对 Player 调用 Violence(Bite, 1.5f, 0f)：
+#   num  = 1.5 / baseDamageResistance(1) = 1.5 ≥ instantDeathDamageLimit(1) ⇒ 必死
+#   num2 = (1.5*30 + 0) / baseStunResistance(1) = 45 ⇒ 未致死时 Stun(45)
+BITE_VIOLENCE_DAMAGE = 1.5
+# 原版 Player.DeathByBiteMultiplier：黄猫 0、圣徒 100、其余 0.75
+PET_BITE_DEATH_MULT = {"monk": 0.0, "saint": 100.0}
+PET_BITE_DEATH_MULT_DEFAULT = 0.75
 STONE_KNOCKBACK = 0.5
 STONE_DRAW_SCALE = 0.7
 # 抛石拖尾
@@ -166,6 +173,24 @@ def _slerp2(ax, ay, bx, by, t):
     s = math.sin(theta)
     return (ax * math.sin((1.0 - t) * theta) / s + bx * math.sin(t * theta) / s,
             ay * math.sin((1.0 - t) * theta) / s + by * math.sin(t * theta) / s)
+
+
+def _pet_stun_death(damage: float, stun_bonus: float, instant_limit: float = 1.0,
+                    dmg_res: float = 1.0, stun_res: float = 1.0):
+    """原版 Creature.Violence 对蛞蝓猫模板的结算（Slugcat 抗性 1 / 即死阈值 1）。
+
+    返回 (是否致死, 眩晕 tick)；蛞蝓猫 State 不是 HealthState，所以只走
+    num >= instantDeathDamageLimit → Die 与 Stun((int)num2) 两条。
+    """
+    num = damage / max(1e-6, dmg_res)
+    num2 = (damage * 30.0 + stun_bonus) / max(1e-6, stun_res)
+    return (num >= instant_limit, int(max(0.0, num2)))
+
+
+def _pet_bite_death_mult(pet) -> float:
+    """原版 Player.DeathByBiteMultiplier（故事模式 0.7 + 难度/5，这里取 0.75）。"""
+    return PET_BITE_DEATH_MULT.get(getattr(pet, "variant", None),
+                                   PET_BITE_DEATH_MULT_DEFAULT)
 
 
 def _ball_hit(creature, ball, pad: float = 0.0):
@@ -1292,8 +1317,23 @@ class ItemInteractionMixin:
         if obj is None:
             return
         beh = getattr(obj, "behavior", None)
-        if beh is not None:                       # 蛞蝓猫：眩晕（apply_stun 内部已扣脾气）
-            if beh.apply_stun(LIZARD_STUN_TICKS):
+        if beh is not None:
+            # 蛞蝓猫：按攻击者数据（biteDamageChance × DeathByBiteMultiplier）掷致死，
+            # 否则按 Violence(Bite) 的 num2 眩晕。
+            death_chance = lz.breed.bite_damage_chance * _pet_bite_death_mult(obj)
+            if death_chance > 0.0 and lz.rng.random() < death_chance:
+                beh.kill()
+                self._shake[0] += 2.0 * lz.facing
+                self._shake[1] += 1.4
+                return
+            died, stun = _pet_stun_death(BITE_VIOLENCE_DAMAGE, 0.0)
+            if died:
+                # 致死掷骰没过时 num 仍是 1.5 ⇒ 原版这条路也必死；宠物按掷骰结果放行
+                if beh.apply_stun(max(LIZARD_STUN_TICKS, stun)):
+                    self._shake[0] += 1.6 * lz.facing
+                    self._shake[1] += 1.0
+                return
+            if beh.apply_stun(stun):
                 self._shake[0] += 1.6 * lz.facing
                 self._shake[1] += 1.0
             return
@@ -1875,9 +1915,16 @@ class ItemInteractionMixin:
                     continue
                 for c in (b.chunk0, b.chunk1):
                     if math.hypot(sp.x - c.x, sp.y - c.y) < sp.rad + c.rad + SPEAR_HIT_PAD:
-                        if pet.behavior.apply_stun(LIZARD_STUN_TICKS):
-                            self._shake[0] += 1.2 * (1.0 if sp.vx >= 0.0 else -1.0)
-                            self._shake[1] += 0.8
+                        # 原版 Spear.HitSomething：Violence(Stab, spearDamageBonus=1, 20)
+                        # 蛞蝓猫 num = 1.0 ≥ 即死阈值 1 ⇒ 被矛扎中即死。
+                        dmg = float(getattr(sp, "damage", SPEAR_DMG))
+                        died, stun = _pet_stun_death(dmg, SPEAR_STUN_BONUS)
+                        if died:
+                            pet.behavior.kill()
+                        else:
+                            pet.behavior.apply_stun(stun)
+                        self._shake[0] += 1.6 * (1.0 if sp.vx >= 0.0 else -1.0)
+                        self._shake[1] += 1.1
                         sp.vx = sp.vy = 0.0
                         break
         for sp in self.spears:

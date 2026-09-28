@@ -9,6 +9,39 @@ HORIZONTAL = "horizontal"
 POLE_RAD = 2.0
 MIN_LENGTH = 40.0
 TOP_MARGIN = 48.0
+CROSS_TOL = 6.0          # 交点到端点/线心的容差（原版 tile 级判定）
+
+
+def _within(a, b, v, tol):
+    """v 是否落在 a~b 段内（含容差）。"""
+    lo, hi = (a, b) if a <= b else (b, a)
+    return lo - tol <= v <= hi + tol
+
+
+def cross_point(pa, pb, tol=CROSS_TOL):
+    """两根杆的交点；同向或不相交返回 None。
+
+    原版 Room.Tile 上 verticalBeam / horizontalBeam 可同格共存，
+    该格即「交叉杆」；这里用线段相交等价表达。
+    """
+    if pa.kind == pb.kind:
+        return None
+    v, h = (pa, pb) if pa.kind == VERTICAL else (pb, pa)
+    if not _within(v.ay, v.by, h.ay, tol):
+        return None
+    if not _within(h.ax, h.bx, v.bx, tol):
+        return None
+    return (v.bx, h.ay)
+
+
+def cross_partner(pole, poles, tol=CROSS_TOL):
+    """返回与 pole 交叉的异类杆；没有则 None。"""
+    for q in poles:
+        if q is pole:
+            continue
+        if cross_point(pole, q, tol) is not None:
+            return q
+    return None
 
 
 class Pole:

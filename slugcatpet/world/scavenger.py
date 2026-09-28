@@ -34,6 +34,10 @@ FLEE_TICKS = 260
 # 若 |DirVec.x| <= 0.5 则要求垂直差 < 40（游戏像素），否则不打（不朝天/地扔）。
 AIM_VERT_TOL = 40.0
 
+# 鼠标也是威胁：原版 Scavenger 对任何靠近的生物都会举矛（ScavengerAI.ThreatRequired）
+CURSOR_ALERT_R = 240.0
+CURSOR_ARM = 6                    # 连续靠近这么久才举矛，防误触
+
 PEARL_SEEK_R = 300.0              # 看到珍珠就去捡的半径（原版 CollectScore=10）
 PEARL_TAKE_PAD = 9.0
 TRADE_GIVE_TICKS = 70             # 拿到珍珠后回礼（给矛）的延迟
@@ -282,7 +286,7 @@ class Scavenger:
                  "_contact_floor", "_rng", "seed", "id", "body_rgb", "head_rgb", "eye_rgb",
                  "belly_rgb", "pupil_rgb", "deco_rgb", "mask_rgb", "ivar",
                  "pearl", "like", "bring_pearl_home", "gift_t", "gift_event",
-                 "goal_pearl")
+                 "goal_pearl", "_cursor_seen")
 
     def __init__(self, x: float, y: float, seed: int = 0, id: int = 0):
         self.x = self.last_x = float(x)
@@ -332,6 +336,7 @@ class Scavenger:
         self.gift_t = -1                # ≥0 表示回礼倒计时
         self.gift_event = False         # 窗口读走后生成回礼的矛
         self.goal_pearl = None          # 正在去捡的珍珠
+        self._cursor_seen = 0           # 光标贴脸计数
 
     @property
     def pos(self):
@@ -396,7 +401,7 @@ class Scavenger:
             return
         self.vx *= AIR_FRICTION
         self.vy = (self.vy + GRAVITY * self.room_gravity) * AIR_FRICTION
-        self._threat_scan(threats)
+        self._threat_scan(threats, cursor)
         self._integrate(WL, HL)
         self._step_legs(HL)
         if self.throw_cd > 0:
@@ -434,7 +439,21 @@ class Scavenger:
                 best, best_ax = (px, py), ax
         return best
 
-    def _threat_scan(self, threats) -> None:
+    def _cursor_threat_points(self, cursor):
+        """鼠标也当威胁：贴脸一段时间后进入举矛流程。"""
+        if cursor is None:
+            return None
+        px, py = cursor
+        if math.hypot(px - self.x, py - self.y) > CURSOR_ALERT_R:
+            self._cursor_seen = 0
+            return None
+        self._cursor_seen += 1
+        if self._cursor_seen < CURSOR_ARM:
+            return None
+        # 给三个虚拟体节点，让 CheckThrow 的 |DirVec.x| 规则有得挑
+        return [(px, py - 12.0), (px, py), (px, py + 12.0)]
+
+    def _threat_scan(self, threats, cursor=None) -> None:
         """按威胁距离切态：瞄准→投矛→逃跑。"""
         best, bd = None, ALERT_R
         for obj, pts, is_pet in threats:
@@ -446,6 +465,13 @@ class Scavenger:
             d = math.hypot(aim[0] - self.x, aim[1] - self.y)
             if d < bd:
                 best, bd = aim, d
+        cpts = self._cursor_threat_points(cursor)
+        if cpts is not None:
+            aim = self._pick_aim_point(cpts)
+            if aim is not None:
+                d = math.hypot(aim[0] - self.x, aim[1] - self.y)
+                if d < bd:
+                    best, bd = aim, d
         if best is None:
             self.aim = None
             if self.state_t > 0 or self.state != ItemState.FREE or self.aim_t:

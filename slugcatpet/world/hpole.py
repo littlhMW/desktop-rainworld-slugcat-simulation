@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 
 from ..behavior import tuning
+from .pole import VERTICAL, cross_partner
 
 # 各阶段计时/距离/速度常量
 CONN = 17.0
@@ -25,13 +26,16 @@ AIRGRAB_TIMEOUT = 90
 
 
 class HPoleController:
-    def __init__(self, win, pole, rng=None):
+    def __init__(self, win, pole, rng=None, start=None, start_x=None):
         self.win = win
         self.body = win.body
         self.gfx = win.gfx
         self.tongue = win.tongue
         self.pole = pole
         self.rng = rng
+        # 换杆请求：("v", 竖杆, "climb") 交叉杆转竖杆
+        self.handoff = None
+        self._cross_t = 0            # 在交点附近逗留的 tick 数
         self.phase = "swing" if self.tongue is not None else "airgrab"
         self.timer = 0
         self.giveup = False
@@ -50,6 +54,14 @@ class HPoleController:
         else:
             ax = self.body.chunk0.x
         self._anchor = (max(lo + 2.0, min(hi - 2.0, ax)), pole.ay)
+        if start == "hang" and pole is not None:
+            # 交叉杆从竖杆直接转横杆：就地抓杆，不重走摆荡/引体
+            hx = self.body.chunk0.x if start_x is None else start_x
+            hx = max(lo + 2.0, min(hi - 2.0, hx))
+            self._anchor = (hx, pole.ay)
+            self._grip(hx, pole.ay)
+            self.phase = "hang"
+            self.timer = 0
 
     # 杆几何
     def _extent(self):
@@ -134,6 +146,15 @@ class HPoleController:
         c0.x = ax  # 上身钉杆线
         c0.y = ay
         c0.vx = c0.vy = 0.0
+        vp = self._cross_vpole(ax, ay)
+        if vp is None:
+            self._cross_t = 0
+        else:
+            self._cross_t += 1
+            if (self._cross_t >= tuning.CROSS_DWELL
+                    and self._roll() < tuning.CROSS_SWITCH_PROB):
+                self.handoff = ("v", vp, "climb")  # 交点处转竖杆（原版 上+吊杆）
+                return True
         if self.timer > HANG_TICKS:
             self.phase = "pullup"
             self.timer = 0
@@ -177,6 +198,15 @@ class HPoleController:
         feet_y = ay - STAND_HOVER
         lo, hi = ax_lo + WALK_MARGIN, ax_hi - WALK_MARGIN
         can_walk = hi > lo
+        vp = self._cross_vpole(c1.x, ay)
+        if vp is None:
+            self._cross_t = 0
+        else:
+            self._cross_t += 1
+            if (self._cross_t >= tuning.CROSS_DWELL
+                    and self._roll() < tuning.CROSS_SWITCH_PROB):
+                self.handoff = ("v", vp, "climb")  # 站在交点上：转到竖杆
+                return True
         # 低概率：翻到杆下再上来
         if (can_walk and self._pause <= 0 and self.rng is not None
                 and self.rng.random() < tuning.HP_HANG_PROB):
@@ -229,6 +259,20 @@ class HPoleController:
             self._jump_down()
             return True
         return False
+
+    def _roll(self):
+        return self.rng.random() if self.rng is not None else 0.5
+
+    def _cross_vpole(self, x, y):
+        """该处是否压在竖杆交点上（原版 tile 的 verticalBeam）。"""
+        if self.win is None or self.pole is None:
+            return None
+        vp = cross_partner(self.pole, self.win.poles)
+        if vp is None or vp.kind != VERTICAL:
+            return None
+        if abs(x - vp.x) > tuning.CROSS_PAD:
+            return None
+        return vp if min(vp.ay, vp.by) - tuning.CROSS_PAD <= y <= max(vp.ay, vp.by) + tuning.CROSS_PAD else None
 
     def _enter_swing_under(self):
         b = self.body

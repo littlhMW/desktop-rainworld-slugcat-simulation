@@ -445,7 +445,7 @@ class GraphicsDrawMixin:
             element = "FaceDead"
         elif self.stunned:
             element = "FaceStunned"
-        elif self.ascension is not None:
+        elif self.ascension is not None or self.face_special:
             idx = int(clampf(self._face_angle_index(), 0, 8))
             element = face_a_frames[min(idx, n_max_a)]
         else:

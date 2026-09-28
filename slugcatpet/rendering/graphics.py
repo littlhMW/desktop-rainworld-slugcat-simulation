@@ -257,6 +257,7 @@ class SlugcatGraphics(GraphicsDrawMixin):
 
         self.ascension = None
         self._asc_face_color = None
+        self.face_special = False     # 特殊表情：救同伴时的睁大眼/超度脸
 
         self._tongue_rope = None
         self._tongue_rope_v = None
