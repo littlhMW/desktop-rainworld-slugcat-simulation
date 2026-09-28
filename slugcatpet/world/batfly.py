@@ -287,8 +287,13 @@ class BatFly:
             return True
         return False
 
-    def hurt(self, dmg: float, kx: float = 0.0, ky: float = 0.0) -> bool:
-        """被武器打中：蝙蝠一碰就死（同游戏 Fly，血量 0.1），并被打飞下坠。"""
+    def hurt(self, dmg: float, kx: float = 0.0, ky: float = 0.0,
+             by=None, lethal: bool = True) -> bool:
+        """被武器打中：蝙蝠一碰就死（同游戏 Fly，血量 0.1），并被打飞下坠。
+
+        `by`/`lethal` 只是和面条蝇/蝉乌贼统一签名（投掷物命中走同一段循环调）；
+        蝙蝠没有社交记忆，不用它们。
+        """
         self.vx += kx
         self.vy += ky
         if not self.dead:

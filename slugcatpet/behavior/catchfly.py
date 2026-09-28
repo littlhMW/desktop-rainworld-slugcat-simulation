@@ -69,7 +69,7 @@ class FlyCatcher:
         return min(math.hypot(c0.x - o.x, c0.y - o.y), math.hypot(hx - o.x, hy - o.y))
 
     def _pick_side(self, o):
-        return "r" if o.x >= self._c0().x else "l"
+        return self.body.pick_hand("fruit") or "r"     # 主手（右手）先
 
     # ── 主循环 ──
     def update(self, want) -> str:

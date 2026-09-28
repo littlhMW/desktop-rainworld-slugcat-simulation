@@ -150,8 +150,8 @@ class FruitFetcher:
         self.body.suspended = False
 
     def _pick_grab_side(self):
-        """选更近的抓取手。"""
-        return "r" if self.target.x >= self._chunk0().x else "l"
+        """槽位优先级：主手（右手）先，右手被占才用左手。"""
+        return self.body.pick_hand("fruit") or "r"
 
     def _drop_executor(self):
         if self._executor is not None:

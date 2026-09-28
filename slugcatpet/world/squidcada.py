@@ -178,10 +178,12 @@ class Squidcada:
 
     DAMAGE_RESISTANCE = 0.8       # 原版 StaticWorld: CicadaA baseDamageResistance = 0.8
 
-    def hurt(self, dmg: float, kx: float = 0.0, ky: float = 0.0) -> bool:
+    def hurt(self, dmg: float, kx: float = 0.0, ky: float = 0.0,
+             by=None, lethal: bool = True) -> bool:
         """被武器打中：原版 Violence 的 num = damage / baseDamageResistance。
 
         矛 1.0 / 0.8 = 1.25 ≥ 1.0 → 一矛即死；石头 0.01 / 0.8 → 只被震飞，打不死。
+        `by`/`lethal` 和面条蝇统一签名（投掷物命中循环共用）；蝉乌贼不用它们。
         """
         self.vx += kx
         self.vy += ky

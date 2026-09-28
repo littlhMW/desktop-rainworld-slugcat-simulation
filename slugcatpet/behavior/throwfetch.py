@@ -48,7 +48,7 @@ class StoneThrower:
         return min(d, math.hypot(hx - s.x, hy - s.y))
 
     def _pick_side(self):
-        return "r" if self.target.x >= self._chunk0().x else "l"
+        return self.body.pick_hand("stone") or "r"     # 主手（右手）先
 
     def _avail(self, s):
         """可作目标：free 态 + 地面静止 + 未判 unfetchable。"""

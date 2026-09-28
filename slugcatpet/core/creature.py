@@ -576,7 +576,10 @@ class SlugcatBody:
         if sp is None:
             return None
         self.back_spear = None
-        return sp if self.grab_spear(sp, side) else None
+        if self.grab_spear(sp, side):
+            return sp
+        self.back_spear = sp              # 手上腾不出位置：还背回去，别把矛弄丢
+        return None
 
     def drop_all(self):
         """丢掉手上所有东西（原版丢物品）。"""
@@ -1473,17 +1476,42 @@ class SlugcatBody:
         if other not in self.hand_of.values():
             self.arm_aim[other] = None
 
-    def _take_hand(self, kind, side):
-        used = set(self.hand_of.values())
-        if side not in used:
-            return side
-        other = "l" if side == "r" else "r"
-        if other not in used:
-            return other
-        victim = min(self.hand_of, key=lambda k: self.ITEM_PRIO.get(k, 0))
-        if self.ITEM_PRIO.get(victim, 0) >= self.ITEM_PRIO.get(kind, 0):
+    def pick_hand(self, kind, hint=None):
+        """槽位优先级（用户规格）：主手＝右手。
+
+        1) 右手空 → 右手（主手）；2) 右手被占、左手空 → 左手（副手）；
+        3) 两手都占 → 顶掉优先级更低的（同优先级先顶右手）；
+        都比新东西重要 → None（抓不了，别硬塞）。
+        纯查询；_take_hand 用同一套规则落地，两边必须一致（不然瞄准的手会错）。
+        hint 只在指定的那只手确实空着时生效，给「顺目标方向伸手」的调用方留口子。
+        """
+        if hint in ("l", "r") and self.held_kind(hint) is None:
+            return hint
+        if self.held_kind("r") is None:
+            return "r"
+        if self.held_kind("l") is None:
+            return "l"
+        prio = self.ITEM_PRIO.get(kind, 0)
+        victim = None
+        for s in ("r", "l"):
+            k = self.held_kind(s)
+            if k is None or self.ITEM_PRIO.get(k, 0) >= prio:
+                continue
+            if (victim is None
+                    or self.ITEM_PRIO.get(self.held_kind(victim), 0)
+                    > self.ITEM_PRIO.get(k, 0)):
+                victim = s
+        return victim
+
+    def _take_hand(self, kind, side=None):
+        """落地 pick_hand 的选择：返回腾出来的那只手，必要时先丢掉手里优先级更低的。"""
+        side = self.pick_hand(kind, hint=side)
+        if side is None:
             return None
-        return self._release_item(victim, to_free=True)
+        old = self.held_kind(side)
+        if old is not None:
+            self._release_item(old, to_free=True)
+        return side
 
     def _release_item(self, kind, to_free=False):
         if kind == "fruit":
@@ -1515,7 +1543,7 @@ class SlugcatBody:
         """Aim hand at fruit; clear opposite side (only one hand reaches)."""
         self._aim_hand(side, fruit.x, fruit.y)
 
-    def grab_fruit(self, fruit, side, snap_stalk=True):
+    def grab_fruit(self, fruit, side=None, snap_stalk=True):
         """Grab fruit with one hand; convert to carried (kinematic).
 
         snap_stalk=False：果柄先不断，靠 Stalk 自己被拉断（被鼠标拖着走的猫
@@ -1579,7 +1607,7 @@ class SlugcatBody:
             if f.stalk.step(f):
                 f.stalk = None
 
-    def grab_stone(self, stone, side):
+    def grab_stone(self, stone, side=None):
         """Grab stone with one hand; convert to carried (kinematic)."""
         side = self._take_hand("stone", side)
         if side is None:
@@ -1650,7 +1678,7 @@ class SlugcatBody:
         self._aim_hand(side, cx, cy)
 
     # ── 矛（原版 Spear：玩家持矛时杆斜指前上方，掷出后走弹道）──
-    def grab_spear(self, spear, side):
+    def grab_spear(self, spear, side=None):
         """Grab a spear with one hand; convert to carried (kinematic).
 
         钉进墙/地变成杆子的矛（spear.pinned）拔不动，拾取直接失败。
@@ -1755,7 +1783,7 @@ class SlugcatBody:
         if self.back_spear is not None:      # 原版掷出后背上的矛立刻补到手上
             bs = self.back_spear
             self.back_spear = None
-            self.grab_spear(bs, self.facing if self.facing else 1)
+            self.grab_spear(bs)
         c0.vx += float(dir_x) * 8.0 * recoil
         c1.vx -= float(dir_x) * 4.0 * recoil
         return sp

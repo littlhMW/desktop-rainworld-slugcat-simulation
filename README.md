@@ -75,6 +75,14 @@ python run_slugcatpet.py
 - **腿翻转公式抽出成 `_leg_flip_num`**（原版 `Custom.DistanceToLine(脚, 挂点, 挂点.rotationChunk)` × 前腿取反）：站立时四腿同号，一条腿抬到体轴另一侧才变号，和 `LizardGraphics.cs:1209-1215` 一致。
 - **端着礼物的猫不会被咬**：手里是能驯服蜥蜴的食物时，蜥蜴靠近只吃食不咬人（原版 `FriendTracker.GiftRecieved`）。
 
+**四槽位与复活认领（第 43 轮）**：
+
+- **四个槽位**：右手（主手）、左手（副手）、背部（只有猎手系用、只放矛，原版 `Player.spearOnBack`）、胃（暂时闲置）。`SlugcatBody.pick_hand(kind)` 是唯一选手指南：右手空就用右手，右手被占才落到左手，两手都占就顶掉 `ITEM_PRIO` 最低的那件（同优先级先顶右手），顶不动就抓不起来（纯查询，不改状态）。取果、取矛、取石、空中抓飞虫、杆上摘果、被鼠标拖着时的抓取全走它，不再按「目标在哪边就用哪只手」挑手。
+- **双手都拿着投掷物时先扔右手那件**（`_launch_weapon`），另一件仍在左手里。
+- **猎手：附近没家伙就把背上的矛抽到主手**（`_weapon_ready`，原版 `CanRetrieveSpearFromBack`）；抽的时候手上腾不出位置就还背回去，不会把矛弄丢。
+- **一只死猫同时只由一只猫去救**：`_revive_claimed_by` 不建登记表，直接看谁的状态是「Socialize + revive + 目标就是它」——救活、放弃、或救护者自己倒下都会离开 Socialize，认领自动失效，死猫重新可救。
+- **蝙蝠 / 禅乌贼的 `hurt` 补上 `by`/`lethal` 形参**（与面条蝇统一签名）：投掷矛 / 石头命中飞虫走同一段命中循环，之前会直接 TypeError。
+
 **社交动作**（第六类欲望「社交」攒满后凑到同伴身边做；动作词表见 `slugcatpet/behavior/social.py`）：
 
 | 动作 | 手势 | 含义 |
@@ -219,6 +227,14 @@ Nothing has a count limit any more - place as many as you like.
 - **Head colour breathes like the original `HeadColor`**, pulsing between `palette.blackColor` (approximated by the dark body colour) and `effectColor`.
 - **Leg flip extracted into `_leg_flip_num`** (the original `Custom.DistanceToLine(foot, hip, hip.rotationChunk)` with the front-leg sign flip): all four legs agree when standing and only a leg lifted across the body axis changes sign.
 - **A cat holding a gift is never bitten**: with tame food in hand the lizard eats instead of biting (the original `FriendTracker.GiftRecieved`).
+
+**Four slots and revive claims (round 43)**:
+
+- **Four slots**: right hand (primary), left hand (secondary), back (hunter line only, spears only - the original `Player.spearOnBack`) and stomach (unused for now). `SlugcatBody.pick_hand(kind)` is the single place that picks a hand: the right hand when free, otherwise the left, otherwise the lowest-`ITEM_PRIO` item is dropped (the right hand wins ties), and when nothing can be dropped the grab just fails. It is a pure query, and every pickup - fruit, spear, rock, catching a fly mid-air, picking fruit off a pole, grabbing while dragged by the mouse - goes through it instead of choosing a hand by which side the target is on.
+- **With a throwable in each hand the right hand's item is thrown first** (`_launch_weapon`); the other stays in the left hand.
+- **A hunter with no weapon nearby draws the spear off its back** (`_weapon_ready`, the original `CanRetrieveSpearFromBack`); if no hand can take it the spear goes back on the back instead of being lost.
+- **One reviver per corpse**: `_revive_claimed_by` keeps no registry - it just looks for a peer in "Socialize + revive + this target". Being revived, giving up, or the reviver dying all leave Socialize, so the claim lapses and the corpse becomes claimable again.
+- **`hurt` on bats and squidcadas now takes `by`/`lethal`** like the noodlefly, matching the shared projectile-hit loop; thrown spears and rocks used to raise a TypeError here.
 
 **Social actions** (the sixth desire, "social", sends a cat over to a companion once it fills up; the vocabulary lives in `slugcatpet/behavior/social.py`):
 

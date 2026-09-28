@@ -87,7 +87,8 @@ class FlyHunter:
         return min(math.hypot(c0.x - o.x, c0.y - o.y), math.hypot(hx - o.x, hy - o.y))
 
     def _pick_side(self, o):
-        return "r" if o.x >= self._c0().x else "l"
+        from ..world.spear import Spear
+        return self.body.pick_hand("spear" if isinstance(o, Spear) else "stone") or "r"
 
     def _ground_stones(self):
         return [s for s in self.win.stones

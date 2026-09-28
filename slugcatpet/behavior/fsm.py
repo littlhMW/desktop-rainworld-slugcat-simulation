@@ -1984,7 +1984,7 @@ class BehaviorFSM:
         if dist < tuning.SWIM_FETCH_REACH:
             if getattr(e, "stuck_pos", None) is not None:
                 e.stuck_pos = None    # 抓取瞬间剥离黏菌
-            b.grab_fruit(e, "r" if e.x >= b.chunk0.x else "l")
+            b.grab_fruit(e)          # 槽位优先级：主手（右手）先
             self._chew_reset()
             return
         ux, uy = dx / dist, dy / dist
@@ -2174,7 +2174,7 @@ class BehaviorFSM:
             if e is not None:
                 b.swim_target = (e.x, e.y)
                 if math.hypot(e.x - b.chunk0.x, e.y - b.chunk0.y) < tuning.SWIM_FETCH_REACH:
-                    b.grab_fruit(e, "r" if e.x >= b.chunk0.x else "l")
+                    b.grab_fruit(e)
                     self._chew_reset()
                 return
         g = self._swim_goal
@@ -2412,13 +2412,12 @@ class BehaviorFSM:
                     best, bd = it, d
             if best is None:
                 continue
-            side = "r" if best.x >= b.chunk0.x else "l"
             if kind == "fruit":
-                b.grab_fruit(best, side, snap_stalk=False)   # 摘取类：拖走才把果子拽下来
+                b.grab_fruit(best, snap_stalk=False)   # 摘取类：拖走才把果子拽下来
             elif kind == "spear":
-                b.grab_spear(best, side)
+                b.grab_spear(best)
             else:
-                b.grab_stone(best, side)
+                b.grab_stone(best)
             return True
         return False
 
@@ -2583,7 +2582,9 @@ class BehaviorFSM:
         for f in (*self.win.batflies, *self.win.squidcadas, *self.win.needleworms):
             if not getattr(f, "catchable", False):
                 continue
-            side = "r" if f.x >= c0.x else "l"
+            side = b.pick_hand("fruit")
+            if side is None:
+                continue
             hx, hy = b._carry_pos(side)
             if math.hypot(hx - f.x, hy - f.y) > tuning.CATCH_REACH:
                 continue
@@ -3032,7 +3033,9 @@ class BehaviorFSM:
                 best, bd = f, d
         if best is None:
             return False
-        side = "r" if best.x >= c0.x else "l"
+        side = self.body.pick_hand("fruit")
+        if side is None:
+            return False
         self.gfx.hand_aim[side] = (best.x, best.y)
         self.gfx.hand_aim["l" if side == "r" else "r"] = None
         self.body.grab_fruit(best, side)
@@ -3087,7 +3090,9 @@ class BehaviorFSM:
             self._hpole_goal_clear()
             return False
         c0 = self.body.chunk0
-        side = "r" if f.x >= c0.x else "l"
+        side = self.body.pick_hand("fruit")
+        if side is None:
+            return False
         self.gfx.hand_aim[side] = (f.x, f.y)
         self.gfx.hand_aim["l" if side == "r" else "r"] = None
         if math.hypot(f.x - c0.x, f.y - c0.y) <= tuning.GRAB_REACH:
@@ -3130,7 +3135,9 @@ class BehaviorFSM:
             self._hp_jump_goal = None
             return
         c0 = self.body.chunk0
-        side = "r" if f.x >= c0.x else "l"
+        side = self.body.pick_hand("fruit")
+        if side is None:
+            return
         self.gfx.hand_aim[side] = (f.x, f.y)
         self.gfx.hand_aim["l" if side == "r" else "r"] = None
         if math.hypot(f.x - c0.x, f.y - c0.y) <= tuning.GRAB_REACH:
@@ -3756,17 +3763,34 @@ class BehaviorFSM:
         return best
 
     def _dead_peer_near(self):
-        """附近倒地的同伴（死了就去扒拉救活）。"""
+        """附近倒地的同伴（死了就去扒拉救活）；已经有人在救的不抢。"""
         best, bd = None, tuning.HELPFEED_SEEK_R
         c1 = self.body.chunk1
         for p in self._peers():
             ob = p.body
-            if not ob.dead:
+            if not ob.dead or self._revive_claimed_by(p) is not None:
                 continue
             d = math.hypot(ob.chunk1.x - c1.x, ob.chunk1.y - c1.y)
             if d < bd:
                 best, bd = p, d
         return best
+
+    def _revive_claimed_by(self, dead):
+        """这只死猫是否已经有别的猫在救（一个死者配一个救护者就够）。
+
+        不记登记表：直接看谁的状态是「Socialize + revive + 目标就是它」。
+        救活、放弃、或者救护者自己倒下都会离开 Socialize，认领自然失效，
+        死猫就重新变得可被认领。
+        """
+        for q in self._peers():
+            if q.body.dead:
+                continue
+            beh = getattr(q, "behavior", None)
+            if beh is None or beh.state != "Socialize":
+                continue
+            if beh._social_kind == "revive" and beh._social_target is dead:
+                return q
+        return None
 
     def _free_pearl_near(self):
         """脚边能捡的珍珠（喜欢珍珠的猫闲着会去叼）。"""
@@ -3794,14 +3818,18 @@ class BehaviorFSM:
         return best
 
     def _weapon_ready(self) -> bool:
-        """手里拿着家伙，或脚边地上有能马上捡起来的。"""
+        """手里拿着家伙、脚边有能马上捡的，或（猎手）背上还备着一支。"""
         b = self.body
         if b.carried_spear is not None or b.carried_stone is not None:
             return True
         w = self._nearest_ground_weapon()
-        if w is None:
-            return False
-        return math.hypot(w.x - b.chunk1.x, w.y - b.chunk1.y) < tuning.FIGHT_ARM_R
+        if w is not None and math.hypot(w.x - b.chunk1.x,
+                                        w.y - b.chunk1.y) < tuning.FIGHT_ARM_R:
+            return True
+        # 猎手：附近没矛可捡 → 把背上的矛抽到主手（原版 CanRetrieveSpearFromBack）
+        if b.back_spear is not None:
+            return b.take_back_spear("r") is not None
+        return False
 
     def _nearest_ground_weapon(self):
         """地上能捡的石头/矛（原版捡起投掷物）；肯不肯捡矛看用矛意愿。"""
@@ -4904,7 +4932,9 @@ class BehaviorFSM:
                 b.walk_to(f.x)
                 return
             b.stop_walk()
-            side = "r" if f.x >= b.chunk0.x else "l"
+            side = b.pick_hand("fruit")
+            if side is None:
+                return
             b.reach_for(f, side)
             if d <= tuning.GRAB_REACH + b.arm_full_reach:
                 b.grab_fruit(f, side)
@@ -5232,7 +5262,9 @@ class BehaviorFSM:
                     b.walk_to(rip.x)
                     return
                 b.stop_walk()
-                side = "r" if rip.x >= b.chunk0.x else "l"
+                side = b.pick_hand("spear")
+                if side is None:
+                    return
                 b.reach_for(rip, side)
                 if (math.hypot(rip.x - b.chunk0.x, rip.y - b.chunk0.y)
                         <= tuning.GRAB_REACH + b.arm_full_reach):
@@ -5246,7 +5278,9 @@ class BehaviorFSM:
                     b.walk_to(o.x)
                     return
                 b.stop_walk()
-                side = "r" if o.x >= b.chunk0.x else "l"
+                side = b.pick_hand("spear")
+                if side is None:
+                    return
                 b.reach_for(o, side)
                 if math.hypot(o.x - b.chunk0.x, o.y - b.chunk0.y) <= tuning.GRAB_REACH + b.arm_full_reach:
                     from ..world.spear import Spear
@@ -5288,6 +5322,9 @@ class BehaviorFSM:
         """按原版水平掷出手里的矛/石头（不做高度判断，由调用方负责对准）。"""
         b = self.body
         spear = b.carried_spear
+        if (spear is not None and b.carried_stone is not None
+                and b.held_kind("r") == "stone"):
+            spear = None                  # 双手都拿着家伙：优先用主手（右手）那件
         weak, toss = weaponphys.player_throw_mode(
             getattr(self.win, "variant", ""), self._exhausted,
             spear is not None, False)
@@ -5632,7 +5669,9 @@ class BehaviorFSM:
         self._itemplay_phase = 0
         self._itemplay_left = 0
         it = self._itemplay_target
-        self._itemplay_side = "r" if (it is not None and it.x >= b.chunk0.x) else "l"
+        from ..world.spear import Spear
+        self._itemplay_side = b.pick_hand(
+            "spear" if isinstance(it, Spear) else "stone") or "r"
 
     def _itemplay_fling(self):
         """玩够了顺手甩出去（暴躁的猫）：走原版水平投掷，石头能砸晕同伴。"""
@@ -5677,7 +5716,10 @@ class BehaviorFSM:
                 self._itemplay_end()
                 self._transition("IdleStand")
                 return
-            side = "r" if it.x >= b.chunk0.x else "l"
+            from ..world.spear import Spear
+            side = b.pick_hand("spear" if isinstance(it, Spear) else "stone")
+            if side is None:
+                side = "r"            # 两手都塞着更重要的东西：这次抓不动，下次再来
             self._itemplay_side = side
             b.walk_to(it.x)
             self.gfx.look_at = (it.x, it.y)
@@ -5688,7 +5730,6 @@ class BehaviorFSM:
                 b.reach_for(it, side)
             if d < tuning.GRAB_REACH:
                 b.stop_walk()
-                from ..world.spear import Spear
                 if isinstance(it, Spear):
                     b.grab_spear(it, side)
                 else:
@@ -5750,7 +5791,9 @@ class BehaviorFSM:
         sp = self._nearest_fetchable_spear()
         if sp is None:
             return False
-        side = "r" if sp.x >= b.chunk0.x else "l"
+        side = b.pick_hand("spear")
+        if side is None:
+            return False
         b.walk_to(sp.x)
         self.gfx.look_at = (sp.x, sp.y)
         hx, hy = b._carry_pos(side)
