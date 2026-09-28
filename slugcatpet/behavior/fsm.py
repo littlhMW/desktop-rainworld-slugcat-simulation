@@ -405,6 +405,7 @@ class BehaviorFSM:
         self._last_blocker = None
         self._hp_goal_x = None        # 上横杆去够的东西的 x（横杆可达食物）
         self._hp_goal_obj = None
+        self._hp_goal_t = 0           # 杆上够这个目标已经等了多久（超时放弃）
         self._hp_jump_goal = None     # 杆上起跳后空中要摘的东西      # 上次挡我路的人（跳过去后可能回头指他）
         self._scold_left = 0
         self._scold_cd = 0
@@ -1086,6 +1087,9 @@ class BehaviorFSM:
             self._settle_to_rest()
             self._sleep_left = int(tuning.HIBERNATE_TICKS * self.rng.uniform(
                 tuning.SLEEP_LEN_MULT_MIN, tuning.SLEEP_LEN_MULT_MAX))
+            # 入睡瞬间结算：按格数扣掉睡眠饱食度、业力 +1（用户口径）
+            b.karma_gain()
+            b.food_eat(-b.food_hibernate)
         elif st == "WakeSequence":
             self._hibernating = False        # 起身就清掉睡眠意图，免得卡在半睡
             self.gfx.sleeping = False
@@ -1768,7 +1772,7 @@ class BehaviorFSM:
         return f is not None and getattr(f, "is_tame_food", False)
 
     def _nearby_lizard(self):
-        """水平距离最近且在威胁圈内的蜥蜴；没有则 None。"""
+        """水平距离最近且在威胁圈内的威胁（蜥蜴 / 愤怒的面条蝇成体）；没有则 None。"""
         x = self.body.chunk1.x
         best, bd = None, self._threat_r()
         for lz in getattr(self.win, "lizards", ()):
@@ -1777,6 +1781,12 @@ class BehaviorFSM:
             d = abs(lz.x - x)
             if d < bd:
                 best, bd = lz, d
+        for f in getattr(self.win, "needleworms", ()):
+            if not self._hostile_fly(f):
+                continue
+            d = abs(f.x - x)
+            if d < bd:
+                best, bd = f, d
         return best
 
     def _flee_target_x(self, lz) -> float:
@@ -2265,8 +2275,6 @@ class BehaviorFSM:
             self._transition("WakeSequence")
             return
         if self.timer >= self._sleep_left:
-            self.body.karma_gain()                          # 睡一觉涨业力（原仓库口径）
-            self.body.food_eat(-self.body.food_hibernate)
             self.body.energy = 1.0
             self._hibernating = False
             self._social_urge_boost(tuning.SOCIAL_URGE_BOOST_WAKE)   # 睡醒：想找人
@@ -2813,6 +2821,63 @@ class BehaviorFSM:
         self._carry_chew(b)
         return True
 
+    def _hand_reach_dist(self, o) -> float:
+        """手够得着的距离：躯干两节 + 两只手的真实位置取最近。
+
+        杆上站立时 chunk0 在身体中段、离目标常比手远十几像素（手在身侧偏下），
+        只量 chunk0 会把「其实抓得到」判成够不到 → 上杆走到位却发呆。
+        """
+        b = self.body
+        d = min(math.hypot(o.x - b.chunk0.x, o.y - b.chunk0.y),
+                math.hypot(o.x - b.chunk1.x, o.y - b.chunk1.y))
+        for side in ("l", "r"):
+            hx, hy = b._carry_pos(side)
+            d = min(d, math.hypot(o.x - hx, o.y - hy))
+        return d
+
+    def _pole_release_any(self):
+        """松开当前抱着的杆（横杆/竖杆通用）——离开杆之前统一走这里。"""
+        if self.hpole is not None:
+            self._hpole_release()
+        else:
+            self._pole_release()
+
+    def _pole_reach_pickups(self) -> bool:
+        """站在杆上伸手也能做的事：捡够得到的矛/石头（有威胁又肯用矛）、徒手抓飞虫。
+
+        原版杆上（StandOnBeam / ClimbOnBeam）照样能捡东西、上手抓飞虫——杆只是脚下的地面。
+        """
+        b = self.body
+        if self.grab.active or b.carried_fruit is not None:
+            return False
+        if b.carried_spear is None and b.carried_stone is None \
+                and self._threat_present() and self._spear_willing():
+            o = self._nearest_ground_weapon()
+            if o is not None and self._hand_reach_dist(o) <= tuning.GRAB_REACH:
+                from ..world.spear import Spear
+                side = b.pick_hand("spear" if isinstance(o, Spear) else "stone")
+                if side is not None:
+                    b.reach_for(o, side)
+                    if isinstance(o, Spear):
+                        b.grab_spear(o, side)
+                    else:
+                        b.grab_stone(o, side)
+                    self._act_end()
+                    return True
+        f = self._nearest_catchable()
+        if f is not None and self._hand_reach_dist(f) <= tuning.CATCH_REACH:
+            side = b.pick_hand("fruit")
+            if side is not None:
+                b.grab_fruit(f, side)
+                self._pole_release_any()        # 抓着虫松杆落下去（同原版空中上手抓）
+                self._transition("CatchFly")
+                if self.flycatch is not None:   # 已经到手：直接进「拿着」相
+                    self.flycatch.target = f
+                    self.flycatch.phase = "hold"
+                    self.flycatch.timer = 0
+                return True
+        return False
+
     def _poleclimb_enter(self):
         from .pole_climb import PoleClimber
         self.gfx.hand_aim["l"] = None
@@ -2841,6 +2906,8 @@ class BehaviorFSM:
         if self._pole_throw():           # 杆上持械遇敌：就地掷出（原版杆上可投掷）
             return
         if self._pole_eat():             # 手里有吃的：先在杆上吃完
+            return
+        if self._pole_reach_pickups():   # 杆上伸手：捡矛/石头、徒手抓飞虫
             return
         if self._pole_tip_grab():        # 杆上够得着的东西：伸手摘（同横杆）
             return
@@ -2939,6 +3006,8 @@ class BehaviorFSM:
             return
         if self._pole_eat():             # 手里有吃的：先在杆上吃完
             return
+        if self._pole_reach_pickups():   # 杆上伸手：捡矛/石头、徒手抓飞虫
+            return
         if self._pole_leave_for_food():  # 杆上等同地面：有别的更想吃的就下杆去拿
             return
         if self._hpole_goal_grab():      # 上杆来够的东西：够到就摘下来
@@ -3008,18 +3077,17 @@ class BehaviorFSM:
         b = self.body
         if b.carried_spear is None and b.carried_stone is None:
             return False
-        lz = self._nearest_lizard(tuning.FIGHT_ARM_R)
-        if lz is None or lz.dead:
+        tgt = self._nearest_throw_target(tuning.FIGHT_ARM_R)
+        if tgt is None:
             return False
-        self._aim_target(lz)
-        return self._throw_weapon_at(lz)
+        self._aim_target(tgt)
+        return self._throw_weapon_at(tgt)
 
     def _pole_tip_grab(self) -> bool:
         """杆上够得着的东西：伸手摘下来（原版 beam 上伸手，同横杆 _hpole_goal_grab）。"""
         pc = self.poleclimb
         if pc is None or pc.phase not in ("climb", "tip"):
             return False
-        c0 = self.body.chunk0
         best, bd = None, None
         for f in self.win.fetchables():
             if getattr(f, "state", None) not in ("free", "hanging"):
@@ -3028,8 +3096,8 @@ class BehaviorFSM:
                 continue
             if getattr(f, "is_meat", False) and self.pers.diet in (DIET_VEGETARIAN, DIET_SPECIAL):
                 continue
-            d = math.hypot(f.x - c0.x, f.y - c0.y)
-            if d <= tuning.GRAB_REACH and (best is None or d < bd):
+            d = self._hand_reach_dist(f)
+            if best is None or d < bd:
                 best, bd = f, d
         if best is None:
             return False
@@ -3038,8 +3106,10 @@ class BehaviorFSM:
             return False
         self.gfx.hand_aim[side] = (best.x, best.y)
         self.gfx.hand_aim["l" if side == "r" else "r"] = None
-        self.body.grab_fruit(best, side)
-        return False                     # 抓到就交回普通流程（杆上啃/玩）
+        if bd <= tuning.GRAB_REACH:
+            self.body.grab_fruit(best, side)
+            return False                 # 抓到就交回普通流程（杆上啃/玩）
+        return self._pole_jump_grab(best)   # 手够不到：跳一下试试（竖杆同横杆）
 
     def _pole_leave_for_food(self) -> bool:
         """杆上等同地面：有更值得拿的东西（普通路就够得到）就下杆去拿。
@@ -3078,7 +3148,12 @@ class BehaviorFSM:
     def _hpole_goal_clear(self):
         self._hp_goal_x = None
         self._hp_goal_obj = None
+        self._hp_goal_t = 0
         self._hp_jump_goal = None
+        h = getattr(self, "hpole", None)
+        if h is not None:                # 控制器还留着停位 → 它会原地站到天荒地老
+            h.goal_x = None
+            h.goal_eps = None
 
     def _hpole_goal_grab(self) -> bool:
         """在杆上够到目标物就抓进手里（原版 beam 上伸手摘）。"""
@@ -3089,24 +3164,31 @@ class BehaviorFSM:
         if st is not None and st not in ("free", "hanging"):
             self._hpole_goal_clear()
             return False
-        c0 = self.body.chunk0
+        self._hp_goal_t += 1
         side = self.body.pick_hand("fruit")
-        if side is None:
-            return False
-        self.gfx.hand_aim[side] = (f.x, f.y)
-        self.gfx.hand_aim["l" if side == "r" else "r"] = None
-        if math.hypot(f.x - c0.x, f.y - c0.y) <= tuning.GRAB_REACH:
-            self.body.grab_fruit(f, side)
-            self._hpole_goal_clear()
-            return False                 # 抓到就交回普通流程（杆上啃）
-        if self._hpole_goal_jump(f):     # 手够不到但跳起来能碰到：起跳空中摘
-            return True                  # 已离开 HPole，调用方要立刻收手
+        if side is not None:
+            self.gfx.hand_aim[side] = (f.x, f.y)
+            self.gfx.hand_aim["l" if side == "r" else "r"] = None
+            if self._hand_reach_dist(f) <= tuning.GRAB_REACH:
+                self.body.grab_fruit(f, side)
+                self._hpole_goal_clear()
+                return False             # 抓到就交回普通流程（杆上啃）
+            if self._pole_jump_grab(f):  # 手够不到但跳起来能碰到：起跳空中摘
+                return True              # 已离开 HPole，调用方要立刻收手
+        h = getattr(self, "hpole", None)
         if not self._hpole_reachable_now():
-            self._hpole_goal_clear()
+            self._hpole_goal_clear()     # 目标不在杆面上了：作废
+            return False
+        if h is not None and abs(h.body.chunk1.x - f.x) > tuning.HPOLE_GOAL_TIGHT_EPS:
+            h.goal_x = f.x               # 还没走够近：收紧停位继续挪过去
+            h.goal_eps = tuning.HPOLE_GOAL_TIGHT_EPS
+            return False
+        if self._hp_goal_t > tuning.HPOLE_GOAL_TIMEOUT:
+            self._hpole_goal_clear()     # 走到位也够不到：放弃，别原地发呆到掉下杆
         return False
 
-    def _hpole_goal_jump(self, f) -> bool:
-        """站在横杆上跳起来能不能碰到目标：能就起跳（原版 beam 上跳抓）。"""
+    def _pole_jump_grab(self, f) -> bool:
+        """杆上跳起来够目标：能碰到就松杆起跳、空中伸手摘（原版 beam 上跳抓）。"""
         from ..planning.jump_arc import get_arc, sweep_hit
         c0 = self.body.chunk0
         dx = f.x - c0.x
@@ -3119,7 +3201,7 @@ class BehaviorFSM:
         for hold in tuning.PLAN_JUMP_HOLD_GEARS:
             if sweep_hit(get_arc(stats, hold, 0), dx, dy, tuning.GRAB_REACH) is None:
                 continue
-            self._hpole_release()          # 先收杆（会清 _hp_goal_*），再记空中目标
+            self._pole_release_any()       # 先收杆（会清 _hp_goal_*），再记空中目标
             self._hp_jump_goal = f
             self.body.tip_launch(hold_ticks=hold, move_dir=0)
             self._transition("Airborne")
@@ -3134,13 +3216,12 @@ class BehaviorFSM:
         if getattr(f, "state", None) not in ("free", "hanging"):
             self._hp_jump_goal = None
             return
-        c0 = self.body.chunk0
         side = self.body.pick_hand("fruit")
         if side is None:
             return
         self.gfx.hand_aim[side] = (f.x, f.y)
         self.gfx.hand_aim["l" if side == "r" else "r"] = None
-        if math.hypot(f.x - c0.x, f.y - c0.y) <= tuning.GRAB_REACH:
+        if self._hand_reach_dist(f) <= tuning.GRAB_REACH:
             self.body.grab_fruit(f, side)
             self._hp_jump_goal = None
 
@@ -3736,8 +3817,32 @@ class BehaviorFSM:
         return max(tuning.THREAT_MIN_R, self.WL * tuning.THREAT_WIN_FRAC)
 
     def _threat_lizard(self):
-        """威胁圈内最近的活蜥蜴（唤醒 / 持械 / 超度 / 逃跑都用它）。"""
-        return self._nearest_lizard(self._threat_r())
+        """威胁圈内最近的活威胁：蜥蜴 + 愤怒的面条蝇成体（唤醒/持械/超度/逃跑都用它）。"""
+        return self._nearest_throw_target(self._threat_r())
+
+    def _hostile_fly(self, f) -> bool:
+        """愤怒的面条蝇成体：原版 BigNeedleWormAI 的 Attacks（拿着幼体 / tempLike<-0.25）。"""
+        if getattr(f, "age", None) != "big" or getattr(f, "dead", False):
+            return False
+        if getattr(f, "state", None) != ItemState.FREE:
+            return False
+        try:
+            return bool(f.hostile_to({"uid": id(self.win)}))
+        except Exception:
+            return False
+
+    def _nearest_throw_target(self, r):
+        """最近的投掷/对抗目标：蜥蜴 或 愤怒的面条蝇成体（r 之内）。"""
+        c1 = self.body.chunk1
+        best = self._nearest_lizard(r)
+        bd = float(r) if best is None else math.hypot(best.x - c1.x, best.y - c1.y)
+        for f in getattr(self.win, "needleworms", ()):
+            if not self._hostile_fly(f):
+                continue
+            d = math.hypot(f.x - c1.x, f.y - c1.y)
+            if d < bd:
+                best, bd = f, d
+        return best
 
     def _threat_present(self) -> bool:
         return self._threat_lizard() is not None

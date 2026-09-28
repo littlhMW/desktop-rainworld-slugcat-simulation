@@ -58,6 +58,7 @@ class HPoleController:
         self._hang_f = 10          # 原版 HangFromBeam animationFrame（1..20，静止靠 10）
         self._hang_walk = 0        # 悬挂时还要横向爬多少 tick
         self.goal_x = None       # 非 None：站杆面上走到这个 x 就停住（去够东西）
+        self.goal_eps = None     # 停位容差（None=tuning.HPOLE_GOAL_EPS；够东西时收紧）
         # 锚点固定到杆
         lo, hi = self._extent()
         if self.tongue is not None:
@@ -278,7 +279,9 @@ class HPoleController:
         # 猫总会自动跑去爬竖杆，一路爬到竖杆顶（用户反馈的「总往竖杆顶跑」）。
         steer = None
         if self.goal_x is not None:      # 目的地优先：走到位就刹住等抓取
-            if abs(c1.x - self.goal_x) <= tuning.HPOLE_GOAL_EPS:
+            eps = (tuning.HPOLE_GOAL_EPS if self.goal_eps is None
+                   else self.goal_eps)
+            if abs(c1.x - self.goal_x) <= eps:
                 steer = None
                 self._walk_dir = 0
                 can_walk = False

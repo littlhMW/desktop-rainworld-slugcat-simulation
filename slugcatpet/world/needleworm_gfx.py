@@ -129,15 +129,43 @@ def draw_needle_egg(painter, atlas, nw, ts) -> None:
     painter.restore()
 
 
-def _draw_wings(painter, atlas, nw, ts, pts, seg_dir, front: bool,
+def _wing_push_dir(bdir, l: int, m: int):
+    """NeedleWormGraphics.Update：翅膀每帧被 vector6 推，朝向由它决定。
+
+    原版公式（y 轴向上）：a 以身体切线为基准斜 -45/+45 度且强制朝上，
+    b 只看头尾上下关系，vector6 = Lerp(a, b, |vector.y| * 0.6)。缺这一步
+    翅会笔直朝上，看上去就是两根竖条。
+    """
+    gx, gy = bdir[0], -bdir[1]                  # 换成游戏坐标（y 向上）
+    s = -1.0 if l == 0 else 1.0
+    off = -45.0 if m == 0 else 45.0
+    adeg = math.degrees(math.atan2(gy, gx)) + (90.0 + off) * s
+    a = (math.cos(math.radians(adeg)), abs(math.sin(math.radians(adeg))))
+    bdeg = (90.0 + off * gy) * s * (1.0 if gy >= 0.0 else -1.0)
+    b = (math.cos(math.radians(bdeg)), math.sin(math.radians(bdeg)))
+    b = (b[0], lerp(b[1], abs(b[1]), 0.4))
+    t = abs(gy) * 0.6
+    vx, vy = lerp(a[0], b[0], t), lerp(a[1], b[1], t)
+    n = math.hypot(vx, vy) or 1.0
+    return (vx / n, -vy / n)                    # 换回屏幕坐标（y 向下）
+
+
+def _draw_wings(painter, atlas, nw, ts, pts, seg_dir, l: int, layer: int,
                 vec14, body, hi, det, eye) -> None:
-    """NeedleWormGraphics.cs:549-582：s=0 在身后、s=1 在身前，每侧 2 张翅。"""
+    """NeedleWormGraphics.cs:549-582：l=0/1 是身体两侧，layer 是原版 num8 图层。
+
+    原版用 `WingSprite(num8, m)`，`num8 = (l == 0) != (zrot.x > 0)`——朝屏幕里那
+    一侧的翅才会翻到上层，不是固定的 l；腿精灵排在所有翅之后（最上层）。
+    """
+    if nw.small and nw.bites <= 4:
+        return                      # 原版 isVisible：幼体没被啃过就不显翅
     cb = nw.cos_bools
     flap = lerp(nw.last_wing_flap, nw.wing_flap, ts)
     flying = clampf(lerp(0.0, nw.flying, ts), 0.0, 1.0)
     zy = lerp(nw.lzrot[1], nw.zrot[1], ts)
+    zx = lerp(nw.lzrot[0], nw.zrot[0], ts)
     sn = nw.snout_n
-    sign = 1.0 if front else -1.0
+    sign = -1.0 if l == 0 else 1.0
     for m, off in enumerate(WING_SEG[nw.age]):
         ci = sn + off
         if ci >= len(pts):
@@ -147,10 +175,13 @@ def _draw_wings(painter, atlas, nw, ts, pts, seg_dir, front: bool,
         base = (bx - (-bdir[1]) * (nw.wings_size * 5.0 * abs(zy) * sign),
                 by - (bdir[0]) * (nw.wings_size * 5.0 * abs(zy) * sign))
         phase = flap + (0.33 if m == 0 else 0.0)
-        tip = (base[0], base[1] - (18.0 + 18.0 * math.sin(phase * math.tau)) * flying * nw.wings_size)
-        d = _dir(base[0], base[1], tip[0], tip[1])
-        tip = (base[0] + d[0] * (lerp(40.0, 60.0, flying) * nw.wings_size),
-               base[1] + d[1] * (lerp(40.0, 60.0, flying) * nw.wings_size))
+        dirn = _wing_push_dir(bdir, l, m)
+        p = (base[0] + dirn[0] * 30.0 * nw.wings_size,
+             base[1] + dirn[1] * 30.0 * nw.wings_size)
+        p = (p[0], p[1] - (18.0 + 18.0 * math.sin(phase * math.tau)) * flying * nw.wings_size)
+        d = _dir(base[0], base[1], p[0], p[1])
+        ln = lerp(40.0, 60.0, flying) * nw.wings_size
+        tip = (base[0] + d[0] * ln, base[1] + d[1] * ln)
         v15 = _slerp(-bdir[1] * sign, bdir[0] * sign, sign, 0.0, flying)
         v16 = (v15[0] * 2.0 * nw.wings_size, v15[1] * 2.0 * nw.wings_size)
         root_col = _mix(FOG_RGB, det, 0.5)
@@ -160,7 +191,7 @@ def _draw_wings(painter, atlas, nw, ts, pts, seg_dir, front: bool,
         if not nw.small:
             blit(painter, atlas, "JetFishEyeB", base[0], base[1],
                  _aim(bdir[0], bdir[1]), 0.9, 1.2,
-                 body if not front else _mix(body, hi, abs(zy) * 0.6))
+                 body if layer == 0 else _mix(body, hi, abs(zx) * 0.6))
         del v16
 
 
@@ -198,9 +229,6 @@ def draw_needleworm(painter, atlas, nw, ts) -> None:
             return _dir(pts[1][0], pts[1][1], pts[0][0], pts[0][1]) if len(pts) > 1 else (0.0, -1.0)
         return _dir(pts[i][0], pts[i][1], pts[i - 1][0], pts[i - 1][1])
 
-    # ── 身后那一对翅膀（s=0）──
-    _draw_wings(painter, atlas, nw, ts, pts, seg_dir, False,
-                pts[sn], body, hi, det, eye)
     # ── 身体（BodyMesh：吻+躯干+尾，尾端渐暗）──
     cols = []
     for i in range(len(pts)):
@@ -222,6 +250,13 @@ def draw_needleworm(painter, atlas, nw, ts) -> None:
         f = inv_lerp(0.0, hl_n - 1.0, k)
         hc.append(_mix(body, hi, math.sin((f ** 0.4) * math.pi)))
     ribbon(painter, hp, hr, hc)
+    # ── 翅膀：原版 WingSprite(num8, m)，num8 = ((l == 0) != (zrot.x > 0)) ──
+    #    先画 num8=0 那层（在下）再画 num8=1 那层（在上）；腿精灵排在所有翅之后。
+    zx = lerp(nw.lzrot[0], nw.zrot[0], ts)
+    for layer in (0, 1):
+        l = 0 if ((layer == 0) == (zx > 0.0)) else 1
+        _draw_wings(painter, atlas, nw, ts, pts, seg_dir, l, layer,
+                    pts[sn], body, hi, det, eye)
     # ── 腿：幼体 1 对（退化）、成体 3 对（NeedleWormGraphics.cs:583-600）──
     n_legs = 1 if nw.small else 3
     zy = lerp(nw.lzrot[1], nw.zrot[1], ts)
@@ -246,9 +281,6 @@ def draw_needleworm(painter, atlas, nw, ts) -> None:
             ribbon(painter, [(ox, oy), (tx, ty)],
                    [2.6 * nw.legs_fac, 1.2 * nw.legs_fac],
                    [body, _mix(body, det, clampf(abs(ln) / (9.0 * nw.legs_fac), 0.0, 1.0))])
-    # ── 身前那一对翅膀（s=1）──
-    _draw_wings(painter, atlas, nw, ts, pts, seg_dir, True,
-                pts[sn], body, hi, det, eye)
     # ── 獠牙（成体，NeedleWormGraphics.cs:615-655）──
     if not nw.small:
         fo = lerp(nw.last_fang_out, nw.fang_out, ts)

@@ -572,6 +572,8 @@ BLOCKED_PUSH_RECOIL  = 0.4      # 自己的反冲
 BLOCKED_PUSH_POSE    = 14       # 推人姿势时长
 HPOLE_GOAL_EPS = 10.0          # 上横杆后离目标 x 多近算走到位
 HPOLE_GOAL_R   = 84.0          # 横杆线上离食物多近算「够得着」（上杆去拿）
+HPOLE_GOAL_TIGHT_EPS = 2.0     # 杆上伸手够东西时用的收紧停位（10 的余量够不到目标）
+HPOLE_GOAL_TIMEOUT   = 150     # 杆上够不到的目标最多再等这么久就放弃（别原地发呆/掉下杆）
 
 BLOCKED_POINT_PROB  = 0.55      # 推完回头指指点点的概率（再乘性格系数）
 BLOCKED_POINT_FIRST_MAX = 0.45  # 暴躁/爱指的猫被挡时「先指指点点不跳」的最大概率
