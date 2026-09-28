@@ -4,6 +4,8 @@ import math
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtCore import QPointF, Qt
 
+from ..core.units import clampf
+
 
 def draw_rope(painter, points, widths, color) -> None:
     """沿点链画锥形软绳（尾巴/舌头）；points 根→尖，widths 各点全宽。"""
@@ -169,3 +171,113 @@ def mesh(painter, verts, tris, vcolors, outline: bool = True) -> None:
                           QPointF(vk[0], vk[1])])
         painter.drawPolygon(poly)
     painter.restore()
+
+# ── 珍珠 / 矛 / 拾荒者：程序化绘制（原版这三者也都是运行时生成的网格，图集里没有整只精灵）──
+
+SPEAR_DRAW_LEN = 46.0       # 与世界 Spear.LEN 一致
+PEARL_RIM_K = 0.92          # 外圈（品种色）相对半径
+PEARL_CORE_K = 0.70         # 白芯相对半径
+
+
+def draw_pearl(painter, x, y, rot_deg=0.0, tint=(255, 255, 255), rad=4.5,
+               core=(255, 255, 255)) -> None:
+    """珍珠：品种色外圈 + 白芯 + 一点高光。"""
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.translate(x, y)
+    if rot_deg:
+        painter.rotate(rot_deg)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(*tint))
+    painter.drawEllipse(QPointF(0.0, 0.0), rad, rad)
+    painter.setBrush(QColor(*core))
+    painter.drawEllipse(QPointF(0.0, 0.0), rad * PEARL_RIM_K * 0.85, rad * PEARL_CORE_K)
+    painter.setBrush(QColor(255, 255, 255, 230))
+    painter.drawEllipse(QPointF(-rad * 0.26, -rad * 0.30), rad * 0.26, rad * 0.22)
+    painter.restore()
+
+
+def draw_spear(painter, x, y, ang_deg, length=46.0,
+               shaft=(94, 78, 60), tip=(206, 206, 198), width=2.6) -> None:
+    """矛：锥形木杆 + 亮尖端；ang 0=朝上、顺时针为正（y↓），锚点=杆中点。"""
+    a = math.radians(ang_deg)
+    ux, uy = math.sin(a), -math.cos(a)
+    bx, by = x - ux * length * 0.5, y - uy * length * 0.5
+    tx, ty = x + ux * length * 0.5, y + uy * length * 0.5
+    hx, hy = tx - ux * length * 0.26, ty - uy * length * 0.26
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    pen = QPen(QColor(*shaft), width)
+    pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+    painter.setPen(pen)
+    painter.drawLine(QPointF(bx, by), QPointF(hx, hy))
+    pen2 = QPen(QColor(*tip), width * 0.85)
+    pen2.setCapStyle(Qt.PenCapStyle.FlatCap)
+    painter.setPen(pen2)
+    painter.drawLine(QPointF(hx, hy), QPointF(tx, ty))
+    painter.restore()
+
+
+def draw_scavenger(painter, sc, ts=1.0, body_rgb=(58, 60, 68), head_rgb=(226, 226, 214),
+                   eye_rgb=(26, 26, 30), leg_rgb=None, spear_draw=None) -> None:
+    """拾荒者：髋点驱动的两足 + 长臂 + 白面具头（原版为三角形网格，无整只精灵）。
+
+    锚点 (x, y) = 髋部（sc.y 即髋心，脚下 7px 为地面）；头在髋上方 22px。
+    """
+    x = sc.last_x + (sc.x - sc.last_x) * ts
+    y = sc.last_y + (sc.y - sc.last_y) * ts
+    if leg_rgb is None:
+        leg_rgb = (int(body_rgb[0] * 0.8), int(body_rgb[1] * 0.8), int(body_rgb[2] * 0.8))
+    f = 1.0 if sc.facing >= 0 else -1.0
+    stance = 7.0                       # 髋到脚
+    phase = sc.walk_phase * math.tau
+    step = clampf(abs(sc.vx) * 0.5, 0.0, 1.0) * 3.0
+    lean = clampf(sc.vx * 1.2, -3.0, 3.0)
+    painter.save()
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    # 腿（两足，前后交替）
+    painter.setPen(QPen(QColor(*leg_rgb), 3.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+    for i, sgn in ((0, -1.0), (1, 1.0)):
+        swing = math.sin(phase + (0.0 if i == 0 else math.pi)) * step
+        hx = x + sgn * 3.0 * f
+        painter.drawLine(QPointF(hx, y - 2.0),
+                         QPointF(hx + swing * f, y + stance))
+    # 短尾
+    painter.setPen(QPen(QColor(*leg_rgb), 2.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+    painter.drawLine(QPointF(x - 2.0 * f, y - 3.0), QPointF(x - 9.0 * f, y - 7.0))
+    # 躯干：髋→肩的锥形
+    shx, shy = x + lean + 1.5 * f, y - 14.0
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(*body_rgb))
+    torso = QPainterPath()
+    torso.moveTo(x - 4.6, y + 1.0)
+    torso.lineTo(x + 4.6, y + 1.0)
+    torso.lineTo(shx + 3.6, shy)
+    torso.lineTo(shx - 3.6, shy)
+    torso.closeSubpath()
+    painter.drawPath(torso)
+    # 手臂（持矛手在前）
+    painter.setPen(QPen(QColor(*body_rgb), 2.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+    painter.drawLine(QPointF(shx, shy + 1.0), QPointF(shx + 6.0 * f, shy + 11.0))
+    painter.drawLine(QPointF(shx, shy + 1.5), QPointF(shx + 12.0 * f, shy + 6.0))
+    # 头 + 面具
+    hx, hy = x + 6.0 * f + lean, y - 22.0
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(*body_rgb))
+    painter.drawEllipse(QPointF(hx - 1.0 * f, hy + 1.0), 6.2, 5.6)
+    painter.setBrush(QColor(*head_rgb))
+    painter.drawEllipse(QPointF(hx + 1.6 * f, hy - 0.4), 5.0, 4.4)
+    painter.setBrush(QColor(*eye_rgb))
+    painter.drawEllipse(QPointF(hx + 3.0 * f, hy - 0.6), 1.5, 1.1)
+    painter.restore()
+
+
+def draw_scavenger_spear(painter, sc, ts=1.0) -> None:
+    """拾荒者手里的矛（瞄准时后仰）。"""
+    sp = getattr(sc, "spear", None)
+    if sp is None:
+        return
+    x = sp.last_x + (sp.x - sp.last_x) * ts
+    y = sp.last_y + (sp.y - sp.last_y) * ts
+    ang = sp.last_angle + (sp.angle_deg - sp.last_angle) * ts
+    draw_spear(painter, x, y, ang, length=SPEAR_DRAW_LEN)

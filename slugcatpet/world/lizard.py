@@ -42,6 +42,14 @@ WANDER_MARGIN = 40.0
 WALK_TURN = 0.14              # 游走时速度趋近速率
 MAX_SEG_SPEED = 24.0
 
+# ── 配色（同游戏 LizardGraphics.ApplyPalette / BodyColor）──
+TAME_LIKE = 0.5                # 原版：like 超过 0.5 即认主跟随
+FOLLOW_GAP = 46.0              # 驯服后与朋友保持的距离
+
+BLACK_RGB = (27, 11, 33)       # 近似 RoomPalette.blackColor：绝大多数蜥蜴的体色
+WHITE_RGB = (255, 255, 255)    # 白蜥体色走纯白分支
+SALAMANDER_RGB = (232, 232, 244)
+
 
 def _hsl2rgb(h: float, s: float, l: float) -> tuple[int, int, int]:
     """HSL→RGB（0..1），同游戏 Custom.HSL2RGB。"""
@@ -65,6 +73,7 @@ class LizardBreed:
     """一种蜥蜴的静态定义；字段名对应游戏 LizardBreedParams。"""
 
     __slots__ = ("key", "name_zh", "name_en", "hue", "sat", "light", "plain_color",
+                 "body_rgb", "head_rgb", "spikes",
                  "head_graphics", "body_size_fac", "body_rad_fac", "body_length_fac",
                  "head_size", "tail_segs", "tail_len_fac", "limb_size", "limb_thickness",
                  "base_speed", "jaw_open_angle", "jaw_lower_fac", "jaw_apart",
@@ -79,7 +88,7 @@ class LizardBreed:
                  jaw_apart=23.0, neck_stiffness=0.2, body_stiffness=0.2,
                  tail_col_start=0.3, tail_col_exp=2.0, bite_damage=1.0,
                  sat=1.0, plain_color=None, anchor_y=0.7,
-                 hue_var=0.10, light_var=0.15, hide_eyes=False):
+                 hue_var=0.10, light_var=0.15, hide_eyes=False, spikes=None):
         self.key = key
         self.name_zh = name_zh
         self.name_en = name_en
@@ -109,6 +118,15 @@ class LizardBreed:
         self.head_hue_var = hue_var
         self.head_light_var = light_var
         self.hide_eyes = hide_eyes          # 黑蜥不画眼睛（游戏里 isVisible=false）
+        self.spikes = spikes                # 背刺 (graphic, colored, 出现概率)，None=无
+        # 体/头配色：白蜥全身纯白、头按原版压黑；蝾螈灰白；黑蜥整体近黑；其余体黑头染品种色
+        if plain_color == WHITE_RGB:
+            self.body_rgb, self.head_rgb = WHITE_RGB, WHITE_RGB
+        elif key in ("salamander", "black"):
+            self.body_rgb = self.head_rgb = (SALAMANDER_RGB if key == "salamander"
+                                            else BLACK_RGB)
+        else:
+            self.body_rgb, self.head_rgb = BLACK_RGB, None
 
     def color(self, rng) -> tuple[int, int, int]:
         """出生时随机化个体色，同游戏 effectColor 的 WrappedRandomVariation。"""
@@ -118,25 +136,23 @@ class LizardBreed:
         l = clampf(self.light + rng.uniform(-self.head_light_var, self.head_light_var), 0.12, 0.92)
         return _hsl2rgb(h, self.sat, l)
 
-    def tail_tint(self, rng):
-        """尾梢渐变色；游戏里 1/2 概率才有（返回 None 即无渐变）。"""
-        if self.plain_color is not None:
+    def tail_tint(self, rng, color):
+        """尾梢渐变色（游戏 iVars.tailColor）：白蜥/黑蜥恒无，其余 1/2 概率，色=品种色。"""
+        if self.plain_color is not None or rng.random() > 0.5:
             return None
-        amt = 0.0 if rng.random() > 0.5 else rng.random()
-        if amt <= 0.0:
-            return None
-        return (_hsl2rgb(rng.random(), self.sat, clampf(self.light * 0.9, 0.2, 0.9)), amt)
+        return (color, 0.35 + 0.65 * rng.random())
 
 
 # 基础九种；数值取自 LizardBreeds / Lizard.effectColor
 BREEDS = (
     LizardBreed("pink", "粉蜥", "Pink lizard", 0.87, 0.50, (0, 0, 0, 0, 0),
-                size=1.00, base_speed=4.1, tail_segs=5, tail_len_fac=1.2, bite_damage=1.0),
+                size=1.00, base_speed=4.1, tail_segs=5, tail_len_fac=1.2, bite_damage=1.0,
+                spikes=(0, 0, 0.5)),
     LizardBreed("green", "绿蜥", "Green lizard", 0.32, 0.50, (1, 1, 1, 1, 1),
                 size=1.20, base_speed=6.7, tail_segs=7, tail_len_fac=0.9, limb_size=1.4,
                 jaw_open_angle=50.0, jaw_lower_fac=0.5, jaw_apart=14.0, neck_stiffness=1.0,
                 body_stiffness=0.5, tail_col_start=0.05, tail_col_exp=4.0,
-                bite_damage=2.0, anchor_y=0.55),
+                bite_damage=2.0, anchor_y=0.55, spikes=(3, 2, 0.8)),
     LizardBreed("blue", "蓝蜥", "Blue lizard", 0.57, 0.50, (0, 0, 0, 0, 0),
                 size=0.90, head_size=0.9, base_speed=3.2, tail_segs=4, tail_len_fac=1.0,
                 limb_size=0.9, jaw_open_angle=105.0, jaw_lower_fac=0.55, jaw_apart=20.0,
@@ -155,11 +171,11 @@ BREEDS = (
     LizardBreed("red", "红蜥", "Red lizard", 0.0025, 0.50, (0, 0, 0, 0, 0),
                 size=1.20, head_size=1.2, base_speed=5.0, tail_segs=9, tail_len_fac=1.9,
                 limb_size=1.5, jaw_open_angle=140.0, body_stiffness=0.3,
-                bite_damage=4.0, hue_var=0.02),
+                bite_damage=4.0, hue_var=0.02, spikes=(0, 0, 0.7)),
     LizardBreed("black", "黑蜥", "Black lizard", 0.0, 0.10, (0, 0, 0, 0, 0),
                 size=0.90, base_speed=3.9, tail_segs=6, tail_len_fac=1.2, limb_size=1.1,
                 body_stiffness=0.25, bite_damage=1.0, sat=0.0, plain_color=(26, 26, 26),
-                hue_var=0.0, light_var=0.0, hide_eyes=True),
+                hue_var=0.0, light_var=0.0, hide_eyes=True, spikes=(0, 0, 0.7)),
     LizardBreed("salamander", "蝾螈", "Salamander", 0.90, 0.40, (2, 2, 2, 2, 2),
                 size=0.90, head_size=0.9, base_speed=3.1, tail_segs=5, tail_len_fac=1.2,
                 limb_size=0.65, jaw_apart=15.0, bite_damage=0.9, hue_var=0.15),
@@ -215,7 +231,7 @@ class Lizard:
                  "target", "target_obj", "bite_event", "bite_hold", "bite_cd",
                  "walk_phase", "idle_timer", "goal_x", "hop_cd",
                  "held_by_hand", "water_y", "room_gravity", "_contact_floor",
-                 "dead", "spacing")
+                 "dead", "spacing", "spikes", "like", "tamed", "friend_id")
 
     def __init__(self, x: float, y: float, breed: LizardBreed | None = None,
                  seed: int = 0, id: int = 0):
@@ -225,9 +241,12 @@ class Lizard:
         self.id = int(id)
         rng = self.rng
         self.color = self.breed.color(rng)
-        tint = self.breed.tail_tint(rng)
+        tint = self.breed.tail_tint(rng, self.color)
         self.tail_edge = tint[0] if tint else None
         self.tail_amt = tint[1] if tint else 0.0
+        self.like = 0.0                  # 原版 SocialMemory.like
+        self.tamed = False
+        self.friend_id = None            # 驯服它的猫（PetUnit.id）
 
         b = self.breed
         self.head_rad = 6.0 * b.head_size * BODY_SCALE
@@ -265,6 +284,23 @@ class Lizard:
         by = (self.seg[2].y if len(self.seg) > 2 else self.seg[-1].y) + self.body_rad * LEG_SIDE_FAC
         self.legs = [_Leg(fx, fy, False, False), _Leg(fx, fy, False, True),
                      _Leg(bx, by, True, False), _Leg(bx, by, True, True)]
+
+        # 背刺（游戏 SpineSpikes）：数量/长度/大小曲线逐个随机
+        self.spikes = None
+        if b.spikes:
+            graphic, colored, chance = b.spikes
+            if rng.random() < chance:
+                n = rng.randint(5, 8)
+                end = rng.uniform(0.2, 0.95)             # 覆盖到体长/总长的比例
+                lo = rng.uniform(0.15, 0.5)
+                hi = max(lo, rng.uniform(lo, 1.1))
+                skew = rng.uniform(0.1, 0.9)
+                pts = []
+                for k in range(n):
+                    t = k / (n - 1.0)
+                    pts.append((0.05 + (end - 0.05) * t,
+                                lo + (hi - lo) * math.sin((t ** skew) * math.pi)))
+                self.spikes = (graphic, colored, pts)
 
         self.state = ItemState.FREE
         self.facing = 1
@@ -396,6 +432,9 @@ class Lizard:
 
     # ── AI ──
     def _step_ai(self, WL, HL, targets, cursor) -> None:
+        if self.tamed:                           # 认主的蜥蜴不再咬人，只跟着走
+            self._follow(WL, HL, targets)
+            return
         self._pick_target(targets, cursor)
         if self.bite_hold > 0:                       # 咬合保持
             self.vx *= 0.84
@@ -414,10 +453,34 @@ class Lizard:
             return
         self._wander(WL, HL)
 
+    def _follow(self, WL, HL, targets) -> None:
+        """跟上朋友：近了就停下，远了就追。"""
+        self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE)
+        self.target = None
+        self.target_obj = None
+        tx = None
+        for obj, ox, oy in targets:
+            if self.friend_id is not None and getattr(obj, "id", None) == self.friend_id:
+                tx, ty = ox, oy
+                self.look_at = (ox, oy)
+                break
+        if tx is None:
+            self.look_at = None
+            self._wander(WL, HL)
+            return
+        dx = tx - self.x
+        if abs(dx) > FOLLOW_GAP:
+            want = clampf(dx * 0.05, -2.2, 2.2)
+            self.vx += (want - self.vx) * WALK_TURN
+        else:
+            self.vx -= self.vx * 0.22
+
     def _pick_target(self, targets, cursor) -> None:
         """最近的可咬目标；没有则退而盯光标。"""
         best, bestd, bestobj = None, NOTICE_R, None
         for obj, ox, oy in targets:
+            if self.friend_id is not None and getattr(obj, "id", None) == self.friend_id:
+                continue
             d = math.hypot(ox - self.x, oy - self.y)
             if d < bestd:
                 best, bestd, bestobj = (ox, oy), d, obj
@@ -450,6 +513,15 @@ class Lizard:
         elif self._contact_floor and self.hop_cd <= 0 and (self.y - self.target[1]) > 34.0:
             self.vy = CLIMB_HOP * math.sqrt(max(0.4, self.breed.body_size_fac))
             self.hop_cd = HOP_CD
+
+    def gift_received(self, alive: bool, friend_id) -> None:
+        """收到礼物（对照 LizardAI.GiftRecieved：活体 +0.6 / 尸体 +1.2）。"""
+        self.like += 0.6 if alive else 1.2
+        if not self.tamed and self.like > TAME_LIKE:
+            self.tamed = True
+            self.friend_id = friend_id
+            self.jaw = 0.0
+            self.bite_event = None
 
     def _start_bite(self) -> None:
         self.bite_hold = BITE_HOLD

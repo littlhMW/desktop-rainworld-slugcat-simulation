@@ -41,6 +41,10 @@ _STR = {
     "tip_slimemold": {"zh": "放黏菌", "en": "Place slime mold"},
     "tip_batfly":  {"zh": "放蝙蝠", "en": "Place batfly"},
     "tip_lizard":  {"zh": "放蜥蜴", "en": "Place lizard"},
+    "tip_squidcada": {"zh": "放蝉乌贼", "en": "Place squidcada"},
+    "tip_scavenger": {"zh": "放拾荒者", "en": "Place scavenger"},
+    "tip_pearl":   {"zh": "放珍珠", "en": "Place pearl"},
+    "tip_spear":   {"zh": "放矛", "en": "Place spear"},
     "tip_clear":   {"zh": "清除可交互实体", "en": "Clear placed items"},
 
 

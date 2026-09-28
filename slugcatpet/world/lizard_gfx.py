@@ -8,31 +8,27 @@
   只转不镜像会让头上下颠倒，且颚的开合位移方向也会反。
 - 张口：上颚组（UpperTeeth/Head/Eyes）转 -A*(1-lf)*jaw，下颚组（Jaw/LowerTeeth）转 +A*lf*jaw，
   位移沿头轴法线上下分开 A*jaw*BODY_SCALE。
-- 四肢：游戏用 LizardArm_XX 贴图（脚点锚定 + atan2 旋转），但 24px 级别下呈「拱形」不好看，
-  这里改为程序化「髋→膝→脚」锥形折线，前腿膝向后、后腿膝向前，脚掌朝前。
-- 体色：游戏用房间调色板（近似中性灰）× effectColor，这里取固定中性灰与品种色混合。
+- 四肢：同游戏 LizardArm_XX 贴图（锚点=脚，旋转 = atan2(-(髋-脚))，贴图未旋转时朝左），
+  上面叠一层 LizardArmColor_XX 品种色（远侧腿压暗），形成原版「暗底 + 亮面」的腿。
+- 体色：同游戏 BodyColor：白蜥纯白，蝾螈灰白，其余 = palette.blackColor（近黑），
+  尾梢按 tailColoration 曲线渐变到品种色（effectColor）；头=品种色，齿/眼 = palette.blackColor。
 """
 from __future__ import annotations
 import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath
 
 from ..core.units import clampf, lerp, inv_lerp
-from .lizard import BODY_SCALE, _ang_from_up
+from .lizard import BODY_SCALE, BLACK_RGB, _ang_from_up
 
 HEAD_KEY = "base"
 NUM14 = 0                      # 头片行号：0 = 正侧面（游戏 |headDepthRotation|≈1）
 
-NEUTRAL = (150, 156, 168)      # 中性体色（代替房间调色板）
-BODY_TINT = 0.46
-HEAD_TINT = 0.56
-EYE_RGB = (238, 244, 250)      # 眼睛：亮色高光（游戏里用房间调色板，这里取亮色更好认）
-NEAR_LEG_K = 1.0
-FAR_LEG_K = 0.82
-LIMB_EDGE_W = 1.7              # 四肢描边总加宽（每侧 ~0.85px）
-BODY_TOP_K = 1.10
-BODY_BOT_K = 0.74
+BODY_TOP_K = 1.16              # 体色很轻的垂向受光（原版体色近黑，不能提亮太多）
+BODY_BOT_K = 0.72
+LIMB_NEAR_A = 1.0              # 近侧腿色层不透明度
+LIMB_FAR_A = 0.45              # 远侧腿色层压暗（深度感）
 BODY_EDGE_K = 0.55
 NECK_K = 0.82                  # 颈根半径系数（相对躯干半径）
 
@@ -80,7 +76,8 @@ def _strip_path(pts, halfw) -> QPainterPath:
     return path
 
 
-def _blit(p, atlas, frame, tint, x, y, rot, sx, sy, ax, ay, key=HEAD_KEY):
+def _blit(p, atlas, frame, tint, x, y, rot, sx, sy, ax, ay, key=HEAD_KEY,
+          opacity=1.0):
     """锚点 (ax, ay)（ay 自图像顶部量）钉在 (x, y)，顺时针 rot 度。"""
     at = atlas.get(key)
     if not at.has(frame):
@@ -88,6 +85,7 @@ def _blit(p, atlas, frame, tint, x, y, rot, sx, sy, ax, ay, key=HEAD_KEY):
     pm = at.sprite(frame, QColor(*tint))
     w, h = float(pm.width()), float(pm.height())
     p.save()
+    p.setOpacity(opacity)
     p.translate(x, y)
     if rot:
         p.rotate(rot)
@@ -130,20 +128,17 @@ def draw_lizard(p, atlas, lz, ts: float) -> None:
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     p.setPen(Qt.PenStyle.NoPen)
 
-    _draw_body(p, lz, spine, rads, color)
+    _draw_body(p, lz, spine, rads)
+    _draw_spikes(p, atlas, lz, spine, rads)
     for i in (0, 2, 1, 3):                      # 远侧前后腿 → 近侧前后腿
         _draw_leg(p, atlas, lz, i, ts)
     _draw_head(p, atlas, lz, hx, hy, rot, jaw, color)
     p.restore()
 
 
-def _body_color(color):
-    return _mix(NEUTRAL, color, BODY_TINT)
-
-
-def _draw_body(p, lz, spine, rads, color):
+def _draw_body(p, lz, spine, rads):
     """躯干+尾：单条带，垂向渐变受光，尾梢按游戏曲线染尾色。"""
-    rgb = _body_color(color)
+    rgb = lz.breed.body_rgb
     path = _strip_path(spine, rads)
     x0, y0 = spine[0]
     x1, y1 = spine[-1]
@@ -193,52 +188,81 @@ def _leg_anchor(lz, lg, ts):
     return lerp(seg.lx, seg.x, ts), lerp(seg.ly, seg.y, ts)
 
 
-def _tapered(p, pts, widths, rgb, outline_rgb):
-    """沿折线画锥形肢体：逐段圆头笔，先粗的描边层再填本色（细边、无珠子感）。"""
-    p.save()
-    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    for col, extra in ((outline_rgb, LIMB_EDGE_W), (rgb, 0.0)):
-        for k in range(len(pts) - 1):
-            w = (widths[k] + widths[k + 1]) * 0.5 + extra
-            pen = QPen(QColor(*col), max(0.8, w))
-            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
-            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-            p.setPen(pen)
-            p.drawLine(QPointF(*pts[k]), QPointF(*pts[k + 1]))
-    p.restore()
+def _spine_at(spine, rads, s):
+    """按归一化体长 s∈[0,1] 在脊柱折线上取样：返点、背侧法线（屏幕系）、该处半径。"""
+    segs = []
+    total = 0.0
+    for k in range(len(spine) - 1):
+        d = math.hypot(spine[k + 1][0] - spine[k][0], spine[k + 1][1] - spine[k][1])
+        segs.append(d)
+        total += d
+    if total <= 0.0:
+        return spine[0], (0.0, -1.0), rads[0]
+    want = clampf(s, 0.0, 1.0) * total
+    for k, d in enumerate(segs):
+        if want <= d or k == len(segs) - 1:
+            t = (want / d) if d > 0 else 0.0
+            t = clampf(t, 0.0, 1.0)
+            ax, ay = spine[k]
+            bx, by = spine[k + 1]
+            px, py = ax + (bx - ax) * t, ay + (by - ay) * t
+            nx, ny = -(by - ay), (bx - ax)
+            L = math.hypot(nx, ny) or 1.0
+            nx, ny = nx / L, ny / L
+            if ny > 0.0:                    # 法线取背侧（屏幕上方）
+                nx, ny = -nx, -ny
+            return (px, py), (nx, ny), lerp(rads[k], rads[k + 1], t)
+        want -= d
+    return spine[-1], (0.0, -1.0), rads[-1]
+
+
+def _draw_spikes(p, atlas, lz, spine, rads):
+    """背刺（游戏 SpineSpikes）：A 片=体色，B 片=品种色（colored 1/2 两种）。"""
+    if not lz.spikes:
+        return
+    graphic, colored, pts = lz.spikes
+    n = len(pts)
+    for k, (s, size) in enumerate(pts):
+        if size <= 0.0:
+            continue
+        pt, (nx, ny), rad = _spine_at(spine, rads, s)
+        x, y = pt[0] + nx * rad * 0.8, pt[1] + ny * rad * 0.8
+        rot = math.degrees(math.atan2(nx, -ny))   # 贴图 local up 对齐法线
+        tint = lz.breed.body_rgb
+        _blit(p, atlas, "LizardScaleA%d" % graphic, tint, x, y, rot,
+              size, size, 0.5, 0.85)
+        if colored:
+            t = k / max(1.0, n - 1.0)
+            rgb = lz.color if colored == 1 else _mix(
+                lz.breed.head_rgb or lz.color, tint, t ** 0.5)
+            _blit(p, atlas, "LizardScaleB%d" % graphic, rgb, x, y, rot,
+                  size, size, 0.5, 0.85)
 
 
 def _draw_leg(p, atlas, lz, i, ts):
-    """一条腿：髋→膝→脚 三段锥形折线 + 脚掌；远侧腿略暗。"""
+    """一条腿：游戏 LizardArm_XX（锚点=脚、按髋→脚距离选帧）+ 品种色层。"""
     lg = lz.legs[i]
-    hx, hy = _leg_anchor(lz, lg, ts)
     fx = lerp(lg.lx, lg.x, ts)
     fy = lerp(lg.ly, lg.y, ts) - lg.lift
-    dx, dy = fx - hx, fy - hy
-    d = math.hypot(dx, dy)
-    if d < 1e-3:
+    hx, hy = _leg_anchor(lz, lg, ts)
+    if not lg.back and len(lz.seg) > 1:              # 游戏：前腿髋 20% 拉向第 1 节
+        s1 = lz.seg[1]
+        hx = lerp(hx, lerp(s1.lx, s1.x, ts), 0.2)
+        hy = lerp(hy, lerp(s1.ly, s1.y, ts), 0.2)
+    ux, uy = hx - fx, hy - fy                        # 脚→髋
+    if math.hypot(ux, uy) < 1e-3:
         return
-    ux, uy = dx / d, dy / d
     b = lz.breed
-    w0 = lz.body_rad * 0.80 * b.limb_thickness
-    w1 = lz.body_rad * 0.62 * b.limb_thickness
-    w2 = lz.body_rad * 0.40 * b.limb_thickness
-    # 膝：中点向「后（前腿）/前（后腿）」偏移，像蜥蜴的折腿
-    bend = d * (0.22 if lg.back else 0.18)
-    dirx = 1.0 if lg.back else -1.0
-    kx = (hx + fx) * 0.5 + dirx * bend
-    ky = (hy + fy) * 0.5 - abs(bend) * 0.10
-    # 脚掌：朝身体前方伸出
-    step = lz.body_rad * 0.55
-    fx_dir = 1.0 if lz.facing >= 0 else -1.0
-    tox, toy = fx + fx_dir * step, fy
-    near = lg.near
-    k = NEAR_LEG_K if near else FAR_LEG_K
-    rgb = _shade(_body_color(lz.color), 0.86 * k)
-    edge = _shade(_body_color(lz.color), BODY_EDGE_K * k)
-    _tapered(p, [(hx, hy), (kx, ky), (fx, fy)], [w0, w1, w2], rgb, edge)
-    _tapered(p, [(fx, fy), (tox, toy)], [w2, w2 * 0.75], rgb, edge)
+    val = int(math.hypot(ux, uy) / (4.0 * b.limb_size)) + 1
+    val = max(1, min(9, val)) + (27 if lg.back else 0)
+    rot = math.degrees(math.atan2(-uy, -ux))         # 贴图未旋转时朝左
+    flip = 1.0 if lg.near else -1.0
+    sx, sy = b.limb_size, flip * b.limb_thickness
+    _blit(p, atlas, "LizardArm_%02d" % val, b.body_rgb,
+          fx, fy, rot, sx, sy, 0.5, 0.5)
+    _blit(p, atlas, "LizardArmColor_%02d" % val, b.head_rgb or lz.color,
+          fx, fy, rot, sx, sy, 0.5, 0.5,
+          opacity=LIMB_NEAR_A if lg.near else LIMB_FAR_A)
 
 
 def _draw_head(p, atlas, lz, hx, hy, rot, jaw, color):
@@ -257,9 +281,8 @@ def _draw_head(p, atlas, lz, hx, hy, rot, jaw, color):
     lo_rot = rot + b.jaw_open_angle * lf * jaw
     sc = b.head_size * BODY_SCALE
     sx = face * sc
-    body_rgb = _body_color(color)
-    head_rgb = _mix(NEUTRAL, color, HEAD_TINT)
-    teeth_rgb = _shade(body_rgb, 1.30)
+    head_rgb = b.head_rgb or color          # 游戏 HeadColor：头=品种色（白/黑蜥压黑）
+    teeth_rgb = BLACK_RGB                   # 游戏 ApplyPalette：齿与眼都是 palette.blackColor
     ay = 1.0 - b.anchor_y
     eyes_ay = 0.25 if hg[4] == 3 else ay
     for part, idx in (("Jaw", 0), ("LowerTeeth", 1)):
@@ -271,5 +294,5 @@ def _draw_head(p, atlas, lz, hx, hy, rot, jaw, color):
               teeth_rgb if idx == 2 else head_rgb,
               hx + nx * up_off, hy + ny * up_off, up_rot, sx, sc, 0.5, ay)
     if not b.hide_eyes:
-        _blit(p, atlas, "LizardEyes%d.%d" % (NUM14, hg[4]), EYE_RGB,
+        _blit(p, atlas, "LizardEyes%d.%d" % (NUM14, hg[4]), BLACK_RGB,
               hx + nx * up_off, hy + ny * up_off, up_rot, sx, sc, 0.5, eyes_ay)

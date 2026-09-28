@@ -44,6 +44,17 @@ _BAT_BODY = QColor(24, 26, 30)
 _BAT_EYE = QColor(232, 236, 226)
 _LIZ_BODY = QColor(122, 158, 108)
 _LIZ_EYE = QColor(238, 244, 250)
+_SQUID_BODY = QColor(236, 240, 245)
+_SQUID_WING = QColor(206, 222, 238, 170)
+_SQUID_SHELL = QColor(126, 190, 226)
+_PEARL_BALL = QColor(240, 243, 248)
+_PEARL_EDGE = QColor(138, 180, 214)
+_PEARL_SHINE = QColor(255, 255, 255)
+_SPEAR_SHAFT = QColor(126, 100, 74)
+_SPEAR_TIP = QColor(198, 206, 214)
+_SCAV_BODY = QColor(58, 62, 50)
+_SCAV_MASK = QColor(232, 238, 232)
+_SCAV_EYE = QColor(24, 26, 22)
 
 
 def _pen(c, w, cap=True):
@@ -212,6 +223,14 @@ def _paint_place_icon(p, kind, r, atlas=None):
         p.drawEllipse(QPointF(bx, by - h * 0.09), w * 0.035, w * 0.035)
     elif kind == "lizard":
         _paint_lizard_icon(p, r)
+    elif kind == "squidcada":
+        _paint_squidcada_icon(p, r)
+    elif kind == "pearl":
+        _paint_pearl_icon(p, r)
+    elif kind == "spear":
+        _paint_spear_icon(p, r)
+    elif kind == "scavenger":
+        _paint_scavenger_icon(p, r)
     elif kind == "clear":
         # 禁止圈 ⊘
         d = min(w, h) * 0.90
@@ -221,6 +240,86 @@ def _paint_place_icon(p, kind, r, atlas=None):
         a, rr = math.radians(45), d / 2
         p.drawLine(QPointF(cx - math.cos(a) * rr, cy + math.sin(a) * rr),
                    QPointF(cx + math.cos(a) * rr, cy - math.sin(a) * rr))
+
+
+def _paint_squidcada_icon(p, r):
+    """蝉乌贼：白色小虫 + 双侧薄翅 + 淡蓝背甲 + 亮眼。"""
+    cx, cy = r.center().x(), r.center().y()
+    w, h = r.width(), r.height()
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(_SQUID_WING)
+    for sgn in (-1, 1):
+        p.drawPolygon(QPolygonF([QPointF(cx + sgn * w * 0.04, cy + h * 0.06),
+                                 QPointF(cx + sgn * w * 0.50, cy - h * 0.34),
+                                 QPointF(cx + sgn * w * 0.42, cy + h * 0.12)]))
+    p.setBrush(_SQUID_BODY)
+    body = QRectF(0, 0, w * 0.46, h * 0.64)
+    body.moveCenter(QPointF(cx, cy))
+    p.drawEllipse(body)
+    p.setBrush(_SQUID_SHELL)
+    shell = QRectF(0, 0, w * 0.36, h * 0.28)
+    shell.moveCenter(QPointF(cx, cy - h * 0.18))
+    p.drawEllipse(shell)
+    p.setBrush(_BAT_EYE)
+    p.drawEllipse(QPointF(cx + w * 0.03, cy + h * 0.02), w * 0.065, w * 0.065)
+
+
+def _paint_pearl_icon(p, r):
+    """珍珠：带渐变与高光的圆珠。"""
+    cx, cy = r.center().x(), r.center().y()
+    d = min(r.width(), r.height()) * 0.80
+    ball = QRectF(0, 0, d, d)
+    ball.moveCenter(QPointF(cx, cy))
+    grad = QLinearGradient(ball.topLeft(), ball.bottomRight())
+    grad.setColorAt(0.0, _PEARL_SHINE)
+    grad.setColorAt(0.45, _PEARL_BALL)
+    grad.setColorAt(1.0, _PEARL_EDGE)
+    p.setPen(_pen(_PEARL_EDGE, max(1.1, d * 0.09)))
+    p.setBrush(grad)
+    p.drawEllipse(ball)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(_PEARL_SHINE)
+    p.drawEllipse(QPointF(cx - d * 0.20, cy - d * 0.24), d * 0.15, d * 0.15)
+
+
+def _paint_spear_icon(p, r):
+    """矛：斜置木杆 + 金属尖 + 尾部配重。"""
+    cx, cy = r.center().x(), r.center().y()
+    w, h = r.width(), r.height()
+    dx, dy = w * 0.40, h * 0.40
+    tx, ty = cx + dx, cy - dy
+    p.setPen(_pen(_SPEAR_SHAFT, max(2.0, w * 0.14)))
+    p.drawLine(QPointF(cx - dx, cy + dy), QPointF(tx, ty))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(_SPEAR_TIP)
+    p.drawPolygon(QPolygonF([QPointF(tx + w * 0.14, ty - h * 0.14),
+                             QPointF(tx + w * 0.20, ty + h * 0.04),
+                             QPointF(tx - w * 0.06, ty + h * 0.06)]))
+    p.setBrush(_SPEAR_SHAFT)
+    p.drawEllipse(QPointF(cx - dx, cy + dy), w * 0.05, w * 0.05)
+
+
+def _paint_scavenger_icon(p, r):
+    """拾荒者：两足长臂剪影 + 白色面具头。"""
+    cx, cy = r.center().x(), r.center().y()
+    w, h = r.width(), r.height()
+    p.setPen(_pen(_SCAV_BODY, max(2.0, w * 0.14), cap=False))
+    p.drawLine(QPointF(cx - w * 0.06, cy + h * 0.10), QPointF(cx - w * 0.24, cy + h * 0.44))
+    p.drawLine(QPointF(cx + w * 0.06, cy + h * 0.10), QPointF(cx + w * 0.24, cy + h * 0.44))
+    p.drawLine(QPointF(cx, cy - h * 0.04), QPointF(cx - w * 0.32, cy + h * 0.24))
+    p.drawLine(QPointF(cx, cy - h * 0.04), QPointF(cx + w * 0.32, cy + h * 0.24))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(_SCAV_BODY)
+    torso = QRectF(0, 0, w * 0.36, h * 0.48)
+    torso.moveCenter(QPointF(cx, cy + h * 0.04))
+    p.drawEllipse(torso)
+    p.setBrush(_SCAV_MASK)
+    head = QRectF(0, 0, w * 0.38, h * 0.34)
+    head.moveCenter(QPointF(cx, cy - h * 0.26))
+    p.drawEllipse(head)
+    p.setBrush(_SCAV_EYE)
+    p.drawEllipse(QPointF(cx - w * 0.06, cy - h * 0.26), w * 0.04, w * 0.04)
+    p.drawEllipse(QPointF(cx + w * 0.06, cy - h * 0.26), w * 0.04, w * 0.04)
 
 
 def _paint_lizard_icon(p, r):
@@ -407,6 +506,10 @@ class TabBar(QWidget):
                        ("slimemold", t("tip_slimemold"), self._place_slimemold),
                        ("batfly", t("tip_batfly"), self._place_batfly),
                        ("lizard", t("tip_lizard"), self._place_lizard),
+                       ("squidcada", t("tip_squidcada"), self._place_squidcada),
+                       ("scavenger", t("tip_scavenger"), self._place_scavenger),
+                       ("pearl", t("tip_pearl"), self._place_pearl),
+                       ("spear", t("tip_spear"), self._place_spear),
                        ("clear", t("tip_clear"), self._clear_all)]
         for i, (kind, tip, cb) in enumerate(place_items):
             ib = QPushButton()
@@ -566,18 +669,12 @@ class TabBar(QWidget):
             self.toggle()
 
     def _place_fruit(self):
-        if self.pet.can_place_fruit():
-            self.pet.enter_place_fruit_mode()
-            self._collapse()
-        else:
-            self._toast(t("toast_max_fruit"))
+        self.pet.enter_place_fruit_mode()
+        self._collapse()
 
     def _place_stone(self):
-        if self.pet.can_place_stone():
-            self.pet.enter_place_stone_mode()
-            self._collapse()
-        else:
-            self._toast(t("toast_max_stone"))
+        self.pet.enter_place_stone_mode()
+        self._collapse()
 
     def _place_lamp(self):
         # 单灯替换旧灯，清除走"清除物体"
@@ -585,43 +682,46 @@ class TabBar(QWidget):
         self._collapse()
 
     def _place_slimemold(self):
-        if self.pet.can_place_slimemold():
-            self.pet.enter_place_slimemold_mode()
-            self._collapse()
-        else:
-            self._toast(t("toast_max_slimemold"))
+        self.pet.enter_place_slimemold_mode()
+        self._collapse()
 
     def _place_batfly(self):
-        if self.pet.can_place_batfly():
-            self.pet.enter_place_batfly_mode()
-            self._collapse()
-        else:
-            self._toast(t("toast_max_batfly"))
+        self.pet.enter_place_batfly_mode()
+        self._collapse()
 
     def _place_lizard(self):
-        if self.pet.can_place_lizard():
-            self.pet.enter_place_lizard_mode()
-            self._collapse()
-        else:
-            self._toast(t("toast_max_lizard"))
+        self.pet.enter_place_lizard_mode()
+        self._collapse()
 
     def _place_vpole(self):
-        if self.pet.can_place_pole("vertical"):
-            self.pet.enter_place_vpole_mode()
-            self._collapse()
-        else:
-            self._toast(t("toast_max_vpole"))
+        self.pet.enter_place_vpole_mode()
+        self._collapse()
 
     def _place_hpole(self):
-        if self.pet.can_place_pole("horizontal"):
-            self.pet.enter_place_hpole_mode()
-            self._collapse()
-        else:
-            self._toast(t("toast_max_hpole"))
+        self.pet.enter_place_hpole_mode()
+        self._collapse()
+
+    def _place_squidcada(self):
+        self.pet.enter_place_squidcada_mode()
+        self._collapse()
+
+    def _place_pearl(self):
+        self.pet.enter_place_pearl_mode()
+        self._collapse()
+
+    def _place_spear(self):
+        self.pet.enter_place_spear_mode()
+        self._collapse()
+
+    def _place_scavenger(self):
+        self.pet.enter_place_scavenger_mode()
+        self._collapse()
 
     def _clear_all(self):
         if (self.pet.fruits or self.pet.stones or self.pet.slimemolds
                 or self.pet.batflies or self.pet.lizards or self.pet.poles
+                or self.pet.squidcadas or self.pet.pearls or self.pet.spears
+                or self.pet.scavengers
                 or self.pet.lamp is not None):
             self.pet.clear_all_items()
         else:

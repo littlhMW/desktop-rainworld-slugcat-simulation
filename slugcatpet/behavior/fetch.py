@@ -14,6 +14,9 @@ EAT_HOLD_POSE = 0.25
 EAT_CHOMP_POSE = 1.0
 BITE_HEAD_NUDGE = 2.0
 CARRY_FALL_TIMEOUT = 200
+DELIVER_REACH = 30.0          # 送蝉乌贼给蜥蜴的交接距离
+DELIVER_TIMEOUT = 900         # 送不出去就放弃（防呆）
+DELIVER_GAP = 40.0            # 走到离蜥蜴这么近就不再逼近
 
 _EDIBLE_STATES = ("free", "hanging")
 
@@ -100,6 +103,7 @@ class FruitFetcher:
         self._executor = None
         self._giveup_pending = False
         self._goal = None
+        self._deliver = None          # 驯服交付目标（Lizard）
         self._snatch = TongueSnatch(win)
 
     def _chunk0(self):
@@ -209,6 +213,14 @@ class FruitFetcher:
         if f is None:
             self.phase = "select"
             return False
+        # 蝉乌贼：叼去喂给还没驯服的蜥蜴（原版送礼驯服），没有人要则当食物吃掉
+        if getattr(f, "is_tame_food", False):
+            lz = self.win.nearest_untamed_lizard(self.body.chunk0.x)
+            if lz is not None:
+                self._deliver = lz
+                self.phase = "deliver"
+                self.timer = 0
+                return False
         # 悬空卡死兜底超时
         if self.timer > CARRY_FALL_TIMEOUT and f.stalk is not None:
             f.stalk = None
@@ -218,6 +230,31 @@ class FruitFetcher:
             self.eat_counter = 0
             self._eat_approaching = True
             self._bit_this_cycle = False
+        return False
+
+    def _phase_deliver(self):
+        """把礼物送到蜥蜴嘴边：走到它旁边，够近即交出。"""
+        f = self.body.carried_fruit
+        lz = self._deliver
+        if (f is None or lz is None or lz.tamed
+                or lz.state not in _EDIBLE_STATES or self.timer > DELIVER_TIMEOUT):
+            self._deliver = None
+            self.phase = "select"
+            return False
+        hx, hy = lz.x, lz.y - lz.body_rad * 1.2      # 蜥蜴头侧
+        c0 = self.body.chunk0
+        d = math.hypot(hx - c0.x, hy - (c0.y - 8.0))
+        self.win.gfx.look_at = (hx, hy)
+        if d <= DELIVER_REACH:
+            self._deliver = None
+            if self.win.deliver_gift(self.win, lz):
+                return True
+            self.phase = "select"
+            return False
+        if d > DELIVER_GAP:
+            self.body.walk_to(hx)
+        else:
+            self.body.stop_walk()
         return False
 
     def _phase_eat(self):

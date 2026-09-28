@@ -13,14 +13,22 @@ from ..core.gfxmath import _hsl2rgb
 from ..control.hotkey import HK_PLACE_ESC, VK_ESCAPE
 from .fruit import PLACE_HANGING_FRAC, make_fruit
 from ..rendering.graphics import _ang_from_up
-from ..rendering.primitives import blit, draw_fruit, draw_rope, draw_stone, draw_stone_trail
+from ..rendering.primitives import (blit, draw_fruit, draw_rope, draw_stone,
+                                    draw_stone_trail, draw_pearl, draw_spear,
+                                    draw_scavenger, draw_scavenger_spear)
 from .enums import ItemState
 from .slimemold import (SlimeMold, _dirvec as _slime_dir, _lerp_map as _slime_lerp_map,
                         TENDRIL_JAG_K)
 from .stone import Stone
 from .batfly import BatFly
-from .lizard import BREEDS, Lizard
+from .lizard import BREEDS, Lizard, _ang_lerp
 from .lizard_gfx import draw_lizard
+from .squidcada import Squidcada
+from .squidcada_gfx import draw_squidcada
+from .pearl import Pearl
+from .spear import Spear, LEN as SPEAR_DRAW_LEN, HALF_W as SPEAR_HALF_W
+from .scavenger import (Scavenger, BODY_RAD as SCAV_BODY_RAD,
+                        STAND_H as SCAV_STAND_H)
 from .pole import POLE_RAD, MIN_LENGTH as POLE_MIN_LENGTH, TOP_MARGIN as POLE_TOP_MARGIN
 from ..behavior import tuning
 
@@ -82,6 +90,16 @@ BATFLY_EYE_DX = 0.92
 BATFLY_EYE_DY = 1.35
 SHOVE_REACH = 22.0
 SHOVE_COOLDOWN = 12
+
+# 蝉乌贼 / 珍珠 / 矛 / 拾荒者
+SQUIDCADA_GRAB_PAD = 10.0
+PEARL_GRAB_PAD = 6.0
+SPEAR_GRAB_PAD = 8.0
+SCAVENGER_GRAB_PAD = 14.0
+SPEAR_HIT_SPEED = 7.0            # 飞矛扎猫的最低速度
+SPEAR_HIT_PAD = 6.0
+SPEAR_THROW_SPEED = 11.0         # 拾荒者掷矛初速
+SPEAR_THROW_LIFT = 1.5           # 掷出时的上抬
 # 翅本地多边形（锚在本体，向 -y 伸展）
 _BATFLY_WING_PTS = [
     (0.0, 0.0),
@@ -147,11 +165,7 @@ def _dist_to_path(pts, x, y):
 
 
 class ItemInteractionMixin:
-    MAX_FRUITS = 3
-    MAX_STONES = 3
-    MAX_SLIMEMOLDS = 3
-    MAX_BATFLIES = 3
-    MAX_POLES = 2              # 每种各上限
+    # 个数上限已全部取消，can_place_* 恒真（保留接口供 UI 调用）
     _FRUIT_GRAB_PAD = 7.0
     _FRUIT_FLING_CAP = 14.0
     _STONE_GRAB_PAD = 7.0
@@ -160,12 +174,13 @@ class ItemInteractionMixin:
     _SLIME_FLING_CAP = 14.0
     _BATFLY_GRAB_PAD = 7.0
     _BATFLY_FLING_CAP = 14.0
-    MAX_LIZARDS = 2
     _LIZARD_GRAB_PAD = 10.0
     _LIZARD_FLING_CAP = 14.0
+    _PEARL_FLING_CAP = 16.0
+    _SPEAR_FLING_CAP = 18.0
 
     def can_place_fruit(self) -> bool:
-        return len(self.fruits) < self.MAX_FRUITS
+        return True
 
     def place_fruit(self, lx, ly):
         if not self.can_place_fruit():
@@ -254,7 +269,7 @@ class ItemInteractionMixin:
         return True
 
     def can_place_stone(self) -> bool:
-        return len(self.stones) < self.MAX_STONES
+        return True
 
     def place_stone(self, lx, ly):
         if not self.can_place_stone():
@@ -390,7 +405,7 @@ class ItemInteractionMixin:
 
     # ── 杆子 ──
     def can_place_pole(self, kind) -> bool:
-        return sum(1 for pl in self.poles if pl.kind == kind) < self.MAX_POLES
+        return True
 
     def place_pole(self, lx, ly, place_kind):
         from .pole import Pole, VERTICAL, HORIZONTAL, MIN_LENGTH, TOP_MARGIN
@@ -432,6 +447,10 @@ class ItemInteractionMixin:
         self.clear_slimemolds()
         self.clear_batflies()
         self.clear_lizards()
+        self.clear_squidcadas()
+        self.clear_pearls()
+        self.clear_spears()
+        self.clear_scavengers()
         self.clear_poles()
         self.clear_lamp()
 
@@ -589,7 +608,7 @@ class ItemInteractionMixin:
 
     # ── 黏菌 ──
     def can_place_slimemold(self) -> bool:
-        return len(self.slimemolds) < self.MAX_SLIMEMOLDS
+        return True
 
     def _slime_edge_anchor(self, lx, ly):
         """点击点 → 最近边锚点+本体位。"""
@@ -834,7 +853,7 @@ class ItemInteractionMixin:
 
     # ── 蝙蝠 ──
     def can_place_batfly(self) -> bool:
-        return len(self.batflies) < self.MAX_BATFLIES
+        return True
 
     def place_batfly(self, lx, ly):
         if not self.can_place_batfly():
@@ -1072,7 +1091,7 @@ class ItemInteractionMixin:
 
     # ── 蜥蜴 ──
     def can_place_lizard(self) -> bool:
-        return len(self.lizards) < self.MAX_LIZARDS
+        return True
 
     def place_lizard(self, lx, ly):
         """放下一只蜥蜴；品种按放置次序轮换，保证九种都见得到。"""
@@ -1329,6 +1348,22 @@ class ItemInteractionMixin:
             self._draw_lizard_hint(p)
             return
 
+        if self._place_kind == "squidcada":
+            self._draw_squidcada_hint(p)
+            return
+
+        if self._place_kind == "pearl":
+            self._draw_pearl_hint(p)
+            return
+
+        if self._place_kind == "spear":
+            self._draw_spear_hint(p)
+            return
+
+        if self._place_kind == "scavenger":
+            self._draw_scavenger_hint(p)
+            return
+
         stone = (self._place_kind == "stone")
         p.save()
         if not stone and not self.zerog_on:
@@ -1349,3 +1384,577 @@ class ItemInteractionMixin:
                     draw_fruit(p, self.atlas, cx, cy, 0.0, 3,
                                flesh_color=FRUIT_FLESH, outline_color=FRUIT_OUTLINE)
         p.restore()
+
+    # ── 蝉乌贼（Squidcada）：飞行可抓，力竭落地后才能被叼走 ──
+    def can_place_squidcada(self) -> bool:
+        return True
+
+    def place_squidcada(self, lx, ly):
+        sc = Squidcada(lx, ly, seed=self._squidcada_seed)
+        self._squidcada_seed += 1
+        self.squidcadas.append(sc)
+        self.world_version += 1
+        self._exit_place_mode()
+        self.update()
+        return sc
+
+    def clear_squidcadas(self):
+        for sc in self.squidcadas:
+            for pet in self.pets:
+                if sc is pet.body.carried_fruit:      # 复用果子叼持槽
+                    pet.body.release_fruit()
+            sc.state = ItemState.EATEN
+        if self.squidcadas:
+            self.squidcadas = []
+            self.world_version += 1
+        self._dragged_squidcada = None
+        self._squidcada_preview = None
+
+    def enter_place_squidcada_mode(self):
+        self._place_mode = True
+        self._place_kind = "squidcada"
+        self._begin_place_capture()
+        return True
+
+    def _squidcada_at(self, pos):
+        if pos is None:
+            return None
+        cx, cy = pos
+        best, bestd = None, 1e9
+        for sc in self.squidcadas:
+            if sc.state not in (ItemState.FREE, ItemState.CARRIED):
+                continue
+            d = math.hypot(cx - sc.x, cy - sc.y)
+            if d <= sc.rad + SQUIDCADA_GRAB_PAD and d < bestd:
+                best, bestd = sc, d
+        return best
+
+    def _begin_squidcada_drag(self, pos) -> bool:
+        sc = self._squidcada_at(pos)
+        if sc is None:
+            return False
+        if sc.state == ItemState.CARRIED:
+            for pet in self.pets:
+                if sc is pet.body.carried_fruit:
+                    pet.body.release_fruit()
+        sc.held_by_hand = None
+        sc.state = ItemState.MOUSE
+        sc.vx = sc.vy = 0.0
+        sc.last_x, sc.last_y = pos
+        sc.x, sc.y = pos
+        self._dragged_squidcada = sc
+        return True
+
+    def _step_squidcada_drag(self):
+        sc = self._dragged_squidcada
+        if sc is None:
+            return
+        if sc.state != ItemState.MOUSE:
+            self._dragged_squidcada = None
+            return
+        cur = self.cursor_logical()
+        if cur is None:
+            return
+        sc.last_x, sc.last_y = sc.x, sc.y
+        sc.x, sc.y = cur
+        sc.vx = sc.vy = 0.0
+
+    def _end_squidcada_drag(self) -> bool:
+        sc = self._dragged_squidcada
+        if sc is None:
+            return False
+        if sc.state == ItemState.MOUSE:
+            sc.state = ItemState.FREE
+        self._dragged_squidcada = None
+        return True
+
+    def _tick_squidcadas(self):
+        self._step_squidcada_drag()
+        if not self.squidcadas:
+            return
+        threats = [(pet, pet.body.chunk0.x, pet.body.chunk0.y) for pet in self.pets]
+        for sc in self.squidcadas:
+            sc._impact_cb = self._shake_impact
+            sc.step(self._WL, self._HL, threats=threats)
+        self.squidcadas = [sc for sc in self.squidcadas if sc.state != ItemState.EATEN]
+
+    def _draw_squidcadas(self, p):
+        ts = self._ts
+        for sc in self.squidcadas:
+            if sc.state in (ItemState.EATEN, ItemState.GONE):
+                continue
+            draw_squidcada(p, self.atlas, sc, ts)
+
+    def _squidcada_hint_object(self):
+        seed = self._squidcada_seed
+        got = getattr(self, "_squidcada_preview", None)
+        if got is None or got[0] != seed:
+            got = (seed, Squidcada(0.0, 0.0, seed=seed))
+            self._squidcada_preview = got
+        return got[1]
+
+    def _draw_squidcada_hint(self, p):
+        cur = self.cursor_logical()
+        if cur is None:
+            return
+        cx, cy = cur
+        if not (0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL):
+            return
+        sc = self._squidcada_hint_object()
+        sc.x = sc.last_x = cx
+        sc.y = sc.last_y = cy
+        sc.vx = sc.vy = 0.0
+        sc.dir_x, sc.dir_y = 1.0, 0.0
+        sc.rest = 0
+        p.save()
+        p.setOpacity(0.5)
+        draw_squidcada(p, self.atlas, sc, 1.0)
+        p.restore()
+
+    # ── 珍珠（Pearl）：高弹小球，可拖可掷 ──
+    def can_place_pearl(self) -> bool:
+        return True
+
+    def place_pearl(self, lx, ly):
+        pr = Pearl(lx, ly, seed=self._pearl_seed)
+        self._pearl_seed += 1
+        self.pearls.append(pr)
+        self.world_version += 1
+        self._exit_place_mode()
+        self.update()
+        return pr
+
+    def clear_pearls(self):
+        for pr in self.pearls:
+            if pr.state == ItemState.CARRIED and pr.held_by_hand is not None:
+                for pet in self.pets:
+                    if pr is pet.body.carried_fruit:
+                        pet.body.release_fruit()
+            pr.state = ItemState.GONE
+        if self.pearls:
+            self.pearls = []
+            self.world_version += 1
+        self._dragged_pearl = None
+        self._pearl_drag_last = None
+
+    def enter_place_pearl_mode(self):
+        self._place_mode = True
+        self._place_kind = "pearl"
+        self._begin_place_capture()
+        return True
+
+    def _pearl_at(self, pos):
+        if pos is None:
+            return None
+        cx, cy = pos
+        best, bestd = None, 1e9
+        for pr in self.pearls:
+            if pr.state != ItemState.FREE:
+                continue
+            d = math.hypot(cx - pr.x, cy - pr.y)
+            if d <= pr.rad + PEARL_GRAB_PAD and d < bestd:
+                best, bestd = pr, d
+        return best
+
+    def _begin_pearl_drag(self, pos) -> bool:
+        pr = self._pearl_at(pos)
+        if pr is None:
+            return False
+        pr.state = ItemState.MOUSE
+        pr.vx = pr.vy = 0.0
+        pr.last_x, pr.last_y = pos
+        pr.x, pr.y = pos
+        self._dragged_pearl = pr
+        self._pearl_drag_last = tuple(pos)
+        return True
+
+    def _step_pearl_drag(self):
+        pr = self._dragged_pearl
+        if pr is None:
+            return
+        if pr.state != ItemState.MOUSE:
+            self._dragged_pearl = None
+            self._pearl_drag_last = None
+            return
+        cur = self.cursor_logical()
+        if cur is None:
+            return
+        pr.last_x, pr.last_y = pr.x, pr.y
+        if self._pearl_drag_last is not None:
+            pr.vx = cur[0] - self._pearl_drag_last[0]
+            pr.vy = cur[1] - self._pearl_drag_last[1]
+        pr.x, pr.y = cur
+        self._pearl_drag_last = tuple(cur)
+
+    def _end_pearl_drag(self) -> bool:
+        pr = self._dragged_pearl
+        if pr is None:
+            return False
+        sp = math.hypot(pr.vx, pr.vy)
+        if sp > self._PEARL_FLING_CAP:
+            k = self._PEARL_FLING_CAP / sp
+            pr.vx *= k
+            pr.vy *= k
+        if pr.state == ItemState.MOUSE:
+            pr.state = ItemState.FREE
+            pr.spin = clampf(pr.vx * 4.0, -60.0, 60.0) * lerp(0.05, 1.0, pr.room_gravity)
+        self._dragged_pearl = None
+        self._pearl_drag_last = None
+        return True
+
+    def _tick_pearls(self):
+        self._step_pearl_drag()
+        if self.pearls:
+            for pr in self.pearls:
+                pr._impact_cb = self._shake_impact
+                pr.step(self._WL, self._HL)
+            self.pearls = [pr for pr in self.pearls if pr.state != ItemState.GONE]
+
+    def _draw_pearls(self, p):
+        ts = self._ts
+        for pr in self.pearls:
+            if pr.state == ItemState.GONE:
+                continue
+            x = pr.last_x + (pr.x - pr.last_x) * ts
+            y = pr.last_y + (pr.y - pr.last_y) * ts
+            rot = pr.last_rotation + (pr.rotation_deg - pr.last_rotation) * ts
+            draw_pearl(p, x, y, rot, pr.tint, pr.rad)
+
+    def _draw_pearl_hint(self, p):
+        cur = self.cursor_logical()
+        if cur is None:
+            return
+        cx, cy = cur
+        if not (0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL):
+            return
+        pr = self._pearl_hint_object()
+        p.save()
+        p.setOpacity(0.5)
+        draw_pearl(p, cx, cy, 0.0, pr.tint, pr.rad)
+        p.restore()
+
+    def _pearl_hint_object(self):
+        seed = self._pearl_seed
+        got = getattr(self, "_pearl_preview", None)
+        if got is None or got[0] != seed:
+            got = (seed, Pearl(0.0, 0.0, seed=seed))
+            self._pearl_preview = got
+        return got[1]
+
+    # ── 矛（Spear）：落地即插入立住；掷出可插墙地 ──
+    def can_place_spear(self) -> bool:
+        return True
+
+    def place_spear(self, lx, ly):
+        sp = Spear(lx, ly, seed=self._spear_seed)
+        self._spear_seed += 1
+        self.spears.append(sp)
+        self.world_version += 1
+        self._exit_place_mode()
+        self.update()
+        return sp
+
+    def clear_spears(self):
+        for sp in self.spears:
+            for sc in self.scavengers:
+                if sp is sc.spear:
+                    sc.spear = None
+            for pet in self.pets:
+                if sp is getattr(pet.body, "carried_stone", None):
+                    rs = getattr(pet.body, "release_stone", None)
+                    if rs is not None:
+                        rs()
+            sp.state = ItemState.GONE
+        if self.spears:
+            self.spears = []
+            self.world_version += 1
+        self._dragged_spear = None
+        self._spear_drag_last = None
+
+    def enter_place_spear_mode(self):
+        self._place_mode = True
+        self._place_kind = "spear"
+        self._begin_place_capture()
+        return True
+
+    def _spear_at(self, pos):
+        if pos is None:
+            return None
+        cx, cy = pos
+        best, bestd = None, 1e9
+        for sp in self.spears:
+            if sp.state != ItemState.FREE:
+                continue
+            d = _dist_to_path([sp.butt(), sp.tip()], cx, cy) - SPEAR_HALF_W
+            if d <= SPEAR_GRAB_PAD and d < bestd:
+                best, bestd = sp, d
+        return best
+
+    def _begin_spear_drag(self, pos) -> bool:
+        sp = self._spear_at(pos)
+        if sp is None:
+            return False
+        sp.unstuck()
+        sp.state = ItemState.MOUSE
+        sp.last_x, sp.last_y = pos
+        sp.x, sp.y = pos
+        self._dragged_spear = sp
+        self._spear_drag_last = tuple(pos)
+        return True
+
+    def _step_spear_drag(self):
+        sp = self._dragged_spear
+        if sp is None:
+            return
+        if sp.state != ItemState.MOUSE:
+            self._dragged_spear = None
+            self._spear_drag_last = None
+            return
+        cur = self.cursor_logical()
+        if cur is None:
+            return
+        sp.last_x, sp.last_y = sp.x, sp.y
+        if self._spear_drag_last is not None:
+            sp.vx = cur[0] - self._spear_drag_last[0]
+            sp.vy = cur[1] - self._spear_drag_last[1]
+        sp.last_angle = sp.angle_deg
+        if abs(sp.vx) + abs(sp.vy) > 0.5:
+            sp.angle_deg = math.degrees(math.atan2(sp.vx, -sp.vy))       # 杆顺运动方向
+        sp.x, sp.y = cur
+        self._spear_drag_last = tuple(cur)
+
+    def _end_spear_drag(self) -> bool:
+        sp = self._dragged_spear
+        if sp is None:
+            return False
+        speed = math.hypot(sp.vx, sp.vy)
+        if speed > self._SPEAR_FLING_CAP:
+            k = self._SPEAR_FLING_CAP / speed
+            sp.vx *= k
+            sp.vy *= k
+        if sp.state == ItemState.MOUSE:
+            sp.state = ItemState.FREE
+        self._dragged_spear = None
+        self._spear_drag_last = None
+        return True
+
+    def _step_spear_hit(self):
+        """飞矛扎到猫：眩晕 + 震动（同抛石）。"""
+        for pet in self.pets:
+            if pet.behavior is None or pet.behavior.blocks_interaction():
+                continue
+            b = pet.body
+            for sp in self.spears:
+                if sp.stuck or sp.state != ItemState.FREE:
+                    continue
+                if math.hypot(sp.vx, sp.vy) < SPEAR_HIT_SPEED:
+                    continue
+                for c in (b.chunk0, b.chunk1):
+                    if math.hypot(sp.x - c.x, sp.y - c.y) < sp.rad + c.rad + SPEAR_HIT_PAD:
+                        if pet.behavior.apply_stun(LIZARD_STUN_TICKS):
+                            self._shake[0] += 1.2 * (1.0 if sp.vx >= 0.0 else -1.0)
+                            self._shake[1] += 0.8
+                        sp.vx = sp.vy = 0.0
+                        break
+
+    def _tick_spears(self):
+        self._step_spear_drag()
+        if self.spears:
+            for sp in self.spears:
+                sp._impact_cb = self._shake_impact
+                sp.step(self._WL, self._HL)
+            self._step_spear_hit()
+            self.spears = [sp for sp in self.spears if sp.state != ItemState.GONE]
+
+    def _draw_spears(self, p):
+        ts = self._ts
+        for sp in self.spears:
+            x = sp.last_x + (sp.x - sp.last_x) * ts
+            y = sp.last_y + (sp.y - sp.last_y) * ts
+            ang = sp.stuck_angle if sp.stuck else _ang_lerp(sp.last_angle, sp.angle_deg, ts)
+            draw_spear(p, x, y, ang, length=SPEAR_DRAW_LEN)
+
+    def _draw_spear_hint(self, p):
+        cur = self.cursor_logical()
+        if cur is None:
+            return
+        cx, cy = cur
+        if not (0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL):
+            return
+        p.save()
+        p.setOpacity(0.5)
+        draw_spear(p, cx, cy, 90.0, length=SPEAR_DRAW_LEN)
+        p.restore()
+
+    # ── 拾荒者（Scavenger）：持矛巡走，见威胁瞄准投矛 ──
+    def can_place_scavenger(self) -> bool:
+        return True
+
+    def place_scavenger(self, lx, ly):
+        sc = Scavenger(lx, ly, seed=self._scavenger_seed, id=self._scavenger_seed)
+        self._scavenger_seed += 1
+        self.scavengers.append(sc)
+        self.world_version += 1
+        self._exit_place_mode()
+        self.update()
+        return sc
+
+    def clear_scavengers(self):
+        for sc in self.scavengers:
+            if sc.spear is not None and sc.spear not in self.spears:
+                sc.spear.state = ItemState.GONE
+            sc.die()
+        if self.scavengers:
+            self.scavengers = []
+            self.world_version += 1
+        self._dragged_scavenger = None
+        self._scavenger_preview = None
+
+    def enter_place_scavenger_mode(self):
+        self._place_mode = True
+        self._place_kind = "scavenger"
+        self._begin_place_capture()
+        return True
+
+    def _scavenger_at(self, pos):
+        if pos is None:
+            return None
+        cx, cy = pos
+        best, bestd = None, 1e9
+        for sc in self.scavengers:
+            if sc.state != ItemState.FREE:
+                continue
+            d = math.hypot(cx - sc.x, cy - (sc.y - SCAV_STAND_H * 0.5))
+            if d <= sc.rad + SCAVENGER_GRAB_PAD and d < bestd:
+                best, bestd = sc, d
+        return best
+
+    def _begin_scavenger_drag(self, pos) -> bool:
+        sc = self._scavenger_at(pos)
+        if sc is None:
+            return False
+        sc.grab(pos)
+        sc.last_x, sc.last_y = pos
+        sc.x, sc.y = pos
+        self._dragged_scavenger = sc
+        return True
+
+    def _step_scavenger_drag(self):
+        """手里的拾荒者由 Scavenger._step_held 跟随光标；这里只清失效引用。"""
+        sc = self._dragged_scavenger
+        if sc is not None and sc.state != ItemState.MOUSE:
+            self._dragged_scavenger = None
+
+    def _end_scavenger_drag(self) -> bool:
+        sc = self._dragged_scavenger
+        if sc is None:
+            return False
+        sc.release(0.0, 0.0)
+        self._dragged_scavenger = None
+        return True
+
+    def _step_scavenger_throws(self):
+        """拾荒者的投矛意图 → 生成一枝飞矛。"""
+        for sc in self.scavengers:
+            ev = sc.throw_event
+            if ev is None:
+                continue
+            sc.throw_event = None
+            hx, hy = sc.head_pos()
+            sp = Spear(hx, hy, seed=self._spear_seed,
+                       angle_deg=math.degrees(math.atan2(ev[0] - hx, -(ev[1] - hy))))
+            self._spear_seed += 1
+            dx, dy = ev[0] - hx, ev[1] - hy
+            d = math.hypot(dx, dy) or 1.0
+            sp.vx = dx / d * SPEAR_THROW_SPEED
+            sp.vy = dy / d * SPEAR_THROW_SPEED - SPEAR_THROW_LIFT
+            self.spears.append(sp)
+
+    def _tick_scavengers(self):
+        self._step_scavenger_drag()
+        if not self.scavengers:
+            return
+        cur = self.cursor_logical()
+        threats = [(lz, lz.x, lz.y) for lz in self.lizards if lz.state == ItemState.FREE]
+        threats += [(pet, pet.body.chunk0.x, pet.body.chunk0.y) for pet in self.pets]
+        for sc in self.scavengers:
+            sc.step(self._WL, self._HL, threats=threats, cursor=cur)
+        self._step_scavenger_throws()
+        self.scavengers = [sc for sc in self.scavengers if sc.state != ItemState.GONE]
+
+    def _draw_scavengers(self, p):
+        ts = self._ts
+        for sc in self.scavengers:
+            if sc.state == ItemState.GONE:
+                continue
+            draw_scavenger(p, sc, ts, sc.body_rgb, sc.head_rgb, sc.eye_rgb)
+            if sc.spear is not None:
+                draw_scavenger_spear(p, sc, ts)
+
+    def _scavenger_hint_object(self):
+        seed = self._scavenger_seed
+        got = getattr(self, "_scavenger_preview", None)
+        if got is None or got[0] != seed:
+            sc = Scavenger(0.0, 0.0, seed=seed)
+            sc.spear = None
+            got = (seed, sc)
+            self._scavenger_preview = got
+        return got[1]
+
+    def _draw_scavenger_hint(self, p):
+        cur = self.cursor_logical()
+        if cur is None:
+            return
+        cx, cy = cur
+        if not (0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL):
+            return
+        sc = self._scavenger_hint_object()
+        sc.x = sc.last_x = cx
+        sc.y = sc.last_y = min(cy, self._HL - SCAV_BODY_RAD)
+        p.save()
+        p.setOpacity(0.5)
+        draw_scavenger(p, sc, 1.0, sc.body_rgb, sc.head_rgb, sc.eye_rgb)
+        p.restore()
+
+    # ── 驯服：猫把蝉乌贼递给蜥蜴（原版 FriendTracker.GiftRecieved）──
+    def untamed_lizards(self):
+        """还没被驯服的蜥蜴。"""
+        return [lz for lz in self.lizards if not lz.tamed and lz.state == ItemState.FREE]
+
+    def nearest_untamed_lizard(self, x):
+        best, bd = None, 1e9
+        for lz in self.untamed_lizards():
+            d = abs(lz.x - x)
+            if d < bd:
+                best, bd = lz, d
+        return best
+
+    def tame_ready(self) -> bool:
+        """有未驯服蜥蜴 + 场上有够得到的蝉乌贼 → 允许猫为驯服而取物。"""
+        if not self.untamed_lizards():
+            return False
+        return any(sc.fetch_ready for sc in self.squidcadas)
+
+    def deliver_gift(self, pet, lz) -> bool:
+        """交接礼物：蝉乌贼转给蜥蜴，按原版结算 like（活体 0.6 / 尸体 1.2）。"""
+        item = pet.body.carried_fruit
+        if item is None or not getattr(item, "is_tame_food", False):
+            return False
+        alive = not getattr(item, "dead", False)
+        item.held_by_hand = None
+        item.stalk = None
+        item.state = ItemState.EATEN
+        pet.body.release_fruit()
+        lz.gift_received(alive, pet.id)
+        self._gift_fx(lz)
+        return True
+
+    def _gift_fx(self, lz):
+        """送礼反馈：一小圈彩色火花 + 轻微抖动。"""
+        rng = self._stun_rng
+        for i in range(10):
+            a = rng.uniform(0.0, math.tau)
+            sp = rng.uniform(1.2, 2.6)
+            self.sparks.append([lz.x, lz.y - 6.0, math.cos(a) * sp, math.sin(a) * sp - 0.6,
+                                18, 18, 1 if i % 2 else 0])
+        self._shake[1] -= 0.6

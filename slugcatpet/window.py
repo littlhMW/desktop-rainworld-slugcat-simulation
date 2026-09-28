@@ -152,6 +152,31 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._dragged_lizard = None
         self._lizard_preview = None
 
+        # 放蝉乌贼
+        self.squidcadas = []
+        self._squidcada_seed = 0
+        self._dragged_squidcada = None
+        self._squidcada_preview = None
+
+        # 放珍珠
+        self.pearls = []
+        self._pearl_seed = 0
+        self._dragged_pearl = None
+        self._pearl_drag_last = None
+        self._pearl_preview = None
+
+        # 放矛
+        self.spears = []
+        self._spear_seed = 0
+        self._dragged_spear = None
+        self._spear_drag_last = None
+
+        # 放拾荒者
+        self.scavengers = []
+        self._scavenger_seed = 0
+        self._dragged_scavenger = None
+        self._scavenger_preview = None
+
         # 放杆子
         self.poles = []
         self._pole_seed = 0
@@ -282,9 +307,19 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         over_batfly = self._batfly_at(cur) is not None
         dragging_lizard = self._dragged_lizard is not None
         over_lizard = self._lizard_at(cur) is not None
+        dragging_squid = self._dragged_squidcada is not None
+        over_squid = self._squidcada_at(cur) is not None
+        dragging_pearl = self._dragged_pearl is not None
+        over_pearl = self._pearl_at(cur) is not None
+        dragging_spear = self._dragged_spear is not None
+        over_spear = self._spear_at(cur) is not None
+        dragging_scav = self._dragged_scavenger is not None
+        over_scav = self._scavenger_at(cur) is not None
         want = not (active or dragging_fruit or over_fruit or dragging_stone or over_stone
                     or dragging_slime or over_slime or dragging_batfly or over_batfly
-                    or dragging_lizard or over_lizard or over_body)
+                    or dragging_lizard or over_lizard or dragging_squid or over_squid
+                    or dragging_pearl or over_pearl or dragging_spear or over_spear
+                    or dragging_scav or over_scav or over_body)
         if want != self._passthrough:
             self._passthrough = want
             if not self._hwnd:
@@ -330,11 +365,24 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             if (abs(lz.vx) + abs(lz.vy) > self._MOTION_STILL * 0.5
                     or lz.jaw > 0.03 or lz.bite_hold > 0):
                 return True
+        for sc in self.squidcadas:               # 悬停/扑翅一直在动
+            if abs(sc.vx) + abs(sc.vy) > self._MOTION_STILL * 0.5 or sc.rest <= 0:
+                return True
+        for pr in self.pearls:
+            if abs(pr.vx) + abs(pr.vy) > self._MOTION_STILL:
+                return True
+        for sp in self.spears:
+            if not sp.stuck and abs(sp.vx) + abs(sp.vy) > self._MOTION_STILL:
+                return True
+        for sc in self.scavengers:
+            if (abs(sc.vx) + abs(sc.vy) > self._MOTION_STILL * 0.5
+                    or sc.state != ItemState.FREE):
+                return True
         return False
 
     def edibles(self):
-        """可食物体聚合（果+黏菌+蝙蝠）。"""
-        return [*self.fruits, *self.slimemolds, *self.batflies]
+        """可食物体聚合（果+黏菌+蝙蝠+蝉乌贼）。"""
+        return [*self.fruits, *self.slimemolds, *self.batflies, *self.squidcadas]
 
     def _tick(self):
         now = self._clock.elapsed()
@@ -450,7 +498,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             if pet.tongue is not None:
                 pet.tongue.floor_y = HL
         for obj in (*self.fruits, *self.stones, *self.slimemolds, *self.batflies,
-                    *self.lizards):
+                    *self.lizards, *self.squidcadas, *self.pearls, *self.spears,
+                    *self.scavengers):
             _clamp_item_to_bounds(obj, WL, HL)
 
     def _do_tick(self):
@@ -483,6 +532,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._tick_slimemolds()
         self._tick_batflies()
         self._tick_lizards()
+        self._tick_squidcadas()
+        self._tick_pearls()
+        self._tick_spears()
+        self._tick_scavengers()
         self._water_splash_detect()   # 须在物体积分后
 
         self._collide_objects()
@@ -521,6 +574,14 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             b.room_gravity = rg
         for lz in self.lizards:
             lz.room_gravity = rg
+        for sc in self.squidcadas:
+            sc.room_gravity = rg
+        for pr in self.pearls:
+            pr.room_gravity = rg
+        for sp in self.spears:
+            sp.room_gravity = rg
+        for sc in self.scavengers:
+            sc.room_gravity = rg
 
     def set_water(self, on):
         """开/关水。"""
@@ -555,7 +616,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             self.water_y = None
             self.bubbles = []
             for o in (*self.fruits, *self.stones, *self.slimemolds, *self.batflies,
-                      *self.lizards):
+                      *self.lizards, *self.squidcadas, *self.pearls, *self.spears,
+                      *self.scavengers):
                 o.water_y = None
             for pet in self.pets:
                 pet.body.water_surface = None
@@ -569,7 +631,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 surf.drain_affect(0.0, self._WL, tuning.WATER_FLOW)
         surf.step()
         for o in (*self.fruits, *self.stones, *self.slimemolds, *self.batflies,
-                  *self.lizards):
+                  *self.lizards, *self.squidcadas, *self.pearls, *self.spears,
+                  *self.scavengers):
             o.water_y = surf.level_at(o.x)
         for pet in self.pets:
             pet.body.water_surface = surf
@@ -600,6 +663,18 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         for lz in self.lizards:
             if lz.state == ItemState.FREE:
                 objs.append(lz)
+        for sc in self.squidcadas:
+            if sc.state == ItemState.FREE:
+                objs.append(sc)
+        for pr in self.pearls:
+            if pr.state == ItemState.FREE:
+                objs.append(pr)
+        for sp in self.spears:
+            if sp.state == ItemState.FREE and not sp.stuck:
+                objs.append(sp)
+        for sc in self.scavengers:
+            if sc.state == ItemState.FREE:
+                objs.append(sc)
         for o in objs:
             lvl = surf.level_at(o.x)
             vy = o.vy
@@ -695,7 +770,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
     def _collide_objects(self):
         """物体间通用碰撞互推。"""
         chunkphys.collide_objects([*(pet.body for pet in self.pets),
-                                   *self.fruits, *self.stones, *self.slimemolds])
+                                   *self.fruits, *self.stones, *self.slimemolds,
+                                   *self.pearls])
 
     # ── 按猫杀死编排 ──
     def _any_kill_dialog(self):
@@ -905,6 +981,22 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             for s_ in lz.seg:
                 put(s_.x - pr, s_.y - pr, s_.lx - pr, s_.ly - pr)
                 put(s_.x + pr, s_.y + pr, s_.lx + pr, s_.ly + pr)
+        for sc in self.squidcadas:
+            pr_ = 40.0                       # 翅展 pad
+            put(sc.x - pr_, sc.y - pr_, sc.last_x - pr_, sc.last_y - pr_)
+            put(sc.x + pr_, sc.y + pr_, sc.last_x + pr_, sc.last_y + pr_)
+        for pr in self.pearls:
+            r = pr.rad + 6.0
+            put(pr.x - r, pr.y - r, pr.last_x - r, pr.last_y - r)
+            put(pr.x + r, pr.y + r, pr.last_x + r, pr.last_y + r)
+        for sp in self.spears:
+            for px, py in (sp.tip(), sp.butt()):
+                xs.append(px); ys.append(py)
+            xs.append(sp.last_x); ys.append(sp.last_y)
+        for sc in self.scavengers:
+            gr = sc.bounding_pad()
+            put(sc.x - gr, sc.y - gr, sc.last_x - gr, sc.last_y - gr)
+            put(sc.x + gr, sc.y + gr, sc.last_x + gr, sc.last_y + gr)
         for pl in self.poles:
             xs.append(pl.ax); xs.append(pl.bx)
             ys.append(pl.ay); ys.append(pl.by)
@@ -1010,6 +1102,14 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 self._draw_batflies(p)
             if self.lizards:
                 self._draw_lizards(p)
+            if self.pearls:
+                self._draw_pearls(p)
+            if self.spears:
+                self._draw_spears(p)
+            if self.squidcadas:
+                self._draw_squidcadas(p)
+            if self.scavengers:
+                self._draw_scavengers(p)
 
             if self.water_surface is not None:
                 self._draw_water(p)
@@ -1044,6 +1144,14 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                     self.place_batfly(lx, ly)
                 elif self._place_kind == "lizard":
                     self.place_lizard(lx, ly)
+                elif self._place_kind == "squidcada":
+                    self.place_squidcada(lx, ly)
+                elif self._place_kind == "pearl":
+                    self.place_pearl(lx, ly)
+                elif self._place_kind == "spear":
+                    self.place_spear(lx, ly)
+                elif self._place_kind == "scavenger":
+                    self.place_scavenger(lx, ly)
                 else:
                     self.place_fruit(lx, ly)
             elif e.button() == Qt.MouseButton.RightButton:
@@ -1075,10 +1183,14 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             if not grabbed:
                 # 蜥蜴体型最大，抓取优先级最高
                 if not self._begin_lizard_drag(pos):
-                    if not self._begin_batfly_drag(pos):
-                        if not self._begin_fruit_drag(pos):
-                            if not self._begin_stone_drag(pos):
-                                self._begin_slimemold_drag(pos)
+                    if not self._begin_scavenger_drag(pos):
+                        if not self._begin_squidcada_drag(pos):
+                            if not self._begin_batfly_drag(pos):
+                                if not self._begin_pearl_drag(pos):
+                                    if not self._begin_spear_drag(pos):
+                                        if not self._begin_fruit_drag(pos):
+                                            if not self._begin_stone_drag(pos):
+                                                self._begin_slimemold_drag(pos)
 
     def keyPressEvent(self, e):
         if self._place_mode and e.key() == Qt.Key.Key_Escape:
@@ -1098,3 +1210,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             self._end_slimemold_drag()
             self._end_batfly_drag()
             self._end_lizard_drag()
+            self._end_squidcada_drag()
+            self._end_pearl_drag()
+            self._end_spear_drag()
+            self._end_scavenger_drag()
