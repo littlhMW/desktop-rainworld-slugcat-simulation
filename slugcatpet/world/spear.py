@@ -42,7 +42,8 @@ class Spear:
                  "state", "angle_deg", "last_angle", "spin", "spinning", "stuck", "stuck_angle",
                  "_id", "_rng", "_contact_floor", "_contact_ceil", "_contact_x", "_impact_cb",
                  "_thrown", "_throw_dir", "_exit_spd", "_throw_x", "_throw_y",
-                 "collide_with_objects", "held_by", "embedded", "stuck_to", "_still")
+                 "collide_with_objects", "held_by", "embedded", "stuck_to", "_still",
+                 "thrower", "no_self_t")
 
     def __init__(self, x: float, y: float, seed: int = 0, angle_deg: float = 90.0):
         self.x = self.last_x = float(x)
@@ -72,6 +73,8 @@ class Spear:
         self._exit_spd = 0.0
         self._throw_x = self._throw_y = 0.0
         self.collide_with_objects = True
+        self.thrower = None            # 谁扔的（前 no_self_t 帧不插自己）
+        self.no_self_t = 0
         self.held_by = None            # 拾荒者手上
         self.stuck_to = None           # 插在生物身上的 (obj, dx, dy)；由 items 层维护
 
@@ -144,6 +147,8 @@ class Spear:
             return
         self.last_x, self.last_y = self.x, self.y
         self.last_angle = self.angle_deg
+        if self.no_self_t > 0:
+            self.no_self_t -= 1
         if self._thrown:                            # Spear.Update: vel.y += 0.45f（y↑）
             self.vy -= wp.SPEAR_FLIGHT_LIFT
         self.vy += self.gravity * self.room_gravity

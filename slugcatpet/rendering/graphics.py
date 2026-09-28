@@ -247,6 +247,9 @@ class SlugcatGraphics(GraphicsDrawMixin):
         self._face_mirror_frames = (self._family_frames(*fam["face_mirror"])
                                     if "face_mirror" in fam else [])
         self._face_scar_frame = fam["face_scar"][1] if "face_scar" in fam else None
+        # 晕/死脸也可由种族覆写（圣徒只用圣徒的脸，不借白猫的晕脸）
+        self._face_stun_frame = fam["face_stunned"][1] if "face_stunned" in fam else "FaceStunned"
+        self._face_dead_frame = fam["face_dead"][1] if "face_dead" in fam else "FaceDead"
         self._leg_walk_frames = self._family_frames(*fam["legs_walk"])
         self._leg_crawl_frames = self._family_frames(*fam["legs_crawl"])
         air_key, air_frame = fam["legs_air"]

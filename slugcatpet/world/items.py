@@ -64,6 +64,7 @@ LAMP_TILT_MAX_DEG = 25.0
 LAMP_STICK_OUTSET = 40.0
 STONE_STUN_SPEED = 8.0
 STONE_STUN_TICKS = 80
+STUN_SCALE = 3.0                  # 桌面尺度：原版 stun 帧数偏短，整体放长一点
 LIZARD_STUN_TICKS = 60            # 被蜥蜴咬到的眩晕 tick（兜底）
 # 原版 Lizard.Bite 对 Player 调用 Violence(Bite, 1.5f, 0f)：
 #   num  = 1.5 / baseDamageResistance(1) = 1.5 ≥ instantDeathDamageLimit(1) ⇒ 必死
@@ -117,7 +118,7 @@ SQUIDCADA_GRAB_PAD = 10.0
 PEARL_GRAB_PAD = 6.0
 SPEAR_GRAB_PAD = 8.0
 SCAVENGER_GRAB_PAD = 14.0
-SPEAR_HIT_SPEED = 7.0            # 飞矛扎猫的最低速度
+SPEAR_HIT_SPEED = 7.0            # （保留）飞矛最低速度；现按原版只认 Mode.Thrown
 SPEAR_HIT_PAD = 6.0
 SPEAR_DMG = 1.0                   # Spear.HitSomething: Violence(Stab, spearDamageBonus=1f, 20f)
 SPEAR_STUN_BONUS = 20.0           # 上句里的 stunBonus = 20f
@@ -196,12 +197,17 @@ def _pet_bite_death_mult(pet) -> float:
 
 
 def _ball_hit(creature, ball, pad: float = 0.0):
-    """球体命中生物判定：头 + 各链节；返回命中点或 None。"""
-    if math.hypot(ball.x - creature.x, ball.y - creature.y) < ball.rad + creature.head_rad + pad:
-        return (ball.x, ball.y)
+    """球体命中生物判定：头 + 各链节；返回命中点或 None。
+
+    用上一帧→本帧的扫掠线段，投掷物 40px/帧时逐帧点判定会直接穿过去。
+    """
+    ax, ay = getattr(ball, "last_x", ball.x), getattr(ball, "last_y", ball.y)
+    bx, by = ball.x, ball.y
+    if _seg_dist(ax, ay, bx, by, creature.x, creature.y) < ball.rad + creature.head_rad + pad:
+        return (bx, by)
     for s in creature.seg:
-        if math.hypot(ball.x - s.x, ball.y - s.y) < ball.rad + s.rad + pad:
-            return (ball.x, ball.y)
+        if _seg_dist(ax, ay, bx, by, s.x, s.y) < ball.rad + s.rad + pad:
+            return (bx, by)
     return None
 
 
@@ -212,6 +218,16 @@ def _hit_is_head(creature, x, y, pad: float = 0.0) -> bool:
         if math.hypot(x - s.x, y - s.y) - (s.rad + pad) < d_head:
             return False
     return True
+
+
+def _seg_dist(ax, ay, bx, by, x, y) -> float:
+    """点 (x,y) 到线段 AB 的最短距离。投掷物 40px/帧，逐帧位置判定会穿过链节。"""
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    if L2 <= 1e-9:
+        return math.hypot(x - ax, y - ay)
+    t = clampf(((x - ax) * dx + (y - ay) * dy) / L2, 0.0, 1.0)
+    return math.hypot(x - (ax + dx * t), y - (ay + dy * t))
 
 
 def _dist_to_path(pts, x, y):
@@ -441,12 +457,15 @@ class ItemInteractionMixin:
             for s in self.stones:
                 if not s.fling or s.state != ItemState.FREE:
                     continue
+                if s.thrower is b and s.no_self_t > 0:        # 刚出手，别砸自己
+                    continue
                 sp = math.hypot(s.vx, s.vy)
                 if sp < STONE_STUN_SPEED:
                     continue
                 for c in (b.chunk0, b.chunk1):
-                    if math.hypot(s.x - c.x, s.y - c.y) < s.rad + c.rad:
-                        if pet.behavior.apply_stun(STONE_STUN_TICKS):
+                    if _seg_dist(s.last_x, s.last_y, s.x, s.y,
+                                 c.x, c.y) < s.rad + c.rad:
+                        if pet.behavior.apply_stun(int(STONE_STUN_TICKS * STUN_SCALE)):
                             c.vx += s.vx * STONE_KNOCKBACK
                             c.vy += s.vy * STONE_KNOCKBACK
                             s.deflect(self._stun_rng)
@@ -1329,6 +1348,7 @@ class ItemInteractionMixin:
                 self._shake[1] += 1.4
                 return
             died, stun = _pet_stun_death(BITE_VIOLENCE_DAMAGE, 0.0)
+            stun = int(stun * STUN_SCALE)
             if died:
                 # 致死掷骰没过时 num 仍是 1.5 ⇒ 原版这条路也必死；宠物按掷骰结果放行
                 if beh.apply_stun(max(LIZARD_STUN_TICKS, stun)):
@@ -1913,14 +1933,18 @@ class ItemInteractionMixin:
             for sp in self.spears:
                 if sp.stuck or sp.state != ItemState.FREE:
                     continue
-                if math.hypot(sp.vx, sp.vy) < SPEAR_HIT_SPEED:
+                if sp.thrower is b and sp.no_self_t > 0:      # 刚出手，别扎自己
+                    continue
+                if not sp._thrown:                            # 原版只有 Mode.Thrown 才判定命中
                     continue
                 for c in (b.chunk0, b.chunk1):
-                    if math.hypot(sp.x - c.x, sp.y - c.y) < sp.rad + c.rad + SPEAR_HIT_PAD:
+                    if _seg_dist(sp.last_x, sp.last_y, sp.x, sp.y,
+                                 c.x, c.y) < sp.rad + c.rad + SPEAR_HIT_PAD:
                         # 原版 Spear.HitSomething：Violence(Stab, spearDamageBonus=1, 20)
                         # 蛞蝓猫 num = 1.0 ≥ 即死阈值 1 ⇒ 被矛扎中即死。
                         dmg = float(getattr(sp, "damage", SPEAR_DMG))
                         died, stun = _pet_stun_death(dmg, SPEAR_STUN_BONUS)
+                        stun = int(stun * STUN_SCALE)
                         if died:
                             pet.behavior.kill()
                         else:
@@ -1932,7 +1956,7 @@ class ItemInteractionMixin:
         for sp in self.spears:
             if sp.stuck_to is not None or sp.stuck or sp.state != ItemState.FREE:
                 continue
-            if math.hypot(sp.vx, sp.vy) < SPEAR_HIT_SPEED:
+            if not sp._thrown:                  # HitWall 后进 Free，不再伤人（原版 Weapon.Update）
                 continue
             for lz in self.lizards:
                 if lz.dead:

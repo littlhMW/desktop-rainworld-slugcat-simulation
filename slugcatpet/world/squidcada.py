@@ -21,8 +21,12 @@ SURFACE_FRICTION = 0.4    # Cicada.cs:138
 BUOYANCY = 0.95           # Cicada.cs:141
 WATER_FRICTION = 0.96     # Cicada.cs:140
 
-HOVER_H = 78.0            # 巡航高度（离地）
+HOVER_H = 78.0            # 巡航高度（离地，窗口很矮时的下限）
+HOVER_TOP = 104.0         # 巡航高度（离窗口上边；原版在房间上半部悬停）
 HOVER_BAND = 18.0         # 高度带：出带才修正
+HOVER_PULL = 3.0          # 掉得太低时的额外拉升倍率
+TAKEOFF_VY = 2.6          # 落地后再起飞的上冲速度（原版扑翅起飞）
+HOVER_VY_MAX = 1.9        # 巡航期垂直速度上限（平滑悬停）
 FLAP_PERIOD = 34          # 扑翅周期 tick
 FLAP_THRUST = 3.4         # 每周期上冲
 DRIFT_ACCEL = 0.10
@@ -185,7 +189,7 @@ class Squidcada:
     def _flight(self, WL, HL, threats) -> None:
         """悬停巡航 / 逃 / 力竭歇；贴地后自然落地。"""
         floor = HL
-        want_y = floor - HOVER_H
+        want_y = min(floor - HOVER_H, HOVER_TOP)
         tx, ty, flee = None, None, False
         bestd = FLEE_R
         for obj, ox, oy in threats:
@@ -214,10 +218,18 @@ class Squidcada:
                         self.flaps = 0
                         self.rest = REST_TICKS
             else:
+                self.flap_ph += 0.35
+                if self.flap_ph > math.tau:
+                    self.flap_ph -= math.tau
+                    self.flaps = max(0, self.flaps - 1)     # 巡航也慢慢耗体力
                 self.vy += self.gravity * self.room_gravity * 0.55
                 if self.y > want_y + HOVER_BAND:
-                    self.vy -= FLAP_THRUST / FLAP_PERIOD * 6.0
+                    # 掉得越低拉得越猛：原版扑翅几下就回到巡航高度
+                    k = clampf((self.y - (want_y + HOVER_BAND)) / 60.0, 0.0, 1.0)
+                    self.vy -= FLAP_THRUST / FLAP_PERIOD * 6.0 * (1.0 + HOVER_PULL * k)
                 self._drift(WL, HL)
+                # 巡航垂直速度夹一下：否则扑翅升力会把巡飞变成上下弹跳
+                self.vy = clampf(self.vy, -HOVER_VY_MAX, HOVER_VY_MAX)
         else:
             self.vy += self.gravity * self.room_gravity
             if flee and bestd < PANIC_R and self.flaps > 0 and self.rest > 0:
@@ -230,14 +242,20 @@ class Squidcada:
                 self.rest -= 1
                 if self.rest == 0:
                     self.flaps = FLAPS_MAX
+                    self.vy = min(self.vy, -TAKEOFF_VY)     # 歇完起身再飞
 
         self.x += self.vx
         self.y += self.vy
         self._collide(WL, HL)
         if self._contact_floor:
-            self.rest = max(self.rest, REST_TICKS // 3)
-            if abs(self.vx) < 0.25:
-                self.vx = 0.0
+            if self.flaps > 0:
+                self.rest = 0                      # 落地只是踉跄一下，立刻扑翅再起
+                self.vy = min(self.vy, -TAKEOFF_VY)
+                self.vy -= 0.35
+            else:
+                self.rest = max(self.rest, REST_TICKS // 3)
+                if abs(self.vx) < 0.25:
+                    self.vx = 0.0
 
     def _drift(self, WL, HL) -> None:
         """闲时随机漂移。"""

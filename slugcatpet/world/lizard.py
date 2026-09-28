@@ -42,6 +42,8 @@ CURSOR_FEAR_SPEED = 1.05      # 逃跑速度 × base_speed
 CURSOR_FEAR_ACCEL = 0.16
 CURSOR_FEAR_HOP = 0.02        # 逃跑时回头跳的概率
 LOST_R = 230.0                # 超出即失去兴趣
+TARGET_HOLD_OBJ = 90          # 对象目标失联后的宽限帧数（原版 forgetDelay）
+TARGET_HOLD_POINT = 10 ** 9   # 纯坐标目标（光标）仍按距离判定
 LUNGE_ACCEL = 0.20            # 扑咬时朝目标的加速度比例
 CLIMB_HOP = -6.4              # 目标在上方时的蹬地（y↓ 取负）
 HOP_CD = 46
@@ -311,7 +313,7 @@ class Lizard:
                  "x", "y", "vx", "vy", "last_x", "last_y", "head_rad", "head_conn",
                  "body_rad", "seg", "legs", "state", "facing", "look_at",
                  "head_angle", "last_head_angle", "jaw", "last_jaw",
-                 "target", "target_obj", "bite_event", "bite_hold", "bite_cd",
+                 "target", "target_obj", "bite_event", "bite_hold", "bite_cd", "_tgt_hold",
                  "walk_phase", "idle_timer", "goal_x", "hop_cd", "blink", "last_blink",
                  "chain_dir",
                  "held_by_hand", "water_y", "room_gravity", "_contact_floor",
@@ -414,6 +416,7 @@ class Lizard:
         self.target = None
         self.target_obj = None
         self.bite_event = None
+        self._tgt_hold = 0
         self.bite_cd = rng.randint(30, 90)
         self.bite_hold = 0
         self.walk_phase = rng.random()
@@ -774,12 +777,19 @@ class Lizard:
         if best is not None:
             self.target, self.target_obj = best, bestobj
             self.look_at = best
+            self._tgt_hold = 0
             return
-        # 失去目标：留一点余温，避免抖动
+        # 失去目标：留一点余温，避免抖动。但对象类目标（猎物/同族/猫）不能拖太久，
+        # 否则会拎着早就过期的坐标一路撞墙瞪着空气（原版 PreyTracker 的 forgetDelay）。
         if self.target is not None:
-            tx, ty = self.target
-            if math.hypot(tx - self.x, ty - self.y) < LOST_R:
-                return
+            self._tgt_hold += 1
+            if self.target_obj is not None:
+                if self._tgt_hold <= TARGET_HOLD_OBJ:
+                    return
+            else:
+                tx, ty = self.target
+                if self._tgt_hold <= TARGET_HOLD_POINT and math.hypot(tx - self.x, ty - self.y) < LOST_R:
+                    return
         self.target = None
         self.target_obj = None
         self.look_at = None

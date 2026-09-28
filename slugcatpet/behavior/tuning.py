@@ -363,6 +363,7 @@ ITEMPLY_TICKS_MIN   = 150
 ITEMPLY_TICKS_MAX   = 320
 ITEMPLY_RETRY       = 700
 ITEMPLY_PRANCE_CD   = 70       # 玩得高兴时每隔这么久蹦一下
+ITEMPLY_FLING_P     = 0.55     # 收手时按 temper 加权，暴躁的猫把家伙甩出去
 ITEMPLY_P           = 0.40     # 闲下来时每次抽查愿意去玩的概率
 
 # 觅食时拿矛打爆米花：没矛就去地上捡一根

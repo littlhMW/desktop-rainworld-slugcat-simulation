@@ -33,7 +33,7 @@ class Stone:
                  "thrown_by_saint", "frame", "collide_with_objects",
                  "_rng", "_thrown", "_throw_dir", "_exit_spd", "_throw_x", "_throw_y",
                  "_id", "_contact_floor", "_contact_ceil", "_contact_x", "_impact_cb",
-                 "unfetchable", "fetch_fails")
+                 "unfetchable", "fetch_fails", "thrower", "no_self_t")
 
     def __init__(self, x: float, y: float, seed: int = 0):
         self.x = self.last_x = float(x)
@@ -57,6 +57,8 @@ class Stone:
         self.vibrate = 0
         self.fling = False
         self.thrown_by_saint = False
+        self.thrower = None            # 谁扔的（前 no_self_t 帧不打自己）
+        self.no_self_t = 0
         self.collide_with_objects = True
         self._id = int(seed)
         self.frame = "Pebble" + str(1 + (int(seed) % PEBBLE_FRAMES))
@@ -119,6 +121,8 @@ class Stone:
 
         if self.vibrate > 0:
             self.vibrate -= 1
+        if self.no_self_t > 0:
+            self.no_self_t -= 1
 
         if (self.fling or self.thrown_by_saint) and (
                 self.at_rest_on_ground(HL)

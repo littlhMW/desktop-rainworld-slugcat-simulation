@@ -25,7 +25,10 @@ MONK_DEF = CatDef(
     stats=replace(DEFAULT_STATS, weight_fac=0.95, max_food=5, food_hibernate=3,
                   lungs_fac=1.2),
     # 温和体弱最亲人：偏懒易累爱黏人
-    personality=replace(DEFAULT_PERSONALITY, activity=0.4, stamina=0.8, sociability=0.9),
+    # 好脾气：不甩东西、不喜欢指指点点也不敢趴（怕）→ 原地安静地玩
+    personality=replace(DEFAULT_PERSONALITY, activity=0.4, stamina=0.8, sociability=0.9,
+                        temper=0.2, crawl_like=0.75, point_like=0.25,
+                        play_style="crawl"),
     tuning={},
     fsm_mount=None,
     wip=False,

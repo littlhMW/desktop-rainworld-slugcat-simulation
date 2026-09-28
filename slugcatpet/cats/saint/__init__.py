@@ -24,7 +24,9 @@ SAINT_DEF = CatDef(
         "head": ("msc", "HeadB"),
         "face": ("base", "FaceB"),        # 闭眼
         "face_blink": ("base", "FaceB"),
-        "face_open": ("base", "FaceA"),   # 超度睁眼
+        "face_open": ("base", "FaceB"),   # 原版 SaintFaceCondition() 恒 true：圣徒永远闭眼
+        "face_stunned": ("base", "FaceB"),  # 晕过去也是圣徒的闭眼脸，不借白猫晕脸
+        "face_dead": ("base", "FaceDead"),  # 死亡脸是标记不是表情，沿用原版
         "legs_walk": ("base", "LegsA"),
         "legs_crawl": ("base", "LegsACrawling"),
         "legs_air": ("base", "LegsAAir0"),
@@ -34,7 +36,8 @@ SAINT_DEF = CatDef(
     caps=CatCaps(tongue=True, ascension=True),
     # 慈悲孱弱纯素：偏静易累最耐寒，爱舌钩荡跃
     personality=replace(DEFAULT_PERSONALITY, activity=0.4, stamina=0.8, cold_gain_fac=0.5,
-                        sociability=0.3, diet=DIET_VEGETARIAN,
+                        sociability=0.3, temper=0.3, crawl_like=0.55,
+                        point_like=0.4, play_style="hop", diet=DIET_VEGETARIAN,
                         toy_pref={"ceiling_play": 1.4}),
     tuning={
         "temper_ascend_gate": -0.20,          # ≤此值才可超度

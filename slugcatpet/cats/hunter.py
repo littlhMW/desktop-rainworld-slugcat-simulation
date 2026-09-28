@@ -21,9 +21,12 @@ HUNTER_DEF = CatDef(
     caps=CatCaps(tongue=False, ascension=False),
     stats=replace(DEFAULT_STATS, runspeed_fac=1.2, pole_fac=1.25, weight_fac=1.12,
                   max_food=9, food_hibernate=6),
+    # 暴躁猎手：玩东西会甩出去，不爱趴，边走边跳，背后常备一支矛
     personality=replace(DEFAULT_PERSONALITY, activity=0.65, stamina=1.05,
-                        sociability=0.3, diet=DIET_CARNIVORE),
-    tuning={},
+                        sociability=0.3, temper=0.9, crawl_like=0.25,
+                        point_like=0.55, play_style="hop", diet=DIET_CARNIVORE),
+    # 原版 Player.spearOnBack：猎手背后常备一支矛
+    tuning={"back_spear": True},
     fsm_mount=None,
     wip=False,
 )

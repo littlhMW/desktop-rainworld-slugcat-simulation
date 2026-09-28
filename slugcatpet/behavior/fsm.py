@@ -90,6 +90,11 @@ _SWIM_KEEP = frozenset(("Swimming", "Ascension", "Dragged", "Dead", "Stunned", "
 
 ARM_REACH_NEAR = 24.0
 ARM_REACH_FAR = 48.0
+THROW_JUMP_DY = 12.0      # 目标高出这么多 → 先起跳再水平投（原版只能横着发射）
+JUMPCUR_DY = 52.0         # 追鼠标：高度差在这以内才值得跳着够
+JUMPCUR_R = 130.0         # 追鼠标：水平距离上限
+JUMPCUR_CD = 24
+JUMPCUR_P = 0.6
 HPOLE_NEAR_Y = 20.0
 HPOLE_REACH_FRAC = 0.85
 HPOLE_GRAB_REACH = 0.60
@@ -117,6 +122,7 @@ _WATER_BLOCKED = frozenset(("RelocateToWall", "TongueClimb", "CeilingHang", "Swi
 # 取果触发不打断的态
 _FETCH_NEVER = frozenset(("FetchFruit", "Ascension", "Dragged", "Dead", "WakeSequence",
                           "Stunned", "DodgeKill", "SeekWarmth", "Swimming",
+                          "LieDown", "Sleep",          # 趴/睡时别把猫叫起来去取果
                           "PyroMaul", "RivSnatch", "CatchFly", "ItemPlay"))
 # play 态接管取果需果在舌头射程内
 _FETCH_PLAY = frozenset(("PoleClimb", "HPole", "CeilingHang"))
@@ -347,6 +353,7 @@ class BehaviorFSM:
         self.flycatch = None            # 徒手抓飞虫控制器
         self._catch_cd = 0
         self._itemplay_cd = 0
+        self._back_spear_cd = 0
         self._itemplay_target = None
         self._itemplay_left = 0
         self._itemplay_phase = 0
@@ -822,6 +829,8 @@ class BehaviorFSM:
                 self._break_active_controllers()
                 self._act_or_wake("ItemPlay")
 
+        self._back_spear_tick()
+
         # 睡眠欲望：吃饱后入睡概率从 0 缓慢升到 100
         self._sleep_urge_tick()
         if (not self._hibernating and not self.grab.active and not self._exhausted
@@ -829,6 +838,7 @@ class BehaviorFSM:
                 and self._sleep_roll()
                 and self.state in ("IdleStand", "LieDown")):
             self._hibernating = True
+            self._sleep_drop_hands()          # 睡觉前把手里的东西放下（原版睡着不留吃的）
             if self.state == "IdleStand":
                 self._transition("LieDown")
 
@@ -852,8 +862,12 @@ class BehaviorFSM:
 
         self._squid_lift_tick()
         self.gfx.look_at = None
-        self.gfx.sleeping = (self.state == "Sleep")
-        self.body.sleeping = (self.state == "Sleep")
+        # _hibernating 一置位就当场蜷起来（LieDown 期也一样），避免「睁着眼蜷着却睡不着」
+        lying = self.state == "Sleep" or self._hibernating
+        self.gfx.sleeping = lying
+        self.body.sleeping = lying
+        if self.state in ("LieDown", "Sleep"):
+            self.gfx.face_special = False    # 睡姿不许挂醒着的表情
         self.gfx.dead = (self.state == "Dead")
         self.gfx.stunned = (self.state == "Stunned")
 
@@ -918,12 +932,15 @@ class BehaviorFSM:
             b.stop_walk()
             self._idle_hold = tuning.IDLE_BREATHER   # 落地喘息，先停一拍再重抽
         elif st == "LieDown":
+            self.gfx.face_special = False     # 趴下睡觉：醒着的表情收掉
             b.set_posture(False)
             b.stop_walk()
         elif st == "Sleep":
+            self.gfx.face_special = False
             b.set_posture(False)
             b.stop_walk()
         elif st == "WakeSequence":
+            self._hibernating = False        # 起身就清掉睡眠意图，免得卡在半睡
             self.gfx.sleeping = False
             self.body.sleeping = False
             self.phase = 0
@@ -2081,6 +2098,8 @@ class BehaviorFSM:
         self.gfx.hand_aim["l" if side == "r" else "r"] = None
 
     def _postthrow_point(self, cursor):
+        """投掷后仍举着手瞄着鼠标（原版 40px 内松手），只是「指向」不是指指点点。"""
+        self.gfx.face_special = False
         if cursor is None:
             self._clear_hands()
             return
@@ -2902,7 +2921,10 @@ class BehaviorFSM:
             lz = self._nearest_lizard(tuning.CRAWL_FEAR_R)
             if lz is not None and not self._carrying_gift():
                 behind = self._behind_creature(lz)
-                if behind or abs(lz.x - b.chunk1.x) > tuning.CRAWL_FEAR_R * 0.6:
+                # 性格：crawl_like 低的猫宁可拔腿就跑，不肯趴下
+                can_crawl = (self.rng.random()
+                             < 0.25 + 0.75 * getattr(self.pers, "crawl_like", 0.5))
+                if (behind or abs(lz.x - b.chunk1.x) > tuning.CRAWL_FEAR_R * 0.6) and can_crawl:
                     self._crawl_from = lz
                     self._crawl_point_to = None
                     self._crawl_left = tuning.CRAWL_AWAY_TICKS
@@ -2951,6 +2973,21 @@ class BehaviorFSM:
                 self._start_protest(thief)
 
     # ── 睡眠欲望：吃饱后入睡概率从 0 缓慢升到 100 ──
+    def _sleep_drop_hands(self):
+        """入睡前把手里攥着的东西放到地上（否则会攥着食物蜷着睡不着）。"""
+        b = self.body
+        if b.carried_fruit is not None:
+            f = b.carried_fruit
+            f.stalk = None
+            f.state = "free"
+            f.held_by_hand = None
+            b.release_fruit()
+            f.y = min(f.y, b.chunk1.y - f.rad)
+        if b.carried_stone is not None:
+            b.release_stone(to_free=True)
+        if b.carried_spear is not None:
+            b.release_spear(to_free=True)
+
     def _sleep_urge_tick(self):
         full = (self.body.food >= self.body.food_max
                 and not self._too_cold_to_sleep() and not self._hibernating)
@@ -3218,9 +3255,11 @@ class BehaviorFSM:
             if not self._point_active():
                 self._point_begin(cursor, mode="cursor")   # 指着鼠标，一下一下
             self._point_step()
-            if d <= tuning.PLAYCUR_GRAB_R and self.timer % 30 == 0:
-                if self.rng.random() < 0.5:
-                    b.request_jump("protest")
+            # 鼠标落在跳跃够得到的一层：有概率跳起来拿身子碰它（原版跳抓）
+            if (b.on_floor() and self.timer % JUMPCUR_CD == 0
+                    and abs(cy - b.chunk0.y) <= JUMPCUR_DY and d <= JUMPCUR_R
+                    and self.rng.random() < JUMPCUR_P):
+                b.request_jump("protest")
         if self._play_left <= 0 or d > tuning.PLAYCUR_R * 1.6:
             self._point_end()
             self._transition("IdleStand")
@@ -3275,7 +3314,11 @@ class BehaviorFSM:
             self._end_social()
 
     def _aim_target(self, tgt) -> bool:
-        """手臂指向目标（同伴/生物/坐标点）并换上特殊表情；目标无效返回 False。"""
+        """【指向】手臂持续瞄着目标（投掷预备/战斗瞄准）；目标无效返回 False。
+
+        对照原版 Player.cs:3728 makeThrowCounter：举手指向不换表情，
+        「指指点点」才走 _point_step 的伸-收-伸手势并换上表情。
+        """
         if tgt is None:
             return False
         ob = getattr(tgt, "body", None)
@@ -3289,17 +3332,20 @@ class BehaviorFSM:
         side = "r" if tx >= b.chunk0.x else "l"
         self.gfx.hand_aim[side] = (tx, ty)
         self.gfx.hand_aim["l" if side == "r" else "r"] = None
-        self.gfx.face_special = True
         return True
 
     def _point_at_peer(self, peer):
-        """指一下（单帧）：手臂指向目标（同伴或生物），并换上特殊表情。"""
+        """【指指点点】指一下（单帧）：手臂指向目标并换上特殊表情。"""
+        self.gfx.face_special = True
         return self._aim_target(peer)
 
     # ── 指指点点手势：伸出 → 收回 → 再伸出，重复 3~5 下 ──
     def _point_begin(self, tgt, mode="obj", enforce_side=False, reps=None):
         if reps is None:
             reps = self.rng.randint(tuning.POINT_REPS_MIN, tuning.POINT_REPS_MAX)
+            # 性格：爱指的猫指得久，性格好的猫敷衍两下就收
+            if self.rng.random() > getattr(self.pers, "point_like", 0.5):
+                reps = max(1, reps - 2)
         self._point = PointGesture(reps, tuning.POINT_ON_TICKS, tuning.POINT_OFF_TICKS)
         self._point_tgt = tgt
         self._point_mode = mode
@@ -3317,6 +3363,7 @@ class BehaviorFSM:
     def _point_end(self):
         self._point = None
         self._point_tgt = None
+        self.gfx.face_special = False        # 指指点点收势：表情一并收掉
         self._clear_hands()
 
     def _point_step(self) -> bool:
@@ -3334,11 +3381,11 @@ class BehaviorFSM:
                 if self._point_stopped:
                     self._point_end()
                     return True
-            elif not self._aim_target(self._point_tgt):
+            elif not self._point_at_peer(self._point_tgt):
                 self._point_end()
                 return True
         else:
-            self._clear_hands()          # 收回这一下
+            self._clear_hands()          # 收回这一下（表情留着，别一闪一闪）
         pg.step()
         if pg.done:
             self._point_end()
@@ -3617,53 +3664,45 @@ class BehaviorFSM:
                 if self.timer % tuning.SOCIAL_POKE_INTERVAL == 0:
                     tgt.vx += 0.35 if tgt.x >= b.chunk0.x else -0.35
             return
-        # 持械：预判弹道投掷（这里是指哪打哪，保持连续瞄准）
+        # 持械：持续瞄着目标（指向），到点就按原版水平掷出
         self._fight_throw_t += 1
         if d < tuning.FIGHT_ARM_KEEP:                # 太近会被咬：边打边拉开
             b.walk_to(b.chunk1.x - (tgt.x - b.chunk1.x))
         else:
             b.stop_walk()
         self._point_end()
-        self._point_at_peer(tgt)
+        self._aim_target(tgt)
         if self._fight_throw_t >= tuning.FIGHT_THROW_CD:
             self._fight_throw_t = 0
             self._throw_weapon_at(tgt)
 
-    def _lead_throw_vel(self, tgt, speed, grav=0.9):
-        """迭代预判落点求初速（同原版投掷预判）。"""
-        c0 = self.body.chunk0
-        lx, ly = c0.x, c0.y - 6.0
-        tvx = getattr(tgt, "vx", 0.0)
-        tvy = getattr(tgt, "vy", 0.0)
-        t = 6.0
-        for _ in range(6):
-            tx = tgt.x + tvx * t
-            ty = tgt.y + tvy * t
-            t = clampf(math.hypot(tx - lx, ty - ly) / speed, 4.0, 26.0)
-        vx = (tgt.x + tvx * t - lx) / t
-        vy = (tgt.y + tvy * t - ly - 0.5 * grav * t * t) / t
-        if abs(vx) > speed * 1.6 or abs(vy) > speed * 1.6:
-            return None
-        return (vx, vy)
-
     def _throw_weapon_at(self, tgt) -> bool:
+        """原版水平投掷：throwDir = IntVector2(sign(x), 0)，初速走 Weapon.Thrown（40*frc）。
+
+        对照反编译 Weapon.cs:463-502：玩家只有水平分支；Spear.Update 里
+        setRotation = throwDir、rotationSpeed = 0 ⇒ 矛头始终顺着飞行方向，不翻滚。
+        目标偏高时先起跳对齐高度（跳着发射，原版也是这么打空中猎物的）。
+        """
         b = self.body
+        c0 = b.chunk0
         spear = b.carried_spear
-        sp = SPEAR_AI_SPEED if spear is not None else STONE_AI_SPEED
-        # 飞行中的矛重力减半（Spear.Update: vel.y += 0.45），预判要用真实值
-        grav = 0.9 - weaponphys.SPEAR_FLIGHT_LIFT if spear is not None else 0.9
-        vel = self._lead_throw_vel(tgt, sp, grav)
-        if vel is None:
+        if tgt is None:
             return False
-        dir_x = 1 if vel[0] >= 0 else -1
+        dx = tgt.x - c0.x
+        dy = tgt.y - c0.y                       # y↓：<0 目标在上方
+        if abs(dy) > THROW_JUMP_DY:
+            if b.on_floor():
+                b.request_jump("stand")         # 跳到那一层再水平掷出
+            return False
+        dir_x = 1 if dx >= 0.0 else -1
         weak, toss = weaponphys.player_throw_mode(
             getattr(self.win, "variant", ""), self._exhausted,
             spear is not None, False)
         if spear is not None:
-            b.throw_spear(dir_x, weaponphys.frc(weak=weak), vel=vel,
+            b.throw_spear(dir_x, weaponphys.frc(weak=weak),
                           recoil=0.4, toss=toss)
         else:
-            b.throw_stone(dir_x, weaponphys.frc(weak=weak), vel=vel,
+            b.throw_stone(dir_x, weaponphys.frc(weak=weak),
                           fling=True, recoil=0.4)
         b.chunk0.vx -= dir_x * 0.35
         self.gfx.blink = 15
@@ -3685,7 +3724,8 @@ class BehaviorFSM:
                 or self.state not in _WANTS_FROM):
             return
         pb = getattr(pointer, "body", None)
-        if pb is None or self.rng.random() >= tuning.POINTED_CROUCH_PROB:
+        prob = tuning.POINTED_CROUCH_PROB * (0.4 + 1.2 * getattr(self.pers, "crawl_like", 0.5))
+        if pb is None or self.rng.random() >= prob:
             return
         self._crawl_point_to = pointer
         self._crawl_from = None
@@ -3819,21 +3859,21 @@ class BehaviorFSM:
         self.gfx.hand_aim["r"] = None
         self._catch_cd = tuning.CATCH_RETRY
 
-    # ── 平时把玩地上的小物件（矛/石头）──
-    def _nearest_play_item(self):
+    def _back_spear_tick(self):
+        """原版 Player.spearOnBack：能背矛的猫闲下来会把脚边多余的矛背到背上。"""
         b = self.body
-        if b.carried_spear is not None or b.carried_stone is not None:
-            return None
+        if not self.win.cat.tuning.get("back_spear"):   # 只有猎手系会背矛
+            return
+        if b.back_spear is not None or b.carried_spear is not None:
+            return
+        if self._back_spear_cd > 0:
+            self._back_spear_cd -= 1
+            return
+        if (self.state != "IdleStand" or self.grab.active or self._hibernating
+                or b.swimming or self._zerog()):
+            return
         c0 = b.chunk0
-        best, bd = None, tuning.ITEMPLY_SEEK_R
-        for o in self.win.stones:
-            if o.state != "free" or getattr(o, "unfetchable", False):
-                continue
-            if not o.at_rest_on_ground(self.HL):
-                continue
-            d = math.hypot(o.x - c0.x, o.y - c0.y)
-            if d < bd:
-                best, bd = o, d
+        best, bd = None, 30.0
         for sp in self.win.spears:
             if sp.state != "free" or sp.stuck_to is not None:
                 continue
@@ -3842,7 +3882,46 @@ class BehaviorFSM:
             d = math.hypot(sp.x - c0.x, sp.y - c0.y)
             if d < bd:
                 best, bd = sp, d
-        return best
+        if best is None:
+            self._back_spear_cd = 120
+            return
+        b.put_spear_on_back(best)
+        self.gfx.blink = 12
+
+    # ── 平时把玩地上的小物件（矛/石头）──
+    def _nearest_play_item(self):
+        """挑一样地上的家伙玩；挑哪样看性格（暴躁爱矛，温顺爱石）。"""
+        b = self.body
+        if b.carried_spear is not None or b.carried_stone is not None:
+            return None
+        from ..world.spear import Spear
+        c0 = b.chunk0
+        cands = []
+        for o in self.win.stones:
+            if o.state != "free" or getattr(o, "unfetchable", False):
+                continue
+            if not o.at_rest_on_ground(self.HL):
+                continue
+            cands.append((o, math.hypot(o.x - c0.x, o.y - c0.y)))
+        for sp in self.win.spears:
+            if sp.state != "free" or sp.stuck_to is not None:
+                continue
+            if not (sp.stuck or (abs(sp.vx) < 0.4 and abs(sp.vy) < 0.4)):
+                continue
+            cands.append((sp, math.hypot(sp.x - c0.x, sp.y - c0.y)))
+        cands = [c for c in cands if c[1] < tuning.ITEMPLY_SEEK_R]
+        if not cands:
+            return None
+        temper = getattr(self.pers, "temper", 0.5)
+        pref = getattr(self.pers, "toy_pref", {})
+
+        def score(c):
+            o, d = c
+            spear = isinstance(o, Spear)
+            w = pref.get("spear_play" if spear else "stone_play", 1.0)
+            w *= 1.0 + (temper - 0.5) * (0.8 if spear else -0.8)
+            return d / max(0.05, w)
+        return min(cands, key=score)[0]
 
     def _itemplay_enter(self):
         b = self.body
@@ -3853,6 +3932,17 @@ class BehaviorFSM:
         it = self._itemplay_target
         self._itemplay_side = "r" if (it is not None and it.x >= b.chunk0.x) else "l"
 
+    def _itemplay_fling(self):
+        """玩够了顺手甩出去（暴躁的猫）：走原版水平投掷，石头能砸晕同伴。"""
+        b = self.body
+        dir_x = 1 if b.facing >= 0 else -1
+        if b.carried_spear is not None:
+            b.throw_spear(dir_x, weaponphys.frc(weak=self._exhausted), recoil=0.3)
+        elif b.carried_stone is not None:
+            b.throw_stone(dir_x, weaponphys.frc(weak=self._exhausted),
+                          fling=True, recoil=0.3)
+        self.gfx.blink = 15
+
     def _itemplay_end(self):
         b = self.body
         if b.carried_stone is not None:
@@ -3860,6 +3950,8 @@ class BehaviorFSM:
         if b.carried_spear is not None:
             b.release_spear(to_free=True)
         b.eat_raise = 0.0
+        b.set_crawl(False)
+        b.set_posture(True)
         b.stop_walk()
         b.arm_aim["l"] = None
         b.arm_aim["r"] = None
@@ -3914,10 +4006,22 @@ class BehaviorFSM:
         b.stop_walk()
         self._itemplay_left -= 1
         t = self.timer
-        b.eat_raise = 0.45 + 0.45 * math.sin(t * 0.13)      # 举起来晃着玩
-        if t % tuning.ITEMPLY_PRANCE_CD == 0 and b.on_floor():
-            b.request_jump("stand")                          # 玩高兴了蹦一下
+        # 拿在手里就是玩（eat_raise 保持 0，手别乱晃）；姿态随性格
+        style = getattr(self.pers, "play_style", "sit")
+        if style == "crawl":
+            b.set_crawl(True)                                # 匍匐着玩
+            if t % tuning.ITEMPLY_PRANCE_CD == 0:
+                b.walk_to(b.chunk1.x + (18.0 if (t // tuning.ITEMPLY_PRANCE_CD) % 2 else -18.0))
+        elif style == "hop":
+            if t % tuning.ITEMPLY_PRANCE_CD == 0:
+                b.walk_to(b.chunk1.x + self.rng.choice((-40.0, 40.0)))
+                if b.on_floor():
+                    b.request_jump("stand")                  # 边走边跳
+        else:
+            b.set_crawl(False)
         if self._itemplay_left <= 0 or t > 2400:
+            if self.rng.random() < getattr(self.pers, "temper", 0.5) * tuning.ITEMPLY_FLING_P:
+                self._itemplay_fling()                       # 暴躁的猫：玩完甩出去
             self._itemplay_end()
             self._transition("IdleStand")
 

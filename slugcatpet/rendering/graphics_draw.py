@@ -443,9 +443,13 @@ class GraphicsDrawMixin:
         n_max_a = len(face_a_frames) - 1
 
         if self.dead:
-            element = "FaceDead"
+            element = self._face_dead_frame
         elif self.stunned:
-            element = "FaceStunned"
+            element = self._face_stun_frame
+        elif self.sleep_curl > 0.0:
+            # 蜷起来睡的那一觉必须闭眼：face_special 是醒着的表情，不能盖过睡眠
+            idx = int(clampf(int(_lerp(4.0, 1.0, self.sleep_curl)), 0, 8))
+            element = blink_frames[min(idx, len(blink_frames) - 1)]
         elif self.ascension is not None or self.face_special:
             idx = int(clampf(self._face_angle_index(), 0, 8))
             element = face_a_frames[min(idx, n_max_a)]

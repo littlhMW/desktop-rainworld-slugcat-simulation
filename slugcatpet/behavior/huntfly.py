@@ -26,6 +26,8 @@ LEAD_ITERS = 6
 MIN_FLIGHT = 4.0
 MAX_FLIGHT = 26.0
 RECOIL = 0.3
+AIM_DY_TOL = 9.0        # 出手高度容差：蟹猫只能水平投，得先跳到猎物那一层
+AIM_JUMP_CD = 10        # 起跳重试间隔
 
 
 def _edible(f, diet) -> bool:
@@ -139,7 +141,10 @@ class FlyHunter:
         # 已有武器直接用
         if self.body.carried_stone is not None or self.body.carried_spear is not None:
             self.weapon = self.body.carried_spear or self.body.carried_stone
-            self.grab_side = self.body.carry_hand or self._pick_side(self.target)
+            held = (self.body.hand_of.get("spear")
+                    if self.body.carried_spear is not None
+                    else self.body.hand_of.get("stone"))
+            self.grab_side = held or self._pick_side(self.target)
             self.phase = "aim"
             self.timer = 0
             return "running"
@@ -193,24 +198,27 @@ class FlyHunter:
             return "giveup"
         self.body.stop_walk()
         self.gfx.look_at = (f.x, f.y)
-        spear = self.body.carried_spear is not None
-        sp = SPEED_SPEAR if spear else SPEED_STONE
-        pr = self._predict(f, sp, 0.9 - weaponphys.SPEAR_FLIGHT_LIFT if spear else 0.9)
-        if pr is None:
-            return "running"
-        _t, vx, _vy = pr
         c0 = self._c0()
-        if abs(vx) < 3.0:
+        # 原版 Weapon.Thrown：throwDir = IntVector2(sign(x), 0) —— 玩家只能水平投，
+        # 所以先要跳到猎物所在高度，再对齐出手（也允许跳着发射矛/石）。
+        speed = SPEED_SPEAR if self.body.carried_spear is not None else SPEED_STONE
+        lead_x = f.x + f.vx * clampf(abs(f.x - c0.x) / speed, MIN_FLIGHT, 12.0)
+        dx = lead_x - c0.x
+        dy = f.y - c0.y
+        self.throw_dir = 1 if dx >= 0.0 else -1
+        if abs(dy) > AIM_DY_TOL:
+            if dy < 0.0 and self.body.on_floor():      # 虫在上方：起跳够高度
+                if self.timer % AIM_JUMP_CD == 0:
+                    self.body.request_jump("stand")
+            elif not self.body.on_floor():
+                pass                                   # 跳跃途中：等高度对齐
+            elif abs(dx) > 30.0:
+                self.body.walk_to(f.x)                 # 虫在下方/同层：先站到它跟前的投掷侧
             return "running"
-        self._vel = (vx, _vy)
-        self.throw_dir = 1 if vx >= 0.0 else -1
-        # 站到投掷方向的正确一侧，避免背身投
-        if self.throw_dir > 0 and c0.x - f.x > 20.0:
-            self.body.walk_to(f.x)
+        if abs(dx) < GRAB_REACH:
+            self.body.walk_to(c0.x - self.throw_dir * 60.0)
             return "running"
-        if self.throw_dir < 0 and f.x - c0.x > 20.0:
-            self.body.walk_to(f.x)
-            return "running"
+        self._vel = None                               # 走原版水平初速
         self.phase = "throw"
         self.throw_t = 0
         return "running"
@@ -223,10 +231,10 @@ class FlyHunter:
                 self.body.carried_spear is not None, False)
             if self.body.carried_spear is not None:
                 self.body.throw_spear(self.throw_dir, weaponphys.frc(weak=weak),
-                                      vel=self._vel, recoil=RECOIL, toss=toss)
+                                      recoil=RECOIL, toss=toss)
             else:
                 self.body.throw_stone(self.throw_dir, weaponphys.frc(weak=weak),
-                                      vel=self._vel, fling=True, recoil=RECOIL)
+                                      fling=True, recoil=RECOIL)
             self.gfx.blink = 15
             self._c0().vx -= self.throw_dir * 0.4
         side = self.grab_side

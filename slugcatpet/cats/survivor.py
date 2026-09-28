@@ -23,7 +23,8 @@ SURVIVOR_DEF = CatDef(
     atlas_keys=("base",),
     caps=CatCaps(tongue=False, ascension=False),   # 舌/超度 Saint 独占
     stats=replace(DEFAULT_STATS, max_food=7, food_hibernate=4),
-    personality=DEFAULT_PERSONALITY,   # 中性基准
+    personality=replace(DEFAULT_PERSONALITY, temper=0.5, crawl_like=0.5,
+                        point_like=0.5, play_style="sit"),   # 中性基准
     tuning={},
     # 预留位：暂无独占机制，未来专属行动挂 fsm_mount
     fsm_mount=None,

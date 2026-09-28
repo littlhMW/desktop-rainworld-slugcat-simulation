@@ -18,6 +18,10 @@ class CatPersonality:
     cold_gain_fac: float = 1.0
     sociability: float = 0.5
     swim_zeal: float = 0.5         # ≤0.5 视为中性
+    temper: float = 0.5            # 0 温顺 ↔ 1 暴躁（玩东西会不会甩出去、多远迎战）
+    crawl_like: float = 0.5        # 0 讨厌趴着 ↔ 1 爱匍匐（低的宁死也不趴）
+    point_like: float = 0.5        # 0 不爱指指点点 ↔ 1 爱指（性格好的猫少指）
+    play_style: str = "sit"        # 玩耍姿态：sit 原地 / hop 边走边跳 / crawl 匍匐着玩
     diet: str = DIET_OMNIVORE
     toy_pref: dict = field(default_factory=dict)   # 空=全 1
 

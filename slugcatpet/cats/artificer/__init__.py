@@ -39,8 +39,10 @@ ARTIFICER_DEF = CatDef(
                   drown_threshold=0.5,                                # 憋气极短，挣扎门提前留逃生时间
                   karma_cap=0),                                       # 业力锁 1 级（无 Echo 可升）
     # 复仇爆破手：好动强健、极不亲人
+    # 极度暴躁：玩两下就把矛/石头甩出去，绝不肯趴
     personality=replace(DEFAULT_PERSONALITY, activity=0.75, stamina=1.1,
-                        sociability=0.2, diet=DIET_CARNIVORE,
+                        sociability=0.2, temper=0.98, crawl_like=0.15,
+                        point_like=0.6, play_style="hop", diet=DIET_CARNIVORE,
                         toy_pref={"pyro_romp": 1.4}),
     tuning={"pyro_heat_cap": 5,    # = pyro.WARN_AT，AI 永不至眩晕/自爆
             "temper_maul_gate": -0.50},   # ≤此值光标拂过可触发爆跳劫持

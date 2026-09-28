@@ -213,11 +213,11 @@ class SlugcatBody:
         self._ctrl_input = None
 
         self.impact_cb = None           # 地形撞击回调，None=不触发
-        self.bubble_cb = None           # 憋气吐泡回调，None=不吐
         self.carried_fruit = None
-        self.carry_hand = None
+        self.hand_of = {}           # 物品种类 -> 手(l/r)
         self.carried_stone = None
         self.carried_spear = None
+        self.back_spear = None        # 背后的备用矛（原版 Player.spearOnBack）
         self.stun = 0
         self.arm_aim = {"l": None, "r": None}
         self.arm_full_reach = 24.0
@@ -416,15 +416,7 @@ class SlugcatBody:
         self.hover = False
         self._jump_pending = None
         self._jump_hold = None
-        if self.carried_fruit is not None:
-            self.carried_fruit.stalk = None
-            self.carried_fruit.state = "free"
-            self.carried_fruit.held_by_hand = None
-            self.release_fruit()
-        if self.carried_stone is not None:
-            self.release_stone(to_free=True)
-        if self.carried_spear is not None:
-            self.release_spear(to_free=True)
+        self.drop_all()
         self.stun = 0
         self.zerog_pole = None
         self.wall_side = 0
@@ -558,17 +550,30 @@ class SlugcatBody:
         if self.crawl_want:
             self.standing = False
 
+    def put_spear_on_back(self, spear):
+        """把一支矛背到背上（原版 Player.spearOnBack）。"""
+        self.back_spear = spear
+        spear.state = ItemState.CARRIED
+        spear.held_by = self
+        spear.stuck = False
+        spear.stuck_to = None
+
+    def take_back_spear(self, side="r"):
+        """从背上把矛抽到手里。"""
+        sp = self.back_spear
+        if sp is None:
+            return None
+        self.back_spear = None
+        return sp if self.grab_spear(sp, side) else None
+
     def drop_all(self):
         """丢掉手上所有东西（原版丢物品）。"""
-        if self.carried_fruit is not None:
-            self.carried_fruit.stalk = None
-            self.carried_fruit.state = "free"
-            self.carried_fruit.held_by_hand = None
-            self.release_fruit()
-        if self.carried_stone is not None:
-            self.release_stone(to_free=True)
-        if self.carried_spear is not None:
-            self.release_spear(to_free=True)
+        if self.back_spear is not None:
+            self.back_spear.state = ItemState.FREE
+            self.back_spear.held_by = None
+            self.back_spear = None
+        for kind in list(self.hand_of):
+            self._release_item(kind, to_free=True)
 
     def set_control_input(self, pkg):
         """push 当前帧进控制输入历史环。"""
@@ -1193,6 +1198,11 @@ class SlugcatBody:
             c1.vy += DEF_STAND_FEET
         elif self.bodyMode == "Crawl":
             dyn0 = dyn1 = CRAWL_SPEED      # 平地趴行恒速，不乘隧道爬速因子
+            # 原版 Player.cs:9126：爬行移动中髋比胸低超过 3px 就逐帧抬起髋，
+            # 让整条身体贴着地面走（不然会变成半跪着挪）。
+            if (move_x != 0 and c0.on_floor and c1.cx == move_x
+                    and c1.y > c0.y + 3.0):
+                c1.y -= 1.0
             if (move_x == 0 and c1.on_floor and not c0.pinned and not c1.pinned
                     and self._jump_pending is None):
                 self._crawl_pose()
@@ -1437,6 +1447,50 @@ class SlugcatBody:
             self._stride_prev_x = None
             self.walk_bob_y *= 0.85
 
+    # --- 双手：每只手最多拿一件；优先级更高的东西会顶掉手里的低优先级物品 ---
+    ITEM_PRIO = {"stone": 1, "fruit": 2, "spear": 3}
+
+    def held_kind(self, side):
+        for k, s in self.hand_of.items():
+            if s == side:
+                return k
+        return None
+
+    def _aim_hand(self, side, tx=None, ty=None):
+        self.arm_aim[side] = None if tx is None else (tx, ty)
+        other = "l" if side == "r" else "r"
+        if other not in self.hand_of.values():
+            self.arm_aim[other] = None
+
+    def _take_hand(self, kind, side):
+        used = set(self.hand_of.values())
+        if side not in used:
+            return side
+        other = "l" if side == "r" else "r"
+        if other not in used:
+            return other
+        victim = min(self.hand_of, key=lambda k: self.ITEM_PRIO.get(k, 0))
+        if self.ITEM_PRIO.get(victim, 0) >= self.ITEM_PRIO.get(kind, 0):
+            return None
+        return self._release_item(victim, to_free=True)
+
+    def _release_item(self, kind, to_free=False):
+        if kind == "fruit":
+            f = self.carried_fruit
+            side = self.hand_of.get("fruit")
+            if f is not None:
+                f.stalk = None
+                f.held_by_hand = None
+                if to_free:
+                    f.state = "free"
+            self.release_fruit()
+            return side
+        if kind == "stone":
+            return self.release_stone(to_free=to_free)
+        if kind == "spear":
+            return self.release_spear(to_free=to_free)
+        return None
+
     def _carry_pos(self, side):
         """Carry hand position in world coords."""
         c0 = self.chunk0
@@ -1448,8 +1502,7 @@ class SlugcatBody:
 
     def reach_for(self, fruit, side):
         """Aim hand at fruit; clear opposite side (only one hand reaches)."""
-        self.arm_aim[side] = (fruit.x, fruit.y)
-        self.arm_aim["l" if side == "r" else "r"] = None
+        self._aim_hand(side, fruit.x, fruit.y)
 
     def grab_fruit(self, fruit, side, snap_stalk=True):
         """Grab fruit with one hand; convert to carried (kinematic).
@@ -1457,22 +1510,26 @@ class SlugcatBody:
         snap_stalk=False：果柄先不断，靠 Stalk 自己被拉断（被鼠标拖着走的猫
         死死攥住摘取类食物，把果子从藤上拽下来）。
         """
+        side = self._take_hand("fruit", side)
+        if side is None:                             # 两手都被更重要的东西占着
+            return False
         self.carried_fruit = fruit
-        self.carry_hand = side
+        self.hand_of["fruit"] = side
         fruit.state = "carried"
         fruit.held_by_hand = side
         self.eat_raise = 0.0
         if fruit.stalk is not None and snap_stalk:   # 抓取瞬即脆断果柄
             fruit.stalk.release_counter = 2
+        return True
 
     def release_fruit(self):
-        """Release grip; caller sets fruit.state."""
-        side = self.carry_hand
+        """Release grip; caller sets fruit.state. 返回腾出来的那只手。"""
+        side = self.hand_of.pop("fruit", None)
         self.carried_fruit = None
-        self.carry_hand = None
         self.eat_raise = 0.0
         if side is not None:
             self.arm_aim[side] = None
+        return side
 
     def bite_carried(self):
         """Consume one bite; return True if finished (bites < min). Caller handles state+release."""
@@ -1501,35 +1558,38 @@ class SlugcatBody:
         f = self.carried_fruit
         if f is None:
             return
-        side = self.carry_hand
+        side = self.hand_of.get("fruit")
         cx, cy = self._carry_pos(side)
         f.last_x, f.last_y = f.x, f.y
         f.x, f.y = cx, cy
         f.set_rotation_to_grabber(self.chunk0.x, self.chunk0.y)
-        self.arm_aim[side] = (cx, cy)
-        self.arm_aim["l" if side == "r" else "r"] = None
+        self._aim_hand(side, cx, cy)
         if f.stalk is not None:
             if f.stalk.step(f):
                 f.stalk = None
 
     def grab_stone(self, stone, side):
         """Grab stone with one hand; convert to carried (kinematic)."""
+        side = self._take_hand("stone", side)
+        if side is None:
+            return False
         self.carried_stone = stone
-        self.carry_hand = side
+        self.hand_of["stone"] = side
         stone.state = "carried"
         self.eat_raise = 0.0
+        return True
 
     def release_stone(self, to_free=False):
-        """Release grip on stone; optionally convert to free."""
-        side = self.carry_hand
+        """Release grip on stone; optionally convert to free. 返回腾出来的手。"""
+        side = self.hand_of.pop("stone", None)
         s = self.carried_stone
         self.carried_stone = None
-        self.carry_hand = None
         self.eat_raise = 0.0
         if s is not None and to_free:
             s.state = "free"
         if side is not None:
             self.arm_aim[side] = None
+        return side
 
     def throw_stone(self, dir_x, frc=1.0, up=3.0, recoil=1.0,
                     vel=None, fling=False, by_saint=True):
@@ -1555,6 +1615,8 @@ class SlugcatBody:
             s.vx = c0.vx * 0.2 + float(vel[0])
             s.vy = c0.vy * 0.2 + float(vel[1])
         s.spin = float(dir_x) * 8.0
+        s.thrower = self                     # 前 6 帧别砸到自己（原版 thrownBy）
+        s.no_self_t = 6
         s.fling = bool(fling)
         s.thrown_by_saint = bool(by_saint)
         s.state = "free"
@@ -1569,31 +1631,33 @@ class SlugcatBody:
         s = self.carried_stone
         if s is None:
             return
-        side = self.carry_hand
+        side = self.hand_of.get("stone")
         cx, cy = self._carry_pos(side)
         s.last_x, s.last_y = s.x, s.y
         s.last_rotation = s.rotation_deg
         s.x, s.y = cx, cy
-        self.arm_aim[side] = (cx, cy)
-        self.arm_aim["l" if side == "r" else "r"] = None
+        self._aim_hand(side, cx, cy)
 
     # ── 矛（原版 Spear：玩家持矛时杆斜指前上方，掷出后走弹道）──
     def grab_spear(self, spear, side):
         """Grab a spear with one hand; convert to carried (kinematic)."""
+        side = self._take_hand("spear", side)
+        if side is None:
+            return False
         self.carried_spear = spear
-        self.carry_hand = side
+        self.hand_of["spear"] = side
         spear.state = ItemState.CARRIED
         spear.stuck = False
         spear.stuck_to = None
         spear.held_by = self
         self.eat_raise = 0.0
+        return True
 
     def release_spear(self, to_free=False):
-        """Release grip on spear; optionally convert back to free."""
-        side = self.carry_hand
+        """Release grip on spear; optionally convert back to free. 返回腾出来的手。"""
+        side = self.hand_of.pop("spear", None)
         sp = self.carried_spear
         self.carried_spear = None
-        self.carry_hand = None
         self.eat_raise = 0.0
         if sp is not None:
             sp.held_by = None
@@ -1601,6 +1665,7 @@ class SlugcatBody:
                 sp.state = ItemState.FREE
         if side is not None:
             self.arm_aim[side] = None
+        return side
 
     def spear_hold_angle(self, up_frac=0.35):
         """持矛朝向：面朝方向 + 抬起的杆（0=上、顺时针；同原版握矛姿态）。"""
@@ -1644,31 +1709,54 @@ class SlugcatBody:
             sp.vx = c0.vx * 0.2 + float(vel[0])
             sp.vy = c0.vy * 0.2 + float(vel[1])
         sp.spin = 0.0
-        # 原版 setRotation = throwDir（水平）；AI 走抛物线预判时按真实初速取角，
-        # 否则上抛的矛会横着飞（杆身与弹道/朝向不一致）。
-        sp.angle_deg = sp.last_angle = weaponphys.vel_angle(sp.vx, sp.vy)
+        sp.thrower = self                    # 前 6 帧别插到自己（原版 thrownBy）
+        sp.no_self_t = 6
+        # 原版 Weapon.Thrown：setRotation = throwDir.ToVector2()，且 Weapon.Update 里
+        # 消费完 setRotation 后 rotationSpeed = 0 → 整个飞行过程朝向锁死在 throwDir。
+        sp.angle_deg = sp.last_angle = (90.0 if float(dir_x) >= 0.0 else 270.0)
         sp.stuck = False
         sp.stuck_to = None
         sp.state = ItemState.FREE
         weaponphys.begin_thrown(sp, dir_x, float(frc))
         self.release_spear(to_free=False)
+        if self.back_spear is not None:      # 原版掷出后背上的矛立刻补到手上
+            bs = self.back_spear
+            self.back_spear = None
+            self.grab_spear(bs, self.facing if self.facing else 1)
         c0.vx += float(dir_x) * 8.0 * recoil
         c1.vx -= float(dir_x) * 4.0 * recoil
         return sp
+
+    def _back_spear_pose(self):
+        """背面矛的位姿：斜背在背上、矛尖朝前上方（原版 Player.spearOnBack）。"""
+        c0, c1 = self.chunk0, self.chunk1
+        dx = c0.x - c1.x
+        ang0 = _ang_from_up(dx, c0.y - c1.y)
+        face = 1.0 if dx >= 0.0 else -1.0
+        ang = ang0 + face * 52.0
+        return (c0.x + (c1.x - c0.x) * 0.25 - face * 2.0,
+                c0.y + (c1.y - c0.y) * 0.25 + 2.0, ang)
 
     def _apply_carry_spear(self):
         """Each tick: write carried spear to hand position, aim arm."""
         sp = self.carried_spear
         if sp is None:
+            bs = self.back_spear
+            if bs is None:
+                return
+            bx, by, bang = self._back_spear_pose()
+            bs.last_x, bs.last_y = bs.x, bs.y
+            bs.last_angle = bs.angle_deg
+            bs.x, bs.y = bx, by
+            bs.angle_deg = bang
             return
-        side = self.carry_hand
+        side = self.hand_of.get("spear")
         cx, cy = self._carry_pos(side)
         sp.last_x, sp.last_y = sp.x, sp.y
         sp.x, sp.y = cx, cy
         sp.last_angle = sp.angle_deg
         sp.angle_deg = self.spear_hold_angle()
-        self.arm_aim[side] = (cx, cy)
-        self.arm_aim["l" if side == "r" else "r"] = None
+        self._aim_hand(side, cx, cy)
 
 
 def _dot_norm(vx, vy, ux, uy):
