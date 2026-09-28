@@ -87,6 +87,8 @@ def pyro_explosion(pet, body) -> None:
             ticks = int(DEATH_MIN_STUN * inv_lerp(0.0, 0.5, best))
             beh = getattr(other, "behavior", None)
             if beh is not None:
+                # 先「吓一跳」：睡着的被炸醒，醒着的按性格回头指指点点（工匠自己除外）
+                beh.startle((x, y))
                 beh.apply_stun(ticks)
             else:
                 other.body.stun = max(getattr(other.body, "stun", 0), ticks)

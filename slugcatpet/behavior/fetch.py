@@ -41,8 +41,12 @@ def _edible_goal(obj):
     return obj_goal(obj, valid=lambda o: o.state in _EDIBLE_STATES, contact="grasp")
 
 
-def fetch_candidates(planner, edibles, diet=None):
-    """选果候选：可达且不冷却的 (obj, goal, 预估耗时)，按耗时升序。"""
+def fetch_candidates(planner, edibles, diet=None, pearl_like=1.0):
+    """选果候选：可达且不冷却的 (obj, goal, 预估耗时)，按耗时升序。
+
+    pearl_like > 1 的猫（溪流）把珍珠的预估耗时缩短，于是珍珠排在果子前面 ——
+    「喜欢珍珠，会尝试持有珍珠」。
+    """
     out = []
     for f in edibles:
         if f.state not in _EDIBLE_STATES:
@@ -60,6 +64,8 @@ def fetch_candidates(planner, edibles, diet=None):
             time_est = cands[0].time_est
             if meat and diet == DIET_CARNIVORE:
                 time_est *= MEAT_PREF
+            elif not getattr(f, "is_edible", True):
+                time_est /= max(1.0, float(pearl_like))   # 珍珠：越喜欢越先拿
             out.append((f, g, time_est))
     out.sort(key=lambda item: item[2])
     return out
@@ -83,13 +89,17 @@ def fetch_ready(planner, edibles, diet=None):
     return out
 
 
+PEARL_HOLD_TICKS = 900        # 喜欢珍珠的猫玩多久才放下（15 秒）
+
+
 class FruitFetcher:
-    def __init__(self, win, planner, diet=None):
+    def __init__(self, win, planner, diet=None, pearl_like=1.0):
         self.win = win
         self.body = win.body
         self.tongue = win.tongue
         self.planner = planner
         self.diet = diet
+        self.pearl_like = float(pearl_like)
 
         self.target = None
         self.phase = "select"
@@ -162,7 +172,8 @@ class FruitFetcher:
 
     def _phase_select(self):
         # 候选空 + 曾放弃 → giveup
-        cands = fetch_candidates(self.planner, self.win.fetchables(), diet=self.diet)
+        cands = fetch_candidates(self.planner, self.win.fetchables(), diet=self.diet,
+                                 pearl_like=self.pearl_like)
         if not cands:
             self.giveup = self._giveup_pending
             return True
@@ -229,6 +240,10 @@ class FruitFetcher:
                 self._trade_to = sc
                 self.phase = "trade"
                 self.timer = 0
+            elif self.pearl_like > 1.0:
+                # 喜欢珍珠的猫（溪流）：没得交易也舍不得撒手，先拿着把玩一段
+                self.phase = "pearl_hold"
+                self.timer = 0
             else:
                 self.body.release_fruit()
                 f.state = "free"
@@ -269,6 +284,23 @@ class FruitFetcher:
             self.body.walk_to(hx)
         else:
             self.body.stop_walk()
+        return False
+
+    def _phase_pearl_hold(self):
+        """喜欢珍珠的猫：把珍珠端在手里看一会儿，玩够了自己放下（原版珍珠可携带）。"""
+        f = self.body.carried_fruit
+        if f is None:
+            self.phase = "select"
+            return False
+        self.win.gfx.look_at = (f.x, f.y)
+        if self.timer > PEARL_HOLD_TICKS:
+            side = self.body.hand_of.get("fruit")
+            if side is not None:
+                self.body.arm_aim[side] = None
+            self.body.release_fruit()
+            f.state = "free"
+            f.held_by_hand = None
+            return True
         return False
 
     def _phase_trade(self):

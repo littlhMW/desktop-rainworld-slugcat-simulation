@@ -585,3 +585,21 @@ AIR_THROW_CD = 55               # 两次空中投掷的最小间隔 tick
 # 被指指点点：有概率面对发起者匍匐
 POINTED_CROUCH_PROB  = 0.5
 POINTED_CROUCH_TICKS = 150
+
+# ── 社交：摇醒睡着的同伴（社交欲望满、对方在睡才会做）──
+WAKE_P              = 0.55      # 基础概率，再 × (0.2 + 1.6 × 性格 wake_like)
+WAKE_SHAKE_REPS_MIN = 2
+WAKE_SHAKE_REPS_MAX = 4
+WAKE_SHAKE_TICKS    = 5         # 每一下摇晃的 tick
+WAKE_SHAKE_SPAN     = 4.0       # 摇晃幅度（手左右摆）
+WAKE_SHAKE_POKE     = 8         # 每这么多 tick 顺手扒拉一下
+
+# ── 被吓一跳（工匠爆炸：先炸醒睡着的，再按性格指指点点）──
+STARTLE_POINT_BASE  = 0.45
+
+# ── 用矛意愿门：低于此值的猫不肯为了开爆米花去捡矛（圣徒）──
+SPEAR_WILLING_MIN   = 0.4
+
+# ── 喜欢珍珠的猫（溪流）：闲着会把地上的珍珠叼起来拿着 ──
+PEARL_HOARD_P       = 0.25      # 每次重算的概率
+PEARL_HOARD_CD      = 900       # 放下之后这么久才会再去叼

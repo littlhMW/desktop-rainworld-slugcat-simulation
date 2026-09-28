@@ -37,8 +37,9 @@ SAINT_DEF = CatDef(
     # 慈悲孱弱纯素：偏静易累最耐寒，爱舌钩荡跃
     personality=replace(DEFAULT_PERSONALITY, activity=0.4, stamina=0.8, cold_gain_fac=0.5,
                         sociability=0.3, temper=0.3, crawl_like=0.55,
-                        point_like=0.4, bravery=0.35, kindness=0.70,
+                        point_like=0.4, bravery=0.35, kindness=0.95,
                         play_style="hop", diet=DIET_VEGETARIAN,
+                        hurry=0.35, spear_like=0.15,
                         toy_pref={"ceiling_play": 1.4}),
     tuning={
         "temper_ascend_gate": -0.20,          # ≤此值才可超度

@@ -23,6 +23,11 @@ class CatPersonality:
     bravery: float = 0.5           # 0 怯懦 ↔ 1 勇敢（恐惧时敢迎战、敢拔敌人身上的矛）
     kindness: float = 0.5          # 0 自私 ↔ 1 善良（恐惧时先救同伴）
     point_like: float = 0.5        # 0 不爱指指点点 ↔ 1 爱指（性格好的猫少指）
+    hurry: float = 0.5             # 0 不急 ↔ 1 赶时间（被挡时先跳走，回头再指）
+    wake_like: float = 0.5         # 0 不吵人 ↔ 1 爱把睡着的同伴摇醒
+    apologize: bool = True         # 误伤同伴会不会认错（False=理直气壮，永不道歉）
+    spear_like: float = 1.0        # 用矛意愿乘子（0=不肯碰矛）
+    pearl_like: float = 1.0        # 对珍珠的偏爱乘子（>1 会专门去拣来拿着）
     play_style: str = "sit"        # 玩耍姿态：sit 原地 / hop 边走边跳 / crawl 匍匐着玩
     diet: str = DIET_OMNIVORE
     toy_pref: dict = field(default_factory=dict)   # 空=全 1

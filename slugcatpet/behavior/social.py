@@ -6,6 +6,7 @@
 
     指向          手持续瞄着对象             指向 / 想要 / 注意
     指指点点      伸手-收回快速 1~5 下        指责 / 强调
+    摇醒          抓着对方左右晃 2~4 下         别睡了 / 起来玩（对方随即醒）
     抚摸          手在对象上画折返横线 2~5    喜欢 / 安抚
     拍拍          手在对象上画折返竖线 2~5    喜欢 / 安抚
     复活          用力下按 4~8 下（身体同压） 复活中；按完对象复活
@@ -73,6 +74,10 @@ _add("crouch_walk", "匍匐行走", "Crouch-walk",
      "害怕强敌，正在潜行", "afraid of a strong foe, sneaking", True, "walk")
 
 # 旧键别名：被抢东西的指指点点沿用 "protest"
+_add("wake", "摇醒", "Wake up",
+     "别睡了 / 起来玩（晃完对方就醒）", "stop sleeping / wake up and play",
+     False, "none")
+
 ALIASES = {"protest": "scold"}
 
 

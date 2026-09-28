@@ -19,7 +19,7 @@ GROUND_FRICTION = 0.86
 WALL_BOUNCE = 0.1
 
 BODY_RAD = 7.0             # Scavenger.cs:1611 bodyChunks[1].rad（髋）
-HEAD_RAD = 6.0
+HEAD_RAD = 5.0             # Scavenger.cs:1611 bodyChunks[2].rad（头）
 STAND_H = 26.0            # 站立时躯干中心离地高度
 SPEED_WALK = 0.85
 SPEED_RUN = 1.5

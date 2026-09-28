@@ -15,7 +15,7 @@ from . import social
 from .desire import build_arbiter, MoodContext
 from .fetch import (fetch_ready, BITE_HEAD_NUDGE, EAT_APPROACH, EAT_CHOMP_POSE,
                     EAT_HOLD_POSE, EAT_INTERVAL)
-from ..cats.personality import DIET_VEGETARIAN, DIET_SPECIAL
+from ..cats.personality import DIET_CARNIVORE, DIET_VEGETARIAN, DIET_SPECIAL
 from .objectlooker import ObjectLooker
 from ..control.mouse import GrabController
 from ..cats.saint.cursorlick import (BAND_LO as LICK_BAND_LO, BAND_HI as LICK_BAND_HI,
@@ -444,6 +444,7 @@ class BehaviorFSM:
         self._catch_cd = 0
         self._itemplay_cd = 0
         self._back_spear_cd = 0
+        self._pearl_cd = 0            # 喜欢珍珠的猫：两颗珍珠之间的间隔
         self._itemplay_target = None
         self._itemplay_left = 0
         self._itemplay_phase = 0
@@ -865,6 +866,22 @@ class BehaviorFSM:
             else:
                 self._hpole_food_trip()
 
+        # 喜欢珍珠的猫（溪流）：闲着也会去把地上的珍珠叼起来拿着
+        if self._pearl_cd > 0:
+            self._pearl_cd -= 1
+        if (self._fetch_check == 0 and self._pearl_cd <= 0
+                and float(getattr(self.pers, "pearl_like", 1.0)) > 1.0
+                and self.body.carried_fruit is None and self.body.carried_spear is None
+                and self.state in ("IdleStand", "PostThrowStand", "PostThrowWander")
+                and not self.grab.active and not self._exhausted
+                and not self._cold_urgent() and not self._zerog()
+                and not self._hibernating and not self.body.swimming
+                and self.rng.random() < tuning.PEARL_HOARD_P):
+            if self._free_pearl_near() is not None:
+                self._pearl_cd = tuning.PEARL_HOARD_CD
+                self._break_active_controllers()
+                self._act_or_wake("FetchFruit")
+
         # 爆米花（原版外部食物源）：开荚的贴上去就能啃；饿了主动走过去
         if self._cob_cd > 0:
             self._cob_cd -= 1
@@ -880,7 +897,7 @@ class BehaviorFSM:
                 and not self._cold_urgent() and not self._zerog()
                 and self.state in _WANTS_FROM):
             cb = self._nearest_cob(feedable=True)
-            if cb is None:
+            if cb is None and self._spear_willing():
                 cb = self._nearest_cob(feedable=False)     # 没开荚：去捡矛打
             if cb is not None:
                 self._cob = cb
@@ -891,7 +908,8 @@ class BehaviorFSM:
         if self._hunt_cd > 0:
             self._hunt_cd -= 1
         full = self.body.food >= self.body.food_max
-        hunting = (not full and self._food_seek_ready())          # 没饱：正经狩猎
+        meat = self._meat_zeal()
+        hunting = (not full and meat > 0.0 and self._food_seek_ready())   # 没饱：正经狩猎（吃素的猫不猎）
         # 饱了：捕食也算娱乐项目（空手也会先去捡石头/矛再打）
         playing = (full and self.rng.random() < tuning.HUNT_PLAY_PROB)
         if (self._fetch_check == 0 and self._hunt_cd <= 0
@@ -1239,7 +1257,7 @@ class BehaviorFSM:
             if tgt is None:
                 self._idle_hold = self._roll_idle_hold()
                 return
-            self._social_kind = self._pick_social_kind(tgt)
+            self._social_kind = self._social_kind_for(tgt)
             self._social_target = tgt
             self._social_left = 0        # 随机时长交给 _social_enter 掷
             if self._social_kind == "crouch_walk":
@@ -1319,7 +1337,9 @@ class BehaviorFSM:
             if self._block_grace > tuning.BLOCK_GRACE_TICKS:
                 # 刚跳过一个人：小概率回头指指点点（性格说了算）
                 if (self._jump_tries > 0 and not self._scold_now(
-                        self._last_blocker, tuning.BLOCKED_POINT_AFTER_JUMP)):
+                        self._last_blocker,
+                        tuning.BLOCKED_POINT_AFTER_JUMP
+                        * (0.4 + 1.2 * self._hurry()))):
                     pass
                 self._blocked_ticks = 0
                 self._jump_tries = 0
@@ -1336,7 +1356,8 @@ class BehaviorFSM:
         elif (blocker is not None and self._can_ground_blockreact()
               and self._blocked_ticks >= tuning.BLOCKED_JUMP_TICKS
               and self._jump_over_cd <= 0):
-            if self._scold_now(blocker, tuning.BLOCKED_POINT_FIRST_MAX):
+            if self._scold_now(blocker, tuning.BLOCKED_POINT_FIRST_MAX
+                               * (1.3 - 0.6 * self._hurry())):
                 self._blocked_ticks = 0        # 性格不好：懒得跳，先指着骂
             else:                              # 默认先跳，跳不过再推/指
                 self.body.request_jump("stand", hold_ticks=tuning.JUMP_OVER_HOLD)
@@ -1357,6 +1378,23 @@ class BehaviorFSM:
         return ((tuning.POINT_TEMPER_LO
                  + (tuning.POINT_TEMPER_HI - tuning.POINT_TEMPER_LO) * t)
                 * (0.6 + 0.8 * pl))
+
+    def _hurry(self) -> float:
+        """赶时间倾向（0 不急 ↔ 1 急着走）：被挡时先跳走、回头再指。"""
+        return clampf(float(getattr(self.pers, "hurry", 0.5)), 0.0, 1.0)
+
+    def _meat_zeal(self) -> float:
+        """食性 → 打猎热情（荤 1.0 / 杂 0.5 / 素与特殊 0.0）。"""
+        d = getattr(self.pers, "diet", None)
+        if d == DIET_CARNIVORE:
+            return 1.0
+        if d in (DIET_VEGETARIAN, DIET_SPECIAL):
+            return 0.0
+        return 0.5
+
+    def _spear_willing(self) -> bool:
+        """肯不肯使矛（圣徒几乎不肯碰矛，够不着就用别的办法）。"""
+        return float(getattr(self.pers, "spear_like", 1.0)) >= tuning.SPEAR_WILLING_MIN
 
     def _point_prob(self, base: float) -> float:
         """按性格缩放一个指指点点概率。"""
@@ -3151,7 +3189,8 @@ class BehaviorFSM:
         from .fetch import FruitFetcher
         self.gfx.hand_aim["l"] = None
         self.gfx.hand_aim["r"] = None
-        self.fetch = FruitFetcher(self.win, self.planner, diet=self.pers.diet)
+        self.fetch = FruitFetcher(self.win, self.planner, diet=self.pers.diet,
+                                  pearl_like=getattr(self.pers, "pearl_like", 1.0))
 
     def _st_fetchfruit(self, cursor, disturbed):
         if self.grab.active:
@@ -3225,12 +3264,16 @@ class BehaviorFSM:
         status = self.flyhunt.update(want)
         if status in ("thrown", "giveup", "idle"):
             self._flyhunt_release()
-            self._hunt_cd = HUNT_CD
+            self._hunt_cd = self._hunt_cd_after()
             self._transition("IdleStand")
         elif status == "revert_wander":
             self._flyhunt_release()
-            self._hunt_cd = HUNT_CD
+            self._hunt_cd = self._hunt_cd_after()
             self._transition("PostThrowWander")
+
+    def _hunt_cd_after(self) -> int:
+        """一次捕猎后的冷却：越爱吃肉越想接着打（荤 0.6× / 杂 1.0× / 素 1.4×）。"""
+        return int(HUNT_CD * (1.4 - 0.8 * self._meat_zeal()))
 
     def _flyhunt_release(self):
         """收尾：松手、清瞄准、清控制器。"""
@@ -3306,6 +3349,13 @@ class BehaviorFSM:
                 return True
         return False
 
+    def _peer_asleep(self, p) -> bool:
+        """这只同伴是不是在睡（Sleep/LieDown，或 body.sleeping 标记）。"""
+        beh = getattr(p, "behavior", None)
+        if beh is not None and beh.state in ("Sleep", "LieDown"):
+            return True
+        return bool(getattr(getattr(p, "body", None), "sleeping", False))
+
     def _cursor_close(self) -> bool:
         cur = self.cursor
         if cur is None:
@@ -3364,6 +3414,18 @@ class BehaviorFSM:
                 best, bd = p, d
         return best
 
+    def _free_pearl_near(self):
+        """脚边能捡的珍珠（喜欢珍珠的猫闲着会去叼）。"""
+        best, bd = None, tuning.ITEMPLY_SEEK_R
+        c0 = self.body.chunk0
+        for pr in getattr(self.win, "pearls", ()):
+            if getattr(pr, "state", None) != ItemState.FREE:
+                continue
+            d = math.hypot(pr.x - c0.x, pr.y - c0.y)
+            if d < bd:
+                best, bd = pr, d
+        return best
+
     def _nearest_free_food(self):
         best, bd = None, tuning.HELPFEED_SEEK_R
         c1 = self.body.chunk1
@@ -3388,7 +3450,8 @@ class BehaviorFSM:
         return math.hypot(w.x - b.chunk1.x, w.y - b.chunk1.y) < tuning.FIGHT_ARM_R
 
     def _nearest_ground_weapon(self):
-        """地上能捡的石头/矛（原版捡起投掷物）。"""
+        """地上能捡的石头/矛（原版捡起投掷物）；肯不肯捡矛看用矛意愿。"""
+        sfac = clampf(float(getattr(self.pers, "spear_like", 1.0)), 0.05, 2.0)
         best, bd = None, 260.0
         c1 = self.body.chunk1
         for s in self.win.stones:
@@ -3406,7 +3469,7 @@ class BehaviorFSM:
                 continue
             if not (getattr(s, "stuck", False) or (abs(s.vx) < 0.4 and abs(s.vy) < 0.4)):
                 continue
-            d = math.hypot(s.x - c1.x, s.y - c1.y)
+            d = math.hypot(s.x - c1.x, s.y - c1.y) / sfac
             if d < bd:
                 best, bd = s, d
         return best
@@ -3556,6 +3619,15 @@ class BehaviorFSM:
         if (self._act_cd <= 0 and self.state in _IDLE_SOCIAL_FROM
                 and not b.swimming and b.on_floor()):
             self._idle_social_try(cursor)
+
+    def _social_kind_for(self, tgt) -> str:
+        """社交欲望满时对这一位同伴要做的动作：同伴在睡就按 wake_like 改成「摇醒」。"""
+        kind = self._pick_social_kind(tgt)
+        if kind != "wake" and self._peer_asleep(tgt):
+            wl = clampf(float(getattr(self.pers, "wake_like", 0.5)), 0.0, 1.0)
+            if self.rng.random() < tuning.WAKE_P * (0.2 + 1.6 * wl):
+                kind = "wake"
+        return kind
 
     def _pick_social_kind(self, tgt):
         """社交欲望攒满 → 按性格从动作词表（behavior/social.py）里加权抽一个动作。"""
@@ -4044,6 +4116,8 @@ class BehaviorFSM:
         """到位后照动作词表（behavior/social.py）演对应的手势。"""
         if kind == "revive":
             self._social_revive(tgt, ob)
+        elif kind == "wake":
+            self._social_wake(tgt, ob)
         elif kind == "pet":
             self._social_stroke(tgt, ob, True)      # 抚摸：横线
         elif kind == "pat":
@@ -4080,6 +4154,34 @@ class BehaviorFSM:
         self.gfx.hand_aim["l" if side == "r" else "r"] = None
         if g.step():
             self._soothe(ob)                        # 画完一轮：双方都平复一点
+
+    def _social_wake(self, tgt, ob):
+        """摇醒：抓着睡着的同伴左右晃几下，晃完它就醒了。
+
+        对照原版 Player.GrabNPC / 拖拽时对被抓者的 nudzh；桌宠原创的社交动作，
+        只有社交欲望攒满、且对方正在睡的时候才会做（爱吵的性格更乐意）。
+        """
+        beh = getattr(tgt, "behavior", None)
+        if beh is None or not self._peer_asleep(tgt):
+            self._end_social()
+            return
+        g = self._social_gesture
+        if g is None:
+            reps = self.rng.randint(tuning.WAKE_SHAKE_REPS_MIN,
+                                    tuning.WAKE_SHAKE_REPS_MAX)
+            self._social_gesture = g = social.StrokeGesture(
+                reps, tuning.WAKE_SHAKE_TICKS, "h", tuning.WAKE_SHAKE_SPAN)
+        self.gfx.face_special = False
+        ox, oy = g.offset()
+        side = "r" if ob.chunk0.x >= self.body.chunk0.x else "l"
+        self.gfx.hand_aim[side] = (ob.chunk0.x + ox, ob.chunk0.y + oy)
+        self.gfx.hand_aim["l" if side == "r" else "r"] = None
+        self._social_touch += 1
+        if self._social_touch % tuning.WAKE_SHAKE_POKE == 0:
+            self._poke(ob)                  # 摇的时候顺手把对方扒拉一下
+        if g.step():
+            beh.wake_up(by=self.win)        # 晃完这一轮：对方被叫醒
+            self._end_social()
 
     def _social_revive(self, tgt, ob):
         """复活：伸手按在同伴身上用力下按 4~8 下（身体跟着压），按完同伴复活。"""
@@ -4670,8 +4772,8 @@ class BehaviorFSM:
         # 还没开荚：原版要用矛打一下才 Open()（空手打不开）。
         # 觅食时会愿意先去地上捡一根矛再回来打（用户要求：选择投矛命中爆米花）。
         if b.carried_spear is None:
-            if self._cob_fetch_spear() and self._cob_left > 0:
-                return                       # 正在去捡矛
+            if self._spear_willing() and self._cob_fetch_spear() and self._cob_left > 0:
+                return                       # 正在去捡矛（不肯用矛的猫直接放弃）
             self._cob_end()
             return
         tx = self._cob_stand_x(cb)
@@ -4937,10 +5039,53 @@ class BehaviorFSM:
             if math.hypot(ob.chunk0.x - c0.x, ob.chunk0.y - c0.y) <= tuning.SOCIAL_BOOST_R:
                 p.behavior._social_urge_boost(tuning.SOCIAL_URGE_BOOST_NEAR)
 
+    def wake_up(self, by=None) -> bool:
+        """被同伴摇醒 / 被爆炸吓醒：打断睡眠，从 WakeSequence 起身。返回 True=确实叫醒了。"""
+        if self.grab.active or self.state not in ("Sleep", "LieDown"):
+            return False
+        self._hibernating = False
+        self.gfx.sleeping = False
+        self.body.sleeping = False
+        self._sleep_urge = 0.0
+        self._wake_then = None
+        self._wake_stable = 0
+        self._social_urge_boost(tuning.SOCIAL_URGE_BOOST_WAKE)   # 被叫醒也是社交事件
+        self._transition("WakeSequence")
+        return True
+
+    def startle(self, origin=None) -> None:
+        """被吓一跳（工匠爆炸）：睡着的直接被炸醒，醒着的按性格回头指指点点。"""
+        if self.wake_up():
+            return                      # 刚被炸醒：先起身，账以后再算
+        p = clampf(tuning.STARTLE_POINT_BASE
+                   * (0.4 + 1.2 * float(getattr(self.pers, "point_like", 0.5)))
+                   * (0.5 + 1.0 * float(getattr(self.pers, "temper", 0.5))), 0.0, 1.0)
+        if self.rng.random() >= p:
+            return
+        tgt = self._startle_target(origin)
+        if tgt is None:
+            return
+        self._protest_target = tgt
+        self._start_protest(tgt)        # 词表：指指点点
+
+    def _startle_target(self, origin=None):
+        """吓人那一方（爆炸的工匠）：离爆心最近的那只同伴。"""
+        best, bd = None, 1e9
+        ox, oy = (origin if origin is not None else (self.body.chunk1.x,
+                                                     self.body.chunk1.y))
+        for p in self._living_peers():
+            ob = p.body
+            d = math.hypot(ob.chunk1.x - ox, ob.chunk1.y - oy)
+            if d < bd:
+                best, bd = p, d
+        return best
+
     def apologize(self, victim) -> None:
         """误伤同伴：记下它，回头面对它匍匐道歉（抱歉）。"""
         if victim is None or getattr(victim, "body", None) is None:
             return
+        if not getattr(self.pers, "apologize", True):
+            return                      # 工匠：暴躁执拗，不认错
         if victim.body.dead or victim is self:
             return
         if self._apology_target is victim:
@@ -5018,11 +5163,13 @@ class BehaviorFSM:
         if self._back_spear_cd > 0:
             self._back_spear_cd -= 1
             return
-        if (self.state != "IdleStand" or self.grab.active or self._hibernating
-                or b.swimming or self._zerog()):
+        eager = float(getattr(self.pers, "spear_like", 1.0)) > 1.0   # 猎手：急着补矛
+        if self.grab.active or self._hibernating or b.swimming or self._zerog():
+            return
+        if not eager and self.state != "IdleStand":
             return
         c0 = b.chunk0
-        best, bd = None, 30.0
+        best, bd = None, (30.0 * float(getattr(self.pers, "spear_like", 1.0)))
         for sp in self.win.spears:
             if sp.state != "free" or not _spear_takeable(sp):
                 continue
@@ -5034,7 +5181,7 @@ class BehaviorFSM:
             if d < bd:
                 best, bd = sp, d
         if best is None:
-            self._back_spear_cd = 120
+            self._back_spear_cd = 60 if eager else 120
             return
         b.put_spear_on_back(best)
         self.gfx.blink = 12
@@ -5073,6 +5220,8 @@ class BehaviorFSM:
             spear = isinstance(o, Spear)
             w = pref.get("spear_play" if spear else "stone_play", 1.0)
             w *= 1.0 + (temper - 0.5) * (0.8 if spear else -0.8)
+            if spear:                        # 用矛意愿：圣徒几乎不玩矛
+                w *= clampf(float(getattr(self.pers, "spear_like", 1.0)), 0.0, 2.0)
             return d / max(0.05, w)
         return min(cands, key=score)[0]
 
