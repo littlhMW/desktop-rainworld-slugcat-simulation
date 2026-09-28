@@ -423,3 +423,37 @@ MAKEWAY_TIMEOUT    = 200
 BLOCKED_JUMP_TICKS = 100
 JUMP_OVER_HOLD     = 6
 JUMP_OVER_COOLDOWN = 80
+BLOCK_GRACE_TICKS  = 30        # 短暂丢失阻挡（跳起的那几帧/擦身）不清零，超过这么久才算真的不再被挡
+
+# 挡路升级：跳不过去 → 上手推对方，再回头指指点点
+BLOCKED_PUSH_TICKS  = 60        # 跳越后又一直被挡满这么久 → 上手推
+BLOCKED_PUSH_IMPULSE = 1.8      # 推对方的水平冲量
+BLOCKED_PUSH_RECOIL  = 0.4      # 自己的反冲
+BLOCKED_PUSH_POSE    = 14       # 推人姿势时长
+BLOCKED_POINT_PROB  = 0.55      # 推完回头指指点点的概率
+SCOLD_TICKS         = 240       # 指指点点状态时长
+SCOLD_R             = 240.0     # 对方跑这么远就不指了
+SCOLD_CD            = 420       # 下一次挡路抗议的冷却
+
+# 杆上被同伴挡路：停在中间扒拉几下（最后有概率改成指指点点）
+POLE_BLOCK_DIST       = 26.0
+POLE_NUDGE_TICKS      = 56
+POLE_NUDGE_POKE       = 12      # 扒拉节奏（每这么多个 tick 扒一下）
+POLE_NUDGE_POINT_TAIL = 30      # 最后这么多 tick 改成指指点点
+POLE_NUDGE_POINT_PROB = 0.5
+POLE_NUDGE_CD         = 150     # 扒拉完的冷却
+
+# 指指点点手势：伸出 → 收回，重复 3~5 次
+POINT_REPS_MIN = 3
+POINT_REPS_MAX = 5
+POINT_ON_TICKS  = 16
+POINT_OFF_TICKS = 12
+
+# 被鼠标抓住时自己够杆/够食物
+DRAG_REACH_R  = 34.0            # 手够得着就抓（原版手碰到就抓）
+DRAG_REACH_CD = 24
+DRAG_POLE_R   = 46.0            # 贴到这么近算抱上杆了
+
+# 被指指点点：有概率面对发起者匍匐
+POINTED_CROUCH_PROB  = 0.5
+POINTED_CROUCH_TICKS = 150

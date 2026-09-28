@@ -8,7 +8,9 @@ from ..behavior import tuning
 from ..core.creature import (ZEROG_GRAB_DIST, WALK_STOP_EPS, WALL_CLIMB_SPEED,
                              _closest_on_segment)
 from ..planning import (GIVEUP, HOLDING, MODE_STAY, PlanExecutor, Planner, obj_goal)
-from .blocking import blocks_path, yield_target_x
+from .blocking import (blocks_path, yield_target_x, on_same_pole,
+                        pole_in_the_way)
+from .pointing import PointGesture
 from .desire import build_arbiter, MoodContext
 from .fetch import (fetch_ready, BITE_HEAD_NUDGE, EAT_APPROACH, EAT_CHOMP_POSE,
                     EAT_HOLD_POSE, EAT_INTERVAL)
@@ -62,7 +64,8 @@ _WANTS_FROM = frozenset(("IdleStand", "PostThrowWander", "PostThrowStand", "Make
 # 这些态靠 _wants_break 收尾（释放墙/天花/手持、恢复行走边界）；
 # 必须保证「离开该态」时一定跑到一次，否则 walk_min/walk_max 会永久留 None
 _WANTS_STATES = frozenset(("WallClimb", "CeilingHang", "ChaseCursor", "Socialize",
-                           "HelpFeed", "FightThreat", "CrawlAway", "EatCob"))
+                           "HelpFeed", "FightThreat", "CrawlAway", "EatCob",
+                           "ScoldBlocker"))
 
 WALL_MARGIN = 40.0
 
@@ -312,7 +315,32 @@ class BehaviorFSM:
         self._saved_walk = None
         self._fight_throw_t = 0
         self._blocked_ticks = 0
+        self._block_grace = 0
         self._jump_over_cd = 0
+        # 挡路升级：跳过 → 推人 → 回头指指点点；杆上被挡 → 停住扒拉
+        self._jump_tries = 0
+        self._push_left = 0
+        self._push_x = None
+        self._push_side = "r"
+        self._blocker_target = None
+        self._scold_left = 0
+        self._scold_cd = 0
+        self._pole_blocker = None
+        self._pole_nudge = 0
+        self._pole_nudge_t = 0
+        self._pole_nudge_pin = None
+        self._pole_nudge_cd = 0
+        self._pole_nudge_point = False
+        # 指指点点手势（伸出→收回→再伸出，重复 3~5 下）
+        self._point = None
+        self._point_tgt = None
+        self._point_mode = "obj"
+        self._point_enforce = False
+        # 被鼠标抓住时自己够杆/够食物
+        self._drag_cd = 0
+        self._drag_pole = None
+        # 被指指点点后面对发起者匍匐
+        self._crawl_point_to = None
         self.stonethrow = None
         self.flyhunt = None
         self._hunt_cd = 0
@@ -406,7 +434,8 @@ class BehaviorFSM:
         if self.state in ("Ascension", "Dead", "Dragged"):
             return False
         if self.state in ("WallClimb", "CeilingHang", "ChaseCursor", "Socialize",
-                          "HelpFeed", "FightThreat", "CrawlAway", "EatCob"):
+                          "HelpFeed", "FightThreat", "CrawlAway", "EatCob",
+                          "ScoldBlocker"):
             self._wants_break(self.state)
         self._break_tongue()
         self.climb = None
@@ -467,7 +496,8 @@ class BehaviorFSM:
         elif self.state == "SeekHPole":
             self._seekhpole_break()
         elif self.state in ("WallClimb", "CeilingHang", "ChaseCursor", "Socialize",
-                            "HelpFeed", "FightThreat", "CrawlAway", "EatCob"):
+                            "HelpFeed", "FightThreat", "CrawlAway", "EatCob",
+                            "ScoldBlocker"):
             self._wants_break(self.state)
         self._hibernating = False
         self.body.food_eat(-tuning.FOOD_KILL_PENALTY)
@@ -579,7 +609,8 @@ class BehaviorFSM:
         elif st == "Swimming":
             self.body.swim_target = None
         elif st in ("WallClimb", "CeilingHang", "ChaseCursor", "Socialize",
-                    "HelpFeed", "FightThreat", "CrawlAway", "EatCob"):
+                    "HelpFeed", "FightThreat", "CrawlAway", "EatCob",
+                    "ScoldBlocker"):
             self._wants_break(st)
 
     def _break_tongue(self):
@@ -783,6 +814,7 @@ class BehaviorFSM:
             handler = getattr(self, "_st_" + self.state.lower(), None)
         if handler:
             handler(cursor, disturbed)
+        self._push_pose_tick()
         e_delta = _energy_delta(self.state, self._drain_fac)
         if (self.state == "PoleClimb" and self.poleclimb is not None
                 and self.poleclimb.phase == "tip"):
@@ -877,6 +909,8 @@ class BehaviorFSM:
             self._fight_enter()
         elif st == "CrawlAway":
             self._crawl_enter()
+        elif st == "ScoldBlocker":
+            self._scold_enter()
         elif st == "EatCob":
             self._cob_enter()
         elif st == "PoleClimb":
@@ -1026,10 +1060,25 @@ class BehaviorFSM:
             self._pick_wander_target()
 
     def _scan_blocking(self):
-        """一遍扫在场猫：我挡了谁的路(被顶→计时让路)、谁挡了我的路(被挡→计时跳越)。"""
+        """一遍扫在场猫：我挡了谁的路(被顶→计时让路)、谁挡了我的路(被挡→跳/推/指)。"""
         if self._jump_over_cd > 0:
             self._jump_over_cd -= 1
         myx = self.body.chunk1.x
+        # 杆上被同伴挡路：停在中间扒拉几下（+有概率指指点点）
+        if (self._pole_nudge_pin is None and self._pole_nudge_cd <= 0
+                and not self.grab.active and self.body.on_pole):
+            self._pole_blocker = None
+            for o in getattr(self.win, "pets", ()):
+                if o is self.win:
+                    continue
+                pb = getattr(o, "body", None)
+                if pb is None:
+                    continue
+                if (on_same_pole(self.body, pb)
+                        and pole_in_the_way(self.body, pb, tuning.POLE_BLOCK_DIST)):
+                    self._pole_blocker = o
+                    self._pole_nudge = tuning.POLE_NUDGE_TICKS
+                    break
         shover = None
         blocker = None
         for o in getattr(self.win, "pets", ()):
@@ -1053,7 +1102,15 @@ class BehaviorFSM:
         else:
             self._shoved_ticks = 0
             self._makeway_of = None
-        self._blocked_ticks = self._blocked_ticks + 1 if blocker is not None else 0
+        if blocker is not None:
+            self._blocked_ticks += 1
+            self._block_grace = 0
+        else:
+            # 跳起来的那几帧/擦身而过会短暂判不到阻挡，别就此清零（原版也是持续贴着硬顶）
+            self._block_grace += 1
+            if self._block_grace > tuning.BLOCK_GRACE_TICKS:
+                self._blocked_ticks = 0
+                self._jump_tries = 0
 
         tx = self._makeway_target(self._makeway_of) \
             if self._shoved_ticks >= tuning.SHOVE_YIELD_TICKS else None
@@ -1063,12 +1120,24 @@ class BehaviorFSM:
                 and not self._exhausted and not self._cold_urgent()
                 and self.body.on_floor()):
             self._transition("MakeWay")     # 被顶满时长 → 让路
-        elif (self._blocked_ticks >= tuning.BLOCKED_JUMP_TICKS and self._jump_over_cd <= 0
-              and self.body.on_floor()
-              and not self.grab.active and not self._zerog() and not self.body.swimming):
+        elif (blocker is not None and self._can_ground_blockreact()
+              and self._blocked_ticks >= tuning.BLOCKED_JUMP_TICKS
+              and self._jump_over_cd <= 0):
             self.body.request_jump("stand", hold_ticks=tuning.JUMP_OVER_HOLD)   # 被挡满时长 → 跳越
+            self._jump_tries += 1
             self._blocked_ticks = 0
             self._jump_over_cd = tuning.JUMP_OVER_COOLDOWN
+        elif (blocker is not None and self._can_ground_blockreact() and self._jump_tries > 0
+              and self._blocked_ticks >= tuning.BLOCKED_PUSH_TICKS
+              and self._jump_over_cd <= 0):
+            self._push_blocker(blocker)     # 跳不过去 → 上手推他（推完可能回头指指点点）
+            self._jump_tries = 0
+            self._blocked_ticks = 0
+
+    def _can_ground_blockreact(self) -> bool:
+        """地面挡路反应（跳/推）的公共门禁。"""
+        return (self.body.on_floor() and not self.grab.active
+                and not self._zerog() and not self.body.swimming)
 
     def _makeway_target(self, o):
         """让路目标 x，无顶人者则 None。"""
@@ -1104,6 +1173,136 @@ class BehaviorFSM:
                 or not blocks_path(b.chunk1.x, ob.chunk1.x, ob.walk_target_x,
                                    tuning.SHOVE_CONTACT_DIST)):
             self._transition("IdleStand")
+
+    # ── 一直被挡路：跳不过就推人，再回头指指点点 ──
+    def _push_blocker(self, o):
+        """推挡路者一把（原版贴身推挤）；推完有概率回头指指点点。"""
+        ob = getattr(o, "body", None)
+        if ob is None:
+            return
+        b = self.body
+        s = 1.0 if ob.chunk0.x >= b.chunk0.x else -1.0
+        ob.chunk0.vx += s * tuning.BLOCKED_PUSH_IMPULSE
+        ob.chunk1.vx += s * tuning.BLOCKED_PUSH_IMPULSE * 0.6
+        ob.chunk0.vy -= 0.2
+        ob.chunk1.vy -= 0.1
+        b.chunk0.vx -= s * tuning.BLOCKED_PUSH_RECOIL
+        b.temper_shift(tuning.TEMPER_FEED * 0.05)
+        self._push_left = tuning.BLOCKED_PUSH_POSE
+        self._push_side = "r" if s > 0 else "l"
+        self._push_x = ob.chunk0.x
+        if (self._scold_cd <= 0 and self.state in _MAKEWAY_FROM
+                and self.rng.random() < tuning.BLOCKED_POINT_PROB):
+            self._blocker_target = o
+            self._break_active_controllers()
+            self._transition("ScoldBlocker")
+
+    def _push_pose_tick(self):
+        """推人姿势：手臂朝被推者伸一下（很短）。"""
+        if self._push_left <= 0:
+            return
+        self._push_left -= 1
+        if self._push_x is None:
+            return
+        self.gfx.hand_aim[self._push_side] = (self._push_x, self.body.chunk0.y + 4.0)
+        self.gfx.hand_aim["l" if self._push_side == "r" else "r"] = None
+
+    def _scold_enter(self):
+        """回头指指点点：先转身面对挡路者，再一下一下地指。"""
+        b = self.body
+        self._scold_left = tuning.SCOLD_TICKS
+        self._scold_cd = tuning.SCOLD_CD
+        b.set_posture(True)
+        b.stop_walk()
+        tb = getattr(self._blocker_target, "body", None)
+        if tb is not None:
+            b.facing = 1 if tb.chunk0.x >= b.chunk0.x else -1
+        self._point_begin(self._blocker_target)
+
+    def _scold_cleanup(self):
+        self._blocker_target = None
+        self._point_end()
+        self.gfx.face_special = False
+
+    def _st_scoldblocker(self, cursor, disturbed):
+        b = self.body
+        if self.grab.active:
+            self._scold_cleanup()
+            self._transition("Dragged")
+            return
+        tb = getattr(self._blocker_target, "body", None)
+        self._scold_left -= 1
+        if (tb is None or getattr(tb, "dead", False) or self._scold_left <= 0
+                or abs(tb.chunk0.x - b.chunk0.x) > tuning.SCOLD_R):
+            self._scold_cleanup()
+            self._transition("IdleStand" if b.on_floor() else "Airborne")
+            return
+        b.stop_walk()
+        b.facing = 1 if tb.chunk0.x >= b.chunk0.x else -1     # 回头
+        self.gfx.look_at = (tb.chunk0.x, tb.chunk0.y)
+        if self._point_step():          # 一轮 3~5 下指完 → 再来一轮
+            self._point_begin(self._blocker_target)
+        if self.timer % tuning.SOCIAL_POKE_INTERVAL == 0:
+            self._poke(tb)              # 顺手扒拉
+
+    # ── 杆上被同伴挡路：停在中间扒拉几下（最后有概率指指点点）──
+    def _pole_nudge_tick(self):
+        """返回 True=本 tick 已被接管（别再推进爬杆控制器）。"""
+        o = self._pole_blocker
+        b = self.body
+        tb = getattr(o, "body", None) if o is not None else None
+        if (o is None or self._pole_nudge <= 0 or tb is None
+                or not pole_in_the_way(b, tb, tuning.POLE_BLOCK_DIST * 1.6)):
+            return self._pole_unfreeze()
+        if self._pole_nudge_pin is None:            # 进入：原地钉住
+            self._pole_nudge_pin = (b.chunk0.pinned, b.chunk1.pinned,
+                                    b.chunk0.x, b.chunk0.y, b.chunk1.x, b.chunk1.y)
+            self._pole_nudge_t = 0
+            self._pole_nudge_point = False
+            b.stop_walk()
+        self._pole_nudge -= 1
+        self._pole_nudge_t += 1
+        _p0, _p1, x0, y0, x1, y1 = self._pole_nudge_pin
+        c0, c1 = b.chunk0, b.chunk1
+        c0.pinned = c1.pinned = True                # 抱在杆上不动
+        c0.x, c0.y, c0.vx, c0.vy = x0, y0, 0.0, 0.0
+        c1.x, c1.y, c1.vx, c1.vy = x1, y1, 0.0, 0.0
+        self.gfx.look_at = (tb.chunk0.x, tb.chunk0.y)
+        if self._pole_nudge <= tuning.POLE_NUDGE_POINT_TAIL and not self._pole_nudge_point:
+            self._pole_nudge_point = self.rng.random() < tuning.POLE_NUDGE_POINT_PROB
+            if self._pole_nudge_point:
+                self._point_begin(o)                # 后半段改成指指点点
+            else:
+                self._clear_hands()
+        if self._pole_nudge_point:
+            self._point_step()
+        elif self._pole_nudge_t % tuning.POLE_NUDGE_POKE == 0:
+            self._poke(tb)                          # 扒拉
+            side = "r" if tb.chunk0.x >= c0.x else "l"
+            self.gfx.hand_aim[side] = (tb.chunk0.x, tb.chunk0.y)
+            self.gfx.hand_aim["l" if side == "r" else "r"] = None
+        elif self._pole_nudge_t % tuning.POLE_NUDGE_POKE == tuning.POLE_NUDGE_POKE // 2:
+            self._clear_hands()
+        if self._pole_nudge <= 0:
+            return self._pole_unfreeze()
+        return True
+
+    def _pole_unfreeze(self):
+        """还原「停住扒拉」钉住的 chunk 状态；返回 False（=没接管本 tick）。"""
+        if self._pole_nudge_pin is None:
+            return False
+        _p0, _p1, x0, y0, x1, y1 = self._pole_nudge_pin
+        self._pole_nudge_pin = None
+        self._pole_nudge = 0
+        self._pole_nudge_point = False
+        self._pole_nudge_cd = tuning.POLE_NUDGE_CD
+        self._point_end()
+        b = self.body
+        b.chunk0.pinned = False
+        b.chunk1.pinned = False
+        b.chunk0.x, b.chunk0.y = x0, y0
+        b.chunk1.x, b.chunk1.y = x1, y1
+        return False
 
     # ── 躲蜥蜴 ──
     def _carrying_gift(self) -> bool:
@@ -1545,9 +1744,10 @@ class BehaviorFSM:
                     self.timer = 0
         elif self.phase == 2:
             self.gfx.look_at = cursor
-            self._point_at_cursor(cursor, enforce_side=True)
-            if self.timer >= T_POINT_WAKE or self._point_stopped:
-                self._clear_hands()
+            if not self._point_active():
+                self._point_begin(cursor, mode="cursor", enforce_side=True)
+            if self._point_step() or self.timer >= T_POINT_WAKE:
+                self._point_end()
                 self._transition("IdleStand")
         elif self.phase == 3:
             if b.on_floor():
@@ -1560,6 +1760,7 @@ class BehaviorFSM:
 
     def _st_dragged(self, cursor, disturbed):
         self._clear_hands()
+        self._drag_reach_tick(cursor)     # 贴到杆/食物旁边就自己抓住
         ch = self.grab.chunk
         if ch is not None and math.hypot(ch.vx, ch.vy) > tuning.TEMPER_SWING_SPEED:
             self.body.temper_shift(tuning.TEMPER_SWING_RATE)
@@ -1570,8 +1771,80 @@ class BehaviorFSM:
             return
         self._struggle_tick(cursor)
 
+    def _drag_reach_tick(self, cursor):
+        """被鼠标抓着时：手碰到杆/食物就自己抓上去（松手就抓牢/把果子拽下来）。"""
+        b = self.body
+        if self._drag_cd > 0:
+            self._drag_cd -= 1
+        free_hands = (b.carried_fruit is None and b.carried_stone is None
+                      and b.carried_spear is None)
+        if free_hands and self._drag_cd <= 0 and self._drag_grab_item():
+            self._drag_cd = tuning.DRAG_REACH_CD
+            return
+        p = self._drag_reach_pole()
+        self._drag_pole = p
+        if p is not None:
+            y = min(max(b.chunk0.y, min(p.ay, p.by)), max(p.ay, p.by))
+            side = "r" if p.bx >= b.chunk0.x else "l"
+            self.gfx.hand_aim[side] = (p.bx, y)      # 伸手抱杆
+            self.gfx.hand_aim["l" if side == "r" else "r"] = None
+            self.gfx.look_at = (p.bx, y)
+
+    def _drag_grab_item(self) -> bool:
+        """够得着就抓最近的果子 / 矛 / 石头（原版：手碰到就抓，抓着不撒手）。"""
+        b = self.body
+        for kind, items in (("fruit", getattr(self.win, "fruits", ())),
+                            ("spear", getattr(self.win, "spears", ())),
+                            ("stone", getattr(self.win, "stones", ()))):
+            best, bd = None, tuning.DRAG_REACH_R
+            for it in items:
+                if getattr(it, "state", None) not in (ItemState.FREE, ItemState.HANGING):
+                    continue
+                if getattr(it, "held_by_hand", None) is not None:
+                    continue
+                d = min(self._reach_dist(b.chunk0, it), self._reach_dist(b.chunk1, it))
+                if d < bd:
+                    best, bd = it, d
+            if best is None:
+                continue
+            side = "r" if best.x >= b.chunk0.x else "l"
+            if kind == "fruit":
+                b.grab_fruit(best, side, snap_stalk=False)   # 摘取类：拖走才把果子拽下来
+            elif kind == "spear":
+                b.grab_spear(best, side)
+            else:
+                b.grab_stone(best, side)
+            return True
+        return False
+
+    @staticmethod
+    def _reach_dist(chunk, item) -> float:
+        return math.hypot(item.x - chunk.x, item.y - chunk.y)
+
+    def _drag_reach_pole(self):
+        """够得着的竖杆（原版贴杆就能抱）。"""
+        from ..world.pole import VERTICAL
+        b = self.body
+        best, bd = None, tuning.DRAG_POLE_R
+        for p in getattr(self.win, "poles", ()):
+            if p.kind != VERTICAL:
+                continue
+            lo, hi = (p.ay, p.by) if p.ay <= p.by else (p.by, p.ay)
+            y = min(max(b.chunk0.y, lo), hi)
+            d = min(math.hypot(p.bx - b.chunk0.x, y - b.chunk0.y),
+                    math.hypot(p.bx - b.chunk1.x, y - b.chunk1.y))
+            if d < bd:
+                best, bd = p, d
+        return best
+
     def _drag_release(self):
-        """松手：在顶部放下 → 抓住上边缘吊住（窗口顶部当平地），否则照旧自由落。"""
+        """松手：抱着杆 → 抓牢杆子；在顶部放下 → 抓住上边缘；否则自由落。"""
+        p = self._drag_pole
+        self._drag_pole = None
+        from ..world.pole import VERTICAL
+        if p is not None and p.kind == VERTICAL and p in getattr(self.win, "poles", ()):
+            self._pole_handoff(("v", p, "climb"))    # 原版：贴杆松手即抓牢
+            return
         if self._ceiling_reachable() and self.body.wall_cd <= 0:
             self._ceil_placed = True     # 鼠标放到顶边 → 吊住
             self._transition("CeilingHang")
@@ -1801,6 +2074,8 @@ class BehaviorFSM:
             self._pole_release()
             self._transition("IdleStand" if on_floor else "Airborne")
             return
+        if self._pole_nudge_tick():      # 被同伴挡在杆上：停住扒拉/指指点点
+            return
         want_dismount = self.body.energy <= tuning.TIP_TIRED_ENERGY
         done = self.poleclimb.update(want_dismount)
         if done:
@@ -1833,6 +2108,10 @@ class BehaviorFSM:
         self._transition("PoleClimb")
 
     def _pole_release(self):
+        self._pole_nudge_pin = None
+        self._pole_nudge = 0
+        self._pole_nudge_point = False
+        self._pole_blocker = None
         if self.poleclimb is not None:
             self.poleclimb.release()
             self.poleclimb = None
@@ -1875,6 +2154,8 @@ class BehaviorFSM:
             self._hpole_release()
             self._transition("IdleStand" if self.body.on_floor() else "Airborne")
             return
+        if self._pole_nudge_tick():      # 被同伴挡在杆上：停住扒拉/指指点点
+            return
         done = self.hpole.update()
         if done:
             ho = self.hpole.handoff
@@ -1885,6 +2166,10 @@ class BehaviorFSM:
             self._transition("IdleStand" if self.body.on_floor() else "Airborne")
 
     def _hpole_release(self):
+        self._pole_nudge_pin = None
+        self._pole_nudge = 0
+        self._pole_nudge_point = False
+        self._pole_blocker = None
         if self.hpole is not None:
             self.hpole.release()
             self.hpole = None
@@ -2381,7 +2666,8 @@ class BehaviorFSM:
     def _wants_tick(self, cursor):
         """社交/帮助/反击/匍匐躲避在「没正事」的态里按优先级抢班。"""
         for k in ("_social_cd", "_help_cd", "_fight_cd", "_crawl_cd",
-                  "_protest_cd", "_revive_cd", "_wall_cd"):
+                  "_protest_cd", "_revive_cd", "_wall_cd", "_scold_cd",
+                  "_pole_nudge_cd"):
             v = getattr(self, k)
             if v > 0:
                 setattr(self, k, v - 1)
@@ -2428,14 +2714,22 @@ class BehaviorFSM:
                 self._break_active_controllers()
                 self._transition("FightThreat")
                 return
-        # 5) 恐惧：蜥蜴贴脸 → 趴下潜行挪开（匍匐）
+        # 5) 恐惧：蜥蜴靠近 → 在它背后就趴下潜行挪开；打了照面直接跑
         if self._crawl_cd <= 0 and not b.swimming and b.on_floor():
             lz = self._nearest_lizard(tuning.CRAWL_FEAR_R)
             if lz is not None and not self._carrying_gift():
-                self._crawl_from = lz
-                self._crawl_left = tuning.CRAWL_AWAY_TICKS
+                behind = self._behind_creature(lz)
+                if behind or abs(lz.x - b.chunk1.x) > tuning.CRAWL_FEAR_R * 0.6:
+                    self._crawl_from = lz
+                    self._crawl_point_to = None
+                    self._crawl_left = tuning.CRAWL_AWAY_TICKS
+                    self._break_active_controllers()
+                    self._transition("CrawlAway")
+                    return
+                self._flee_from = lz
+                self._crawl_cd = T_CRAWL_RETRY
                 self._break_active_controllers()
-                self._transition("CrawlAway")
+                self._transition("FleeLizard")
                 return
 
     def _start_protest(self, thief):
@@ -2530,7 +2824,7 @@ class BehaviorFSM:
             self._saved_walk = None
 
     def _social_cleanup(self):
-        self._clear_hands()
+        self._point_end()
         self.gfx.face_special = False
         if self._social_kind == "revive":
             self._revive_cd = T_REVIVE_RETRY
@@ -2555,6 +2849,9 @@ class BehaviorFSM:
             b.release_ceiling()
         elif st == "CrawlAway":
             b.set_crawl(False)
+            self._crawl_point_to = None
+        elif st == "ScoldBlocker":
+            self._scold_cleanup()
         elif st == "Socialize":
             self._social_cleanup()
         elif st == "HelpFeed":
@@ -2720,14 +3017,17 @@ class BehaviorFSM:
         d = math.hypot(cx - b.chunk0.x, cy - b.chunk0.y)
         if d > tuning.PLAYCUR_ARRIVE:
             b.walk_to(cx)
+            self._point_end()
         else:
             b.stop_walk()
-            self._point_at_cursor(cursor, cover=True)
+            if not self._point_active():
+                self._point_begin(cursor, mode="cursor")   # 指着鼠标，一下一下
+            self._point_step()
             if d <= tuning.PLAYCUR_GRAB_R and self.timer % 30 == 0:
                 if self.rng.random() < 0.5:
                     b.request_jump("protest")
         if self._play_left <= 0 or d > tuning.PLAYCUR_R * 1.6:
-            self._clear_hands()
+            self._point_end()
             self._transition("IdleStand")
 
     # ── 社交：靠近/抚摸同伴 · 扒拉指指点点 · 救同伴 ──
@@ -2769,24 +3069,83 @@ class BehaviorFSM:
             if self._social_kind == "revive":
                 self._nuzzle_peer(tgt)
             else:
-                self._point_at_peer(tgt)
+                if self._point_step():          # 一轮 3~5 下指完 → 再来一轮
+                    self._point_begin(tgt)
                 if self.timer % tuning.SOCIAL_POKE_INTERVAL == 0:
                     self._poke(ob)
         if self._social_left <= 0:
             self._end_social()
 
-    def _point_at_peer(self, peer):
-        """指指点点：手臂指向目标（同伴或生物），并换上特殊表情。"""
-        ob = getattr(peer, "body", None)
+    def _aim_target(self, tgt) -> bool:
+        """手臂指向目标（同伴/生物/坐标点）并换上特殊表情；目标无效返回 False。"""
+        if tgt is None:
+            return False
+        ob = getattr(tgt, "body", None)
         if ob is not None:
             tx, ty = ob.chunk0.x, ob.chunk0.y
         else:
-            tx, ty = getattr(peer, "x", 0.0), getattr(peer, "y", 0.0)
+            tx, ty = getattr(tgt, "x", None), getattr(tgt, "y", None)
+            if tx is None or ty is None:
+                return False
         b = self.body
         side = "r" if tx >= b.chunk0.x else "l"
         self.gfx.hand_aim[side] = (tx, ty)
         self.gfx.hand_aim["l" if side == "r" else "r"] = None
         self.gfx.face_special = True
+        return True
+
+    def _point_at_peer(self, peer):
+        """指一下（单帧）：手臂指向目标（同伴或生物），并换上特殊表情。"""
+        return self._aim_target(peer)
+
+    # ── 指指点点手势：伸出 → 收回 → 再伸出，重复 3~5 下 ──
+    def _point_begin(self, tgt, mode="obj", enforce_side=False, reps=None):
+        if reps is None:
+            reps = self.rng.randint(tuning.POINT_REPS_MIN, tuning.POINT_REPS_MAX)
+        self._point = PointGesture(reps, tuning.POINT_ON_TICKS, tuning.POINT_OFF_TICKS)
+        self._point_tgt = tgt
+        self._point_mode = mode
+        self._point_enforce = bool(enforce_side)
+        if mode == "cursor":
+            self.point_side = 0
+        # 被指的同伴：有概率转过身来对着发起者匍匐
+        beh = getattr(tgt, "behavior", None) if tgt is not None else None
+        if beh is not None and hasattr(beh, "be_pointed_at"):
+            beh.be_pointed_at(self.win)
+
+    def _point_active(self) -> bool:
+        return self._point is not None
+
+    def _point_end(self):
+        self._point = None
+        self._point_tgt = None
+        self._clear_hands()
+
+    def _point_step(self) -> bool:
+        """推进一步指指点点；返回 True=整段结束（手也收回去了）。"""
+        pg = self._point
+        if pg is None:
+            return True
+        if pg.done:
+            self._point_end()
+            return True
+        if pg.extended:
+            if self._point_mode == "cursor":
+                self._point_at_cursor(self._point_tgt, enforce_side=self._point_enforce,
+                                      cover=True)
+                if self._point_stopped:
+                    self._point_end()
+                    return True
+            elif not self._aim_target(self._point_tgt):
+                self._point_end()
+                return True
+        else:
+            self._clear_hands()          # 收回这一下
+        pg.step()
+        if pg.done:
+            self._point_end()
+            return True
+        return False
 
     def _poke(self, ob):
         """扒拉：推对方一下（原版挥拳/拍打的轻推）。"""
@@ -2988,7 +3347,7 @@ class BehaviorFSM:
         self.body.stop_walk()
 
     def _fight_end(self):
-        self._clear_hands()
+        self._point_end()
         self.gfx.face_special = False
         self._fight_cd = T_FIGHT_RETRY
         self._fight_target = None
@@ -3029,15 +3388,18 @@ class BehaviorFSM:
             # 空手：贴上去拍打指指点点（原版空手打不动蜥蜴）
             if d > tuning.FIGHT_MELEE_R:
                 b.walk_to(tgt.x)
+                self._point_end()
             else:
                 b.stop_walk()
-                self._point_at_peer(tgt)
+                if self._point_step():          # 空手：扒拉着指指点点
+                    self._point_begin(tgt)
                 if self.timer % tuning.SOCIAL_POKE_INTERVAL == 0:
                     tgt.vx += 0.35 if tgt.x >= b.chunk0.x else -0.35
             return
-        # 持械：预判弹道投掷
+        # 持械：预判弹道投掷（这里是指哪打哪，保持连续瞄准）
         self._fight_throw_t += 1
         b.stop_walk()
+        self._point_end()
         self._point_at_peer(tgt)
         if self._fight_throw_t >= tuning.FIGHT_THROW_CD:
             self._fight_throw_t = 0
@@ -3084,9 +3446,34 @@ class BehaviorFSM:
         return True
 
     # ── 恐惧：匍匐潜行挪开 ──
+    def _behind_creature(self, c) -> bool:
+        """我是否在对方背后（对方的头朝着另一侧 → 看不见我）。"""
+        facing = getattr(c, "facing", 0) or 0
+        if not facing:
+            return True                  # 没有朝向信息：当背后处理（悄悄匍匐）
+        return (self.body.chunk1.x - c.x) * facing < 0.0
+
+    def be_pointed_at(self, pointer):
+        """被别的猫指指点点：有概率转过身来对着它匍匐（缩起来）。"""
+        b = self.body
+        if (getattr(b, "dead", False) or self.grab.active or self._zerog()
+                or b.swimming or not b.on_floor() or self._crawl_cd > 0
+                or self.state not in _WANTS_FROM):
+            return
+        pb = getattr(pointer, "body", None)
+        if pb is None or self.rng.random() >= tuning.POINTED_CROUCH_PROB:
+            return
+        self._crawl_point_to = pointer
+        self._crawl_from = None
+        self._crawl_left = tuning.POINTED_CROUCH_TICKS
+        self._crawl_cd = T_CRAWL_RETRY
+        self._break_active_controllers()
+        self._transition("CrawlAway")
+
     def _crawl_enter(self):
         b = self.body
-        self._crawl_left = tuning.CRAWL_AWAY_TICKS
+        if self._crawl_point_to is None or self._crawl_left <= 0:
+            self._crawl_left = tuning.CRAWL_AWAY_TICKS
         b.set_posture(False)
         b.set_crawl(True)
 
@@ -3094,7 +3481,25 @@ class BehaviorFSM:
         b = self.body
         if self.grab.active:
             b.set_crawl(False)
+            self._crawl_point_to = None
             self._transition("Dragged")
+            return
+        # 被指指点点：原地面对发起者蹲着（不挪窝）
+        pt = self._crawl_point_to
+        if pt is not None:
+            pb = getattr(pt, "body", None)
+            self._crawl_left -= 1
+            if pb is None or getattr(pb, "dead", False) or self._crawl_left <= 0:
+                self._crawl_point_to = None
+                b.set_crawl(False)
+                self._crawl_cd = T_CRAWL_RETRY
+                self._transition("IdleStand")
+                return
+            b.set_crawl(True)
+            b.stop_walk()
+            b.facing = 1 if pb.chunk0.x >= b.chunk0.x else -1
+            self.gfx.look_at = (pb.chunk0.x, pb.chunk0.y)
+            self.gfx.face_special = True
             return
         lz = self._nearest_lizard(tuning.CRAWL_FEAR_R * 1.6)
         self._crawl_left -= 1
@@ -3104,9 +3509,10 @@ class BehaviorFSM:
             self._transition("IdleStand")
             return
         d = math.hypot(lz.x - b.chunk1.x, lz.y - b.chunk1.y)
-        if d < tuning.CRAWL_FEAR_R * 0.5:      # 太近：别匍匐了，拔腿就跑
-            b.set_crawl(False)
+        if d < tuning.CRAWL_FEAR_R * 0.5 and not self._behind_creature(lz):
+            b.set_crawl(False)                  # 打了照面：别匍匐了，拔腿就跑
             self._flee_from = lz
+            self._crawl_cd = T_CRAWL_RETRY
             self._transition("FleeLizard")
             return
         b.move_dir = -1 if lz.x >= b.chunk1.x else 1

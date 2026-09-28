@@ -1429,14 +1429,18 @@ class SlugcatBody:
         self.arm_aim[side] = (fruit.x, fruit.y)
         self.arm_aim["l" if side == "r" else "r"] = None
 
-    def grab_fruit(self, fruit, side):
-        """Grab fruit with one hand; convert to carried (kinematic)."""
+    def grab_fruit(self, fruit, side, snap_stalk=True):
+        """Grab fruit with one hand; convert to carried (kinematic).
+
+        snap_stalk=False：果柄先不断，靠 Stalk 自己被拉断（被鼠标拖着走的猫
+        死死攥住摘取类食物，把果子从藤上拽下来）。
+        """
         self.carried_fruit = fruit
         self.carry_hand = side
         fruit.state = "carried"
         fruit.held_by_hand = side
         self.eat_raise = 0.0
-        if fruit.stalk is not None:      # 抓取瞬即脆断果柄
+        if fruit.stalk is not None and snap_stalk:   # 抓取瞬即脆断果柄
             fruit.stalk.release_counter = 2
 
     def release_fruit(self):
