@@ -4094,9 +4094,8 @@ class BehaviorFSM:
                 reps, tuning.REVIVE_PRESS_TICKS, tuning.REVIVE_RELEASE_TICKS)
             self._social_press_per = max(1, tuning.REVIVE_TOUCH_TICKS // reps)
         self.gfx.face_special = True
-        self._point_at_peer(tgt)                    # 伸手按住同伴
-        if self._touch_dist(ob) > tuning.REVIVE_TOUCH_R:
-            return                                  # 够不着：先把身子挪过去
+        if not self._both_hands_on(ob):
+            return                                  # 两只手都要按上去（够不着就先挪身子）
         if g.pressing:                              # 身体跟着用力向下
             self.body.chunk0.vy += tuning.REVIVE_PRESS_DOWN
             self.body.chunk1.vy += tuning.REVIVE_PRESS_DOWN * 0.6
@@ -4109,6 +4108,29 @@ class BehaviorFSM:
             beh.nuzzle(tuning.REVIVE_TOUCH_TICKS, by=self.win)   # 按完就复活
             self.body.temper_shift(tuning.TEMPER_FEED)
             self._end_social()
+
+    def _both_hands_on(self, ob) -> bool:
+        """复活要「两只手都放在目标身上」：两手分别按住目标的两截，且都够得着。
+
+        对照原版 Player 抓取（两只手各抓一个 chunk）；按住期间两只手都钉在目标上，
+        所以只有真的贴上去、两只手都按到了才会推进按压计数。
+        """
+        a, b = ob.chunk0, ob.chunk1
+        self.gfx.hand_aim["l"] = (a.x, a.y)
+        self.gfx.hand_aim["r"] = (b.x, b.y)
+        hl, hr = self.gfx.hands[0], self.gfx.hands[1]
+        rd = tuning.REVIVE_TOUCH_R
+
+        def on_target(h):
+            # 手挨上目标身体的任意一截都算「放在目标身上」（尸体是会滚的），
+            # 同时胳膊得真的伸出去——手缩在肩边不算按上。
+            if min(math.hypot(h.x - a.x, h.y - a.y),
+                   math.hypot(h.x - b.x, h.y - b.y)) > rd:
+                return False
+            sx, sy = self.gfx._shoulder(-1.0 if h is hl else 1.0, self.gfx.body_axis())
+            return math.hypot(h.x - sx, h.y - sy) >= tuning.REVIVE_ARM_MIN
+
+        return on_target(hl) and on_target(hr)
 
     def _soothe(self, ob):
         """安抚：一次抚摸/拍拍画完，双方都平复一点。"""

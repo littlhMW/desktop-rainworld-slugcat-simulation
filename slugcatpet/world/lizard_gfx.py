@@ -148,7 +148,9 @@ def draw_lizard(p, atlas, lz, ts: float) -> None:
     n_body = sum(1 for s in lz.seg if not s.tail)
     n_tail = sum(1 for s in lz.seg if s.tail)
     for k, s in enumerate(lz.seg):
-        spine.append((lerp(s.lx, s.x, ts), lerp(s.ly, s.y, ts)))
+        # 走动上下颠只作用在躯干三节（原版 drawPositions[0..2].y += bob*walkBob）
+        bob = lz.bob[k] if k < len(lz.bob) else 0.0
+        spine.append((lerp(s.lx, s.x, ts), lerp(s.ly, s.y, ts) + bob))
         r = s.rad
         if not s.tail:                       # 躯干中段略鼓
             r *= (0.94, 1.06, 1.00)[min(k, 2)]

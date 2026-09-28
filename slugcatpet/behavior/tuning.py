@@ -369,6 +369,7 @@ FIGHT_ARM_KEEP = 72.0         # 持械时与威胁保持的距离（拉开了才
 FIGHT_RECOVER_TICKS = 40      # 反击的迟疑
 
 # 复活同伴：特殊表情（吐舌/舔）扒拉一会儿
+REVIVE_ARM_MIN = 12.0        # 复活时每条胳膊至少要伸出这么多（手贴着身子不算按上）
 REVIVE_TOUCH_R = 34.0        # 最近 chunk 对间距：挨着尸体就算摸到（原 26 一直够不着）
 REVIVE_TOUCH_TICKS = 150
 REVIVE_APPROACH_TICKS = 900

@@ -30,6 +30,8 @@ BODY_STAND_FAC = 1.7          # 躯干节最低离地 = 自身半径 * 此值
 TAIL_SINK_FAC = 0.5           # 尾节可拖到接近地面
 TURN_VX = 0.35                # 判定「真的转身」的横向速度阈值（避免停下时身体窜到头前面）
 LEG_SIDE_FAC = 0.55           # 腿根挂在躯干侧下方 = 半径 * 此值
+LEG_JOINT = 25.0              # 原版 LizardLimb.jointDist 基准（再 ×(sizeFac+1)/2）
+LEG_LIFT_MAX = 9.0            # liftFeet=1 时的抬脚高度（逻辑像素）
 
 # ── AI ──
 NOTICE_R = 150.0              # 视野半径：注意到猫（原版关系 Eats 1.0）
@@ -42,6 +44,15 @@ CURSOR_FEAR_SPEED = 1.05      # 逃跑速度 × base_speed
 CURSOR_FEAR_ACCEL = 0.16
 CURSOR_FEAR_HOP = 0.02        # 逃跑时回头跳的概率
 LOST_R = 230.0                # 超出即失去兴趣
+
+# 叼走死猫/昏迷猫（原版把猎物拖回巢穴的宠物化改写：改拖到屏幕两侧角落）
+CARRY_NOTICE_R = 460.0        # 多远之内会主动去叼尸体/昏迷猫
+CARRY_SPEED_FAC = 0.55        # 叼着东西走，速度打这个折
+CARRY_CORNER_MARGIN = 34.0    # 角落落点距屏幕边缘
+CARRY_ARRIVE_R = 22.0         # 距角落多近算「到了」
+CARRY_MOUTH_FAC = 1.1         # 嘴前叼点 = 头半径 * 此值
+CARRY_STUN_KEEP = 90          # 被叼住期间保持的昏迷 tick
+FAINT_BITE_BONUS = 2.2        # 昏迷的猫在选目标时的权重加成（优先咬死）
 TARGET_HOLD_OBJ = 90          # 对象目标失联后的宽限帧数（原版 forgetDelay）
 TARGET_HOLD_POINT = 10 ** 9   # 纯坐标目标（光标）仍按距离判定
 LUNGE_ACCEL = 0.20            # 扑咬时朝目标的加速度比例
@@ -102,7 +113,11 @@ class LizardBreed:
                  "hide_eyes", "toughness", "stun_toughness", "bite_chance",
                  "attempt_bite_radius", "taming_difficulty", "head_shield_angle",
                  "danger", "visual_radius", "tongue", "tongue_range", "body_mass",
-                 "flips_from_rock", "bite_damage_chance")
+                 "flips_from_rock", "bite_damage_chance",
+                 # 步态（LizardBreedParams 同名参数，原版腿 IK 的行为参数）
+                 "step_length", "lift_feet", "feet_down", "limb_speed",
+                 "limb_quickness", "smooth_legs", "leg_pair_disp", "walk_bob",
+                 "lounge_tendency")
 
     def __init__(self, key, name_zh, name_en, hue, light, head_graphics, *,
                  size=1.0, body_rad_fac=1.0, body_length_fac=1.0, head_size=1.0,
@@ -117,7 +132,10 @@ class LizardBreed:
                  attempt_bite_radius=80.0, taming_difficulty=1.0,
                  head_shield_angle=100.0, danger=0.45, visual_radius=900.0,
                  tongue=False, tongue_range=0.0, body_mass=2.1,
-                 flips_from_rock=True):
+                 flips_from_rock=True,
+                 step_length=0.5, lift_feet=0.3, feet_down=0.5, limb_speed=5.0,
+                 limb_quickness=0.5, smooth_legs=True, leg_pair_disp=0.2,
+                 walk_bob=4.0, lounge_tendency=0.05):
         self.key = key
         self.name_zh = name_zh
         self.name_en = name_en
@@ -162,9 +180,22 @@ class LizardBreed:
         self.tongue_range = tongue_range
         self.body_mass = body_mass
         self.flips_from_rock = flips_from_rock   # 原版红蜥不吃石头转身
+        # 步态：照抄 LizardBreedParams（步幅 / 抬脚 / 落脚 / 腿速 / 腿灵巧度 /
+        # 腿部是否平滑 / 前后腿错位 / 走动上下颠 / 冲刺倾向）
+        self.step_length = step_length
+        self.lift_feet = lift_feet
+        self.feet_down = feet_down
+        self.limb_speed = limb_speed
+        self.limb_quickness = limb_quickness
+        self.smooth_legs = smooth_legs
+        self.leg_pair_disp = leg_pair_disp
+        self.walk_bob = walk_bob
+        self.lounge_tendency = lounge_tendency
         # 体/头配色：白蜥全身纯白、头按原版压黑；蝾螈灰白；黑蜥整体近黑；其余体黑头染品种色
         if plain_color == WHITE_RGB:
-            self.body_rgb, self.head_rgb = WHITE_RGB, WHITE_RGB
+            # 白蜥：躯干纯白，头走「黑↔白呼吸闪烁」（原版 HeadColor1=白 / HeadColor2=黑），
+            # 因此这里只钉体色，头交给 head_color 的呼吸分支。
+            self.body_rgb, self.head_rgb = WHITE_RGB, None
         elif key in ("salamander", "black"):
             self.body_rgb = self.head_rgb = (SALAMANDER_RGB if key == "salamander"
                                             else BLACK_RGB)
@@ -215,7 +246,10 @@ BREEDS = (
                 bite_damage=2.0, bite_damage_chance=0.5, bite_chance=1.0 / 3.0, attempt_bite_radius=100.0,
                 anchor_y=0.55,
                 toughness=2.5, stun_toughness=2.5, taming_difficulty=0.8,
-                danger=0.45, visual_radius=850.0, body_mass=7.5, spikes=(3, 2, 0.8)),
+                danger=0.45, visual_radius=850.0, body_mass=7.5, spikes=(3, 2, 0.8),
+                step_length=0.9, lift_feet=0.5, feet_down=1.0, limb_speed=3.0,
+                limb_quickness=0.3, smooth_legs=False, leg_pair_disp=1.0,
+                walk_bob=4.0, lounge_tendency=1.0),
     LizardBreed("blue", "蓝蜥", "Blue lizard", 0.57, 0.50, (0, 0, 0, 0, 0),
                 size=0.90, head_size=0.9, base_speed=3.2, tail_segs=4, tail_len_fac=1.0,
                 limb_size=0.9, jaw_open_angle=105.0, jaw_lower_fac=0.55, jaw_apart=20.0,
@@ -223,7 +257,10 @@ BREEDS = (
                 bite_damage=0.7, bite_damage_chance=0.2, bite_chance=0.4, attempt_bite_radius=90.0,
                 toughness=0.5, stun_toughness=0.5, taming_difficulty=1.1,
                 danger=0.35, visual_radius=950.0, body_mass=1.4,
-                tongue=True, tongue_range=140.0, hue_var=0.08),
+                tongue=True, tongue_range=140.0, hue_var=0.08,
+                step_length=0.4, lift_feet=0.0, feet_down=0.0, limb_speed=6.0,
+                limb_quickness=0.6, leg_pair_disp=0.0, walk_bob=0.4,
+                lounge_tendency=0.01),
     LizardBreed("yellow", "黄蜥", "Yellow lizard", 0.10, 0.50, (0, 0, 0, 0, 0),
                 size=0.93, base_speed=4.1, tail_segs=5, tail_len_fac=1.2,
                 jaw_open_angle=90.0, jaw_apart=23.0,
@@ -239,7 +276,10 @@ BREEDS = (
                 toughness=0.9, stun_toughness=0.9, taming_difficulty=3.0,
                 danger=0.5, visual_radius=1300.0, body_mass=2.1,
                 sat=0.0, plain_color=(255, 255, 255), anchor_y=0.75,
-                tongue=True, tongue_range=440.0),
+                tongue=True, tongue_range=440.0,
+                step_length=0.6, lift_feet=0.2, feet_down=0.05, limb_speed=8.0,
+                limb_quickness=0.8, smooth_legs=False, leg_pair_disp=0.0,
+                walk_bob=0.8),
     LizardBreed("red", "红蜥", "Red lizard", 0.0025, 0.50, (0, 0, 0, 0, 0),
                 size=1.20, head_size=1.2, base_speed=5.0, tail_segs=11, tail_len_fac=1.9,
                 limb_size=1.5, jaw_open_angle=140.0, body_stiffness=0.3,
@@ -247,28 +287,35 @@ BREEDS = (
                 toughness=3.0, stun_toughness=3.0, taming_difficulty=7.0,
                 danger=0.8, visual_radius=2300.0, body_mass=3.1,
                 tongue=True, tongue_range=350.0, flips_from_rock=False,
-                hue_var=0.02, spikes=(0, 0, 0.7)),
+                hue_var=0.02, spikes=(0, 0, 0.7),
+                step_length=0.8, lift_feet=0.3, limb_speed=9.0, limb_quickness=0.8,
+                walk_bob=3.0),
     LizardBreed("black", "黑蜥", "Black lizard", 0.0, 0.10, (0, 0, 0, 0, 0),
                 size=0.90, base_speed=3.9, tail_segs=6, tail_len_fac=1.2, limb_size=1.1,
                 body_stiffness=0.25, bite_damage=1.0, bite_damage_chance=5.0 / 14.0, bite_chance=1.0 / 3.0,
                 attempt_bite_radius=70.0, toughness=1.0, stun_toughness=1.0,
                 taming_difficulty=4.0, danger=0.45, visual_radius=0.0, body_mass=2.0,
                 sat=0.0, plain_color=(26, 26, 26),
-                hue_var=0.0, light_var=0.0, hide_eyes=True, spikes=(0, 0, 0.7)),
+                hue_var=0.0, light_var=0.0, hide_eyes=True, spikes=(0, 0, 0.7),
+                step_length=0.6, lift_feet=0.25, limb_quickness=0.6, walk_bob=3.0),
     LizardBreed("salamander", "蝾螈", "Salamander", 0.90, 0.40, (2, 2, 2, 2, 2),
                 size=0.90, head_size=0.9, base_speed=3.1, tail_segs=5, tail_len_fac=1.2,
                 limb_size=0.65, jaw_apart=15.0, bite_damage=0.9, bite_damage_chance=1.0 / 3.0,
                 bite_chance=1.0 / 3.0, attempt_bite_radius=70.0,
                 toughness=1.0, stun_toughness=1.0, taming_difficulty=3.5,
                 head_shield_angle=70.0, danger=0.4, visual_radius=960.0, body_mass=2.1,
-                tongue=True, tongue_range=150.0, hue_var=0.15),
+                tongue=True, tongue_range=150.0, hue_var=0.15,
+                smooth_legs=False),
     LizardBreed("cyan", "青蜥", "Cyan lizard", 0.49, 0.50, (0, 0, 0, 0, 0),
-                size=0.65, base_speed=3.0, tail_segs=5, tail_len_fac=1.44, limb_size=0.8,
+                size=0.65, base_speed=3.0, tail_segs=5, tail_len_fac=1.44, limb_size=1.0,
                 limb_thickness=0.8, jaw_open_angle=80.0, jaw_apart=17.0, body_stiffness=0.8,
                 bite_damage=1.0, bite_damage_chance=0.25, bite_chance=0.5, attempt_bite_radius=80.0,
                 toughness=0.35, stun_toughness=50.0, taming_difficulty=1.0,
                 head_shield_angle=70.0, danger=0.25, visual_radius=990.0, body_mass=0.8,
-                tongue=True, tongue_range=160.0, hue_var=0.04),
+                tongue=True, tongue_range=160.0, hue_var=0.04,
+                step_length=0.4, lift_feet=0.0, feet_down=0.0, limb_speed=6.0,
+                limb_quickness=0.6, leg_pair_disp=0.0, walk_bob=2.0,
+                lounge_tendency=1.0 / 30.0),
 )
 BREED_BY_KEY = {b.key: b for b in BREEDS}
 
@@ -320,7 +367,9 @@ class Lizard:
                  "dead", "spacing", "spikes", "like", "tamed", "friend_id",
                  "max_health", "health", "stun", "hurt_flash", "dead_t",
                  "rock_push", "rock_push_dir",
-                 "fear_t", "fear_x", "fear_y", "fear_seen", "wall_dir")
+                 "fear_t", "fear_x", "fear_y", "fear_seen", "wall_dir",
+                 "bob", "bob_front", "bob_hind",
+                 "carry_obj", "carry_body", "carry_corner", "sprint")
 
     def __init__(self, x: float, y: float, breed: LizardBreed | None = None,
                  seed: int = 0, id: int = 0):
@@ -365,6 +414,17 @@ class Lizard:
         self.fear_y = 0.0
         self.fear_seen = 0
         self.wall_dir = 0        # 贴在左右墙时记墙侧（窗口边缘＝墙）
+        # 走动上下颠（原版 drawPositions[i].y += frontBob/hindBob * walkBob）
+        self.bob = [0.0, 0.0, 0.0]
+        self.bob_front = 0.0
+        self.bob_hind = 0.0
+        # 叼着死猫/昏迷猫去屏幕角落：carry_obj 是那只猫（PetUnit），
+        # carry_body 是它的身体（被钉住跟着嘴走），carry_corner 是目标角（±1）
+        self.carry_obj = None
+        self.carry_body = None
+        self.carry_corner = 0
+        # loungeTendency：锁定新目标时掷一次（绿蜥 1.0 必全速冲，蓝蜥 0.01 慢慢蹭）
+        self.sprint = 0.55
 
         # 链体：躯干 N_BODY 节 + 尾若干节；dist 为到前一节的固定距离
         n_tail = max(2, min(int(b.tail_segs), MAX_TAIL_SEGS))
@@ -469,6 +529,7 @@ class Lizard:
         """被杀死：留尸、瘫软，不再行动（同游戏死蜥尸体）。"""
         if self.dead:
             return
+        self._release_carry()
         self.dead = True
         self.dead_t = 0
         self.stun = 0
@@ -572,7 +633,7 @@ class Lizard:
 
     # ── 主循环 ──
     def step(self, WL: float, HL: float, targets=(), cursor=None,
-             rivals=(), prey=()) -> None:
+             rivals=(), prey=(), cats=()) -> None:
         """推进一 tick。
 
         targets: [(obj, x, y)] 蛞蝓猫（原版关系 Eats 1.0）
@@ -593,6 +654,7 @@ class Lizard:
         if self.hurt_flash > 0:
             self.hurt_flash -= 1
         if self.dead:
+            self._release_carry()
             self.dead_t += 1
             if self.dead_t > CORPSE_TTL:
                 self.state = ItemState.GONE
@@ -601,7 +663,7 @@ class Lizard:
         elif self.state == ItemState.MOUSE:
             self._step_held(WL, HL, cursor)
         else:
-            self._step_ai(WL, HL, targets, cursor, rivals, prey)
+            self._step_ai(WL, HL, targets, cursor, rivals, prey, cats)
             self._integrate(WL, HL)
 
         self._step_chain(HL)
@@ -662,20 +724,26 @@ class Lizard:
             self.wall_dir = 1         # 窗口右边缘＝墙
 
     # ── AI ──
-    def _step_ai(self, WL, HL, targets, cursor, rivals=(), prey=()) -> None:
+    def _step_ai(self, WL, HL, targets, cursor, rivals=(), prey=(), cats=()) -> None:
         if self.rock_push > 0:
             # 原版 Lizard.cs：turnedByRockCounter 期间 WeightedPush(0, 2, (dir,0), 6f)
             self.rock_push -= 1
             self.vx += 0.14 * self.rock_push_dir * self.room_gravity
         if self.stun > 0:
             self.stun -= 1
+            self._release_carry()                 # 被砸晕/击晕 → 松口（原版猎物掉出来）
             self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE)
             self.vx *= 0.90
             return
         if self._fear_tick(cursor, HL):           # 光标恐惧优先于捕猎
+            self._release_carry()
             return
         if self.tamed:                           # 认主的蜥蜴不再咬人，只跟着走
+            self._release_carry()
             self._follow(WL, HL, targets)
+            return
+        # 优先级①：先把死猫/昏迷猫叼到屏幕两侧角落；到了就原地咬死它
+        if self._carry_tick(WL, HL, cats):
             return
         self._pick_target(targets, rivals, prey)
         if self.bite_hold > 0:                       # 咬合保持
@@ -701,7 +769,8 @@ class Lizard:
         self.target = None
         self.target_obj = None
         tx = None
-        for obj, ox, oy in targets:
+        for row in targets:
+            obj, ox, oy, _dead, _fainted = _cat_row(row)
             if self.friend_id is not None and getattr(obj, "id", None) == self.friend_id:
                 tx, ty = ox, oy
                 self.look_at = (ox, oy)
@@ -769,7 +838,10 @@ class Lizard:
             if bestscore is None or score < bestscore:
                 best, bestscore, bestobj = (ox, oy), score, obj
 
-        for obj, ox, oy in targets:
+        for row in targets:
+            obj, ox, oy, dead, _fainted = _cat_row(row)
+            if dead:
+                continue                          # 尸体归「叼走」流程管，不在这咬
             if self.friend_id is not None and getattr(obj, "id", None) == self.friend_id:
                 continue
             consider(obj, ox, oy, 1.0)
@@ -778,6 +850,8 @@ class Lizard:
         for obj, w in prey:
             consider(obj, obj.x, obj.y, w)
         if best is not None:
+            if bestobj is not self.target_obj:
+                self.sprint = 1.0 if self.rng.random() < self.breed.lounge_tendency else 0.55
             self.target, self.target_obj = best, bestobj
             self.look_at = best
             self._tgt_hold = 0
@@ -797,8 +871,12 @@ class Lizard:
         self.target_obj = None
         self.look_at = None
     def _lunge(self, kx, ky, d, HL) -> None:
-        """朝目标加速；够近了就咬。"""
-        sp = self.breed.base_speed * 0.8
+        """朝目标加速；够近了就咬。
+
+        loungeTendency 决定「冲刺倾向」：绿蜥 1.0 一发现猎物就全速冲，
+        蓝蜥 0.01 基本是慢慢蹭过去（原版 LizardAI 用同一参数掷骰）。
+        """
+        sp = self.breed.base_speed * 0.8 * self.sprint
         self.vx += (kx * sp - self.vx) * LUNGE_ACCEL
         self.jaw = clampf(self.jaw + JAW_OPEN_RATE, 0.0, 0.9)
         reach = self.head_rad + (16.0 * self.breed.body_size_fac
@@ -808,6 +886,127 @@ class Lizard:
         elif self._contact_floor and self.hop_cd <= 0 and (self.y - self.target[1]) > 34.0:
             self.vy = CLIMB_HOP * math.sqrt(max(0.4, self.breed.body_size_fac))
             self.hop_cd = HOP_CD
+
+    # ── 叼走死猫 / 昏迷猫到屏幕角落 ──
+    def _bite_reach(self) -> float:
+        """咬得着的距离（同 _lunge 里的 reach）。"""
+        b = self.breed
+        return self.head_rad + 16.0 * b.body_size_fac * (b.attempt_bite_radius / 80.0)
+
+    def _mouth_point(self):
+        """嘴前叼点：头轴正前方一个头半径。"""
+        a = math.radians(self.head_angle)
+        d = self.head_rad * CARRY_MOUTH_FAC
+        return self.x + math.sin(a) * d, self.y - math.cos(a) * d
+
+    def _best_carry(self, cats):
+        """挑一只该叼的猫：昏迷优先于死，同档取最近的。"""
+        best = None
+        for row in cats:
+            obj, ox, oy, dead, fainted = _cat_row(row)
+            if obj is None or not (dead or fainted):
+                continue
+            d = math.hypot(ox - self.x, oy - self.y)
+            if d > CARRY_NOTICE_R:
+                continue
+            key = (0 if fainted else 1, d)
+            if best is None or key < best[0]:
+                best = (key, (obj, ox, oy, dead, fainted))
+        return best[1] if best is not None else None
+
+    def _corner_x(self, WL: float, x: float) -> float:
+        """离 x 最近的那侧角落落点。"""
+        return CARRY_CORNER_MARGIN if x < WL * 0.5 else WL - CARRY_CORNER_MARGIN
+
+    def _begin_carry(self, obj, ox) -> None:
+        """张嘴咬住（不造成伤害）并把这只猫叼起来。"""
+        body = getattr(obj, "body", None)
+        chunk = getattr(body, "chunk0", None)
+        if chunk is None:
+            return
+        self.carry_obj = obj
+        self.carry_body = body
+        self.carry_corner = 0
+        self.jaw = 0.85
+        self.bite_event = None
+        self.bite_hold = 0
+        self._hold_cat()
+
+    def _hold_cat(self) -> None:
+        """把手里的猫钉在嘴前（pinned chunk 不积分不撞，其余链节自然垂下）。"""
+        body = self.carry_body
+        chunk = None if body is None else getattr(body, "chunk0", None)
+        if chunk is None:
+            self.carry_obj = self.carry_body = None
+            return
+        if not getattr(body, "dead", False) and getattr(body, "stun", 0) < CARRY_STUN_KEEP:
+            body.stun = CARRY_STUN_KEEP          # 叼住＝挣不开，放下才恢复
+        mx, my = self._mouth_point()
+        chunk.pinned = True
+        chunk.x = mx
+        chunk.y = my
+        chunk.vx = chunk.vy = 0.0
+
+    def _release_carry(self) -> None:
+        """松口（放下 / 被击晕 / 自己死了）。"""
+        body = self.carry_body
+        chunk = None if body is None else getattr(body, "chunk0", None)
+        if chunk is not None:
+            chunk.pinned = False
+            chunk.vx = self.vx * 0.5
+            chunk.vy = 0.0
+        self.carry_obj = None
+        self.carry_body = None
+        self.carry_corner = 0
+
+    def _carry_tick(self, WL: float, HL: float, cats) -> bool:
+        """优先级①②：叼走死/昏迷的猫到屏幕侧边角落，到角落就把它咬死。"""
+        if self.carry_body is not None:
+            row = None
+            for c in cats:
+                if _cat_row(c)[0] is self.carry_obj:
+                    row = _cat_row(c)
+                    break
+            if row is None:
+                self._release_carry()             # 目标没了（被清场/转世）
+                return False
+            obj, ox, oy, dead, fainted = row
+            if not dead and not fainted:
+                self._release_carry()             # 醒了：松口，回去当普通猎物
+                return False
+            goal_x = self._corner_x(WL, self.x)
+            if abs(goal_x - self.x) <= CARRY_ARRIVE_R:
+                self._release_carry()
+                return True                        # 这一 tick 用来放下
+            self.jaw = clampf(self.jaw + JAW_OPEN_RATE * 0.5, 0.0, 0.45)
+            want = clampf((goal_x - self.x) * 0.05, -1.8, 1.8) * CARRY_SPEED_FAC
+            self.vx += (want - self.vx) * WALK_TURN
+            self._hold_cat()
+            self.look_at = (goal_x, HL - 12.0)
+            return True
+        pick = self._best_carry(cats)
+        if pick is None:
+            return False
+        obj, ox, oy, dead, fainted = pick
+        if fainted and not dead and abs(self._corner_x(WL, ox) - ox) <= CARRY_ARRIVE_R:
+            # 已经在角落里躺着了：直接咬死（原版咬死猎物，而不是再叼一趟）
+            self.target, self.target_obj = (ox, oy), obj
+            self.look_at = (ox, oy)
+            dx, dy = ox - self.x, oy - self.y
+            d = math.hypot(dx, dy)
+            if d > 1e-6:
+                self._lunge(dx / d, dy / d, d, HL)
+            return True
+        dx, dy = ox - self.x, oy - self.y
+        d = math.hypot(dx, dy)
+        if d <= self._bite_reach():
+            self._begin_carry(obj, ox)
+            return True
+        self.target, self.target_obj = (ox, oy), obj
+        self.look_at = (ox, oy)
+        if d > 1e-6:
+            self._lunge(dx / d, dy / d, d, HL)     # 走过去叼（够不着不会触发咬）
+        return True
 
     def gift_received(self, alive: bool, friend_id) -> None:
         """收到礼物（对照 LizardAI.GiftRecieved）。
@@ -924,35 +1123,68 @@ class Lizard:
 
     # ── 腿 ──
     def _step_legs(self, HL) -> None:
-        """四足：挂在躯干两侧，走动迈步，悬空则垂下。"""
+        """四足迈步：照原版 LizardLimb 的「踩住 → 拖到身后 → 抬脚迈到身前」模型。
+
+        jointDist = 25*(sizeFac+1)/2；触发迈步的位移閾值 = jointDist*StepLength，
+        其中原版 StepLength = Lerp(-0.5, 0.5, stepLength)，也就是 stepLength=0.5 时
+        脚一落到身体后方就迈（粉蜥），>0.5 要拖很久才迈（绿蜥 0.9 → 大跨步拖行），
+        <0.5 几乎一直在迈（蓝蜥 0.4、白蜥 0.6 的小碎步）。
+        抬脚高度 = liftFeet，落脚点下沉 0.3*feetDown，前后腿错位 legPairDisplacement。
+        """
+        b = self.breed
+        joint = LEG_JOINT * ((b.body_size_fac + 1.0) * 0.5) * BODY_SCALE
         anchors = self._leg_anchors()
-        stride = 10.0 * self.breed.body_size_fac * BODY_SCALE
-        self.walk_phase += abs(self.vx) * 0.045
+        fwd = 1.0 if self.facing >= 0 else -1.0
+        trigger = -joint * (b.step_length - 0.5)      # 沿前进方向的有符号位移阈值
+        rate = clampf((0.08 + 0.30 * b.limb_quickness) * (b.limb_speed / 5.0), 0.05, 0.5)
         airborne = not self._contact_floor
+        planted = [0, 0, 0]
         for i, lg in enumerate(self.legs):
             ax, ay = anchors[i]
-            lg.rest = self.body_rad * 1.0
+            lg.rest = joint
             if airborne:
                 lg.swing = 0.0
                 lg.lift = 0.0
-                lg.tx, lg.ty = ax, ay + lg.rest * 0.8
+                lg.tx, lg.ty = ax, ay + joint * 0.55
                 lg.x += (lg.tx - lg.x) * 0.12
                 lg.y += (lg.ty - lg.y) * 0.12
                 continue
-            phase = (self.walk_phase + (0.5 if lg.back else 0.0)) % 1.0
-            lg.tx = ax + (phase - 0.5) * stride
-            lg.ty = HL - 1.0
-            if abs(lg.tx - lg.x) > stride * 1.15:
+            if lg.swing > 0.0:                        # 迈步中：脚在空中往落点赶
+                lg.swing = max(0.0, lg.swing - rate)
+                k = min(0.6, rate * 2.2)
+                lg.x += (lg.tx - lg.x) * k
+                lg.y += (lg.ty - lg.y) * k
+                lg.lift = math.sin((1.0 - lg.swing) * math.pi) * LEG_LIFT_MAX * b.lift_feet
+                if lg.swing <= 0.0:
+                    lg.y = min(lg.y, HL - 1.0)
+                continue
+            planted[2 if lg.back else 0] += 1         # 踩实：脚不动，身体往前拖
+            lg.lift = 0.0
+            if (lg.x - ax) * fwd < trigger:
+                side = (1.0 if lg.near else -1.0) * b.leg_pair_disp * fwd
+                nx = lg.x + (ax - lg.x) * b.lift_feet + fwd * (joint + 1.0) + side
+                ny = lg.y + (ay - lg.y) * b.lift_feet + 0.3 * b.feet_down * b.body_size_fac
+                lg.tx, lg.ty = nx, min(ny, HL - 1.0)
                 lg.swing = 1.0
-            if lg.swing > 0.0:
-                lg.swing = max(0.0, lg.swing - 0.22)
-                lg.x += (lg.tx - lg.x) * 0.32
-                lg.y += (lg.ty - lg.y) * 0.32
-                lg.lift = math.sin((1.0 - lg.swing) * math.pi) * 4.5 * self.breed.body_size_fac
-            else:
-                lg.x += (lg.tx - lg.x) * 0.16
-                lg.y += (lg.ty - lg.y) * 0.30
-                lg.lift = 0.0
+        self._step_bob(planted)
+
+    def _step_bob(self, planted) -> None:
+        """走动上下颠（原版 drawPositions[0/1/2].y += frontBob/hindBob * walkBob）。
+
+        frontBob = 前腿踩实条数 - 1（两条都踩实＝+1 身体抬起，都在空中＝-1 下沉），
+        再用 num6 = (4 + 7/walkBob)/2 做平滑。
+        """
+        wb = self.breed.walk_bob
+        num6 = (4.0 + 7.0 / max(0.05, wb)) * 0.5
+        self.bob_front = (self.bob_front * num6 + (planted[0] - 1)) / (num6 + 1.0)
+        self.bob_hind = (self.bob_hind * num6 + (planted[2] - 1)) / (num6 + 1.0)
+        if self.dead:
+            self.bob = [0.0, 0.0, 0.0]
+            return
+        # y↓：踩实时身体抬起来（取负）
+        self.bob = [-self.bob_front * wb,
+                    -(self.bob_front + self.bob_hind * wb * 0.5),
+                    -self.bob_hind * wb]
 
     def _leg_anchors(self):
         """前腿挂第 0 节两侧，后腿挂第 2 节两侧（远近各一）。"""
@@ -964,6 +1196,13 @@ class Lizard:
         return out
 
 
+def _cat_row(row):
+    """兼容 3 元组 (obj,x,y) 与 5 元组 (obj,x,y,dead,fainted)。"""
+    if len(row) >= 5:
+        return row[0], row[1], row[2], bool(row[3]), bool(row[4])
+    return row[0], row[1], row[2], False, False
+
+
 def _ang_from_up(dx: float, dy: float) -> float:
     """由向量取 0=上、顺时针为正的角度（y↓）。"""
     return math.degrees(math.atan2(dx, -dy))
@@ -973,3 +1212,5 @@ def _ang_lerp(a: float, b: float, k: float) -> float:
     """角度插值（走最短弧）。"""
     d = (b - a + 180.0) % 360.0 - 180.0
     return a + d * k
+
+

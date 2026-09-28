@@ -1351,11 +1351,18 @@ class ItemInteractionMixin:
         if not self.lizards:
             return
         cur = self.cursor_logical()
-        targets = [(pet, pet.body.chunk0.x, pet.body.chunk0.y)
-                   for pet in self.pets if pet.behavior is not None]
+        # 每只猫带上「死了 / 昏迷」两个标记：蜥蜴靠它们决定叼走、咬死还是追击
+        targets = []
+        for pet in self.pets:
+            beh = pet.behavior
+            if beh is None:
+                continue
+            targets.append((pet, pet.body.chunk0.x, pet.body.chunk0.y,
+                            beh.is_dead(), beh.state == "Stunned"))
         for lz in self.lizards:
             lz.step(self._WL, self._HL, targets=targets, cursor=cur,
-                    rivals=self._lizard_rivals(lz), prey=self._lizard_prey(lz))
+                    rivals=self._lizard_rivals(lz), prey=self._lizard_prey(lz),
+                    cats=targets)
             self._lizard_bite(lz)
         self._cull_flung_corpses()
 
