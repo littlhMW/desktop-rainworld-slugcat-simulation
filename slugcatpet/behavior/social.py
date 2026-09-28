@@ -13,10 +13,17 @@
     匍匐指指点点  趴着指指点点               仇恨 / 预备攻击 / 狩猎目标 / 帮我打这个
     匍匐指向      趴着指向                   恐惧这个对象 / 小心这个对象
     匍匐行走      趴着挪动                   害怕强敌，正在潜行
+
+同一套手势引擎同时服务两条路径：
+  * 社交欲望态（fsm._st_socialize）：攒满社交欲望 → 走到同伴身边做动作；
+  * 平时随手小动作（fsm._act_begin / _act_tick / _act_end）：被挡路、被抢、
+    追鼠标、睡醒、空手反击、让路、被指、挣扎等情景直接抽词表起手。
 """
 from __future__ import annotations
 
 from collections import OrderedDict
+
+from .tuning import POINT_REPS_MIN, POINT_REPS_MAX
 
 
 class SocialAction:
@@ -78,6 +85,53 @@ def is_crouch(key) -> bool:
     """该动作是否要趴着做。"""
     a = action(key)
     return bool(a is not None and a.crouch)
+
+
+class PointGesture:
+    """指指点点手势：伸出 on_ticks → 收回 off_ticks，重复 reps 次（1~5 下）。"""
+
+    __slots__ = ("reps", "on", "off", "_left", "_ext", "_t")
+
+    def __init__(self, reps: int, on_ticks: int, off_ticks: int):
+        self.reps = max(1, int(reps))
+        self.on = max(1, int(on_ticks))
+        self.off = max(1, int(off_ticks))
+        self._left = self.reps
+        self._ext = True
+        self._t = 0
+
+    @property
+    def extended(self) -> bool:
+        """本 tick 处于「伸出」相（该把手指着目标）。"""
+        return self._ext
+
+    @property
+    def done(self) -> bool:
+        """指完并已收回。"""
+        return self._left <= 0
+
+    def step(self) -> bool:
+        """推进一 tick；返回 True=整段指指点点结束。"""
+        if self._left <= 0:
+            return True
+        self._t += 1
+        if self._t < (self.on if self._ext else self.off):
+            return False
+        self._t = 0
+        if self._ext:
+            self._left -= 1        # 这一下指完（连带收回）
+            self._ext = False
+        else:
+            self._ext = True       # 再指一下
+        return False
+
+
+def social_reps(rng, point_like: float) -> int:
+    """指指点点次数：爱指的猫指得久，性格好的猫敷衍两下就收（1~5 下）。"""
+    reps = rng.randint(POINT_REPS_MIN, POINT_REPS_MAX)
+    if rng.random() > float(point_like):
+        reps = max(1, reps - 2)
+    return reps
 
 
 class StrokeGesture:

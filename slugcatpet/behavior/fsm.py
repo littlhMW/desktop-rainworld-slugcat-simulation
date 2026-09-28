@@ -10,7 +10,6 @@ from ..core.creature import (ZEROG_GRAB_DIST, WALK_STOP_EPS, WALL_CLIMB_SPEED,
 from ..planning import (GIVEUP, HOLDING, MODE_STAY, PlanExecutor, Planner, obj_goal)
 from .blocking import (blocks_path, yield_target_x, on_same_pole,
                         pole_in_the_way)
-from .pointing import PointGesture
 from . import social
 from .desire import build_arbiter, MoodContext
 from .fetch import (fetch_ready, BITE_HEAD_NUDGE, EAT_APPROACH, EAT_CHOMP_POSE,
@@ -139,6 +138,8 @@ _EN_IDLE = frozenset(("IdleStand", "PostThrowStand"))
 
 # 被顶让路仅从这些无更高目的态触发
 _MAKEWAY_FROM = frozenset(("IdleStand", "PostThrowWander", "PostThrowStand"))
+# 平时随手社交动作只从这些「没正事」的态起手（做完不切态，歇一拍再重抽）
+_IDLE_SOCIAL_FROM = frozenset(("IdleStand",))
 
 # ── 躲蜥蜴（原版 Player 见威胁逃逸）──
 FLEE_R = 110.0            # 蜥蜴进入此水平距离 → 掉头跑
@@ -363,6 +364,16 @@ class BehaviorFSM:
         self._shake_cd = 0
         # 被指指点点后面对发起者匍匐
         self._crawl_point_to = None
+        # 统一社交动作 API（词表 behavior/social.py）：起手 / 推进 / 收势
+        self._act_key = None
+        self._act_tgt = None
+        self._act_owner = None        # 起手这个动作时所在的态（换态即收势）
+        self._act_mode = "obj"
+        self._act_enforce = False
+        self._act_left = 0
+        self._act_idle = False        # 平时随手做的小动作（只在家闲态里做）
+        self._act_cd = 0
+        self._act_check = 0
         self.stonethrow = None
         self.flyhunt = None
         self._hunt_cd = 0
@@ -904,6 +915,9 @@ class BehaviorFSM:
         self.gfx.dead = (self.state == "Dead")
         self.gfx.stunned = (self.state == "Stunned")
 
+        # 社交动作只属于起手它的那个态：换态（或被无重力接管）就收势
+        if self._act_active() and (self.state != self._act_owner or self._zerog()):
+            self._act_end()
         handler = self._ext_states.get(self.state)
         if handler is None:
             handler = getattr(self, "_st_" + self.state.lower(), None)
@@ -1115,6 +1129,9 @@ class BehaviorFSM:
         return self.looker.update(head, self._look_candidates(cursor), self.WL, self.HL)
 
     def _st_idlestand(self, cursor, disturbed):
+        if self._act_idle and self._act_active():   # 平时社交动作：站着做完整段
+            self._act_idle_tick()
+            return
         if self._zerog():
             self._zerog_idle(cursor)
             return
@@ -1329,6 +1346,9 @@ class BehaviorFSM:
                 or not blocks_path(b.chunk1.x, ob.chunk1.x, ob.walk_target_x,
                                    tuning.SHOVE_CONTACT_DIST)):
             self._transition("IdleStand")
+            # 让完路：小概率回头对顶人者做个社交动作（词表）
+            if o is not None and not b.is_moving():
+                self._idle_social_start(o, tuning.MAKEWAY_SOCIAL_P)
 
     # ── 一直被挡路：跳不过就推人，再回头指指点点 ──
     def _push_blocker(self, o):
@@ -1360,7 +1380,7 @@ class BehaviorFSM:
         self.gfx.hand_aim["l" if self._push_side == "r" else "r"] = None
 
     def _scold_enter(self):
-        """回头指指点点：先转身面对挡路者，再一下一下地指。"""
+        """回头指指点点：先转身面对挡路者，再按词表一下一下地指。"""
         b = self.body
         self._scold_left = tuning.SCOLD_TICKS
         self._scold_cd = tuning.SCOLD_CD
@@ -1369,12 +1389,19 @@ class BehaviorFSM:
         tb = getattr(self._blocker_target, "body", None)
         if tb is not None:
             b.facing = 1 if tb.chunk0.x >= b.chunk0.x else -1
-        self._point_begin(self._blocker_target)
+        self._act_begin(self._scold_kind(), self._blocker_target)
+
+    def _scold_kind(self) -> str:
+        """被挡路的动作词：暴躁又爱趴的猫会「匍匐指指点点」（仇恨/帮我打这个）。"""
+        t = clampf(float(getattr(self.pers, "temper", 0.5)), 0.0, 1.0)
+        cl = clampf(float(getattr(self.pers, "crawl_like", 0.5)), 0.0, 1.0)
+        if self.rng.random() < tuning.SCOLD_CROUCH_PROB * 2.0 * t * cl:
+            return "crouch_scold"
+        return "scold"
 
     def _scold_cleanup(self):
         self._blocker_target = None
-        self._point_end()
-        self.gfx.face_special = False
+        self._act_end()
 
     def _st_scoldblocker(self, cursor, disturbed):
         b = self.body
@@ -1392,8 +1419,10 @@ class BehaviorFSM:
         b.stop_walk()
         b.facing = 1 if tb.chunk0.x >= b.chunk0.x else -1     # 回头
         self.gfx.look_at = (tb.chunk0.x, tb.chunk0.y)
-        if self._point_step():          # 一轮 3~5 下指完 → 再来一轮
-            self._point_begin(self._blocker_target)
+        if not self._act_active():      # 被中断过：重新起手
+            self._act_begin(self._scold_kind(), self._blocker_target)
+        elif not self._act_tick():      # 一轮 1~5 下指完 → 再来一轮
+            self._act_begin(self._scold_kind(), self._blocker_target)
         if self.timer % tuning.SOCIAL_POKE_INTERVAL == 0:
             self._poke(tb)              # 顺手扒拉
 
@@ -1423,11 +1452,12 @@ class BehaviorFSM:
         if self._pole_nudge <= tuning.POLE_NUDGE_POINT_TAIL and not self._pole_nudge_point:
             self._pole_nudge_point = self.rng.random() < tuning.POLE_NUDGE_POINT_PROB
             if self._pole_nudge_point:
-                self._point_begin(o)                # 后半段改成指指点点
+                self._act_begin("scold", o)         # 后半段：指指点点（词表）
             else:
                 self._clear_hands()
         if self._pole_nudge_point:
-            self._point_step()
+            if not self._act_tick():
+                self._act_begin("scold", o)
         elif self._pole_nudge_t % tuning.POLE_NUDGE_POKE == 0:
             self._poke(tb)                          # 扒拉
             side = "r" if tb.chunk0.x >= c0.x else "l"
@@ -1448,7 +1478,7 @@ class BehaviorFSM:
         self._pole_nudge = 0
         self._pole_nudge_point = False
         self._pole_nudge_cd = tuning.POLE_NUDGE_CD
-        self._point_end()
+        self._act_end()
         b = self.body
         b.chunk0.pinned = False
         b.chunk1.pinned = False
@@ -1902,11 +1932,10 @@ class BehaviorFSM:
                     self.timer = 0
         elif self.phase == 2:
             self.gfx.look_at = cursor
-            if not self._point_active():
-                if self._cursor_point_ok():
-                    self._point_begin(cursor, mode="cursor", enforce_side=True)
-            if self._point_step() or self.timer >= T_POINT_WAKE:
-                self._point_end()
+            if not self._act_active() and self._cursor_point_ok():
+                self._act_begin("point", cursor, mode="cursor", enforce_side=True)
+            if not self._act_tick() or self.timer >= T_POINT_WAKE:
+                self._act_end()
                 self._transition("IdleStand")
         elif self.phase == 3:
             if b.on_floor():
@@ -2078,11 +2107,13 @@ class BehaviorFSM:
         if self._struggle_left > 0:
             self._struggle_left -= 1
             if cursor is not None:
-                self._point_at_cursor(cursor, cover=True)
+                if not self._act_active():
+                    self._act_begin("point", cursor, mode="cursor")
+                self._act_tick()
             if self._struggle_left % 6 == 0:
                 self._struggle_kick()
             if self._struggle_left <= 0:
-                self._clear_hands()
+                self._act_end()
             return
         if self.grab.frames < tuning.DRAG_STRUGGLE_MIN_FRAMES:
             return
@@ -2285,8 +2316,7 @@ class BehaviorFSM:
         if d > ARM_REACH_FAR:
             self._clear_hands()
         else:
-            self._point_at_cursor(cursor, enforce_side=False,
-                                  cover=(d <= ARM_REACH_NEAR))
+            self._aim_act(cursor, "cursor", cover=(d <= ARM_REACH_NEAR))
 
     def _clear_hands(self):
         self.gfx.hand_aim["l"] = None
@@ -2383,6 +2413,7 @@ class BehaviorFSM:
         self._pole_nudge = 0
         self._pole_nudge_point = False
         self._pole_blocker = None
+        self._act_end()
         if self.poleclimb is not None:
             self.poleclimb.release()
             self.poleclimb = None
@@ -2597,6 +2628,7 @@ class BehaviorFSM:
         self._pole_nudge = 0
         self._pole_nudge_point = False
         self._pole_blocker = None
+        self._act_end()
         if self.hpole is not None:
             self.hpole.release()
             self.hpole = None
@@ -3148,8 +3180,9 @@ class BehaviorFSM:
         c1 = self.body.chunk1
         return clampf(1.0 - math.hypot(lz.x - c1.x, lz.y - c1.y) / tuning.FIGHT_R, 0.0, 1.0)
 
-    def _nearest_peer(self):
-        best, bd = None, 1e9
+    def _nearest_peer(self, r=None):
+        """最近的同伴；给了 r 就只找这么近的。"""
+        best, bd = None, (1e9 if r is None else float(r))
         c1 = self.body.chunk1
         for p in self._living_peers():
             ob = p.body
@@ -3232,7 +3265,7 @@ class BehaviorFSM:
         """社交/帮助/反击/匍匐躲避在「没正事」的态里按优先级抢班。"""
         for k in ("_social_cd", "_help_cd", "_fight_cd", "_crawl_cd",
                   "_protest_cd", "_revive_cd", "_wall_cd", "_scold_cd",
-                  "_pole_nudge_cd"):
+                  "_pole_nudge_cd", "_act_cd"):
             v = getattr(self, k)
             if v > 0:
                 setattr(self, k, v - 1)
@@ -3301,6 +3334,10 @@ class BehaviorFSM:
                 self._break_active_controllers()
                 self._transition("FleeLizard")
                 return
+        # 6) 平时：附近有同伴 / 鼠标在附近停够久 → 随手做个小社交动作（不切态）
+        if (self._act_cd <= 0 and self.state in _IDLE_SOCIAL_FROM
+                and not b.swimming and b.on_floor()):
+            self._idle_social_try(cursor)
 
     def _pick_social_kind(self, tgt):
         """社交欲望攒满 → 按性格从动作词表（behavior/social.py）里加权抽一个动作。"""
@@ -3450,8 +3487,7 @@ class BehaviorFSM:
             self._saved_walk = None
 
     def _social_cleanup(self):
-        self._point_end()
-        self.gfx.face_special = False
+        self._act_end()
         self.body.set_crawl(False)          # 匍匐类社交动作收势：站起来
         self._social_gesture = None
         self._social_press_seen = 0
@@ -3492,7 +3528,7 @@ class BehaviorFSM:
             self._fight_cd = T_FIGHT_RETRY
             self._fight_target = None
         elif st == "ChaseCursor":
-            self._clear_hands()
+            self._act_end()
         elif st == "EatCob":
             self.gfx.hand_aim["l"] = None
             self.gfx.hand_aim["r"] = None
@@ -3669,19 +3705,20 @@ class BehaviorFSM:
         d = math.hypot(cx - b.chunk0.x, cy - b.chunk0.y)
         if d > tuning.PLAYCUR_ARRIVE:
             b.walk_to(cx)
-            self._point_end()
+            self._act_end()
         else:
             b.stop_walk()
-            if not self._point_active() and self._cursor_point_ok():
-                self._point_begin(cursor, mode="cursor")   # 指着鼠标，一下一下
-            self._point_step()
+            if not self._act_active() and self._cursor_point_ok():
+                # 指着鼠标：指向（hold）或指指点点（scold），性格说了算
+                self._act_begin(self._cursor_social_kind(), cursor, mode="cursor")
+            self._act_tick()
             # 鼠标落在跳跃够得到的一层：有概率跳起来拿身子碰它（原版跳抓）
             if (b.on_floor() and self.timer % JUMPCUR_CD == 0
                     and abs(cy - b.chunk0.y) <= JUMPCUR_DY and d <= JUMPCUR_R
                     and self.rng.random() < JUMPCUR_P):
                 b.request_jump("protest")
         if self._play_left <= 0 or d > tuning.PLAYCUR_R * 1.6:
-            self._point_end()
+            self._act_end()
             self._transition("IdleStand")
 
     # ── 社交：靠近/抚摸同伴 · 扒拉指指点点 · 救同伴 ──
@@ -3837,14 +3874,156 @@ class BehaviorFSM:
         self.gfx.face_special = True
         return self._aim_target(peer)
 
-    # ── 指指点点手势：伸出 → 收回 → 再伸出，重复 3~5 下 ──
+    # ══ 统一社交动作 API：词表（behavior/social.py）驱动的 起手 / 推进 / 收势 ══
+    # 所有「伸手比划」的地方——社交欲望态、被挡路、杆上被挡、被抢、追鼠标、
+    # 睡醒、空手反击、让路、被指、挣扎——都走这里，手势与含义只有词表一份。
+    def _act_begin(self, key, tgt, mode="obj", enforce_side=False, reps=None, left=0):
+        """起手一个社交动作（词表键 → 手势 + 姿态）；返回 False=没起来。"""
+        a = social.action(key)
+        if a is None or tgt is None:
+            return False
+        self._act_key = a.key
+        self._act_tgt = tgt
+        self._act_owner = self.state
+        self._act_mode = "cursor" if mode == "cursor" else "obj"
+        self._act_enforce = bool(enforce_side)
+        self._act_left = int(left)
+        self._act_idle = False
+        self._social_gesture = None
+        self._social_press_seen = 0
+        if a.gesture == "scold":
+            self._point_begin(tgt, mode=self._act_mode, enforce_side=enforce_side, reps=reps)
+        else:
+            self._point_end()
+        if a.crouch:
+            self.body.set_crawl(True)
+        self.gfx.face_special = (a.gesture == "scold")
+        return True
+
+    def _act_active(self) -> bool:
+        return self._act_key is not None
+
+    def _aim_act(self, tgt, mode="obj", enforce_side=False, cover=True) -> bool:
+        """把一个「指向」瞄到对象/鼠标上；返回 False=目标没了。"""
+        if mode == "cursor":
+            cur = tgt if isinstance(tgt, tuple) else self.cursor
+            if cur is None:
+                self._clear_hands()
+                return False
+            self._point_at_cursor(cur, enforce_side=enforce_side, cover=cover)
+            return not self._point_stopped
+        return self._aim_target(tgt)
+
+    def _act_tick(self) -> bool:
+        """推进一 tick 当前社交动作；返回 True=还要接着做。"""
+        a = social.action(self._act_key)
+        tgt = self._act_tgt
+        if a is None or tgt is None:
+            return False
+        ob = getattr(tgt, "body", None)
+        g = a.gesture
+        if a.crouch:
+            self.body.set_crawl(True)          # 匍匐族：整段都趴着
+        if g == "scold":
+            if self._point_step():             # 一轮指完（想接着做就再来一轮）
+                return False
+        elif g == "hold":
+            self.gfx.face_special = False      # 指向：只是举着手，不上表情
+            if not self._aim_act(tgt, self._act_mode, self._act_enforce):
+                return False
+        elif g in ("stroke_h", "stroke_v"):
+            if ob is None:
+                return False
+            self._social_stroke(tgt, ob, g == "stroke_h")
+        elif g == "press":
+            if ob is None:
+                return False
+            self._social_revive(tgt, ob)       # 按完自己收势
+            return self._act_active()
+        else:                                  # crouch / walk：趴着不动
+            self.gfx.face_special = False
+            self._clear_hands()
+        if self._act_left > 0:
+            self._act_left -= 1
+        return True
+
+    def _act_end(self):
+        """收势：清手势、站起来、收表情。"""
+        self._act_key = None
+        self._act_tgt = None
+        self._act_owner = None
+        self._act_idle = False
+        self._point_end()
+        self.body.set_crawl(False)
+        self.gfx.face_special = False
+
+    # ── 平时随手小动作：不切状态，站着（或趴着）做一小段 ──
+    def _act_idle_tick(self):
+        """推进平时小动作；做完/超时/目标没了就收势。"""
+        b = self.body
+        tgt = self._act_tgt
+        ob = getattr(tgt, "body", None)
+        b.stop_walk()
+        if ob is not None:
+            b.facing = 1 if ob.chunk0.x >= b.chunk0.x else -1
+            self.gfx.look_at = (ob.chunk0.x, ob.chunk0.y)
+        elif isinstance(tgt, tuple):
+            self.gfx.look_at = tgt
+        alive = self._act_tick()
+        if not alive or self._act_left <= 0 or (ob is not None and getattr(ob, "dead", False)):
+            self._act_end()
+            self._idle_hold = tuning.IDLE_SOCIAL_HOLD
+
+    def _idle_social_kind(self, tgt) -> str:
+        """平时小动作抽词：跟社交欲望同一套性格权重，去掉要走长流程的两个。"""
+        for _ in range(4):
+            k = self._pick_social_kind(tgt)
+            if k not in ("revive", "crouch_walk"):
+                return k
+        return "point"
+
+    def _idle_social_start(self, tgt, p, kind=None) -> bool:
+        """随手起一个小社交动作（同伴或鼠标）；返回 True=起来了。"""
+        if tgt is None or self._act_active() or self._act_cd > 0:
+            return False
+        if self.rng.random() >= p:
+            return False
+        mode = "cursor" if isinstance(tgt, tuple) else "obj"
+        if kind is None:
+            kind = "point" if mode == "cursor" else self._idle_social_kind(tgt)
+        left = self.rng.randint(tuning.IDLE_SOCIAL_TICKS_MIN, tuning.IDLE_SOCIAL_TICKS_MAX)
+        if not self._act_begin(kind, tgt, mode=mode, left=left):
+            return False
+        self._act_idle = True
+        self._act_cd = tuning.IDLE_SOCIAL_CD
+        return True
+
+    def _idle_social_try(self, cursor):
+        """平时（非社交欲望态）也有概率对附近同伴/鼠标做个社交动作。"""
+        self._act_check = (self._act_check + 1) % max(1, tuning.IDLE_SOCIAL_CHECK)
+        if self._act_check:
+            return False
+        peer = self._nearest_peer(tuning.SOCIAL_R * 0.75)
+        if peer is not None:
+            p = tuning.IDLE_SOCIAL_P * (0.4 + 1.2 * getattr(self.pers, "sociability", 0.5))
+            if self._idle_social_start(peer, clampf(p, 0.0, 1.0)):
+                return True
+        if (cursor is not None and self._cursor_point_ok()
+                and self.rng.random() < tuning.IDLE_SOCIAL_CURSOR_P):
+            return self._idle_social_start(cursor, 1.0)
+        return False
+
+    def _cursor_social_kind(self) -> str:
+        """对着鼠标：通常「指向」，性格不好的猫有概率改成「指指点点」。"""
+        if self.rng.random() < self._point_prob(tuning.CURSOR_SCOLD_PROB):
+            return "scold"
+        return "point"
+
+    # ── 指指点点手势：伸出 → 收回 → 再伸出，重复 1~5 下 ──
     def _point_begin(self, tgt, mode="obj", enforce_side=False, reps=None):
         if reps is None:
-            reps = self.rng.randint(tuning.POINT_REPS_MIN, tuning.POINT_REPS_MAX)
-            # 性格：爱指的猫指得久，性格好的猫敷衍两下就收
-            if self.rng.random() > getattr(self.pers, "point_like", 0.5):
-                reps = max(1, reps - 2)
-        self._point = PointGesture(reps, tuning.POINT_ON_TICKS, tuning.POINT_OFF_TICKS)
+            reps = social.social_reps(self.rng, getattr(self.pers, "point_like", 0.5))
+        self._point = social.PointGesture(reps, tuning.POINT_ON_TICKS, tuning.POINT_OFF_TICKS)
         self._point_tgt = tgt
         self._point_mode = mode
         self._point_enforce = bool(enforce_side)
@@ -4093,8 +4272,7 @@ class BehaviorFSM:
         self.body.stop_walk()
 
     def _fight_end(self):
-        self._point_end()
-        self.gfx.face_special = False
+        self._act_end()
         self._fight_cd = T_FIGHT_RETRY
         self._fight_target = None
         self.body.stop_walk()
@@ -4138,11 +4316,13 @@ class BehaviorFSM:
                 return
             if d > tuning.FIGHT_MELEE_R:
                 b.walk_to(tgt.x)
-                self._point_end()
+                self._act_end()
             else:
                 b.stop_walk()
-                if self._point_step():          # 空手：扒拉着指指点点
-                    self._point_begin(tgt)
+                if not self._act_active():
+                    self._act_begin("scold", tgt)
+                elif not self._act_tick():      # 空手：扒拉着指指点点
+                    self._act_begin("scold", tgt)
                 if self.timer % tuning.SOCIAL_POKE_INTERVAL == 0:
                     tgt.vx += 0.35 if tgt.x >= b.chunk0.x else -0.35
             return
@@ -4152,7 +4332,7 @@ class BehaviorFSM:
             b.walk_to(b.chunk1.x - (tgt.x - b.chunk1.x))
         else:
             b.stop_walk()
-        self._point_end()
+        self._act_end()
         self._aim_target(tgt)
         if self._fight_throw_t >= tuning.FIGHT_THROW_CD:
             self._fight_throw_t = 0
@@ -4198,15 +4378,20 @@ class BehaviorFSM:
         return (self.body.chunk1.x - c.x) * facing < 0.0
 
     def be_pointed_at(self, pointer):
-        """被别的猫指指点点：有概率转过身来对着它匍匐（缩起来）。"""
+        """被指指点点：性格不好就回头指回去（scold），其余有概率转身匍匐（crouch）。"""
         b = self.body
         if (getattr(b, "dead", False) or self.grab.active or self._zerog()
                 or b.swimming or not b.on_floor() or self._crawl_cd > 0
-                or self.state not in _WANTS_FROM):
+                or self._act_active() or self.state not in _WANTS_FROM):
             return
         pb = getattr(pointer, "body", None)
+        if pb is None:
+            return
+        if (self.rng.random() < self._point_prob(tuning.POINTED_SCOLD_PROB)
+                and self._idle_social_start(pointer, 1.0, kind="scold")):
+            return
         prob = tuning.POINTED_CROUCH_PROB * (0.4 + 1.2 * getattr(self.pers, "crawl_like", 0.5))
-        if pb is None or self.rng.random() >= prob:
+        if self.rng.random() >= prob:
             return
         self._crawl_point_to = pointer
         self._crawl_from = None

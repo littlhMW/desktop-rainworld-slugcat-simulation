@@ -60,6 +60,21 @@ python run_slugcatpet.py
 | 匍匐行走 | 匍匐着潜行挪动 | 害怕强敌，正在潜行 |
 
 性格决定抽得到哪些：`crawl_like` 低的猫（不肯趴）抽不到匍匐族，`point_like` 低（性格好）少指指点点，`sociability` 高更喜欢抚摸/拍拍；记恨的对象会加权匍匐指指点点。
+
+同一套词表也管**平时**（没攒满社交欲望时）的随手小动作——所有伸手比划的地方都走同一个「起手 / 推进 / 收势」接口，不再各写各的：
+
+| 情景 | 抽到的动作 |
+| --- | --- |
+| 家闲态附近有同伴 / 鼠标在附近停够久 | 按性格随手抽一个（指向/指指点点/抚摸/拍拍/匍匐族），一小段后自己收势 |
+| 被别的猫挡路（跳不过去） | 指指点点；暴躁又爱趴的猫改用匍匐指指点点 |
+| 杆上被同伴挡住 | 先停在中间扒拉几下，后半段有概率改成指指点点 |
+| 被抢了果子 | 过去扒拉指指点点那个小偷（`protest` 是 `scold` 的旧键别名） |
+| 追鼠标 / 睡醒 | 指向鼠标；性格不好的猫改成指指点点鼠标 |
+| 空手反击蜥蜴 | 贴上去扒拉着指指点点 |
+| 被同伴指指点点 | 性格不好就回头指回去，其余有概率转身匍匐 |
+| 被顶后让完路 | 小概率回头对顶人者做个动作 |
+| 被鼠标抓着挣扎 | 伸手扒鼠标 |
+| 复活同伴 | 按压 4~8 下（`PressGesture`），按完对方复活 |
 - 手里或脚边有矛/石头时，蛞蝓猫会主动迎战蜥蜴：捡起家伙、拉开距离、预判弹道扔出去。在杆上也能把手里的东西吃完。
 - 拖拽**爆米花**只会把豆荚拉开（植株不会挪位置，松手弹回），豆荚有弹性，也会和地面/窗口碰撞。
 - 蛞蝓猫**手里拿着东西**时，用鼠标抓着它**剧烈左右摇晃**，东西会被甩掉（先掉石头、再掉果子，最后才是矛），甩出去的物件带着摆动速度飞出去。
@@ -135,6 +150,21 @@ Nothing has a count limit any more - place as many as you like.
 | Crouch-walk | sneak away while crouched | afraid of a strong foe, sneaking |
 
 Personality decides which ones come up: a low `crawl_like` (won't lie down) rules out the crouch family, a low `point_like` (good-natured) means less scolding, a high `sociability` favours petting and patting, and a cat you have a grudge against gets weighted crouched scolding.
+
+The same vocabulary also drives **everyday** gestures (when the social urge has not filled up). Every place that reaches out now goes through one begin / tick / end interface instead of its own ad-hoc code:
+
+| Situation | Action picked |
+| --- | --- |
+| Idling with a companion nearby, or the cursor hovering nearby long enough | a personality-weighted pick (point / point-point / pet / pat / crouch family), ends by itself |
+| Blocked on the ground by another cat (can't jump over) | point-point; a hot-tempered crouchy cat uses crouched point-point instead |
+| Blocked by a companion on a pole | nudge a few times mid-pole, then maybe point-point in the tail |
+| Fruit stolen | walk over and point-point at the thief (`protest` is a legacy alias of `scold`) |
+| Chasing the cursor / waking up | point at the cursor; a bad-tempered cat point-points it instead |
+| Fighting a lizard bare-handed | get close and point-point while nudging |
+| Being point-pointed at | a bad-tempered cat points back, others may turn and crouch |
+| After making way for a shover | small chance to do a gesture back at them |
+| Struggling while held by the mouse | reach out and paw at the cursor |
+| Reviving a companion | 4-8 presses (`PressGesture`); the target comes back when done |
 - With a spear or rock in hand (or lying within reach) a slugcat will pick a fight with a lizard: grab the weapon, keep its distance and throw a lead shot. It can also finish a meal while hanging on a pole.
 - Dragging a **popcorn plant** only pulls the cob around (the plant stays rooted and springs back), and the cob is elastic and collides with the ground and window tops.
 - **Shake the cat violently** left and right while it holds something and it drops it (rocks first, then fruit, then spears) - the dropped item flies off with the swing's velocity.

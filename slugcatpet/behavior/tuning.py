@@ -331,6 +331,18 @@ PET_SPAN = 15.0                   # 横向折返半宽（px）
 PAT_ON_TICKS = 9
 PAT_SPAN = 13.0                   # 竖向折返半高（px）
 PET_SOOTHE = 0.05                 # 一次抚摸/拍拍的安抚量（双方 temper 各降）
+# ── 平时随手小动作：不在社交欲望态里也能冒出来（词表同一份）──
+IDLE_SOCIAL_CHECK = 90            # 每隔这么多 tick 掷一次骰
+IDLE_SOCIAL_P = 0.30              # 附近有同伴时的触发概率（再乘性格）
+IDLE_SOCIAL_CURSOR_P = 0.35       # 鼠标在附近停够久时对鼠标做动作的概率
+IDLE_SOCIAL_CD = 420              # 一次平时小动作后的冷却（约 10s）
+IDLE_SOCIAL_TICKS_MIN = 40        # 单次小动作时长
+IDLE_SOCIAL_TICKS_MAX = 130
+IDLE_SOCIAL_HOLD = 30             # 做完歇一拍再重抽
+MAKEWAY_SOCIAL_P = 0.35           # 让完路回头对顶人者做个小动作的概率
+CURSOR_SCOLD_PROB = 0.30          # 追鼠标时改成「指指点点」的概率（暴躁猫）
+POINTED_SCOLD_PROB = 0.30         # 被指后回头指回去的概率（暴躁猫）
+SCOLD_CROUCH_PROB = 0.25          # 被挡路时用「匍匐指指点点」的概率（暴躁 + 爱趴）
 
 # 帮别的猫取食（自己饱了别人没饱）
 HELPFEED_SEEK_R = 900.0
