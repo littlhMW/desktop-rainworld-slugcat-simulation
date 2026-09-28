@@ -43,13 +43,14 @@ class FlyCatcher:
         return getattr(self.fsm.pers, "diet", None)
 
     def _candidates(self):
-        """半径内的活飞虫（蝙蝠 + 蝉乌贼）。"""
+        """半径内的活飞虫（蝙蝠 + 蝉乌贼 + 面条蝇）。"""
         diet = self._diet()
         if diet in (DIET_VEGETARIAN, DIET_SPECIAL):
             return []                       # 素食/圣徒不主动抓虫吃
         c0 = self._c0()
         out = []
-        for f in (*self.win.batflies, *self.win.squidcadas):
+        for f in (*self.win.batflies, *self.win.squidcadas,
+                  *self.win.needleworms):
             if not getattr(f, "catchable", False):
                 continue
             if math.hypot(f.x - c0.x, f.y - c0.y) > tuning.CATCH_SEEK_R:

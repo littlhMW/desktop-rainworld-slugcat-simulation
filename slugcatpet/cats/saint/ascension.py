@@ -281,7 +281,8 @@ class Ascension:
         win = self.win
         cx, cy = self.fx, self.fy
         hits = []
-        for name in ("lizards", "scavengers", "batflies", "squidcadas"):
+        for name in ("lizards", "scavengers", "batflies", "squidcadas",
+                     "needleworms"):
             for obj in list(getattr(win, name, ()) or ()):
                 if getattr(obj, "dead", False):
                     continue

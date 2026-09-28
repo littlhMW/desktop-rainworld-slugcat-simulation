@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 import random as _random
 
-from ..core.units import clampf, lerp
+from ..core.units import clampf, lerp, inv_lerp
 from .enums import ItemState
 
 # ── 物理 ──
@@ -22,6 +22,9 @@ MAX_TAIL_SEGS = 11            # 尾段上限（原版红蜥 tailSegments=11，�
 SEG_STIFF_BODY = 0.55         # 躯干节跟随刚度（高=挺）
 SEG_STIFF_TAIL = 0.30         # 尾节更软
 SEG_GRAV = 0.22               # 悬空（被拎起）时链节下坠
+DEPTH_LERP = 0.1              # 原版 depthRotation 的插值系数（LizardGraphics.Update）
+HEAD_DEPTH_LERP = 0.5         # 原版 headDepthRotation 的插值系数
+TURN_LIFT = 6.0               # 转身时上半身支起的高度（原版靠头部绳索，这里直接抬驱动点）
 HURT_STUN = 70                # 非致命伤的僵直 tick
 HURT_FLASH = 8                # 受击白闪帧数
 CORPSE_TTL = 1500             # 尸体保留 tick（约 25s）
@@ -75,6 +78,10 @@ FOLLOW_GAP = 46.0              # 驯服后与朋友保持的距离
 BLACK_RGB = (27, 11, 33)       # 近似 RoomPalette.blackColor：绝大多数蜥蜴的体色
 WHITE_RGB = (255, 255, 255)    # 白蜥体色走纯白分支
 SALAMANDER_RGB = (232, 232, 244)
+HUE_DEV_K = 0.6                # 原版体色色相偏差的 SCurve 参数（所有品种都是 0.6）
+WHITE_PALE_SAT = 0.45          # 白蜥随机色版本：低饱和 + 高亮度 = 淡彩色
+WHITE_PALE_LIGHT = 0.86
+WHITE_PALE_LIGHT_DEV = 0.10
 
 
 def _hsl2rgb(h: float, s: float, l: float) -> tuple[int, int, int]:
@@ -95,6 +102,32 @@ def _hsl2rgb(h: float, s: float, l: float) -> tuple[int, int, int]:
     return (int(round(f(0.0) * 255.0)), int(round(f(4.0) * 255.0)), int(round(f(2.0) * 255.0)))
 
 
+def _scurve(x: float, k: float) -> float:
+    """原版 Custom.SCurve（同 needleworm._scurve）。"""
+    x = x * 2.0 - 1.0
+    if x < 0.0:
+        x = abs(1.0 + x)
+        return k * x / (k - x + 1.0) * 0.5
+    k = -1.0 - k
+    return 0.5 + k * x / (k - x + 1.0) * 0.5
+
+
+def _random_deviation(rng, k: float) -> float:
+    """原版 Custom.RandomDeviation：SCurve 分布（两头重、中间轻），带随机符号。"""
+    return _scurve(rng.random() * 0.5, k) * 2.0 * (1.0 if rng.random() < 0.5 else -1.0)
+
+
+def _clamped_var(rng, base: float, max_dev: float, k: float) -> float:
+    """原版 Custom.ClampedRandomVariation。"""
+    return clampf(base + _random_deviation(rng, k) * max_dev, 0.0, 1.0)
+
+
+def _wrapped_var(rng, base: float, max_dev: float, k: float) -> float:
+    """原版 Custom.WrappedRandomVariation（色相环绕）。"""
+    n = base + _random_deviation(rng, k) * max_dev + 1.0
+    return n - math.floor(n)
+
+
 class LizardBreed:
     """一种蜥蜴的静态定义；字段名对应游戏 LizardBreedParams / LizardBreeds。
 
@@ -105,11 +138,13 @@ class LizardBreed:
 
     __slots__ = ("key", "name_zh", "name_en", "hue", "sat", "light", "plain_color",
                  "body_rgb", "head_rgb", "spikes",
+                 "pale_random",
                  "head_graphics", "body_size_fac", "body_rad_fac", "body_length_fac",
                  "head_size", "tail_segs", "tail_len_fac", "limb_size", "limb_thickness",
                  "base_speed", "jaw_open_angle", "jaw_lower_fac", "jaw_apart",
                  "neck_stiffness", "body_stiffness", "tail_col_start", "tail_col_exp",
                  "bite_damage", "anchor_y", "head_hue_var", "head_light_var",
+                 "light_dev_k",
                  "hide_eyes", "toughness", "stun_toughness", "bite_chance",
                  "attempt_bite_radius", "taming_difficulty", "head_shield_angle",
                  "danger", "visual_radius", "tongue", "tongue_range", "body_mass",
@@ -126,7 +161,9 @@ class LizardBreed:
                  jaw_apart=23.0, neck_stiffness=0.2, body_stiffness=0.2,
                  tail_col_start=0.3, tail_col_exp=2.0, bite_damage=1.0,
                  sat=1.0, plain_color=None, anchor_y=0.7,
-                 hue_var=0.10, light_var=0.15, hide_eyes=False, spikes=None,
+                 pale_random=False,
+                 hue_var=0.10, light_var=0.15, light_dev_k=0.1,
+                 hide_eyes=False, spikes=None,
                  toughness=1.0, stun_toughness=1.0, bite_chance=0.5,
                  bite_damage_chance=1.0 / 3.0,
                  attempt_bite_radius=80.0, taming_difficulty=1.0,
@@ -143,6 +180,7 @@ class LizardBreed:
         self.sat = sat
         self.light = light
         self.plain_color = plain_color      # 白/黑等不走 HSL 的品种
+        self.pale_random = pale_random      # 白蜥随机色变体：色相每次出生重掷
         self.head_graphics = head_graphics  # (jaw, lowerTeeth, upperTeeth, head, eyes)
         self.body_size_fac = size
         self.body_rad_fac = body_rad_fac
@@ -164,6 +202,7 @@ class LizardBreed:
         self.anchor_y = anchor_y
         self.head_hue_var = hue_var
         self.head_light_var = light_var
+        self.light_dev_k = light_dev_k
         self.hide_eyes = hide_eyes
         self.spikes = spikes                # 背刺 (graphic, colored, 出现概率)，None=无
         # ── 原版战斗/AI 参数 ──
@@ -195,6 +234,7 @@ class LizardBreed:
         if plain_color == WHITE_RGB:
             # 白蜥：躯干纯白，头走「黑↔白呼吸闪烁」（原版 HeadColor1=白 / HeadColor2=黑），
             # 因此这里只钉体色，头交给 head_color 的呼吸分支。
+            # pale_random 变体则整只按出生随机淡彩色（见 color/body_color）。
             self.body_rgb, self.head_rgb = WHITE_RGB, None
         elif key in ("salamander", "black"):
             self.body_rgb = self.head_rgb = (SALAMANDER_RGB if key == "salamander"
@@ -217,11 +257,24 @@ class LizardBreed:
         return max(0.05, self.stun_toughness)
 
     def color(self, rng) -> tuple[int, int, int]:
-        """出生时随机化个体色，同游戏 effectColor 的 WrappedRandomVariation。"""
+        """出生时随机化个体色：逐字照抄 Lizard.cctor 里 effectColor 的赋值。
+
+        原版每个品种都是 `Custom.HSL2RGB(WrappedRandomVariation(hue, hueDev, 0.6),
+        sat, ClampedRandomVariation(light, lightDev, lightK))`，白/黑蜥走
+        `lizardParams.standardColor`（纯色分支，见 plain_color）。
+        SCurve 偏差是两头重的分布，所以同种蜥蜴既有接近基准色的个体，
+        也有明显偏色/偏亮的个体 —— 这是原版体色「鲜艳且多样」的来源。
+        """
         if self.plain_color is not None:
-            return self.plain_color
-        h = self.hue + rng.uniform(-self.head_hue_var, self.head_hue_var)
-        l = clampf(self.light + rng.uniform(-self.head_light_var, self.head_light_var), 0.12, 0.92)
+            if not self.pale_random:
+                return self.plain_color
+            # 白蜥随机色版：整圈随机色相 + 低饱和高亮度（淡彩），个体差异靠 light 抖动
+            return _hsl2rgb(rng.random(),
+                            WHITE_PALE_SAT,
+                            _clamped_var(rng, WHITE_PALE_LIGHT, WHITE_PALE_LIGHT_DEV,
+                                         self.light_dev_k))
+        h = _wrapped_var(rng, self.hue, self.head_hue_var, HUE_DEV_K)
+        l = _clamped_var(rng, self.light, self.head_light_var, self.light_dev_k)
         return _hsl2rgb(h, self.sat, l)
 
     def tail_tint(self, rng, color):
@@ -269,6 +322,7 @@ BREEDS = (
                 toughness=0.8, stun_toughness=0.8, taming_difficulty=3.0,
                 danger=0.4, visual_radius=900.0, body_mass=1.7, hue_var=0.05),
     LizardBreed("white", "白蜥", "White lizard", 0.0, 1.0, (0, 0, 0, 0, 3),
+                pale_random=True,
                 size=1.00, base_speed=3.8, tail_segs=5, tail_len_fac=1.2,
                 jaw_open_angle=110.0, jaw_lower_fac=0.5, neck_stiffness=0.05,
                 body_stiffness=0.15, tail_col_start=0.1, tail_col_exp=1.2,
@@ -304,7 +358,7 @@ BREEDS = (
                 bite_chance=1.0 / 3.0, attempt_bite_radius=70.0,
                 toughness=1.0, stun_toughness=1.0, taming_difficulty=3.5,
                 head_shield_angle=70.0, danger=0.4, visual_radius=960.0, body_mass=2.1,
-                tongue=True, tongue_range=150.0, hue_var=0.15,
+                tongue=True, tongue_range=150.0, hue_var=0.15, light_dev_k=0.2,
                 smooth_legs=False),
     LizardBreed("cyan", "青蜥", "Cyan lizard", 0.49, 0.50, (0, 0, 0, 0, 0),
                 size=0.65, base_speed=3.0, tail_segs=5, tail_len_fac=1.44, limb_size=1.0,
@@ -357,6 +411,7 @@ class Lizard:
     collision_layer = 0                 # 不参与 chunk 互推，交互全部走 AI
 
     __slots__ = ("breed", "color", "tail_edge", "tail_amt", "rng", "seed", "id",
+                 "body_rgb",
                  "x", "y", "vx", "vy", "last_x", "last_y", "head_rad", "head_conn",
                  "body_rad", "seg", "legs", "state", "facing", "look_at",
                  "head_angle", "last_head_angle", "jaw", "last_jaw",
@@ -369,7 +424,8 @@ class Lizard:
                  "rock_push", "rock_push_dir",
                  "fear_t", "fear_x", "fear_y", "fear_seen", "wall_dir",
                  "bob", "bob_front", "bob_hind",
-                 "carry_obj", "carry_body", "carry_corner", "sprint")
+                 "carry_obj", "carry_body", "carry_corner", "sprint",
+                 "depth", "last_depth", "head_depth", "last_head_depth", "turn_lift")
 
     def __init__(self, x: float, y: float, breed: LizardBreed | None = None,
                  seed: int = 0, id: int = 0):
@@ -379,6 +435,7 @@ class Lizard:
         self.id = int(id)
         rng = self.rng
         self.color = self.breed.color(rng)
+        self.body_rgb = self.color if self.breed.pale_random else None
         tint = self.breed.tail_tint(rng, self.color)
         self.tail_edge = tint[0] if tint else None
         self.tail_amt = tint[1] if tint else 0.0
@@ -468,6 +525,10 @@ class Lizard:
         self.state = ItemState.FREE
         self.facing = 1
         self.chain_dir = 1.0
+        # 原版 LizardGraphics 的 depthRotation / headDepthRotation（决定头取哪一行贴图）
+        self.depth = self.last_depth = 1.0
+        self.head_depth = self.last_head_depth = 1.0
+        self.turn_lift = 0.0
         self.look_at = None
         self.head_angle = 0.0
         self.last_head_angle = 0.0
@@ -669,6 +730,7 @@ class Lizard:
         self._step_chain(HL)
         self._step_legs(HL)
         self._step_head()
+        self._step_depth()
 
         if self.bite_hold > 0:
             self.bite_hold -= 1
@@ -699,7 +761,8 @@ class Lizard:
         self.y += self.vy
 
         r = self.head_rad
-        floor = HL - self.body_rad * HEAD_STAND_FAC
+        # 转身时上半身支起：头的落点抬高 turn_lift（链体仍受各自的落地限制）
+        floor = HL - self.body_rad * HEAD_STAND_FAC - self.turn_lift
         self._contact_floor = False
         self.wall_dir = 0
         if self.y > floor:
@@ -1081,6 +1144,31 @@ class Lizard:
             self.facing = -1
 
     # ── 链体 ──
+    def _step_depth(self) -> None:
+        """原版 LizardGraphics.Update 的 depthRotation / headDepthRotation。
+
+        原版这两个量由四肢相对躯干连线的深度推导（limbs[i].connection 与
+        rotationChunk），2D 宠物里没有 z 轴，等价量就是「身体朝向观众的程度」：
+        平时 = 朝向(±1)（侧视 → 头取正侧面贴图行 0）；转身时从 -1 扫到 +1，
+        中途 |depth|→0，头依次经过行 3/2/1 的正面、斜前贴图 —— 原版蜥蜴转身时
+        头「从一侧抬起、绕过身体转到另一侧」正是这个扫描过程。
+        """
+        self.last_depth = self.depth
+        self.depth = lerp(self.depth, 1.0 if self.facing >= 0 else -1.0, DEPTH_LERP)
+        self.last_head_depth = self.head_depth
+        # f2 = InverseLerp(0, 0.6, |dot((lookPos - 躯干0), (头 - 躯干0))|)（原版同名量）
+        s0 = self.seg[0]
+        hx, hy = self.x - s0.x, self.y - s0.y
+        hl = math.hypot(hx, hy) or 1.0
+        lx, ly = self.look_at if self.look_at is not None else (self.x, self.y)
+        vx, vy = lx - s0.x, ly - s0.y
+        vl = math.hypot(vx, vy) or 1.0
+        f2 = inv_lerp(0.0, 0.6, abs((hx / hl) * (vx / vl) + (hy / hl) * (vy / vl)))
+        self.head_depth = lerp(self.head_depth, self.depth * f2, HEAD_DEPTH_LERP)
+        # 转身中支起上半身（|depth| 越小 = 越正对镜头 = 转得越狠）
+        self.turn_lift = (0.0 if self.dead
+                          else TURN_LIFT * (1.0 - min(1.0, abs(self.depth))))
+
     def _step_chain(self, HL) -> None:
         """头为领头点，逐节跟随；悬空节受重力。
 

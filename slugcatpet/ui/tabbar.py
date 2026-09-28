@@ -51,6 +51,8 @@ _PEARL_BALL = QColor(240, 243, 248)
 _PEARL_EDGE = QColor(138, 180, 214)
 _PEARL_SHINE = QColor(255, 255, 255)
 _SPEAR_SHAFT = QColor(126, 100, 74)
+_NWORM_BODY = QColor(224, 158, 196)
+_NWORM_HI = QColor(255, 214, 232)
 _SPEAR_TIP = QColor(198, 206, 214)
 _SCAV_BODY = QColor(58, 62, 50)
 _SCAV_MASK = QColor(232, 238, 232)
@@ -227,6 +229,8 @@ def _paint_place_icon(p, kind, r, atlas=None):
         _paint_lizard_icon(p, r)
     elif kind == "squidcada":
         _paint_squidcada_icon(p, r)
+    elif kind == "needleworm":
+        _paint_needleworm_icon(p, r)
     elif kind == "pearl":
         _paint_pearl_icon(p, r)
     elif kind == "spear":
@@ -266,6 +270,30 @@ def _paint_squidcada_icon(p, r):
     p.drawEllipse(shell)
     p.setBrush(_BAT_EYE)
     p.drawEllipse(QPointF(cx + w * 0.03, cy + h * 0.02), w * 0.065, w * 0.065)
+
+
+def _paint_needleworm_icon(p, r):
+    """面条蝇：横向分节虫身 + 双翅 + 亮眼（与程序化绘制一致）。"""
+    cx, cy = r.center().x(), r.center().y()
+    w, h = r.width(), r.height()
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(_SQUID_WING)
+    for sgn in (-1, 1):
+        p.drawPolygon(QPolygonF([QPointF(cx + sgn * w * 0.02, cy - h * 0.02),
+                                 QPointF(cx + sgn * w * 0.44, cy - h * 0.40),
+                                 QPointF(cx + sgn * w * 0.30, cy + h * 0.06)]))
+    p.setBrush(_NWORM_BODY)
+    body = QRectF(0, 0, w * 0.78, h * 0.30)
+    body.moveCenter(QPointF(cx, cy + h * 0.04))
+    p.drawRoundedRect(body, h * 0.15, h * 0.15)
+    p.setBrush(_NWORM_HI)
+    for i in range(4):
+        dx = (i - 1.5) * w * 0.14
+        dot = QRectF(0, 0, w * 0.07, h * 0.16)
+        dot.moveCenter(QPointF(cx + dx, cy + h * 0.04))
+        p.drawEllipse(dot)
+    p.setBrush(_BAT_EYE)
+    p.drawEllipse(QPointF(cx + w * 0.26, cy + h * 0.02), w * 0.055, w * 0.055)
 
 
 def _paint_pearl_icon(p, r):
@@ -537,6 +565,7 @@ class TabBar(QWidget):
                        ("batfly", t("tip_batfly"), self._place_batfly),
                        ("lizard", t("tip_lizard"), self._place_lizard),
                        ("squidcada", t("tip_squidcada"), self._place_squidcada),
+                       ("needleworm", t("tip_needleworm"), self._place_needleworm),
                        ("scavenger", t("tip_scavenger"), self._place_scavenger),
                        ("pearl", t("tip_pearl"), self._place_pearl),
                        ("spear", t("tip_spear"), self._place_spear),
@@ -736,6 +765,10 @@ class TabBar(QWidget):
         self.pet.enter_place_squidcada_mode()
         self._collapse()
 
+    def _place_needleworm(self):
+        self.pet.enter_place_needleworm_mode()
+        self._collapse()
+
     def _place_pearl(self):
         self.pet.enter_place_pearl_mode()
         self._collapse()
@@ -756,6 +789,7 @@ class TabBar(QWidget):
         if (self.pet.fruits or self.pet.stones or self.pet.slimemolds
                 or self.pet.batflies or self.pet.lizards or self.pet.poles
                 or self.pet.squidcadas or self.pet.pearls or self.pet.spears
+                or self.pet.needleworms
                 or self.pet.scavengers or self.pet.seedcobs or self.pet.seeds
                 or self.pet.lamp is not None):
             self.pet.clear_all_items()

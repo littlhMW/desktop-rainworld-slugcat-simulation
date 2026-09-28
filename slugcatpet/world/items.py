@@ -26,6 +26,8 @@ from .lizard import BREEDS, Lizard, _ang_lerp
 from .lizard_gfx import draw_lizard
 from .squidcada import Squidcada
 from .squidcada_gfx import draw_squidcada
+from .needleworm import NeedleWorm, AGE_EGG
+from .needleworm_gfx import draw_needleworm, draw_needle_egg
 from .pearl import Pearl
 from . import weaponphys
 from .scavenger import PEARL_SEEK_R, PEARL_TAKE_PAD
@@ -117,6 +119,7 @@ SHOVE_COOLDOWN = 12
 
 # 蝉乌贼 / 珍珠 / 矛 / 拾荒者
 SQUIDCADA_GRAB_PAD = 10.0
+NEEDLEWORM_GRAB_PAD = 12.0
 PEARL_GRAB_PAD = 6.0
 SPEAR_GRAB_PAD = 8.0
 SCAVENGER_GRAB_PAD = 14.0
@@ -521,7 +524,8 @@ class ItemInteractionMixin:
                 if killed:
                     self._lizard_death_fx(lz)
                 break
-            for small in (*self.batflies, *self.squidcadas):   # 砸中就打下来
+            for small in (*self.batflies, *self.squidcadas,
+                          *self.needleworms):   # 砸中就打下来
                 if small.dead or not s.fling or s.state != ItemState.FREE:
                     continue
                 if math.hypot(s.vx, s.vy) < STONE_STUN_SPEED:
@@ -597,6 +601,7 @@ class ItemInteractionMixin:
         self.clear_batflies()
         self.clear_lizards()
         self.clear_squidcadas()
+        self.clear_needleworms()
         self.clear_pearls()
         self.clear_spears()
         self.clear_scavengers()
@@ -1336,10 +1341,12 @@ class ItemInteractionMixin:
 
     def _cull_flung_corpses(self):
         """被甩出窗口的尸体直接清除（非蛞蝓猫的才算，猫死了另有守灵/转生逻辑）。"""
-        for e in (*self.lizards, *self.squidcadas, *self.batflies):
+        for e in (*self.lizards, *self.squidcadas, *self.batflies,
+                  *self.needleworms):
             if (not getattr(e, "dead", False) or e.state != ItemState.FREE
                     or e is self._dragged_lizard or e is self._dragged_squidcada
-                    or e is self._dragged_batfly):
+                    or e is self._dragged_batfly
+                    or e is self._dragged_needleworm):
                 continue
             rad = getattr(e, "rad", None) or getattr(e, "body_rad", 0.0)
             if self._out_of_window(e, rad):
@@ -1383,8 +1390,12 @@ class ItemInteractionMixin:
     def _lizard_prey(self, lz):
         """小猎物：原版 LizardTemplate → CicadaA Eats 0.05（蓝/白蜥 0.7）。"""
         w = _LIZ_PREY_W.get(lz.breed.key, _LIZ_PREY_DEFAULT)
-        return tuple((sq, w) for sq in self.squidcadas
-                     if not sq.dead and sq.state == ItemState.FREE)
+        out = [(sq, w) for sq in self.squidcadas
+               if not sq.dead and sq.state == ItemState.FREE]
+        out += [(nw, 0.25 if nw.age == "big" else 0.3) for nw in self.needleworms
+                if not nw.dead and nw.state == ItemState.FREE
+                and nw.age in ("small", "big")]
+        return tuple(out)
 
     def _lizard_death_fx(self, lz):
         """蜥蜴被击杀：重震一下（原版会有血花，这里只用震动表示）。"""
@@ -1435,6 +1446,10 @@ class ItemInteractionMixin:
                 self._lizard_death_fx(obj)
             return
         if isinstance(obj, Squidcada):            # 被蜥蜴吃掉（原版 Eats 关系）
+            obj.die()
+            obj.state = ItemState.EATEN
+            self._shake[1] += 0.3
+        elif isinstance(obj, NeedleWorm):         # 原版 Eats 0.25/0.3，比蝉乌贼更可口
             obj.die()
             obj.state = ItemState.EATEN
             self._shake[1] += 0.3
@@ -1595,6 +1610,10 @@ class ItemInteractionMixin:
 
         if self._place_kind == "squidcada":
             self._draw_squidcada_hint(p)
+            return
+
+        if self._place_kind == "needleworm":
+            self._draw_needleworm_hint(p)
             return
 
         if self._place_kind == "pearl":
@@ -1763,6 +1782,143 @@ class ItemInteractionMixin:
         p.save()
         p.setOpacity(0.5)
         draw_squidcada(p, self.atlas, sc, 1.0)
+        p.restore()
+
+    # ── 面条蝇（NeedleWorm）：卵 / 幼体 / 成体，出生年龄随机 ──
+    def can_place_needleworm(self) -> bool:
+        return True
+
+    def place_needleworm(self, lx, ly):
+        nw = NeedleWorm(lx, ly, seed=self._needleworm_seed)
+        self._needleworm_seed += 1
+        self.needleworms.append(nw)
+        self.world_version += 1
+        self._exit_place_mode()
+        self.update()
+        return nw
+
+    def clear_needleworms(self):
+        for nw in self.needleworms:
+            for pet in self.pets:
+                if nw is pet.body.carried_fruit:      # 复用果子叼持槽
+                    pet.body.release_fruit()
+            nw.state = ItemState.EATEN
+        if self.needleworms:
+            self.needleworms = []
+            self.world_version += 1
+        self._dragged_needleworm = None
+        self._needleworm_preview = None
+
+    def enter_place_needleworm_mode(self):
+        self._place_mode = True
+        self._place_kind = "needleworm"
+        self._begin_place_capture()
+        return True
+
+    def _needleworm_at(self, pos):
+        if pos is None:
+            return None
+        cx, cy = pos
+        best, bestd = None, 1e9
+        for nw in self.needleworms:
+            if nw.state not in (ItemState.FREE, ItemState.CARRIED):
+                continue
+            d = math.hypot(cx - nw.x, cy - nw.y)
+            if d <= nw.rad + NEEDLEWORM_GRAB_PAD and d < bestd:
+                best, bestd = nw, d
+        return best
+
+    def _begin_needleworm_drag(self, pos) -> bool:
+        nw = self._needleworm_at(pos)
+        if nw is None:
+            return False
+        if nw.state == ItemState.CARRIED:
+            for pet in self.pets:
+                if nw is pet.body.carried_fruit:
+                    pet.body.release_fruit()
+        nw.held_by_hand = None
+        nw.state = ItemState.MOUSE
+        nw.vx = nw.vy = 0.0
+        nw.last_x, nw.last_y = pos
+        nw.x, nw.y = pos
+        self._dragged_needleworm = nw
+        return True
+
+    def _step_needleworm_drag(self):
+        nw = self._dragged_needleworm
+        if nw is None:
+            return
+        if nw.state != ItemState.MOUSE:
+            self._dragged_needleworm = None
+            return
+        cur = self.cursor_logical()
+        if cur is None:
+            return
+        nw.last_x, nw.last_y = nw.x, nw.y
+        nw.x, nw.y = cur
+        nw.vx = nw.vy = 0.0
+
+    def _end_needleworm_drag(self) -> bool:
+        nw = self._dragged_needleworm
+        if nw is None:
+            return False
+        if nw.dead and self._out_of_window(nw, nw.rad):
+            nw.state = ItemState.GONE           # 尸体被拖出窗口扔了：直接清除
+            self._dragged_needleworm = None
+            return True
+        if nw.state == ItemState.MOUSE:
+            nw.state = ItemState.FREE
+        self._dragged_needleworm = None
+        return True
+
+    def _tick_needleworms(self):
+        self._step_needleworm_drag()
+        if not self.needleworms:
+            return
+        threats = [(pet, pet.body.chunk0.x, pet.body.chunk0.y) for pet in self.pets]
+        for nw in self.needleworms:
+            nw._impact_cb = self._shake_impact
+            nw.step(self._WL, self._HL, threats=threats)
+        self._cull_flung_corpses()
+        self.needleworms = [nw for nw in self.needleworms
+                            if nw.state != ItemState.EATEN]
+
+    def _draw_needleworms(self, p):
+        ts = self._ts
+        for nw in self.needleworms:
+            if nw.state in (ItemState.EATEN, ItemState.GONE):
+                continue
+            if nw.age == AGE_EGG:
+                draw_needle_egg(p, self.atlas, nw, ts)
+            else:
+                draw_needleworm(p, self.atlas, nw, ts)
+
+    def _needleworm_hint_object(self):
+        seed = self._needleworm_seed
+        got = getattr(self, "_needleworm_preview", None)
+        if got is None or got[0] != seed:
+            got = (seed, NeedleWorm(0.0, 0.0, seed=seed))
+            self._needleworm_preview = got
+        return got[1]
+
+    def _draw_needleworm_hint(self, p):
+        cur = self.cursor_logical()
+        if cur is None:
+            return
+        cx, cy = cur
+        if not (0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL):
+            return
+        nw = self._needleworm_hint_object()
+        nw.x = nw.last_x = cx
+        nw.y = nw.last_y = cy
+        nw.vx = nw.vy = 0.0
+        nw.facing = 1
+        p.save()
+        p.setOpacity(0.5)
+        if nw.age == AGE_EGG:
+            draw_needle_egg(p, self.atlas, nw, 1.0)
+        else:
+            draw_needleworm(p, self.atlas, nw, 1.0)
         p.restore()
 
     # ── 珍珠（Pearl）：高弹小球，可拖可掷 ──
@@ -2092,7 +2248,8 @@ class ItemInteractionMixin:
                 sp.stuck_to = (cb, hit[0] - cb.x, hit[1] - cb.y)
                 self._shake[0] += 0.4 * kx
                 break
-            for small in (*self.batflies, *self.squidcadas):   # 小生物：一矛带走
+            for small in (*self.batflies, *self.squidcadas,
+                          *self.needleworms):   # 小生物：一矛带走
                 if small.dead or small.state != ItemState.FREE:
                     continue
                 if math.hypot(sp.x - small.x, sp.y - small.y) >= sp.rad + small.rad + SPEAR_HIT_PAD:
@@ -2598,7 +2755,8 @@ class ItemInteractionMixin:
         """有未驯服蜥蜴 + 场上有够得到的蝉乌贼 → 允许猫为驯服而取物。"""
         if not self.untamed_lizards():
             return False
-        return any(sc.fetch_ready for sc in self.squidcadas)
+        return (any(sc.fetch_ready for sc in self.squidcadas)
+                or any(nw.fetch_ready for nw in self.needleworms))
 
     def deliver_gift(self, pet, lz) -> bool:
         """交接礼物：蝉乌贼转给蜥蜴，按原版结算 like（活体 0.6 / 尸体 1.2）。"""

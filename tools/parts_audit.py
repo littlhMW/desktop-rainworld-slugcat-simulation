@@ -28,6 +28,7 @@ DOCS = ROOT / "docs"
 ENTITIES = [
     ("蜥蜴",        "LizardGraphics",  "slugcatpet/world/lizard_gfx.py"),
     ("禅乌贼",      "CicadaGraphics",  "slugcatpet/world/squidcada_gfx.py"),
+    ("面条蝇",      "NeedleWormGraphics", "slugcatpet/world/needleworm_gfx.py"),
     ("拾荒者",      "ScavengerGraphics", "slugcatpet/world/scavenger.py"),
     ("蝠蝇",        "FlyGraphics",     "slugcatpet/world/batfly_gfx.py"),
     ("爆米花",      "SeedCob",         "slugcatpet/world/seedcob.py"),
@@ -76,6 +77,12 @@ def our_const(rel: str, name: str):
     return float(m.group(1)) if m else None
 
 
+def num_in(owner: str, pattern: str):
+    """从原版源码里按正则抓第一个捕获组当数字（可跨文件复用）。"""
+    m = re.search(pattern, decomp(owner))
+    return float(m.group(1)) if m else None
+
+
 CHECKS = [
     ("矛 chunk0.rad",        lambda: chunk_n("Spear", 0)[0],      "slugcatpet/world/spear.py", "RAD"),
     ("矛 chunk0.mass",       lambda: chunk_n("Spear", 0)[1],      "slugcatpet/world/spear.py", "MASS"),
@@ -83,6 +90,10 @@ CHECKS = [
     ("珍珠 chunk0.mass",     lambda: chunk_n("DataPearl", 0)[1],  "slugcatpet/world/pearl.py", "MASS"),
     ("禅乌贼 chunk0.rad",    lambda: (chunk_n("Cicada", 0) or (None, None))[0],     "slugcatpet/world/squidcada.py", "RAD"),
     ("禅乌贼 两截间距",       lambda: conn_n("Cicada", 0),         "slugcatpet/world/squidcada_gfx.py", "CHUNK_GAP"),
+    ("面条蝇 躯干半径下限",   lambda: num_in("NeedleWorm", r"Mathf\.Lerp\(([\d.]+)f,\s*[\d.]+f,\s*t\)"),
+     "slugcatpet/world/needleworm.py", "CHUNK_RAD_MIN"),
+    ("面条蝇 躯干半径上限",   lambda: num_in("NeedleWorm", r"Mathf\.Lerp\([\d.]+f,\s*([\d.]+)f,\s*t\)"),
+     "slugcatpet/world/needleworm.py", "CHUNK_RAD_MAX"),
     ("拾荒者 chunk1.rad(髋)", lambda: chunk_n("Scavenger", 1)[0],  "slugcatpet/world/scavenger.py", "BODY_RAD"),
     ("拾荒者 chunk2.rad(头)", lambda: chunk_n("Scavenger", 2)[0],  "slugcatpet/world/scavenger.py", "HEAD_RAD"),
 ]
@@ -92,6 +103,11 @@ FINDINGS = [
     ("✅", "矛", "chunk0 rad 5 / mass 0.07（Spear.cs:286）", "同值；杆长 53px 取 SmallSpear 贴图"),
     ("✅", "珍珠", "chunk0 rad 5 / mass 0.07（DataPearl.cs:184）", "同值；bounce 0.4 / surfaceFriction 0.4 同值"),
     ("✅", "禅乌贼", "chunk0 rad 7.5、两截间距 14（Cicada.cs:131）", "同值；触须 ConnectToPoint 24/19×tentacleLength 同值"),
+    ("✅", "面条蝇", "躯干半径 Lerp(2,5,t)*num、质量 Lerp(0.05,0.15,t)*num（NeedleWorm.cs:85）",
+     "同值（CHUNK_RAD_MIN/MAX、CHUNK_MASS_MIN/MAX）；幼体 ×0.7 同原版"),
+    ("⚠️", "面条蝇", "身体是 TriangleMesh 程序化网格（无贴图）",
+     "我们同样程序化画：躯干/尾用中轴带 + 高光带，眼/翅复用 JetFishEyeB、CentipedeWing；\n"
+     "翅膀尺寸是我们的观感微调（×0.55），不是原版顶点数据"),
     ("⚠️", "禅乌贼", "chunk1 rad 7.0（第二截）", "我们只有主 chunk（7.5）+ 14px 偏移，第二截没有独立半径："
      "贴墙/压地时比原版略薄，不影响观感"),
     ("⚠️", "拾荒者", "身体是 3 截：胸 9.5 / 髋 7.0 / 头 5.0（Scavenger.cs:1611 起）+ 截间连接",

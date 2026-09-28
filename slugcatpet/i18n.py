@@ -42,6 +42,7 @@ _STR = {
     "tip_batfly":  {"zh": "放蝙蝠", "en": "Place batfly"},
     "tip_lizard":  {"zh": "放蜥蜴", "en": "Place lizard"},
     "tip_squidcada": {"zh": "放蝉乌贼", "en": "Place squidcada"},
+    "tip_needleworm": {"zh": "放面条蝇", "en": "Place needleworm"},
     "tip_scavenger": {"zh": "放拾荒者", "en": "Place scavenger"},
     "tip_pearl":   {"zh": "放珍珠", "en": "Place pearl"},
     "tip_spear":   {"zh": "放矛", "en": "Place spear"},

@@ -68,7 +68,8 @@ class FlyHunter:
     def _flies(self):
         diet = self._diet()
         out = []
-        for f in (*self.win.batflies, *self.win.squidcadas):
+        for f in (*self.win.batflies, *self.win.squidcadas,
+                  *self.win.needleworms):
             if not _edible(f, diet):
                 continue
             c0 = self._c0()

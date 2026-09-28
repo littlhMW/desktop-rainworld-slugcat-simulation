@@ -5109,12 +5109,13 @@ class BehaviorFSM:
 
     # ── 徒手抓飞虫（蝙蝠/蝉乌贼）──
     def _nearest_catchable(self):
-        """半径内可徒手抓的飞虫（含飞行中）。"""
+        """半径内可徒手抓的飞虫（蝙蝠/蝉乌贼/面条蝇，含飞行中）。"""
         if self.pers.diet in (DIET_VEGETARIAN, DIET_SPECIAL):
             return None
         c0 = self.body.chunk0
         best, bd = None, tuning.CATCH_SEEK_R
-        for f in (*self.win.batflies, *self.win.squidcadas):
+        for f in (*self.win.batflies, *self.win.squidcadas,
+                  *self.win.needleworms):
             if not getattr(f, "catchable", False):
                 continue
             d = math.hypot(f.x - c0.x, f.y - c0.y)

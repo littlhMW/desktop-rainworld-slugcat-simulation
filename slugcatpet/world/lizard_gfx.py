@@ -24,7 +24,17 @@ from .lizard import BODY_SCALE, BLACK_RGB, _ang_from_up
 from ..rendering.pixelmode import aa_hint
 
 HEAD_KEY = "base"
-NUM14 = 0                      # 头片行号：0 = 正侧面（游戏 |headDepthRotation|≈1）
+
+
+def head_row(lz, ts: float) -> int:
+    """头片行号 num14（原版 LizardGraphics.DrawSprites：3 - int(|num| * 3.9)）。
+
+    num = headDepthRotation 的插值：|num|≈1 → 行 0（正侧面，平时走路）；
+    |num|→0 → 行 3（正对/背对镜头，转身途中经过），中间行 1/2 是斜前/斜后。
+    贴图集里 LizardHead0..3 / Jaw / Teeth / Eyes 四行都在，直接用。
+    """
+    num = lerp(lz.last_head_depth, lz.head_depth, ts)
+    return max(0, min(3, 3 - int(abs(num) * 3.9)))
 # 原版：rotation = num12（头-颈 aim，0=上）在 y↑/逆时针系；Qt 是 y↓/顺时针，
 # 故 Qt 角度 = -num12，且头片贴图自带「吻部朝下」→ 需再垂向镜像（sy = -scale）。
 # 推演：屏幕矩阵 F·R(r)·S(s) = Rq(-r)·Sq(s, -1)（F = y 翻转），与 D 组合逐像素核对过游戏截图。
@@ -58,7 +68,7 @@ def body_color(lz):
     宠物没有房间调色板，纯紫黑会读成一团黑；这里掺一点品种色当「暗染」，
     才像游戏里那种深绿 / 深粉的躯干。
     """
-    rgb = lz.breed.body_rgb
+    rgb = lz.body_rgb or lz.breed.body_rgb      # 白蜥随机色版：整只走个体色
     rgb = _mix(rgb, lz.color, BODY_TINT) if rgb == BLACK_RGB else rgb
     if lz.hurt_flash > 0:                 # 受击白闪（同游戏被创瞬间整体发白）
         rgb = _mix(rgb, (255, 255, 255), 0.45 * lz.hurt_flash / 8.0)
@@ -325,18 +335,19 @@ def _draw_head(p, atlas, lz, hx, hy, rot, jaw, color, ts=1.0):
     lo_rot = rt + b.jaw_open_angle * lf * jaw
     sc = b.head_size * BODY_SCALE
     sx = face * sc
+    row = head_row(lz, ts)
     head_rgb = color                        # 游戏 HeadColor（含呼吸闪烁，见 head_color）
     teeth_rgb = BLACK_RGB                   # 游戏 ApplyPalette：齿与眼都是 palette.blackColor
     ay = 1.0 - b.anchor_y
     eyes_ay = 0.25 if hg[4] == 3 else ay
     for part, idx in (("Jaw", 0), ("LowerTeeth", 1)):
-        _blit(p, atlas, "Lizard%s%d.%d" % (part, NUM14, hg[idx]),
+        _blit(p, atlas, "Lizard%s%d.%d" % (part, row, hg[idx]),
               head_rgb if idx == 0 else teeth_rgb,
               hx + nx * lo_off, hy + ny * lo_off, lo_rot, sx, -sc, 0.5, ay)
     for part, idx in (("UpperTeeth", 2), ("Head", 3)):
-        _blit(p, atlas, "Lizard%s%d.%d" % (part, NUM14, hg[idx]),
+        _blit(p, atlas, "Lizard%s%d.%d" % (part, row, hg[idx]),
               teeth_rgb if idx == 2 else head_rgb,
               hx + nx * up_off, hy + ny * up_off, up_rot, sx, -sc, 0.5, ay)
     if not b.hide_eyes:
-        _blit(p, atlas, "LizardEyes%d.%d" % (NUM14, hg[4]), BLACK_RGB,
+        _blit(p, atlas, "LizardEyes%d.%d" % (row, hg[4]), BLACK_RGB,
               hx + nx * up_off, hy + ny * up_off, up_rot, sx, -sc, 0.5, eyes_ay)

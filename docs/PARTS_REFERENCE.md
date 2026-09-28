@@ -187,6 +187,43 @@ WingSprite(k, j)  WingSprite(k, j)       ?                          -
             · sLeaser.sprites[WingSprite(k, j)].rotation = Custom.AimFromOneVectorToAnother(p2, Vector2.Lerp(wings[k, j].lastPos, wings[k, j].pos, timeStacker)) - 9
 
 
+## 面条蝇（NeedleWormGraphics）
+
+# 实际屏幕尺寸 = 该尺寸 × DrawSprites 里对应的 scale/scaleX/scaleY。
+   idx  下标写法                   元件                         atlas WxH   变换(DrawSprites/Palette)
+FangMesh  FangMesh               TriangleMesh([5, pointyTip: true, customColor: true]) -          
+            · sLeaser.sprites[FangMesh] = TriangleMesh.MakeLongMesh(5, pointyTip: true, customColor: true);
+BodyMesh  BodyMesh               TriangleMesh([TotGraphSegments, pointyTip: true, !small]) -          
+            · sLeaser.sprites[BodyMesh] = TriangleMesh.MakeLongMesh(TotGraphSegments, pointyTip: true, !small);
+HighLightMesh  HighLightMesh          TriangleMesh([HighLightSegments, pointyTip: true, customColor: true]) -          
+            · sLeaser.sprites[HighLightMesh] = TriangleMesh.MakeLongMesh(HighLightSegments, pointyTip: true, customColor: true);
+EyeSprite(i)  EyeSprite(i)           JetFishEyeB                4x4        
+            · sLeaser.sprites[EyeSprite(i)] = new FSprite("JetFishEyeB");
+            · sLeaser.sprites[EyeSprite(i)].x = vector4.x - camPos.x;
+            · sLeaser.sprites[EyeSprite(i)].y = vector4.y - camPos.y;
+            · sLeaser.sprites[EyeSprite(i)].scaleX = Mathf.Lerp(0.8f, 0.6f, t) * (small ? 0.65f : 1f);
+            · sLeaser.sprites[EyeSprite(i)].scaleY = Mathf.Lerp(1.1f, 1.5f, t) * (small ? 0.65f : 1f);
+            · sLeaser.sprites[EyeSprite(i)].rotation = Custom.VecToDeg((vector3 + vector).normalized);
+     i  i                      ?                          -          
+            · sLeaser.sprites[i].color = bodyColor;
+EyeSprite(j)  EyeSprite(j)           ?                          -          
+            · sLeaser.sprites[EyeSprite(j)].color = eyeColor;
+WingSprite(i, j)  WingSprite(i, j)       new CustomFSprite("CentipedeWing") -          
+            · sLeaser.sprites[WingSprite(i, j)] = new CustomFSprite("CentipedeWing");
+LumpSprite(i, j)  LumpSprite(i, j)       JetFishEyeB                4x4        
+            · sLeaser.sprites[LumpSprite(i, j)] = new FSprite("JetFishEyeB");
+LegSprite(k, l)  LegSprite(k, l)        new CustomFSprite("JetFishFlipper3") -          
+            · sLeaser.sprites[LegSprite(k, l)] = new CustomFSprite("JetFishFlipper3");
+WingSprite(num8, m)  WingSprite(num8, m)    ?                          -          
+LumpSprite(num8, m)  LumpSprite(num8, m)    ?                          -          
+            · sLeaser.sprites[LumpSprite(num8, m)].x = vector14.x - camPos.x;
+            · sLeaser.sprites[LumpSprite(num8, m)].y = vector14.y - camPos.y;
+            · sLeaser.sprites[LumpSprite(num8, m)].scaleX = 0.9f;
+            · sLeaser.sprites[LumpSprite(num8, m)].scaleY = 1.2f;
+            · sLeaser.sprites[LumpSprite(num8, m)].rotation = Custom.VecToDeg(segmentDir);
+            · sLeaser.sprites[LumpSprite(num8, m)].color = ((num8 == 0) ? bodyColor : Color.Lerp(bodyColor, highLightColor, Mathf.Abs(vector2.x) * 0.6f));
+
+
 ## 拾荒者（ScavengerGraphics）
 
 # 实际屏幕尺寸 = 该尺寸 × DrawSprites 里对应的 scale/scaleX/scaleY。
