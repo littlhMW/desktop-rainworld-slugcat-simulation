@@ -17,6 +17,7 @@ from ..control.mouse import GrabController
 from ..cats.saint.cursorlick import (BAND_LO as LICK_BAND_LO, BAND_HI as LICK_BAND_HI,
                                      DWELL_TICKS as LICK_DWELL, DWELL_TOL as LICK_DWELL_TOL,
                                      GATE_FRAC as LICK_GATE_FRAC)
+from ..world.enums import ItemState
 
 # 计时常量（tick）
 T_POINT_WAKE = 160
@@ -86,12 +87,22 @@ _FETCH_PLAY = frozenset(("PoleClimb", "HPole", "CeilingHang"))
 _EN_VIGOROUS = frozenset(("TongueClimb", "PoleClimb", "HPole", "CeilingHang", "DodgeKill", "Swimming",
                           "PyroRomp", "RivFlip", "PyroMaul", "RivSnatch"))
 _EN_LIGHT = frozenset(("RelocateToWall", "PostThrowWander", "FetchFruit", "AngryStone",
-                       "WakeSequence", "CursorLick", "SeekWarmth", "SeekHPole", "MakeWay"))
+                       "WakeSequence", "CursorLick", "SeekWarmth", "SeekHPole", "MakeWay",
+                       "FleeLizard"))
 _EN_REST = frozenset(("LieDown", "Sleep"))
 _EN_IDLE = frozenset(("IdleStand", "PostThrowStand"))
 
 # 被顶让路仅从这些无更高目的态触发
 _MAKEWAY_FROM = frozenset(("IdleStand", "PostThrowWander", "PostThrowStand"))
+
+# ── 躲蜥蜴（原版 Player 见威胁逃逸）──
+FLEE_R = 110.0            # 蜥蜴进入此水平距离 → 掉头跑
+FLEE_SAFE_R = 150.0       # 拉开到此距离 → 安全，收工
+FLEE_GAP = 90.0           # 逃跑目标：离蜥蜴这么远
+FLEE_MAX_TICKS = 200      # 单次逃跑上限
+FLEE_COOLDOWN = 300       # 两次躲之间至少隔这么久（进场即计时）
+# 只从「没事干」的态里起跑：取果/送礼这类有目的的态不打断
+_FLEE_FROM = frozenset(("IdleStand", "PostThrowWander", "PostThrowStand", "MakeWay"))
 
 
 def _energy_delta(state: str, drain_fac: float = 1.0) -> float:
@@ -215,6 +226,8 @@ class BehaviorFSM:
         self._fetch_check = 0
         self._shoved_ticks = 0
         self._makeway_of = None
+        self._flee_from = None
+        self._flee_cd = 0
         self._blocked_ticks = 0
         self._jump_over_cd = 0
         self.stonethrow = None
@@ -546,6 +559,18 @@ class BehaviorFSM:
         # 挡路互动扫描
         self._scan_blocking()
 
+        # 躲蜥蜴：就近出现蜥蜴 → 掉头跑开
+        if self._flee_cd > 0:
+            self._flee_cd -= 1
+        if (self._flee_cd <= 0 and self.state in _FLEE_FROM
+                and not self.grab.active and not self._exhausted and not self._zerog()
+                and not self._carrying_gift()
+                and not self.body.swimming and self.body.on_floor()):
+            lz = self._nearby_lizard()
+            if lz is not None:
+                self._flee_from = lz
+                self._transition("FleeLizard")
+
         # 体力告急强制休息
         if (not self._exhausted and not self._hibernating and not self.grab.active
                 and not self._cold_urgent() and not self._zerog()
@@ -688,6 +713,8 @@ class BehaviorFSM:
             b.stop_walk()
         elif st == "MakeWay":
             self._enter_makeway()
+        elif st == "FleeLizard":
+            self._enter_fleelizard()
         elif st == "PoleClimb":
             self._poleclimb_enter()
         elif st == "HPole":
@@ -880,6 +907,57 @@ class BehaviorFSM:
         if (not b.is_moving() or self.timer >= tuning.MAKEWAY_TIMEOUT or ob is None
                 or not blocks_path(b.chunk1.x, ob.chunk1.x, ob.walk_target_x,
                                    tuning.SHOVE_CONTACT_DIST)):
+            self._transition("IdleStand")
+
+    # ── 躲蜥蜴 ──
+    def _carrying_gift(self) -> bool:
+        """手上正拿着要送蜥蜴的蝉乌贼 —— 送礼优先，先不躲。"""
+        f = self.body.carried_fruit
+        return f is not None and getattr(f, "is_tame_food", False)
+
+    def _nearby_lizard(self):
+        """水平距离最近且在 FLEE_R 内的蜥蜴；没有则 None。"""
+        x = self.body.chunk1.x
+        best, bd = None, FLEE_R
+        for lz in getattr(self.win, "lizards", ()):
+            if getattr(lz, "state", None) != ItemState.FREE:
+                continue
+            d = abs(lz.x - x)
+            if d < bd:
+                best, bd = lz, d
+        return best
+
+    def _flee_target_x(self, lz) -> float:
+        """逃向蜥蜴的反面，至少隔开 FLEE_GAP；夹在可行走范围内。"""
+        b = self.body
+        lo = WALL_MARGIN if b.walk_min is None else max(b.walk_min, WALL_MARGIN)
+        hi = (self.WL - WALL_MARGIN if b.walk_max is None
+              else min(b.walk_max, self.WL - WALL_MARGIN))
+        if hi < lo:
+            lo, hi = WALL_MARGIN, self.WL - WALL_MARGIN
+        x = b.chunk1.x
+        side = 1.0 if x >= lz.x else -1.0
+        return min(max(lz.x + side * FLEE_GAP, lo), hi)
+
+    def _enter_fleelizard(self):
+        b = self.body
+        b.set_posture(True)
+        self._flee_cd = FLEE_COOLDOWN      # 进场即计时：被咬断也算躲过一轮
+        b.walk_to(self._flee_target_x(self._flee_from))
+
+    def _st_fleelizard(self, cursor, disturbed):
+        b = self.body
+        if self.grab.active:
+            self._transition("Dragged")
+            return
+        lz = self._flee_from
+        alive = lz is not None and getattr(lz, "state", None) == ItemState.FREE
+        if alive:
+            self.gfx.look_at = (lz.x, lz.y)
+            if self.timer % 12 == 0:              # 蜥蜴在动，隔几拍重取反方向
+                b.walk_to(self._flee_target_x(lz))
+        if ((not alive) or self.timer >= FLEE_MAX_TICKS or not b.on_floor()
+                or abs(lz.x - b.chunk1.x) >= FLEE_SAFE_R):
             self._transition("IdleStand")
 
     def _zerog(self) -> bool:

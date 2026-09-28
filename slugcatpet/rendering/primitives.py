@@ -1,7 +1,8 @@
 """共享渲染原语：软绳/带状/三角网格/atlas sprite 绘制。"""
 from __future__ import annotations
 import math
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen, QPolygonF
+from PySide6.QtGui import (QColor, QLinearGradient, QPainter, QPainterPath, QPen,
+                           QPolygonF, QRadialGradient)
 from PySide6.QtCore import QPointF, Qt
 
 from ..core.units import clampf
@@ -172,112 +173,163 @@ def mesh(painter, verts, tris, vcolors, outline: bool = True) -> None:
         painter.drawPolygon(poly)
     painter.restore()
 
-# ── 珍珠 / 矛 / 拾荒者：程序化绘制（原版这三者也都是运行时生成的网格，图集里没有整只精灵）──
+# ── 珍珠 / 矛 / 拾荒者：都用原版图集贴图 ──
+# 原版：DataPearl = JetFishEyeA(珠体) + tinyStar(高光) + Futile_White(柔光)；
+#       Spear = SmallSpear；Scavenger = Circle20 拼的圆滚身体 + ScavengerHandA/B。
 
 SPEAR_DRAW_LEN = 46.0       # 与世界 Spear.LEN 一致
-PEARL_RIM_K = 0.92          # 外圈（品种色）相对半径
-PEARL_CORE_K = 0.70         # 白芯相对半径
+SPEAR_SPRITE = "SmallSpear"
+SPEAR_ART_LEN = 53.0        # SmallSpear 贴图里杆本身的可视长度（像素）
+SPEAR_TIP_PIVOT_Y = 0.85    # 原版：插住时以杆尖为轴（anchorY 0.85）
+SPEAR_RGB = (27, 11, 33)    # 原版 Spear.ApplyPalette：color = palette.blackColor
+PEARL_SPRITE = "JetFishEyeA"      # 原版珍珠本体（6x6 圆）
+PEARL_ART_RAD = 3.0               # 本体贴图半径（像素），用于换算缩放
+PEARL_STAR = "tinyStar"           # 原版高光小星
+PEARL_STAR_OFF = (-0.5, 1.5)      # 原版高光相对珠心的偏移（像素）
 
 
-def draw_pearl(painter, x, y, rot_deg=0.0, tint=(255, 255, 255), rad=4.5,
-               core=(255, 255, 255)) -> None:
-    """珍珠：品种色外圈 + 白芯 + 一点高光。"""
+def draw_pearl(painter, atlas, x, y, rot_deg=0.0, tint=(255, 255, 255), rad=4.5,
+               glimmer=0.0) -> None:
+    """珍珠：原版贴图 + 原版高光脉冲（glimmer 0..1：珠体与高光一起发亮）。"""
+    k = rad / PEARL_ART_RAD
+    body = _mix_rgb(tint, (255, 255, 255), glimmer)
+    star = _mix_rgb(_scale_rgb(tint, 1.3), (255, 255, 255),
+                    0.5 + 0.5 * glimmer)
     painter.save()
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    painter.translate(x, y)
-    if rot_deg:
-        painter.rotate(rot_deg)
+    if glimmer > 0.01:                       # 柔光（原版 Futile_White + 0.5*num 透明度）
+        g = QRadialGradient(QPointF(x, y), 10.0 * glimmer * k)
+        g.setColorAt(0.0, QColor(tint[0], tint[1], tint[2], int(150 * glimmer)))
+        g.setColorAt(1.0, QColor(tint[0], tint[1], tint[2], 0))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(g)
+        painter.drawEllipse(QPointF(x, y), 10.0 * glimmer * k, 10.0 * glimmer * k)
+    blit(painter, atlas, PEARL_SPRITE, x, y, rot_deg, k, k, body)
+    blit(painter, atlas, PEARL_STAR, x + PEARL_STAR_OFF[0] * k, y + PEARL_STAR_OFF[1] * k,
+         0.0, k, k, star)
+    painter.restore()
+
+
+def draw_spear(painter, atlas, x, y, ang_deg, length=46.0,
+               tint=SPEAR_RGB, pivot_tip=False) -> None:
+    """矛：原版 SmallSpear 贴图（白剪影按杆色染色）；ang 0=朝上、顺时针为正（y↓）。"""
+    k = length / SPEAR_ART_LEN
+    blit(painter, atlas, SPEAR_SPRITE, x, y, ang_deg, k, k, tint,
+         ax=0.5, ay=SPEAR_TIP_PIVOT_Y if pivot_tip else 0.5)
+
+
+def _scale_rgb(rgb, k):
+    return (min(255, int(rgb[0] * k)), min(255, int(rgb[1] * k)), min(255, int(rgb[2] * k)))
+
+
+def _mix_rgb(a, b, t):
+    t = clampf(t, 0.0, 1.0)
+    return (int(a[0] + (b[0] - a[0]) * t),
+            int(a[1] + (b[1] - a[1]) * t),
+            int(a[2] + (b[2] - a[2]) * t))
+
+
+CIRCLE_SPRITE = "Circle20"       # 原版拾荒者的髋/胸/头/眼都是 Circle20
+SCAV_HAND = "ScavengerHandA"    # 原版手（张开帧；原版握矛手用 ScavengerHandB）
+SCAV_S = 0.72                    # 相对原版像素的整体缩放（与蜥蜴同一屏幕比例）
+SCAV_HIP_R = 7.0 * SCAV_S         # 原版 bodyChunks[1].rad = 7
+SCAV_CHEST_R = 9.5 * SCAV_S       # 原版 bodyChunks[0].rad = 9.5
+SCAV_CHEST_DY = 18.0 * SCAV_S     # 原版 髋→胸 连接长度 18
+SCAV_HEAD_DY = 22.0 * SCAV_S      # 原版 胸→头 连接长度 22
+
+# 部件常量（锚点 (x, y) = 髋心，脚下 stance 为地面）
+SCAV_STANCE = 7.0
+SCAV_CHEST_W = 1.15              # 胸横向放大（原版 scaleX/scaleY 由 fatness/narrowWaist 定）
+SCAV_HEAD_W = 1.0
+
+
+def _tapered(painter, x0, y0, x1, y1, r0, r1, rgb) -> None:
+    """锥形杆（原版拾荒者的腰/颈/臂都是 Futile_White 三角网格）。"""
+    dx, dy = x1 - x0, y1 - y0
+    L = math.hypot(dx, dy) or 1.0
+    nx, ny = -dy / L, dx / L
+    poly = QPolygonF([QPointF(x0 + nx * r0, y0 + ny * r0),
+                      QPointF(x0 - nx * r0, y0 - ny * r0),
+                      QPointF(x1 - nx * r1, y1 - ny * r1),
+                      QPointF(x1 + nx * r1, y1 + ny * r1)])
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor(*tint))
-    painter.drawEllipse(QPointF(0.0, 0.0), rad, rad)
-    painter.setBrush(QColor(*core))
-    painter.drawEllipse(QPointF(0.0, 0.0), rad * PEARL_RIM_K * 0.85, rad * PEARL_CORE_K)
-    painter.setBrush(QColor(255, 255, 255, 230))
-    painter.drawEllipse(QPointF(-rad * 0.26, -rad * 0.30), rad * 0.26, rad * 0.22)
-    painter.restore()
+    painter.setBrush(QColor(*rgb))
+    painter.drawPolygon(poly)
 
 
-def draw_spear(painter, x, y, ang_deg, length=46.0,
-               shaft=(94, 78, 60), tip=(206, 206, 198), width=2.6) -> None:
-    """矛：锥形木杆 + 亮尖端；ang 0=朝上、顺时针为正（y↓），锚点=杆中点。"""
-    a = math.radians(ang_deg)
-    ux, uy = math.sin(a), -math.cos(a)
-    bx, by = x - ux * length * 0.5, y - uy * length * 0.5
-    tx, ty = x + ux * length * 0.5, y + uy * length * 0.5
-    hx, hy = tx - ux * length * 0.26, ty - uy * length * 0.26
-    painter.save()
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    pen = QPen(QColor(*shaft), width)
-    pen.setCapStyle(Qt.PenCapStyle.FlatCap)
-    painter.setPen(pen)
-    painter.drawLine(QPointF(bx, by), QPointF(hx, hy))
-    pen2 = QPen(QColor(*tip), width * 0.85)
-    pen2.setCapStyle(Qt.PenCapStyle.FlatCap)
-    painter.setPen(pen2)
-    painter.drawLine(QPointF(hx, hy), QPointF(tx, ty))
-    painter.restore()
+def _circle(painter, atlas, x, y, w, h, rgb, rot=0.0) -> None:
+    """原版 Circle20 单帧按 (w, h) 像素画在 (x, y)。"""
+    blit(painter, atlas, CIRCLE_SPRITE, x, y, rot, w / 20.0, h / 20.0, rgb)
 
 
-def draw_scavenger(painter, sc, ts=1.0, body_rgb=(58, 60, 68), head_rgb=(226, 226, 214),
-                   eye_rgb=(26, 26, 30), leg_rgb=None, spear_draw=None) -> None:
-    """拾荒者：髋点驱动的两足 + 长臂 + 白面具头（原版为三角形网格，无整只精灵）。
+def draw_scavenger(painter, atlas, sc, ts=1.0, body_rgb=(58, 60, 68),
+                   head_rgb=(226, 226, 214), eye_rgb=(26, 26, 30),
+                   leg_rgb=None, hand_rgb=None) -> None:
+    """拾荒者：原版贴图组合 = Circle20（髋/胸/头/眼）+ ScavengerHandA/B（手）。
 
-    锚点 (x, y) = 髋部（sc.y 即髋心，脚下 7px 为地面）；头在髋上方 22px。
+    腰/颈/臂/腿在原版就是 Futile_White 三角网格与 "pixel" 线段，这里照做。
+    锚点 (x, y) = 髋部（sc.y 即髋心，脚下 7px 为地面）。
     """
     x = sc.last_x + (sc.x - sc.last_x) * ts
     y = sc.last_y + (sc.y - sc.last_y) * ts
     if leg_rgb is None:
-        leg_rgb = (int(body_rgb[0] * 0.8), int(body_rgb[1] * 0.8), int(body_rgb[2] * 0.8))
+        leg_rgb = _scale_rgb(body_rgb, 0.78)
+    if hand_rgb is None:
+        hand_rgb = _mix_rgb(body_rgb, head_rgb, 0.55)
     f = 1.0 if sc.facing >= 0 else -1.0
-    stance = 7.0                       # 髋到脚
     phase = sc.walk_phase * math.tau
     step = clampf(abs(sc.vx) * 0.5, 0.0, 1.0) * 3.0
     lean = clampf(sc.vx * 1.2, -3.0, 3.0)
+    # 三个骨点（原版 bodyChunks：胸 / 髋 / 头）
+    chx, chy = x + lean * 0.6, y - SCAV_CHEST_DY
+    hdx, hdy = x + 6.0 * f + lean, chy - SCAV_HEAD_DY
+    neck_rgb = _mix_rgb(body_rgb, head_rgb, 0.55)
     painter.save()
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    # 腿（两足，前后交替）
+    # 腿（原版 ScavengerLeg 就是 "pixel" 线段，只有宽窄之分）
     painter.setPen(QPen(QColor(*leg_rgb), 3.2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
     for i, sgn in ((0, -1.0), (1, 1.0)):
         swing = math.sin(phase + (0.0 if i == 0 else math.pi)) * step
-        hx = x + sgn * 3.0 * f
-        painter.drawLine(QPointF(hx, y - 2.0),
-                         QPointF(hx + swing * f, y + stance))
+        lx = x + sgn * 3.0 * f
+        painter.drawLine(QPointF(lx, y - 2.0), QPointF(lx + swing * f, y + SCAV_STANCE))
     # 短尾
     painter.setPen(QPen(QColor(*leg_rgb), 2.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-    painter.drawLine(QPointF(x - 2.0 * f, y - 3.0), QPointF(x - 9.0 * f, y - 7.0))
-    # 躯干：髋→肩的锥形
-    shx, shy = x + lean + 1.5 * f, y - 14.0
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor(*body_rgb))
-    torso = QPainterPath()
-    torso.moveTo(x - 4.6, y + 1.0)
-    torso.lineTo(x + 4.6, y + 1.0)
-    torso.lineTo(shx + 3.6, shy)
-    torso.lineTo(shx - 3.6, shy)
-    torso.closeSubpath()
-    painter.drawPath(torso)
-    # 手臂（持矛手在前）
+    painter.drawLine(QPointF(x - 2.0 * f, y - 3.0), QPointF(x - 9.0 * f, y - 8.0))
+    # 腰（髋→胸）与颈（胸→头）
+    _tapered(painter, x, y, chx, chy, SCAV_HIP_R * 0.9, SCAV_CHEST_R * 0.75, body_rgb)
+    _tapered(painter, chx, chy, hdx, hdy, SCAV_CHEST_R * 0.5, SCAV_HIP_R * 0.55, neck_rgb)
+    # 髋（原版 scale = rad/15 → 直径 2*rad，但 Circle20 本身直径即贴图 20）
+    _circle(painter, atlas, x, y, SCAV_HIP_R * 2.0, SCAV_HIP_R * 2.0, body_rgb)
+    # 胸（原版最粗一节）
+    _circle(painter, atlas, chx, chy, SCAV_CHEST_R * 2.0 * SCAV_CHEST_W,
+            SCAV_CHEST_R * 2.15, body_rgb)
+    # 臂：上臂下探 + 前臂前伸，末端原版 ScavengerHandA/B
     painter.setPen(QPen(QColor(*body_rgb), 2.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-    painter.drawLine(QPointF(shx, shy + 1.0), QPointF(shx + 6.0 * f, shy + 11.0))
-    painter.drawLine(QPointF(shx, shy + 1.5), QPointF(shx + 12.0 * f, shy + 6.0))
-    # 头 + 面具
-    hx, hy = x + 6.0 * f + lean, y - 22.0
-    painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor(*body_rgb))
-    painter.drawEllipse(QPointF(hx - 1.0 * f, hy + 1.0), 6.2, 5.6)
-    painter.setBrush(QColor(*head_rgb))
-    painter.drawEllipse(QPointF(hx + 1.6 * f, hy - 0.4), 5.0, 4.4)
-    painter.setBrush(QColor(*eye_rgb))
-    painter.drawEllipse(QPointF(hx + 3.0 * f, hy - 0.6), 1.5, 1.1)
+    painter.drawLine(QPointF(chx, chy + 1.0), QPointF(chx + 6.0 * f, chy + 10.0))
+    painter.drawLine(QPointF(chx, chy + 1.5), QPointF(chx + 12.0 * f, chy + 5.0))
+    _blit_hand(painter, atlas, chx + 12.0 * f, chy + 5.0, f, hand_rgb)
+    # 头（原版 headSize 决定大小与朝向下的压扁）
+    _circle(painter, atlas, hdx, hdy, 14.4 * SCAV_S * SCAV_HEAD_W,
+            15.0 * SCAV_S, head_rgb, rot=0.0)
+    # 眼（原版两只眼是后脑两侧的小 Circle20）
+    for sgn in (-1.0, 1.0):
+        _circle(painter, atlas, hdx - 2.0 * f + sgn * 2.6 * f, hdy - 0.4,
+                3.6, 2.8, eye_rgb)
     painter.restore()
 
 
-def draw_scavenger_spear(painter, sc, ts=1.0) -> None:
-    """拾荒者手里的矛（瞄准时后仰）。"""
+def _blit_hand(painter, atlas, x, y, f, rgb) -> None:
+    """手（原版 ScavengerHandA，18x20 贴图）。"""
+    blit(painter, atlas, SCAV_HAND, x, y, 90.0 * (1.0 if f > 0 else -1.0),
+         1.0, 1.0, rgb)
+
+
+def draw_scavenger_spear(painter, atlas, sc, ts=1.0) -> None:
+    """拾荒者手里的矛（原版 SmallSpear，瞄准时后仰）。"""
     sp = getattr(sc, "spear", None)
     if sp is None:
         return
     x = sp.last_x + (sp.x - sp.last_x) * ts
     y = sp.last_y + (sp.y - sp.last_y) * ts
     ang = sp.last_angle + (sp.angle_deg - sp.last_angle) * ts
-    draw_spear(painter, x, y, ang, length=SPEAR_DRAW_LEN)
+    draw_spear(painter, atlas, x, y, ang, length=SPEAR_DRAW_LEN)

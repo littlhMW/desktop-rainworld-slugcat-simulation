@@ -1618,7 +1618,7 @@ class ItemInteractionMixin:
             x = pr.last_x + (pr.x - pr.last_x) * ts
             y = pr.last_y + (pr.y - pr.last_y) * ts
             rot = pr.last_rotation + (pr.rotation_deg - pr.last_rotation) * ts
-            draw_pearl(p, x, y, rot, pr.tint, pr.rad)
+            draw_pearl(p, self.atlas, x, y, rot, pr.tint, pr.rad, pr.glimmer_at(ts))
 
     def _draw_pearl_hint(self, p):
         cur = self.cursor_logical()
@@ -1630,7 +1630,7 @@ class ItemInteractionMixin:
         pr = self._pearl_hint_object()
         p.save()
         p.setOpacity(0.5)
-        draw_pearl(p, cx, cy, 0.0, pr.tint, pr.rad)
+        draw_pearl(p, self.atlas, cx, cy, 0.0, pr.tint, pr.rad, pr.glimmer_at(1.0))
         p.restore()
 
     def _pearl_hint_object(self):
@@ -1772,7 +1772,8 @@ class ItemInteractionMixin:
             x = sp.last_x + (sp.x - sp.last_x) * ts
             y = sp.last_y + (sp.y - sp.last_y) * ts
             ang = sp.stuck_angle if sp.stuck else _ang_lerp(sp.last_angle, sp.angle_deg, ts)
-            draw_spear(p, x, y, ang, length=SPEAR_DRAW_LEN)
+            draw_spear(p, self.atlas, x, y, ang, length=SPEAR_DRAW_LEN,
+                       pivot_tip=sp.stuck)
 
     def _draw_spear_hint(self, p):
         cur = self.cursor_logical()
@@ -1783,7 +1784,7 @@ class ItemInteractionMixin:
             return
         p.save()
         p.setOpacity(0.5)
-        draw_spear(p, cx, cy, 90.0, length=SPEAR_DRAW_LEN)
+        draw_spear(p, self.atlas, cx, cy, 90.0, length=SPEAR_DRAW_LEN)
         p.restore()
 
     # ── 拾荒者（Scavenger）：持矛巡走，见威胁瞄准投矛 ──
@@ -1887,9 +1888,9 @@ class ItemInteractionMixin:
         for sc in self.scavengers:
             if sc.state == ItemState.GONE:
                 continue
-            draw_scavenger(p, sc, ts, sc.body_rgb, sc.head_rgb, sc.eye_rgb)
+            draw_scavenger(p, self.atlas, sc, ts, sc.body_rgb, sc.head_rgb, sc.eye_rgb)
             if sc.spear is not None:
-                draw_scavenger_spear(p, sc, ts)
+                draw_scavenger_spear(p, self.atlas, sc, ts)
 
     def _scavenger_hint_object(self):
         seed = self._scavenger_seed
@@ -1913,7 +1914,7 @@ class ItemInteractionMixin:
         sc.y = sc.last_y = min(cy, self._HL - SCAV_BODY_RAD)
         p.save()
         p.setOpacity(0.5)
-        draw_scavenger(p, sc, 1.0, sc.body_rgb, sc.head_rgb, sc.eye_rgb)
+        draw_scavenger(p, self.atlas, sc, 1.0, sc.body_rgb, sc.head_rgb, sc.eye_rgb)
         p.restore()
 
     # ── 驯服：猫把蝉乌贼递给蜥蜴（原版 FriendTracker.GiftRecieved）──

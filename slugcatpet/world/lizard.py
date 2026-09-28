@@ -25,6 +25,7 @@ SEG_GRAV = 0.22               # 悬空（被拎起）时链节下坠
 HEAD_STAND_FAC = 2.05         # 头（链首）离地高度 = 躯干半径 * 此值
 BODY_STAND_FAC = 1.7          # 躯干节最低离地 = 自身半径 * 此值
 TAIL_SINK_FAC = 0.5           # 尾节可拖到接近地面
+TURN_VX = 0.35                # 判定「真的转身」的横向速度阈值（避免停下时身体窜到头前面）
 LEG_SIDE_FAC = 0.55           # 腿根挂在躯干侧下方 = 半径 * 此值
 
 # ── AI ──
@@ -40,6 +41,7 @@ COOLDOWN_TICKS = 150
 IDLE_TICKS = (60, 200)        # 原地停留时长
 WANDER_MARGIN = 40.0
 WALK_TURN = 0.14              # 游走时速度趋近速率
+BLINK_RATE = 0.0125           # 头部呼吸闪烁推进速率（同游戏 LizardGraphics.breath 步长）
 MAX_SEG_SPEED = 24.0
 
 # ── 配色（同游戏 LizardGraphics.ApplyPalette / BodyColor）──
@@ -229,7 +231,8 @@ class Lizard:
                  "body_rad", "seg", "legs", "state", "facing", "look_at",
                  "head_angle", "last_head_angle", "jaw", "last_jaw",
                  "target", "target_obj", "bite_event", "bite_hold", "bite_cd",
-                 "walk_phase", "idle_timer", "goal_x", "hop_cd",
+                 "walk_phase", "idle_timer", "goal_x", "hop_cd", "blink", "last_blink",
+                 "chain_dir",
                  "held_by_hand", "water_y", "room_gravity", "_contact_floor",
                  "dead", "spacing", "spikes", "like", "tamed", "friend_id")
 
@@ -304,6 +307,7 @@ class Lizard:
 
         self.state = ItemState.FREE
         self.facing = 1
+        self.chain_dir = 1.0
         self.look_at = None
         self.head_angle = 0.0
         self.last_head_angle = 0.0
@@ -315,6 +319,7 @@ class Lizard:
         self.bite_cd = rng.randint(30, 90)
         self.bite_hold = 0
         self.walk_phase = rng.random()
+        self.blink = self.last_blink = rng.random()   # 原版 LizardGraphics.blink：头部呼吸闪烁相位
         self.idle_timer = rng.randint(*IDLE_TICKS)
         self.goal_x = self.x
         self.hop_cd = 0
@@ -368,6 +373,8 @@ class Lizard:
         self.last_x, self.last_y = self.x, self.y
         self.last_head_angle = self.head_angle
         self.last_jaw = self.jaw
+        self.last_blink = self.blink
+        self.blink = (self.blink + BLINK_RATE + self.rng.random() * 0.001) % 1.0
         for s in self.seg:
             s.lx, s.ly = s.x, s.y
         for lg in self.legs:
@@ -568,19 +575,31 @@ class Lizard:
 
     # ── 链体 ──
     def _step_chain(self, HL) -> None:
-        """头为领头点，逐节跟随；悬空节受重力。"""
+        """头为领头点，逐节跟随；悬空节受重力。
+
+        首节方向：有横向速度时强制「挂在头正后方」（原版靠头节质点击打实现；
+                     若按节自身相对头的方位跟随，转身时身体会留在头前面，
+                     看起来就是在朝反方向走）。
+        其余节仍按上一节的实际方位跟随，并含重力分量 —— 这样贴地时会自然
+        铺平、悬空时会垂挂，而不会因为方向被冻结而竖直堆在头顶。
+        """
         prev_x, prev_y = self.x, self.y
         held = self.state == ItemState.MOUSE
-        # 链节恒受重力：贴地时被地面钳住自然铺平，悬空时垂挂
+        # 方向带记忆：只有真正走出速度才翻面；否则停稳瞬间的
+        # ±0.0x 抖动会把躯干甩到头前面，看起来就是「朝反方向走」。
+        if abs(self.vx) > TURN_VX:
+            self.chain_dir = 1.0 if self.vx > 0.0 else -1.0
+        forced = abs(self.vx) > 0.05
+        # 链节恒受重力
         grav = SEG_GRAV * (1.35 if held else 1.0) * self.room_gravity
-        for s in self.seg:
+        for i, s in enumerate(self.seg):
             s.y += grav
-            dx, dy = s.x - prev_x, s.y - prev_y
-            d = math.hypot(dx, dy)
-            if d > 1e-6:
-                ux, uy = dx / d, dy / d
+            if forced and i == 0:
+                ux, uy = -self.chain_dir, 0.0
             else:
-                ux, uy = -self.facing, 0.0
+                dx, dy = s.x - prev_x, s.y - prev_y
+                d = math.hypot(dx, dy)
+                ux, uy = ((-self.facing), 0.0) if d <= 1e-6 else (dx / d, dy / d)
             tx = prev_x + ux * s.dist
             ty = prev_y + uy * s.dist
             s.x += (tx - s.x) * s.stiff

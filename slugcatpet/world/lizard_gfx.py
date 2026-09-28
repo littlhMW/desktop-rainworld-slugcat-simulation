@@ -28,8 +28,10 @@ HEAD_FLIP = 180.0              # 头贴图吻部朝下，绘制前翻正
 
 BODY_TOP_K = 1.16              # 体色很轻的垂向受光（原版体色近黑，不能提亮太多）
 BODY_BOT_K = 0.72
+HEAD_FLICKER_EXC = 0.2         # 原版 HeadColor 呼吸系数里的 excitement 取值
 LIMB_NEAR_A = 1.0              # 近侧腿色层不透明度
 LIMB_FAR_A = 0.45              # 远侧腿色层压暗（深度感）
+BODY_TINT = 0.30               # 体色里掺入的品种色比例（见 body_color）
 BODY_EDGE_K = 0.55
 NECK_K = 0.82                  # 颈根半径系数（相对躯干半径）
 
@@ -45,6 +47,29 @@ def _mix(a, b, t):
     return (int(a[0] + (b[0] - a[0]) * t),
             int(a[1] + (b[1] - a[1]) * t),
             int(a[2] + (b[2] - a[2]) * t))
+
+
+def body_color(lz):
+    """体色：原版取 palette.blackColor（明亮来自头/尾/刺）。
+
+    宠物没有房间调色板，纯紫黑会读成一团黑；这里掺一点品种色当「暗染」，
+    才像游戏里那种深绿 / 深粉的躯干。
+    """
+    rgb = lz.breed.body_rgb
+    return _mix(rgb, lz.color, BODY_TINT) if rgb == BLACK_RGB else rgb
+
+
+def head_color(lz, ts: float):
+    """原版 LizardGraphics.HeadColor：头色在 palette.blackColor 与 effectColor 间「呼吸」闪烁。
+
+    白蜥／蝾螈／黑蜥在原版是恒定色分支（发光、雪盖等），宠物里直接取品种定色。
+    """
+    b = lz.breed
+    if b.head_rgb is not None:
+        return b.head_rgb
+    ph = lerp(lz.last_blink, lz.blink, ts)
+    a = 1.0 - (0.5 + 0.5 * math.sin(ph * math.tau)) ** (1.5 + HEAD_FLICKER_EXC * 1.5)
+    return _mix(BLACK_RGB, lz.color, a)
 
 
 def _strip_path(pts, halfw) -> QPainterPath:
@@ -133,13 +158,13 @@ def draw_lizard(p, atlas, lz, ts: float) -> None:
     _draw_spikes(p, atlas, lz, spine, rads)
     for i in (0, 2, 1, 3):                      # 远侧前后腿 → 近侧前后腿
         _draw_leg(p, atlas, lz, i, ts)
-    _draw_head(p, atlas, lz, hx, hy, rot, jaw, color)
+    _draw_head(p, atlas, lz, hx, hy, rot, jaw, head_color(lz, ts), ts)
     p.restore()
 
 
 def _draw_body(p, lz, spine, rads):
     """躯干+尾：单条带，垂向渐变受光，尾梢按游戏曲线染尾色。"""
-    rgb = lz.breed.body_rgb
+    rgb = body_color(lz)
     path = _strip_path(spine, rads)
     x0, y0 = spine[0]
     x1, y1 = spine[-1]
@@ -229,7 +254,7 @@ def _draw_spikes(p, atlas, lz, spine, rads):
         pt, (nx, ny), rad = _spine_at(spine, rads, s)
         x, y = pt[0] + nx * rad * 0.8, pt[1] + ny * rad * 0.8
         rot = math.degrees(math.atan2(nx, -ny))   # 贴图 local up 对齐法线
-        tint = lz.breed.body_rgb
+        tint = body_color(lz)
         _blit(p, atlas, "LizardScaleA%d" % graphic, tint, x, y, rot,
               size, size, 0.5, 0.85)
         if colored:
@@ -259,14 +284,14 @@ def _draw_leg(p, atlas, lz, i, ts):
     rot = math.degrees(math.atan2(-uy, -ux))         # 贴图未旋转时朝左
     flip = 1.0 if lg.near else -1.0
     sx, sy = b.limb_size, flip * b.limb_thickness
-    _blit(p, atlas, "LizardArm_%02d" % val, b.body_rgb,
+    _blit(p, atlas, "LizardArm_%02d" % val, body_color(lz),
           fx, fy, rot, sx, sy, 0.5, 0.5)
     _blit(p, atlas, "LizardArmColor_%02d" % val, b.head_rgb or lz.color,
           fx, fy, rot, sx, sy, 0.5, 0.5,
           opacity=LIMB_NEAR_A if lg.near else LIMB_FAR_A)
 
 
-def _draw_head(p, atlas, lz, hx, hy, rot, jaw, color):
+def _draw_head(p, atlas, lz, hx, hy, rot, jaw, color, ts=1.0):
     """头部件：下颚组（Jaw/LowerTeeth）+ 上颚组（UpperTeeth/Head/Eyes）。"""
     b = lz.breed
     hg = b.head_graphics
@@ -284,7 +309,7 @@ def _draw_head(p, atlas, lz, hx, hy, rot, jaw, color):
     lo_rot = rt + b.jaw_open_angle * lf * jaw
     sc = b.head_size * BODY_SCALE
     sx = face * sc
-    head_rgb = b.head_rgb or color          # 游戏 HeadColor：头=品种色（白/黑蜥压黑）
+    head_rgb = color                        # 游戏 HeadColor（含呼吸闪烁，见 head_color）
     teeth_rgb = BLACK_RGB                   # 游戏 ApplyPalette：齿与眼都是 palette.blackColor
     ay = 1.0 - b.anchor_y
     eyes_ay = 0.25 if hg[4] == 3 else ay
