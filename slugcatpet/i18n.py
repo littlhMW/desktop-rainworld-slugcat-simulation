@@ -40,6 +40,7 @@ _STR = {
     "tip_lamp":    {"zh": "放灯笼", "en": "Place lantern"},
     "tip_slimemold": {"zh": "放黏菌", "en": "Place slime mold"},
     "tip_batfly":  {"zh": "放蝙蝠", "en": "Place batfly"},
+    "tip_lizard":  {"zh": "放蜥蜴", "en": "Place lizard"},
     "tip_clear":   {"zh": "清除可交互实体", "en": "Clear placed items"},
 
 
@@ -48,6 +49,7 @@ _STR = {
     "toast_max_stone":  {"zh": "场上最多 3 个石头", "en": "At most 3 stones on the field"},
     "toast_max_slimemold": {"zh": "场上最多 3 个黏菌", "en": "At most 3 slime molds on the field"},
     "toast_max_batfly": {"zh": "场上最多 3 只蝙蝠", "en": "At most 3 batflies on the field"},
+    "toast_max_lizard": {"zh": "场上最多 2 只蜥蜴", "en": "At most 2 lizards on the field"},
     "toast_max_vpole":  {"zh": "场上最多 2 根竖杆", "en": "At most 2 vertical poles on the field"},
     "toast_max_hpole":  {"zh": "场上最多 2 根横杆", "en": "At most 2 horizontal poles on the field"},
     "toast_no_object":  {"zh": "场上没有物体", "en": "No objects on the field"},

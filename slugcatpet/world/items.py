@@ -19,6 +19,8 @@ from .slimemold import (SlimeMold, _dirvec as _slime_dir, _lerp_map as _slime_le
                         TENDRIL_JAG_K)
 from .stone import Stone
 from .batfly import BatFly
+from .lizard import BREEDS, Lizard
+from .lizard_gfx import draw_lizard
 from .pole import POLE_RAD, MIN_LENGTH as POLE_MIN_LENGTH, TOP_MARGIN as POLE_TOP_MARGIN
 from ..behavior import tuning
 
@@ -40,6 +42,7 @@ LAMP_TILT_MAX_DEG = 25.0
 LAMP_STICK_OUTSET = 40.0
 STONE_STUN_SPEED = 8.0
 STONE_STUN_TICKS = 80
+LIZARD_STUN_TICKS = 60            # 被蜥蜴咬到的眩晕 tick
 STONE_KNOCKBACK = 0.5
 STONE_DRAW_SCALE = 0.7
 # 抛石拖尾
@@ -128,6 +131,21 @@ def _slerp2(ax, ay, bx, by, t):
             ay * math.sin((1.0 - t) * theta) / s + by * math.sin(t * theta) / s)
 
 
+def _dist_to_path(pts, x, y):
+    """点到折线的最短距离（蜥蜴抓取判定用）。"""
+    best = 1e9
+    for i in range(len(pts) - 1):
+        ax, ay = pts[i]
+        bx, by = pts[i + 1]
+        dx, dy = bx - ax, by - ay
+        L2 = dx * dx + dy * dy
+        t = 0.0 if L2 <= 1e-9 else clampf(((x - ax) * dx + (y - ay) * dy) / L2, 0.0, 1.0)
+        d = math.hypot(x - (ax + dx * t), y - (ay + dy * t))
+        if d < best:
+            best = d
+    return best
+
+
 class ItemInteractionMixin:
     MAX_FRUITS = 3
     MAX_STONES = 3
@@ -142,6 +160,9 @@ class ItemInteractionMixin:
     _SLIME_FLING_CAP = 14.0
     _BATFLY_GRAB_PAD = 7.0
     _BATFLY_FLING_CAP = 14.0
+    MAX_LIZARDS = 2
+    _LIZARD_GRAB_PAD = 10.0
+    _LIZARD_FLING_CAP = 14.0
 
     def can_place_fruit(self) -> bool:
         return len(self.fruits) < self.MAX_FRUITS
@@ -410,6 +431,7 @@ class ItemInteractionMixin:
         self.clear_stones()
         self.clear_slimemolds()
         self.clear_batflies()
+        self.clear_lizards()
         self.clear_poles()
         self.clear_lamp()
 
@@ -1048,6 +1070,159 @@ class ItemInteractionMixin:
         self._draw_batfly_eyes(p, cx, cy, 0.0)
         p.restore()
 
+    # ── 蜥蜴 ──
+    def can_place_lizard(self) -> bool:
+        return len(self.lizards) < self.MAX_LIZARDS
+
+    def place_lizard(self, lx, ly):
+        """放下一只蜥蜴；品种按放置次序轮换，保证九种都见得到。"""
+        if not self.can_place_lizard():
+            return None
+        seed = self._lizard_seed
+        lz = Lizard(lx, ly, BREEDS[seed % len(BREEDS)], seed=seed, id=seed)
+        self._lizard_seed += 1
+        self.lizards.append(lz)
+        self.world_version += 1
+        self._exit_place_mode()
+        self.update()
+        return lz
+
+    def clear_lizards(self):
+        for lz in self.lizards:
+            lz.die()
+        if self.lizards:
+            self.lizards = []
+            self.world_version += 1
+        self._dragged_lizard = None
+        self._lizard_preview = None
+        self._exit_place_mode()
+        self.update()
+
+    def enter_place_lizard_mode(self):
+        if not self.can_place_lizard():
+            return False
+        self._place_mode = True
+        self._place_kind = "lizard"
+        self._begin_place_capture()
+        return True
+
+    def _lizard_at(self, pos):
+        """命中测试：到脊柱折线的距离 ≤ 躯干半径 + pad。"""
+        if pos is None:
+            return None
+        cx, cy = pos
+        best, bestd = None, 1e9
+        for lz in self.lizards:
+            if lz.state != ItemState.FREE:
+                continue
+            d = _dist_to_path(lz.body_path(), cx, cy) - lz.body_rad
+            if d <= self._LIZARD_GRAB_PAD and d < bestd:
+                best, bestd = lz, d
+        return best
+
+    def _begin_lizard_drag(self, pos) -> bool:
+        lz = self._lizard_at(pos)
+        if lz is None:
+            return False
+        lz.grab(pos)
+        lz.last_x, lz.last_y = pos
+        lz.x, lz.y = pos
+        self._dragged_lizard = lz
+        return True
+
+    def _step_lizard_drag(self):
+        """手里的蜥蜴由 Lizard._step_held 跟随光标；这里只清失效引用。"""
+        lz = self._dragged_lizard
+        if lz is not None and lz.state != ItemState.MOUSE:
+            self._dragged_lizard = None
+
+    def _end_lizard_drag(self) -> bool:
+        lz = self._dragged_lizard
+        if lz is None:
+            return False
+        sp = math.hypot(lz.vx, lz.vy)
+        if sp > self._LIZARD_FLING_CAP:
+            k = self._LIZARD_FLING_CAP / sp
+            lz.vx *= k
+            lz.vy *= k
+        lz.release(lz.vx, lz.vy)
+        self._dragged_lizard = None
+        return True
+
+    def _step_lizards(self):
+        """推进所有蜥蜴：物理/AI + 咬到猫结算。"""
+        self._step_lizard_drag()
+        if not self.lizards:
+            return
+        cur = self.cursor_logical()
+        targets = [(pet, pet.body.chunk0.x, pet.body.chunk0.y)
+                   for pet in self.pets if pet.behavior is not None]
+        for lz in self.lizards:
+            lz.step(self._WL, self._HL, targets=targets, cursor=cur)
+            self._lizard_bite(lz)
+
+    def _lizard_bite(self, lz):
+        """蜥蜴咬到猫：眩晕（apply_stun 内部已扣脾气）+ 轻微震动。"""
+        ev = lz.bite_event
+        if ev is None:
+            return
+        lz.bite_event = None
+        obj, _dmg = ev
+        beh = getattr(obj, "behavior", None)
+        if beh is None:
+            return
+        if beh.apply_stun(LIZARD_STUN_TICKS):
+            self._shake[0] += 1.6 * lz.facing
+            self._shake[1] += 1.0
+
+    def _draw_lizards(self, p):
+        ts = self._ts
+        for lz in self.lizards:
+            draw_lizard(p, self.atlas, lz, ts)
+
+    def _lizard_hint_object(self):
+        """放置预览用的一次性蜥蜴（不参与物理，品种跟随下一次放置）。"""
+        seed = self._lizard_seed
+        got = getattr(self, "_lizard_preview", None)
+        if got is None or got[0] != seed:
+            lz = Lizard(0.0, 0.0, BREEDS[seed % len(BREEDS)], seed=seed)
+            lz.state = ItemState.MOUSE
+            got = (seed, lz)
+            self._lizard_preview = got
+        return got[1]
+
+    @staticmethod
+    def _lay_lizard_hint(lz, cx, cy):
+        """把预览蜥蜴摆成「头在光标、身体横躺向左」的站姿。"""
+        lz.x = lz.last_x = cx
+        lz.y = lz.last_y = cy
+        lz.head_angle = lz.last_head_angle = 90.0
+        lz.facing = 1
+        x = cx
+        for s in lz.seg:
+            x -= s.dist
+            s.x = s.lx = x
+            s.y = s.ly = cy
+        for lg in lz.legs:
+            seg = lz.seg[0] if not lg.back else (lz.seg[2] if len(lz.seg) > 2 else lz.seg[-1])
+            lg.x = lg.lx = seg.x + (8.0 if lg.back else -8.0)
+            lg.y = lg.ly = seg.y + lz.body_rad * 2.2
+            lg.lift = 0.0
+
+    def _draw_lizard_hint(self, p):
+        cur = self.cursor_logical()
+        if cur is None:
+            return
+        cx, cy = cur
+        if not (0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL):
+            return
+        lz = self._lizard_hint_object()
+        self._lay_lizard_hint(lz, cx, cy)
+        p.save()
+        p.setOpacity(0.5)
+        draw_lizard(p, self.atlas, lz, 1.0)
+        p.restore()
+
     def enter_place_fruit_mode(self):
         if not self.can_place_fruit():
             return False
@@ -1148,6 +1323,10 @@ class ItemInteractionMixin:
 
         if self._place_kind == "batfly":
             self._draw_batfly_hint(p)
+            return
+
+        if self._place_kind == "lizard":
+            self._draw_lizard_hint(p)
             return
 
         stone = (self._place_kind == "stone")

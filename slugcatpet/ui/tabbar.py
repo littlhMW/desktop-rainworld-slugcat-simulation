@@ -42,6 +42,8 @@ _SLIME_TENDRIL = QColor(204, 92, 16)
 _SLIME_GLOW = QColor(255, 150, 50, 90)
 _BAT_BODY = QColor(24, 26, 30)
 _BAT_EYE = QColor(232, 236, 226)
+_LIZ_BODY = QColor(122, 158, 108)
+_LIZ_EYE = QColor(238, 244, 250)
 
 
 def _pen(c, w, cap=True):
@@ -208,6 +210,8 @@ def _paint_place_icon(p, kind, r, atlas=None):
         p.drawEllipse(body)
         p.setBrush(_BAT_EYE)
         p.drawEllipse(QPointF(bx, by - h * 0.09), w * 0.035, w * 0.035)
+    elif kind == "lizard":
+        _paint_lizard_icon(p, r)
     elif kind == "clear":
         # 禁止圈 ⊘
         d = min(w, h) * 0.90
@@ -217,6 +221,40 @@ def _paint_place_icon(p, kind, r, atlas=None):
         a, rr = math.radians(45), d / 2
         p.drawLine(QPointF(cx - math.cos(a) * rr, cy + math.sin(a) * rr),
                    QPointF(cx + math.cos(a) * rr, cy - math.sin(a) * rr))
+
+
+def _paint_lizard_icon(p, r):
+    """蜥蜴剪影：长身+尾+四条短腿+带眼头。"""
+    cx, cy = r.center().x(), r.center().y()
+    w, h = r.width(), r.height()
+    body = QPainterPath()
+    body.moveTo(cx - w * 0.46, cy + h * 0.02)                 # 尾尖
+    body.cubicTo(cx - w * 0.28, cy - h * 0.16,
+                 cx - w * 0.12, cy - h * 0.20,
+                 cx + w * 0.12, cy - h * 0.20)                 # 背
+    body.cubicTo(cx + w * 0.30, cy - h * 0.20,
+                 cx + w * 0.36, cy - h * 0.08,
+                 cx + w * 0.40, cy - h * 0.02)                 # 吻
+    body.cubicTo(cx + w * 0.30, cy + h * 0.06,
+                 cx + w * 0.08, cy + h * 0.12,
+                 cx - w * 0.30, cy + h * 0.14)                 # 腹
+    body.cubicTo(cx - w * 0.38, cy + h * 0.12,
+                 cx - w * 0.44, cy + h * 0.08,
+                 cx - w * 0.46, cy + h * 0.02)
+    body.closeSubpath()
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(_LIZ_BODY)
+    p.drawPath(body)
+    # 四条短腿
+    p.setPen(_pen(_LIZ_BODY, max(1.2, w * 0.09), cap=True))
+    for dx, dy in ((-0.16, 1.0), (0.02, 1.0), (0.16, 1.0), (0.30, 1.0)):
+        x = cx + w * dx
+        y = cy + h * (0.10 if dx < 0.1 else 0.06)
+        p.drawLine(QPointF(x, y), QPointF(x - w * 0.03, y + h * 0.16 * dy))
+    # 眼
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(_LIZ_EYE)
+    p.drawEllipse(QPointF(cx + w * 0.31, cy - h * 0.09), w * 0.045, w * 0.045)
 
 
 def _paint_lamp_sprite(p, r, atlas):
@@ -368,6 +406,7 @@ class TabBar(QWidget):
                        ("lamp", t("tip_lamp"), self._place_lamp),
                        ("slimemold", t("tip_slimemold"), self._place_slimemold),
                        ("batfly", t("tip_batfly"), self._place_batfly),
+                       ("lizard", t("tip_lizard"), self._place_lizard),
                        ("clear", t("tip_clear"), self._clear_all)]
         for i, (kind, tip, cb) in enumerate(place_items):
             ib = QPushButton()
@@ -559,6 +598,13 @@ class TabBar(QWidget):
         else:
             self._toast(t("toast_max_batfly"))
 
+    def _place_lizard(self):
+        if self.pet.can_place_lizard():
+            self.pet.enter_place_lizard_mode()
+            self._collapse()
+        else:
+            self._toast(t("toast_max_lizard"))
+
     def _place_vpole(self):
         if self.pet.can_place_pole("vertical"):
             self.pet.enter_place_vpole_mode()
@@ -575,7 +621,8 @@ class TabBar(QWidget):
 
     def _clear_all(self):
         if (self.pet.fruits or self.pet.stones or self.pet.slimemolds
-                or self.pet.batflies or self.pet.poles or self.pet.lamp is not None):
+                or self.pet.batflies or self.pet.lizards or self.pet.poles
+                or self.pet.lamp is not None):
             self.pet.clear_all_items()
         else:
             self._toast(t("toast_no_object"))

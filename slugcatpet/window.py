@@ -146,6 +146,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._dragged_batfly = None
         self._batfly_drag_last = None
 
+        # 放蜥蜴
+        self.lizards = []
+        self._lizard_seed = 0
+        self._dragged_lizard = None
+        self._lizard_preview = None
+
         # 放杆子
         self.poles = []
         self._pole_seed = 0
@@ -274,8 +280,11 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         over_slime = self._slimemold_at(cur) is not None
         dragging_batfly = self._dragged_batfly is not None
         over_batfly = self._batfly_at(cur) is not None
+        dragging_lizard = self._dragged_lizard is not None
+        over_lizard = self._lizard_at(cur) is not None
         want = not (active or dragging_fruit or over_fruit or dragging_stone or over_stone
-                    or dragging_slime or over_slime or dragging_batfly or over_batfly or over_body)
+                    or dragging_slime or over_slime or dragging_batfly or over_batfly
+                    or dragging_lizard or over_lizard or over_body)
         if want != self._passthrough:
             self._passthrough = want
             if not self._hwnd:
@@ -316,6 +325,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 return True
         for b in self.batflies:
             if abs(b.vx) + abs(b.vy) > self._MOTION_STILL:
+                return True
+        for lz in self.lizards:
+            if (abs(lz.vx) + abs(lz.vy) > self._MOTION_STILL * 0.5
+                    or lz.jaw > 0.03 or lz.bite_hold > 0):
                 return True
         return False
 
@@ -436,7 +449,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             pet.tail.floor_y = HL
             if pet.tongue is not None:
                 pet.tongue.floor_y = HL
-        for obj in (*self.fruits, *self.stones, *self.slimemolds, *self.batflies):
+        for obj in (*self.fruits, *self.stones, *self.slimemolds, *self.batflies,
+                    *self.lizards):
             _clamp_item_to_bounds(obj, WL, HL)
 
     def _do_tick(self):
@@ -468,6 +482,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._tick_stones()
         self._tick_slimemolds()
         self._tick_batflies()
+        self._tick_lizards()
         self._water_splash_detect()   # 须在物体积分后
 
         self._collide_objects()
@@ -504,6 +519,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             m.room_gravity = rg
         for b in self.batflies:
             b.room_gravity = rg
+        for lz in self.lizards:
+            lz.room_gravity = rg
 
     def set_water(self, on):
         """开/关水。"""
@@ -537,7 +554,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             self.water_surface = None
             self.water_y = None
             self.bubbles = []
-            for o in (*self.fruits, *self.stones, *self.slimemolds, *self.batflies):
+            for o in (*self.fruits, *self.stones, *self.slimemolds, *self.batflies,
+                      *self.lizards):
                 o.water_y = None
             for pet in self.pets:
                 pet.body.water_surface = None
@@ -550,7 +568,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             else:
                 surf.drain_affect(0.0, self._WL, tuning.WATER_FLOW)
         surf.step()
-        for o in (*self.fruits, *self.stones, *self.slimemolds, *self.batflies):
+        for o in (*self.fruits, *self.stones, *self.slimemolds, *self.batflies,
+                  *self.lizards):
             o.water_y = surf.level_at(o.x)
         for pet in self.pets:
             pet.body.water_surface = surf
@@ -578,6 +597,9 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         for b in self.batflies:
             if b.state == ItemState.FREE:
                 objs.append(b)
+        for lz in self.lizards:
+            if lz.state == ItemState.FREE:
+                objs.append(lz)
         for o in objs:
             lvl = surf.level_at(o.x)
             vy = o.vy
@@ -665,6 +687,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 b.step(self._WL, self._HL)
             self._step_batfly_shove()
             self.batflies = [b for b in self.batflies if b.state != ItemState.EATEN]
+
+    def _tick_lizards(self):
+        """推进放蜥蜴（入口，便于与其它 _tick_* 并列）。"""
+        self._step_lizards()
 
     def _collide_objects(self):
         """物体间通用碰撞互推。"""
@@ -872,6 +898,13 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             put(b.x + wr, b.y + wr, b.last_x + wr, b.last_y + wr)
             put(b.lower_x - wr, b.lower_y - wr, b.last_lower_x - wr, b.last_lower_y - wr)
             put(b.lower_x + wr, b.lower_y + wr, b.last_lower_x + wr, b.last_lower_y + wr)
+        for lz in self.lizards:
+            pr = lz.bounding_pad()
+            put(lz.x - pr, lz.y - pr, lz.last_x - pr, lz.last_y - pr)
+            put(lz.x + pr, lz.y + pr, lz.last_x + pr, lz.last_y + pr)
+            for s_ in lz.seg:
+                put(s_.x - pr, s_.y - pr, s_.lx - pr, s_.ly - pr)
+                put(s_.x + pr, s_.y + pr, s_.lx + pr, s_.ly + pr)
         for pl in self.poles:
             xs.append(pl.ax); xs.append(pl.bx)
             ys.append(pl.ay); ys.append(pl.by)
@@ -975,6 +1008,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 self._draw_slimemolds(p)
             if self.batflies:
                 self._draw_batflies(p)
+            if self.lizards:
+                self._draw_lizards(p)
 
             if self.water_surface is not None:
                 self._draw_water(p)
@@ -1007,6 +1042,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                     self.place_slimemold(lx, ly)
                 elif self._place_kind == "batfly":
                     self.place_batfly(lx, ly)
+                elif self._place_kind == "lizard":
+                    self.place_lizard(lx, ly)
                 else:
                     self.place_fruit(lx, ly)
             elif e.button() == Qt.MouseButton.RightButton:
@@ -1036,11 +1073,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                     grabbed = True
                     break
             if not grabbed:
-                # 蝙蝠优先级最高
-                if not self._begin_batfly_drag(pos):
-                    if not self._begin_fruit_drag(pos):
-                        if not self._begin_stone_drag(pos):
-                            self._begin_slimemold_drag(pos)
+                # 蜥蜴体型最大，抓取优先级最高
+                if not self._begin_lizard_drag(pos):
+                    if not self._begin_batfly_drag(pos):
+                        if not self._begin_fruit_drag(pos):
+                            if not self._begin_stone_drag(pos):
+                                self._begin_slimemold_drag(pos)
 
     def keyPressEvent(self, e):
         if self._place_mode and e.key() == Qt.Key.Key_Escape:
@@ -1059,3 +1097,4 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             self._end_stone_drag()
             self._end_slimemold_drag()
             self._end_batfly_drag()
+            self._end_lizard_drag()
