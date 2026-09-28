@@ -1,7 +1,8 @@
 """拾荒者 Scavenger：地面行走的持矛生物（原版 Scavenger）。y↓。
 
 看到蜥蜴/猫靠近 → 站定瞄准 → 把矛掷出 → 逃跑；没矛了就一直躲。
-外形程序化绘制（原版拾荒者是骨架+面具头，图集里只有 ScavengerHandA/B）。
+外形按原版 ScavengerGraphics 的贴图组合绘制（见 rendering/primitives.py），
+个体差异 ivar 复刻原版 IndividualVariations。
 """
 from __future__ import annotations
 import math
@@ -29,6 +30,10 @@ THROW_CD = 90
 IDLE_TICKS = (90, 260)
 FLEE_TICKS = 260
 
+PEARL_SEEK_R = 300.0              # 看到珍珠就去捡的半径（原版 CollectScore=10）
+PEARL_TAKE_PAD = 9.0
+TRADE_GIVE_TICKS = 70             # 拿到珍珠后回礼（给矛）的延迟
+
 BODY_RGB = (58, 60, 68)          # 兜底体色
 HEAD_RGB = (226, 226, 214)       # 面具（原版偏白的骨质面具）
 EYE_RGB = (26, 26, 30)
@@ -36,15 +41,231 @@ SPIKE_RGB = (232, 232, 224)
 LEG_RGB = (44, 46, 52)
 
 
-def body_colors(rng):
-    """原版 GenerateColors：体色随机色相，面具恒白，眼睛同色相深色。"""
-    hue = rng.random()
-    sat = lerp(0.05, 1.0, rng.random() ** 0.85)
-    light = lerp(0.05, 0.8, rng.random())
-    r, g, b = _hsl2rgb(hue, sat, light)
-    return ((int(r * 255), int(g * 255), int(b * 255)), HEAD_RGB,
-            (int(r * 90), int(g * 90), int(b * 90)))
+def _scurve(x, k):
+    """原版 Custom.SCurve。"""
+    x = x * 2.0 - 1.0
+    if x < 0.0:
+        x = abs(1.0 + x)
+        return k * x / (k - x + 1.0) * 0.5
+    k = -1.0 - k
+    return 0.5 + k * x / (k - x + 1.0) * 0.5
 
+
+def _rand_dev(rng, k):
+    """原版 Custom.RandomDeviation。"""
+    return _scurve(rng.random() * 0.5, k) * 2.0 * (1.0 if rng.random() < 0.5 else -1.0)
+
+
+def _clamped_var(rng, base, dev, k):
+    """原版 Custom.ClampedRandomVariation。"""
+    return clampf(base + _rand_dev(rng, k) * dev, 0.0, 1.0)
+
+
+def _dist01(a, b):
+    """原版 Custom.DistanceBetweenZeroToOneFloats。"""
+    return min(abs(a - b), abs(a + 1.0 - b), abs(a - 1.0 - b))
+
+
+def _inverse_lerp(a, b, v):
+    if b == a:
+        return 0.0
+    return clampf((v - a) / (b - a), 0.0, 1.0)
+
+
+def _hsl255(h, s, l):
+    return tuple(int(c * 255.0) for c in
+                 _hsl2rgb(h % 1.0, clampf(s, 0.0, 1.0), clampf(l, 0.0, 1.0)))
+
+
+def _hsl_rgb(h, s, l):
+    return _hsl2rgb(h % 1.0, clampf(s, 0.0, 1.0), clampf(l, 0.0, 1.0))
+
+
+def _mix255(a, b, t):
+    t = clampf(t, 0.0, 1.0)
+    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+
+BLACK_RGB = (27, 11, 33)          # 原版 palette.blackColor
+
+
+def _push_from_half(v, e):
+    """原版 Custom.PushFromHalf：把 0.5 附近的值推向两端。"""
+    if v < 0.5:
+        return 0.5 * (2.0 * v) ** e
+    return 1.0 - 0.5 * (2.0 - 2.0 * v) ** e
+
+
+def _lerp_map(v, a, b, A, B, e=1.0):
+    """原版 Custom.LerpMap（含可选的曲线指数）。"""
+    if a == b:
+        return A
+    t = clampf((v - a) / (b - a), 0.0, 1.0)
+    if e != 1.0:
+        t = t ** e
+    return A + (B - A) * t
+
+
+def individual_variations(rng, elite=False):
+    """原版 ScavengerGraphics.IndividualVariations。
+
+    宠物没有 AbstractCreature.personality，energy/dominance/sympathy/aggression
+    一律取中性 0.5（原版公式在这些取值下退化为最朴素的那一支）。
+    """
+    v = {}
+    v["general_melanin"] = _push_from_half(rng.random(), 2.0)
+    v["head_size"] = _clamped_var(rng, 0.5, 0.5, 0.1)
+    v["eartler_width"] = rng.random()
+    v["eye_size"] = math.pow(max(0.0, lerp(rng.random(), math.pow(v["head_size"], 0.5),
+                                           rng.random() * 0.4)),
+                             lerp(0.95, 0.55, 0.5))
+    v["narrow_eyes"] = (0.0 if rng.random() < lerp(0.3, 0.7, 0.5)
+                        else math.pow(rng.random(), lerp(0.5, 1.5, 0.5)))
+    if elite:
+        v["narrow_eyes"] = 1.0
+    v["eyes_angle"] = math.pow(rng.random(), lerp(2.5, 0.5, math.pow(0.5, 0.03)))
+    fat = lerp(rng.random(), 0.5, rng.random() * 0.2)      # dominance = 0.5
+    # energy = 0.5 → InverseLerp(0.5, 1, 0.5) = 0，两支都不生效
+    v["fat"] = fat
+    v["waist"] = lerp(lerp(rng.random(), 1.0 - fat, rng.random()),
+                     1.0 - 0.5, rng.random())
+    v["neck"] = lerp(math.pow(rng.random(), 1.5 - 0.5), 1.0 - fat, rng.random() * 0.5)
+    v["pupil"] = 0.0
+    v["deep"] = False
+    v["colored_pupils"] = 0
+    if rng.random() < 0.65 and v["eye_size"] > 0.4 and v["narrow_eyes"] < 0.3:
+        if rng.random() < math.pow(0.5, 1.5) * 0.8:
+            v["pupil"] = lerp(0.4, 0.8, math.pow(rng.random(), 0.5))
+            if rng.random() < 2.0 / 3.0:
+                v["colored_pupils"] = rng.randint(1, 3)
+        else:
+            v["pupil"] = 0.7
+            v["deep"] = True
+    if elite:
+        v["colored_pupils"] = rng.randint(1, 3)
+    if rng.random() < v["general_melanin"]:
+        r = rng.random()
+        v["hands_head_color"] = r if r < 0.3 else (1.0 if rng.random() < 0.6 else 0.0)
+    else:
+        r = rng.random()
+        v["hands_head_color"] = r if r < 0.2 else (1.0 if rng.random() < 0.8 else 0.0)
+    v["legs"] = rng.random()
+    v["arm"] = lerp(rng.random(), lerp(0.5, fat, 0.5), rng.random())
+    v["colored_eartler_tips"] = elite or rng.random() < 1.0 / lerp(1.2, 10.0,
+                                                                   v["general_melanin"])
+    v["wide_teeth"] = rng.random()
+    v["tail_segs"] = 0 if rng.random() < 0.5 else rng.randint(1, 4)
+    v["elite"] = elite
+    v["mask"] = rng.choice(("KrakenMask", "SpikeMask", "HornedMask", "SadMask")) if elite else None
+    v["teeth_n"] = rng.randint(2, 4) * 2   # 原版 teeth = new float[Range(2,5)*2, 2] → 4/6/8
+    v["hands"] = 1.0 if rng.random() < 0.8 else 0.0
+    return v
+
+
+def body_colors(rng, iv, elite=False):
+    """原版 ScavengerGraphics.GenerateColors（darkness=0，即明亮房间）。
+
+    返回 (体色, 头色, 眼色, 腹色, 瞳色, 装饰色)，都已按 Blended*Color 与黑混合。
+    """
+    mel = iv["general_melanin"]
+    hue = rng.random() * 0.1
+    if rng.random() < 0.025:
+        hue = math.pow(rng.random(), 0.4)
+    if elite:
+        hue = math.pow(rng.random(), 5.0)
+    hue2 = (hue + lerp(-1.0, 1.0, rng.random()) * 0.3 * math.pow(rng.random(), 2.0)) % 1.0
+
+    body_h = hue
+    body_s = lerp(0.05, 1.0, math.pow(rng.random(), 0.85))
+    body_l = lerp(0.05, 0.8, rng.random())
+    body_s *= 1.0 - mel
+    body_l = lerp(body_l, 0.5 + 0.5 * math.pow(rng.random(), 0.8), 1.0 - mel)
+
+    def _avg_rgb(h, s, l):
+        return sum(_hsl_rgb(h, s, l)) / 3.0
+
+    def _black_of(rgb_avg):
+        """原版 bodyColorBlack：LerpMap(avg, .04,.8, .3,.95, e=.5) 再按 rand^3 拉。"""
+        t = _lerp_map(rgb_avg, 0.04, 0.8, 0.3, 0.95, 0.5)
+        t = lerp(t, lerp(0.5, 1.0, rng.random()), rng.random() ** 3)
+        return t * mel
+
+    def _black_of_head(rgb_avg):
+        """原版 headColorBlack：另一套区间 + 0.2+0.7*mel 上限。"""
+        t = _lerp_map(rgb_avg, 0.035, 0.26, 0.7, 0.95, 0.25)
+        t = lerp(t, lerp(0.8, 1.0, rng.random()), rng.random() ** 3)
+        return t * (0.2 + 0.7 * mel)
+
+    bcb = _black_of(_avg_rgb(body_h, body_s, body_l))
+    # 原版 float2 张力修正：饱和+亮度都太低时把颜色撑开
+    fx, fy = body_s, lerp(-1.0, 1.0, body_l * (1.0 - bcb))
+    mag = math.hypot(fx, fy)
+    if mag < 0.5:
+        t = _inverse_lerp(0.5, 0.3, mag)
+        body_s = _inverse_lerp(-1.0, 1.0, lerp(fx, fx / mag, t))
+        body_l = _inverse_lerp(-1.0, 1.0, lerp(fy, fy / mag, t))
+        bcb = _black_of(_avg_rgb(body_h, body_s, body_l))
+    # 头色相：75% 用 hue2，否则用 a（此处 a 用 hue2 的随机偏移近似）
+    a_hue = (hue2 + lerp(-1.0, 1.0, rng.random()) * 0.1 * math.pow(rng.random(), 1.5)) % 1.0
+    a_hue = lerp(a_hue, 0.15, rng.random())          # 原版两支都有的「拉向 0.15」
+    head_h = hue2 if rng.random() < 0.75 else a_hue
+    head_s = 1.0
+    head_l = 0.05 + 0.15 * rng.random()
+    head_s *= math.pow(1.0 - mel, 2.0)
+    head_l = lerp(head_l, 0.5 + 0.5 * math.pow(rng.random(), 0.8), 1.0 - mel)
+    head_s *= 0.1 + 0.9 * _inverse_lerp(0.1, 0.0,
+                                        _dist01(body_h, head_h)
+                                        * _lerp_map(abs(0.5 - head_l), 0.0, 0.5, 1.0, 0.3))
+    if head_l < 0.5:
+        head_l *= 0.5 + 0.5 * _inverse_lerp(0.2, 0.05, _dist01(body_h, head_h))
+    hcb = _black_of_head(_avg_rgb(head_h, head_s, head_l))
+    hcb = max(hcb, bcb)
+    head_s = _lerp_map(head_l * (1.0 - hcb), 0.0, 0.15, 1.0, head_s)
+    if head_l > body_l:
+        head_h, head_s, head_l = body_h, body_s, body_l
+    if head_s < body_s * 0.75:
+        if rng.random() < 0.5:
+            head_h = body_h
+        else:
+            head_l *= 0.25
+        head_s = body_s * 0.75
+    deco_h = hue if rng.random() < 0.65 else (hue2 if rng.random() < 0.5 else a_hue)
+    deco_s = rng.random()
+    deco_l = 0.5 + 0.5 * math.pow(rng.random(), 0.5)
+    deco_l *= lerp(mel, rng.random(), 0.5)
+    eye_h = 0.0 if elite else a_hue
+    eye_s = 1.0
+    eye_l = (0.5 + rng.random() * 0.5) if rng.random() < 0.2 else 0.5
+    if iv["colored_pupils"] > 0:
+        eye_l = lerp(eye_l, 1.0, 0.3)
+    if head_l * (1.0 - hcb) > eye_l / 2.0 and (iv["pupil"] == 0.0 or iv["deep"]):
+        eye_l *= 0.2
+    v1, v2 = rng.random(), rng.random()
+    belly_h = lerp(body_h, deco_h, v1 * 0.7)
+    belly_s = body_s * lerp(1.0, 0.5, v1)
+    belly_l = body_l + 0.05 + 0.3 * v2
+    belly_black = lerp(bcb, 1.0, 0.3 * math.pow(v2, 1.4))
+    if rng.random() < 1.0 / 30.0:
+        head_l = lerp(0.2, 0.35, rng.random())
+        hcb *= lerp(1.0, 0.8, rng.random())
+        belly_h = lerp(belly_h, head_h, math.pow(rng.random(), 0.5))
+    # 瞳孔（原版 ApplyPalette 的 switch 分支）
+    if iv["colored_pupils"] == 1:
+        pupil = _hsl255(body_h, 1.0, 0.35)
+    elif iv["colored_pupils"] == 2:
+        pupil = _hsl255(head_h, 1.0, 0.35)
+    elif iv["colored_pupils"] == 3:
+        pupil = _hsl255(deco_h, 1.0, 0.35)
+    elif head_l * (1.0 - hcb) > 0.1:
+        pupil = _mix255(_hsl255(head_h, head_s, 0.15), BLACK_RGB, hcb)
+    else:
+        pupil = _mix255(_hsl255(head_h, head_s, head_l), BLACK_RGB, hcb)
+    return (_mix255(_hsl255(body_h, body_s, body_l), BLACK_RGB, bcb),
+            _mix255(_hsl255(head_h, head_s, head_l), BLACK_RGB, hcb),
+            _hsl255(eye_h, eye_s, eye_l),
+            _mix255(_hsl255(belly_h, belly_s, belly_l), BLACK_RGB, belly_black),
+            pupil,
+            _mix255(_hsl255(deco_h, deco_s, deco_l), BLACK_RGB, 0.0))
 
 class Scavenger:
     """拾荒者：巡走/警觉/投矛/逃跑 四态。"""
@@ -54,7 +275,10 @@ class Scavenger:
                  "air_friction", "surface_friction", "bounce", "water_y", "room_gravity",
                  "state", "facing", "walk_phase", "state_t", "idle_timer", "goal_x",
                  "spear", "aim", "aim_t", "throw_event", "throw_cd", "dead", "held_by_hand",
-                 "_contact_floor", "_rng", "seed", "id", "body_rgb", "head_rgb", "eye_rgb")
+                 "_contact_floor", "_rng", "seed", "id", "body_rgb", "head_rgb", "eye_rgb",
+                 "belly_rgb", "pupil_rgb", "deco_rgb", "mask_rgb", "ivar",
+                 "pearl", "like", "bring_pearl_home", "gift_t", "gift_event",
+                 "goal_pearl")
 
     def __init__(self, x: float, y: float, seed: int = 0, id: int = 0):
         self.x = self.last_x = float(x)
@@ -77,7 +301,17 @@ class Scavenger:
         self.seed = int(seed)
         self.id = int(id)
         self._rng = _random.Random(seed * 3571 + 11)
-        self.body_rgb, self.head_rgb, self.eye_rgb = body_colors(self._rng)
+        self.ivar = individual_variations(self._rng)
+        (self.body_rgb, self.head_rgb, self.eye_rgb, self.belly_rgb,
+         self.pupil_rgb, self.deco_rgb) = body_colors(self._rng, self.ivar)
+        # 原版 VultureMaskGraphics.ColorA：浅色骨面具（色相随机偏移、明度 0.7–0.8）
+        if self.ivar["mask"] is None:
+            self.mask_rgb = None
+        else:
+            _mh = 0.02 + self._rng.random() * 0.12
+            self.mask_rgb = tuple(int(c * 255) for c in
+                                  _hsl2rgb(_mh, 0.25 + 0.2 * self._rng.random(),
+                                           0.76 + 0.05 * self._rng.random()))
         self.idle_timer = self._rng.randint(*IDLE_TICKS)
         self.goal_x = self.x
         self.aim = None                 # (x, y) 瞄准点
@@ -87,10 +321,51 @@ class Scavenger:
         self.spear = Spear(self.x + 6.0, self.y - 6.0, seed=seed, angle_deg=90.0)
         self.spear.held_by = self
         self._contact_floor = False
+        # ── 珍珠交易（原版 ScavengerAI：DataPearl 价值 10，收到后好感大涨）──
+        self.pearl = None               # 手上的珍珠
+        self.like = 0.35                # 对猫的好感 0..1（原版 relationship.like）
+        self.bring_pearl_home = False   # 原版 GrabObject(DataPearl) 时置位
+        self.gift_t = -1                # ≥0 表示回礼倒计时
+        self.gift_event = False         # 窗口读走后生成回礼的矛
+        self.goal_pearl = None          # 正在去捡的珍珠
 
     @property
     def pos(self):
         return (self.x, self.y)
+
+    @property
+    def friendly(self) -> bool:
+        """给过珍珠 → 不再把猫当猎物（原版关系值高了就不敌对）。"""
+        return self.like >= 0.6 or self.bring_pearl_home
+
+    def receive_pearl(self, pearl=None) -> None:
+        """收到珍珠：原版 GrabObject → bringPearlHome，且 InfluenceTempLike(2f)。
+
+        CollectScore(DataPearl)=10 → InfluenceLike(10/7.5*0.6) 直接拉满好感。
+        """
+        if pearl is not None:
+            pearl.state = ItemState.CARRIED
+            pearl.held_by_hand = "scav"
+            pearl.vx = pearl.vy = 0.0
+        self.pearl = pearl
+        self.bring_pearl_home = True
+        self.goal_pearl = None
+        self.like = 1.0
+        self.gift_t = TRADE_GIVE_TICKS
+        self.throw_event = None
+        self.aim = None
+        if self.state in ("aim", "flee"):
+            self.state = ItemState.FREE
+            self.state_t = 0
+        self.throw_cd = max(self.throw_cd, THROW_CD)
+
+    def _carry_pearl(self) -> None:
+        pr = self.pearl
+        pr.x, pr.y = self.x - self.facing * 3.0, self.y - 5.0
+        pr.last_x, pr.last_y = pr.x, pr.y
+        pr.vx = pr.vy = 0.0
+        pr.state = ItemState.CARRIED
+        pr.held_by_hand = "scav"
 
     def bounding_pad(self) -> float:
         return 46.0
@@ -124,6 +399,13 @@ class Scavenger:
             self.throw_cd -= 1
         if self.spear is not None:                  # 矛跟着手
             self._carry_spear()
+        if self.pearl is not None:                  # 珍珠跟着手
+            self._carry_pearl()
+            if self.gift_t > 0:
+                self.gift_t -= 1
+            elif self.gift_t == 0:
+                self.gift_event = True              # 回礼：给猫一根矛
+                self.gift_t = -1
 
     def _step_held(self, HL, cursor=None) -> None:
         """被拎起：跟光标垂着，矛与投掷意图都失效。"""
@@ -136,7 +418,9 @@ class Scavenger:
     def _threat_scan(self, threats) -> None:
         """按威胁距离切态：瞄准→投矛→逃跑。"""
         best, bd = None, ALERT_R
-        for obj, ox, oy in threats:
+        for obj, ox, oy, is_pet in threats:
+            if is_pet and self.friendly:            # 交易过的拾荒者不攻击猫
+                continue
             d = math.hypot(ox - self.x, oy - self.y)
             if d < bd:
                 best, bd = (ox, oy), d
@@ -177,6 +461,10 @@ class Scavenger:
             self.vx += (SPEED_RUN * self.facing - self.vx) * 0.12
             if self.throw_event is None and self._rng.random() < 0.01:
                 self.facing = -self.facing
+        elif self.goal_pearl is not None and self.goal_pearl.state == ItemState.FREE:
+            gp = self.goal_pearl                # 原版：去捡珍珠（beeline）
+            self.facing = 1 if gp.x >= self.x else -1
+            self.vx += (SPEED_WALK * self.facing - self.vx) * 0.10
         else:
             self.state_t += 1
             self.idle_timer -= 1

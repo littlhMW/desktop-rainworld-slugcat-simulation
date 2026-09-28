@@ -104,6 +104,7 @@ class FruitFetcher:
         self._giveup_pending = False
         self._goal = None
         self._deliver = None          # 驯服交付目标（Lizard）
+        self._trade_to = None         # 珍珠交易目标（Scavenger）
         self._snatch = TongueSnatch(win)
 
     def _chunk0(self):
@@ -161,7 +162,7 @@ class FruitFetcher:
 
     def _phase_select(self):
         # 候选空 + 曾放弃 → giveup
-        cands = fetch_candidates(self.planner, self.win.edibles(), diet=self.diet)
+        cands = fetch_candidates(self.planner, self.win.fetchables(), diet=self.diet)
         if not cands:
             self.giveup = self._giveup_pending
             return True
@@ -221,6 +222,19 @@ class FruitFetcher:
                 self.phase = "deliver"
                 self.timer = 0
                 return False
+        # 不能吃的东西（珍珠）：叼去跟拾荒者交易（原版：手里的珍珠换东西）
+        if not getattr(f, "is_edible", True):
+            sc = self.win.nearest_scavenger(self.body.chunk0.x)
+            if sc is not None:
+                self._trade_to = sc
+                self.phase = "trade"
+                self.timer = 0
+            else:
+                self.body.release_fruit()
+                f.state = "free"
+                f.held_by_hand = None
+                self.phase = "select"
+            return False
         # 悬空卡死兜底超时
         if self.timer > CARRY_FALL_TIMEOUT and f.stalk is not None:
             f.stalk = None
@@ -249,6 +263,32 @@ class FruitFetcher:
             self._deliver = None
             if self.win.deliver_gift(self.win, lz):
                 return True
+            self.phase = "select"
+            return False
+        if d > DELIVER_GAP:
+            self.body.walk_to(hx)
+        else:
+            self.body.stop_walk()
+        return False
+
+    def _phase_trade(self):
+        """把珍珠送到拾荒者旁边：够近它自己会收下（items._step_scavenger_trade）。"""
+        f = self.body.carried_fruit
+        sc = self._trade_to
+        if (f is None or sc is None or sc.dead or sc.state != "free"
+                or self.timer > DELIVER_TIMEOUT):
+            self._trade_to = None
+            self.phase = "select"
+            return False
+        c0 = self.body.chunk0
+        hx, hy = sc.x, sc.y - 10.0
+        self.win.gfx.look_at = (hx, hy)
+        d = math.hypot(hx - c0.x, hy - (c0.y - 8.0))
+        if d <= DELIVER_REACH:
+            if self.win.hand_pearl(sc):
+                self._trade_to = None
+                return True
+            self._trade_to = None
             self.phase = "select"
             return False
         if d > DELIVER_GAP:

@@ -26,7 +26,9 @@ from .lizard_gfx import draw_lizard
 from .squidcada import Squidcada
 from .squidcada_gfx import draw_squidcada
 from .pearl import Pearl
+from .scavenger import PEARL_SEEK_R, PEARL_TAKE_PAD
 from .spear import Spear, LEN as SPEAR_DRAW_LEN, HALF_W as SPEAR_HALF_W
+from .seedcob import Seed, SeedCob, draw_seed, draw_seedcob
 from .scavenger import (Scavenger, BODY_RAD as SCAV_BODY_RAD,
                         STAND_H as SCAV_STAND_H)
 from .pole import POLE_RAD, MIN_LENGTH as POLE_MIN_LENGTH, TOP_MARGIN as POLE_TOP_MARGIN
@@ -192,6 +194,7 @@ class ItemInteractionMixin:
     _LIZARD_FLING_CAP = 14.0
     _PEARL_FLING_CAP = 16.0
     _SPEAR_FLING_CAP = 18.0
+    _SEEDCOB_GRAB_PAD = 14.0
 
     def can_place_fruit(self) -> bool:
         return True
@@ -492,6 +495,8 @@ class ItemInteractionMixin:
         self.clear_pearls()
         self.clear_spears()
         self.clear_scavengers()
+        self.clear_seedcobs()
+        self.clear_seeds()
         self.clear_poles()
         self.clear_lamp()
 
@@ -1410,6 +1415,10 @@ class ItemInteractionMixin:
             self._draw_scavenger_hint(p)
             return
 
+        if self._place_kind == "seedcob":
+            self._draw_seedcob_hint(p)
+            return
+
         stone = (self._place_kind == "stone")
         p.save()
         if not stone and not self.zerog_on:
@@ -1659,8 +1668,8 @@ class ItemInteractionMixin:
     def _draw_pearls(self, p):
         ts = self._ts
         for pr in self.pearls:
-            if pr.state == ItemState.GONE:
-                continue
+            if pr.state == ItemState.GONE or pr.held_by_hand == "scav":
+                continue        # 拾荒者手上的珍珠随它一起画，避免被身挡住
             x = pr.last_x + (pr.x - pr.last_x) * ts
             y = pr.last_y + (pr.y - pr.last_y) * ts
             rot = pr.last_rotation + (pr.rotation_deg - pr.last_rotation) * ts
@@ -1824,6 +1833,17 @@ class ItemInteractionMixin:
                 if killed:
                     self._lizard_death_fx(lz)
                 break
+            for cb in self.seedcobs:                          # 矛扎中爆米花 → 开荚
+                if cb.opened or cb.dead:
+                    continue
+                if _dist_to_path((cb.p0, cb.p1), sp.x, sp.y) > sp.rad + 12.0:
+                    continue
+                cb.open_cob()
+                kx = 1.0 if sp.vx >= 0.0 else -1.0
+                sp.vx *= 0.5
+                sp.vy *= 0.5
+                self._shake[0] += 0.4 * kx
+                break
             for small in (*self.batflies, *self.squidcadas):   # 小生物：一矛带走
                 if small.dead or small.state != ItemState.FREE:
                     continue
@@ -1943,6 +1963,145 @@ class ItemInteractionMixin:
         self._dragged_scavenger = None
         return True
 
+    # ── 爆米花（Popcorn Plant / SeedCob）：吊在天花板，矛或超度开荚弹种子 ──
+    def can_place_seedcob(self) -> bool:
+        return True
+
+    def place_seedcob(self, lx, ly):
+        if not self.can_place_seedcob():
+            return None
+        cb = SeedCob(lx, ly, seed=self._seedcob_seed)
+        self._seedcob_seed += 1
+        self.seedcobs.append(cb)
+        self.world_version += 1
+        self._exit_place_mode()
+        self.update()
+        return cb
+
+    def clear_seedcobs(self):
+        for cb in self.seedcobs:
+            cb.state = ItemState.GONE
+        if self.seedcobs:
+            self.seedcobs = []
+            self.world_version += 1
+        self._dragged_seedcob = None
+
+    def clear_seeds(self):
+        for s in self.seeds:
+            if s.state == ItemState.CARRIED:
+                s.held_by_hand = None
+                for pet in self.pets:
+                    if s is pet.body.carried_fruit:
+                        pet.body.release_fruit()
+            s.state = ItemState.EATEN
+        if self.seeds:
+            self.seeds = []
+            self.world_version += 1
+
+    def spawn_seed(self, x, y):
+        """SeedCob.burst 的回调：弹出一颗可食种子。"""
+        s = Seed(x, y, seed=self._seed_seed)
+        self._seed_seed += 1
+        s.vx = random.uniform(-3.5, 3.5)
+        s.vy = random.uniform(-4.5, -1.5)
+        s.room_gravity = self.room_gravity
+        self.seeds.append(s)
+        self.world_version += 1
+        return s
+
+    def enter_place_seedcob_mode(self):
+        self._place_mode = True
+        self._place_kind = "seedcob"
+        self._begin_place_capture()
+        return True
+
+    def _seedcob_at(self, pos):
+        """命中豆荚段（p1→p0）或挂点附近。"""
+        if pos is None:
+            return None
+        cx, cy = pos
+        best, bestd = None, 1e9
+        for cb in self.seedcobs:
+            if cb.state != ItemState.FREE:
+                continue
+            d = _dist_to_path((cb.p0, cb.p1), cx, cy)
+            d = min(d, math.hypot(cx - cb.root_pos[0], cy - cb.root_pos[1]))
+            if d <= cb.rad + self._SEEDCOB_GRAB_PAD and d < bestd:
+                best, bestd = cb, d
+        return best
+
+    def _begin_seedcob_drag(self, pos) -> bool:
+        cb = self._seedcob_at(pos)
+        if cb is None:
+            return False
+        self._dragged_seedcob = cb
+        return True
+
+    def _step_seedcob_drag(self):
+        cb = self._dragged_seedcob
+        if cb is None or cb.state != ItemState.FREE:
+            self._dragged_seedcob = None
+            return
+        cur = self.cursor_logical()
+        if cur is None:
+            return
+        cb.retarget(clampf(cur[0], 20.0, self._WL - 20.0),
+                    clampf(cur[1], 40.0, self._HL - 10.0))
+
+    def _end_seedcob_drag(self) -> bool:
+        if self._dragged_seedcob is None:
+            return False
+        self._dragged_seedcob = None
+        return True
+
+    def _tick_seedcobs(self):
+        self._step_seedcob_drag()
+        if self.seedcobs:
+            for cb in self.seedcobs:
+                cb.step(self._WL, self._HL)
+            self.seedcobs = [cb for cb in self.seedcobs if cb.state != ItemState.GONE]
+        if self.seeds:
+            for s in self.seeds:
+                s._impact_cb = self._shake_impact
+                s.step(self._WL, self._HL)
+            self.seeds = [s for s in self.seeds
+                          if s.state not in (ItemState.EATEN, ItemState.GONE)]
+
+    def _draw_seedcobs(self, p):
+        for cb in self.seedcobs:
+            if cb.state == ItemState.GONE:
+                continue
+            draw_seedcob(p, self.atlas, cb, self._ts)
+
+    def _draw_seeds(self, p):
+        for s in self.seeds:
+            if s.state in (ItemState.EATEN, ItemState.GONE,
+                           ItemState.CARRIED, ItemState.MOUSE):
+                continue
+            draw_seed(p, self.atlas, s, self._ts)
+
+    def _seedcob_hint_object(self):
+        seed = self._seedcob_seed
+        got = getattr(self, "_seedcob_preview", None)
+        if got is None or got[0] != seed:
+            got = (seed, SeedCob(0.0, 0.0, seed=seed))
+            self._seedcob_preview = got
+        return got[1]
+
+    def _draw_seedcob_hint(self, p):
+        cur = self.cursor_logical()
+        if cur is None:
+            return
+        cx, cy = cur
+        if not (0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL):
+            return
+        cb = self._seedcob_hint_object()
+        cb.retarget(cx, cy)
+        p.save()
+        p.setOpacity(0.5)
+        draw_seedcob(p, self.atlas, cb, 1.0)
+        p.restore()
+
     def _step_scavenger_throws(self):
         """拾荒者的投矛意图 → 生成一枝飞矛。"""
         for sc in self.scavengers:
@@ -1965,12 +2124,110 @@ class ItemInteractionMixin:
         if not self.scavengers:
             return
         cur = self.cursor_logical()
-        threats = [(lz, lz.x, lz.y) for lz in self.lizards if lz.state == ItemState.FREE]
-        threats += [(pet, pet.body.chunk0.x, pet.body.chunk0.y) for pet in self.pets]
+        threats = [(lz, lz.x, lz.y, False) for lz in self.lizards
+                   if lz.state == ItemState.FREE]
+        threats += [(pet, pet.body.chunk0.x, pet.body.chunk0.y, True) for pet in self.pets]
+        self._assign_pearl_targets()
         for sc in self.scavengers:
             sc.step(self._WL, self._HL, threats=threats, cursor=cur)
         self._step_scavenger_throws()
+        self._step_scavenger_trade()
         self.scavengers = [sc for sc in self.scavengers if sc.state != ItemState.GONE]
+
+    # ── 珍珠交易（原版 ScavengerAI.CollectScore(DataPearl)=10 → bringPearlHome）──
+    def nearest_scavenger(self, x):
+        """最近的在场上拾荒者（猫拿珍珠去交易的目标）。"""
+        best, bd = None, 1e9
+        for sc in self.scavengers:
+            if sc.dead or sc.state != ItemState.FREE:
+                continue
+            d = abs(sc.x - x)
+            if d < bd:
+                best, bd = sc, d
+        return best
+
+    def _assign_pearl_targets(self):
+        """给还没拿珍珠的拾荒者就近指派地上的珍珠。"""
+        free = [pr for pr in self.pearls if pr.state == ItemState.FREE]
+        if not free:
+            return
+        taken = {id(sc.goal_pearl) for sc in self.scavengers if sc.goal_pearl is not None}
+        for sc in self.scavengers:
+            if sc.goal_pearl is not None or sc.pearl is not None or sc.friendly:
+                continue
+            if sc.state in ("aim", "flee") or sc.state != ItemState.FREE:
+                continue
+            best, bd = None, PEARL_SEEK_R
+            for pr in free:
+                if id(pr) in taken:
+                    continue
+                d = math.hypot(pr.x - sc.x, pr.y - sc.y)
+                if d < bd:
+                    best, bd = pr, d
+            if best is not None:
+                sc.goal_pearl = best
+                taken.add(id(best))
+
+    def _step_scavenger_trade(self):
+        """捡珍珠 / 收下猫递来的珍珠 / 回礼一根矛。"""
+        for sc in self.scavengers:
+            # 1) 走到珍珠跟前就捡起来
+            gp = sc.goal_pearl
+            if gp is not None:
+                if gp.state != ItemState.FREE:
+                    sc.goal_pearl = None
+                elif (math.hypot(gp.x - sc.x, gp.y - sc.y)
+                      <= SCAV_BODY_RAD + gp.rad + PEARL_TAKE_PAD):
+                    sc.receive_pearl(gp)
+                    self._trade_fx(sc, gp)
+            # 2) 猫手里举着珍珠凑过来 → 原版 RecognizeCreatureAcceptingGift
+            if sc.pearl is None:
+                for pet in self.pets:
+                    if pet.behavior is None or pet.behavior.blocks_interaction():
+                        continue
+                    item = pet.body.carried_fruit
+                    if not isinstance(item, Pearl):
+                        continue
+                    c1 = pet.body.chunk1
+                    if math.hypot(c1.x - sc.x, c1.y - sc.y) > 46.0:
+                        continue
+                    pet.body.release_fruit()
+                    sc.receive_pearl(item)
+                    self._trade_fx(sc, item)
+                    break
+            # 3) 回礼：在原版是 Scavenger 把手上的东西（矛）让给玩家
+            if sc.gift_event:
+                sc.gift_event = False
+                sp = Spear(sc.x + sc.facing * 14.0, sc.y - 2.0,
+                           seed=self._spear_seed, angle_deg=90.0)
+                self._spear_seed += 1
+                sp.vx = sc.facing * 1.2
+                self.spears.append(sp)
+                self._trade_fx(sc, None)
+
+    def hand_pearl(self, sc) -> bool:
+        """把猫手里的珍珠交给拾荒者（原版 RecognizeCreatureAcceptingGift）。"""
+        for pet in self.pets:
+            item = pet.body.carried_fruit
+            if isinstance(item, Pearl):
+                pet.body.release_fruit()
+                sc.receive_pearl(item)
+                self._trade_fx(sc, item)
+                return True
+        return False
+
+    def _trade_fx(self, sc, pearl):
+        """交易反馈：一圈暖色火花。"""
+        rng = self._stun_rng
+        cx = pearl.x if pearl is not None else sc.x
+        cy = (pearl.y if pearl is not None else sc.y - 10.0)
+        for i in range(12):
+            a = rng.uniform(0.0, math.tau)
+            sp = rng.uniform(1.0, 2.4)
+            self.sparks.append([cx, cy, math.cos(a) * sp, math.sin(a) * sp - 0.5,
+                                20, 20, 1 if i % 2 else 0])
+
+
 
     def _draw_scavengers(self, p):
         ts = self._ts
@@ -1980,6 +2237,10 @@ class ItemInteractionMixin:
             draw_scavenger(p, self.atlas, sc, ts, sc.body_rgb, sc.head_rgb, sc.eye_rgb)
             if sc.spear is not None:
                 draw_scavenger_spear(p, self.atlas, sc, ts)
+            if sc.pearl is not None:
+                pr = sc.pearl
+                draw_pearl(p, self.atlas, pr.x, pr.y, pr.rotation_deg,
+                           pr.tint, pr.rad, pr.glimmer_at(ts))
 
     def _scavenger_hint_object(self):
         seed = self._scavenger_seed

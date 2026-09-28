@@ -45,6 +45,8 @@ GLIMMER_WAIT = (20, 40)                   # 原版 glimmerWait
 class Pearl:
     """珍珠：单点质点 + 自旋；高弹度小球的滚动与落定。"""
     collision_layer = 2
+    is_edible = False        # 不能吃：原版里珍珠是货币
+    stalk = None             # 复用果子的叼持槽，需有同名属性
 
     __slots__ = ("x", "y", "vx", "vy", "last_x", "last_y", "rad", "mass", "gravity",
                  "air_friction", "bounce", "surface_friction", "buoyancy",
@@ -52,7 +54,7 @@ class Pearl:
                  "rotation_deg", "last_rotation", "spin", "tint", "_id",
                  "_contact_floor", "_contact_x", "_impact_cb", "collide_with_objects",
                  "glimmer", "last_glimmer", "glimmer_prog", "glimmer_speed",
-                 "glimmer_wait", "_glimmer_amp")
+                 "glimmer_wait", "_glimmer_amp", "held_by_hand")
 
     def __init__(self, x: float, y: float, seed: int = 0):
         self.x = self.last_x = float(x)
@@ -67,6 +69,7 @@ class Pearl:
         self.state = ItemState.FREE
         self.rotation_deg = 0.0
         self.last_rotation = 0.0
+        self.held_by_hand = None       # "scav" = 被拾荒者拿着（交易用）
         self.spin = 0.0
         self.tint = PEARL_HUES[int(seed) % len(PEARL_HUES)]
         self._id = int(seed)
@@ -85,6 +88,11 @@ class Pearl:
     @property
     def pos(self):
         return (self.x, self.y)
+
+    def set_rotation_to_grabber(self, gx: float, gy: float) -> None:
+        """被抓在手里：珠子无尖端，停自旋即可（对齐 Fruit 的同名接口）。"""
+        self.spin = 0.0
+        self.last_rotation = self.rotation_deg
 
     def glimmer_at(self, ts: float) -> float:
         """插值后的高光强度（绘制用）。"""

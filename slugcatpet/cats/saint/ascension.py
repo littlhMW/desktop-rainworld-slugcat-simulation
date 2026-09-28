@@ -23,6 +23,10 @@ STEP_MAX_LOCKED = 100.0 * K_VEL
 KILLWAIT_RATE = 0.035
 KILLFAC_RATE = 0.025
 
+# 超度判定（原版 Player.monkAscension：num = 60f，bodyChunk.vel += RNV() * 36f）
+ASCEND_KILL_R = 60.0
+ASCEND_KILL_PUSH = 36.0
+
 # 闪
 FLASH_RADIUS = 60.0
 SPARK_COUNT = 20
@@ -33,6 +37,28 @@ SPARK_LIFE_MIN, SPARK_LIFE_MAX = 30, 120   # 40Hz
 NUM_GOD_PIPS = 12
 
 GUARD_ICON_COLOR = (255, 221, 132)
+
+
+def _body_chunks(obj):
+    """生物的可判定体节 (x, y, rad)：蜥蜴逐节，其余取本体。"""
+    segs = getattr(obj, "seg", None)
+    if segs:
+        for s in segs:
+            yield s.x, s.y, getattr(s, "rad", 6.0)
+    yield obj.x, obj.y, getattr(obj, "rad", 6.0)
+
+
+def _ascend_object(obj, win, cx, cy):
+    """超度单个对象：白色火花 + 推离 + 死亡（同原版逐体节加的 RNV()*36）。"""
+    import random as _random
+    a = _random.random() * math.tau
+    obj.vx = getattr(obj, "vx", 0.0) + math.cos(a) * ASCEND_KILL_PUSH
+    obj.vy = getattr(obj, "vy", 0.0) - abs(math.sin(a) * ASCEND_KILL_PUSH)
+    win.add_spark(obj.x, obj.y, 0.0, -1.2, white=True, life=45)
+    if hasattr(obj, "kill"):
+        obj.kill()
+    else:
+        obj.die()
 
 
 class Ascension:
@@ -228,7 +254,27 @@ class Ascension:
             sp = ((i * 13 % 20) / 20.0) * SPARK_SPEED_MAX
             win.add_spark(self.fx, self.fy, math.cos(ang) * sp, math.sin(ang) * sp,
                           white=True, life=SPARK_LIFE_MIN + (i * 9 % (SPARK_LIFE_MAX - SPARK_LIFE_MIN)))
+        self._ascend_kill()
         win.start_cursor_hijack(self.fx, self.fy)
+
+    def _ascend_kill(self):
+        """原版 Player.monkAscension 的收束：半径 60(+体节半径) 内一切生物 Die()。"""
+        win = self.win
+        cx, cy = self.fx, self.fy
+        for name in ("lizards", "scavengers", "batflies", "squidcadas"):
+            for obj in list(getattr(win, name, ()) or ()):
+                if getattr(obj, "dead", False):
+                    continue
+                for px, py, pr in _body_chunks(obj):
+                    if math.hypot(px - cx, py - cy) <= ASCEND_KILL_R + pr:
+                        _ascend_object(obj, win, cx, cy)
+                        break
+        # 原版：被超度的爆米花荚直接爆开
+        for cob in list(getattr(win, "seedcobs", ()) or ()):
+            if getattr(cob, "opened", False) or getattr(cob, "dead", False):
+                continue
+            if math.hypot(cob.x - cx, cob.y - cy) <= ASCEND_KILL_R + 20.0:
+                cob.burst(win)
 
     def _exit(self, hijack):
         self.body.hover = False

@@ -55,6 +55,8 @@ _SPEAR_TIP = QColor(198, 206, 214)
 _SCAV_BODY = QColor(58, 62, 50)
 _SCAV_MASK = QColor(232, 238, 232)
 _SCAV_EYE = QColor(24, 26, 22)
+_SC_LEAF = QColor(96, 116, 66)
+_SC_SEED = QColor(255, 118, 78)
 
 
 def _pen(c, w, cap=True):
@@ -231,6 +233,8 @@ def _paint_place_icon(p, kind, r, atlas=None):
         _paint_spear_icon(p, r)
     elif kind == "scavenger":
         _paint_scavenger_icon(p, r)
+    elif kind == "seedcob":
+        _paint_seedcob_icon(p, r)
     elif kind == "clear":
         # 禁止圈 ⊘
         d = min(w, h) * 0.90
@@ -320,6 +324,32 @@ def _paint_scavenger_icon(p, r):
     p.setBrush(_SCAV_EYE)
     p.drawEllipse(QPointF(cx - w * 0.06, cy - h * 0.26), w * 0.04, w * 0.04)
     p.drawEllipse(QPointF(cx + w * 0.06, cy - h * 0.26), w * 0.04, w * 0.04)
+
+def _paint_seedcob_icon(p, r):
+    """爆米花：从顶垂下的暗色细茎 + 黄色豆荚 + 顶端两片叶。"""
+    cx, cy = r.center().x(), r.center().y()
+    w, h = r.width(), r.height()
+    top = cy - h * 0.48
+    pod_top = cy - h * 0.10
+    pod_bot = cy + h * 0.46
+    p.setPen(_pen(_POLE_CORE, max(1.4, w * 0.09), cap=False))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawLine(QPointF(cx - w * 0.10, top), QPointF(cx, pod_top))
+    p.drawLine(QPointF(cx + w * 0.10, top), QPointF(cx, pod_top))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(_ICON_AMBER)
+    pod = QRectF(0, 0, w * 0.30, pod_bot - pod_top)
+    pod.moveCenter(QPointF(cx, (pod_top + pod_bot) * 0.5))
+    p.drawEllipse(pod)
+    p.setBrush(_SC_LEAF)
+    for sgn in (-1, 1):
+        p.drawPolygon(QPolygonF([QPointF(cx, pod_top + h * 0.06),
+                                 QPointF(cx + sgn * w * 0.40, pod_top - h * 0.04),
+                                 QPointF(cx + sgn * w * 0.14, pod_top + h * 0.20)]))
+    p.setBrush(_SC_SEED)
+    for k in range(3):
+        p.drawEllipse(QPointF(cx, pod_top + (pod_bot - pod_top) * (0.24 + 0.26 * k)),
+                      w * 0.055, w * 0.055)
 
 
 def _paint_lizard_icon(p, r):
@@ -510,6 +540,7 @@ class TabBar(QWidget):
                        ("scavenger", t("tip_scavenger"), self._place_scavenger),
                        ("pearl", t("tip_pearl"), self._place_pearl),
                        ("spear", t("tip_spear"), self._place_spear),
+                       ("seedcob", t("tip_seedcob"), self._place_seedcob),
                        ("clear", t("tip_clear"), self._clear_all)]
         for i, (kind, tip, cb) in enumerate(place_items):
             ib = QPushButton()
@@ -717,11 +748,15 @@ class TabBar(QWidget):
         self.pet.enter_place_scavenger_mode()
         self._collapse()
 
+    def _place_seedcob(self):
+        self.pet.enter_place_seedcob_mode()
+        self._collapse()
+
     def _clear_all(self):
         if (self.pet.fruits or self.pet.stones or self.pet.slimemolds
                 or self.pet.batflies or self.pet.lizards or self.pet.poles
                 or self.pet.squidcadas or self.pet.pearls or self.pet.spears
-                or self.pet.scavengers
+                or self.pet.scavengers or self.pet.seedcobs or self.pet.seeds
                 or self.pet.lamp is not None):
             self.pet.clear_all_items()
         else:

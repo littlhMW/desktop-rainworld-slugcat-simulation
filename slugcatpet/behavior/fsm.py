@@ -26,6 +26,7 @@ T_POSTTHROW_STAND = 400
 ANGER_TOTAL = T_POSTTHROW_WANDER + T_POSTTHROW_STAND
 T_FETCH_COOLDOWN = 200
 T_FETCH_CHECK = 8   # 取果闸重算间隔
+HUNT_CD = 900       # 一次捕猎后的冷却（tick）
 T_HPOLE_TIMEOUT = 1600
 HPOLE_MAX_CLIMBS = 3
 WAKE_STABILIZE_TICKS = 30
@@ -231,6 +232,8 @@ class BehaviorFSM:
         self._blocked_ticks = 0
         self._jump_over_cd = 0
         self.stonethrow = None
+        self.flyhunt = None
+        self._hunt_cd = 0
         self.anger = 0
         self.cursorlick = None
         self._cursor_prev = None
@@ -327,6 +330,9 @@ class BehaviorFSM:
             self.fetch = None
         self.cursorlick = None
         self.stonethrow = None
+        self.flyhunt = None
+        if self.body.carried_spear is not None:
+            self.body.release_spear(to_free=True)
         if self.poleclimb is not None:
             self.body.chunk0.pinned = False
             self.body.chunk1.pinned = False
@@ -469,6 +475,8 @@ class BehaviorFSM:
             brk()
         elif st == "AngryStone":
             self._angrystone_release()
+        elif st == "HuntFly":
+            self._flyhunt_release()
         elif st == "PoleClimb":
             self._pole_release()
         elif st == "HPole":
@@ -590,7 +598,8 @@ class BehaviorFSM:
                 and not self._cold_urgent() and not self._zerog()
                 and self._fetch_cooldown <= 0
                 and self.state not in _FETCH_NEVER):
-            fetch_cands = fetch_ready(self.planner, self.win.edibles(), diet=self.pers.diet)
+            fetch_cands = fetch_ready(self.planner, self.win.fetchables(),
+                                      diet=self.pers.diet)
             if fetch_cands:
                 take = True
                 if self.state in _FETCH_PLAY:
@@ -604,6 +613,23 @@ class BehaviorFSM:
                 if take:
                     self._break_active_controllers()
                     self._act_or_wake("FetchFruit")
+
+        # 狩猎飞虫（原版：蝙蝠/蝉乌贼在空中 → 捡石/持矛预判投掷）
+        if self._hunt_cd > 0:
+            self._hunt_cd -= 1
+        if (self._fetch_check == 0 and self._hunt_cd <= 0
+                and self.body.food < self.body.food_max
+                and not self.grab.active and not self._exhausted
+                and not self._cold_urgent() and not self._zerog()
+                and not self._hibernating and not self.body.swimming
+                and self.state in ("IdleStand", "PostThrowStand", "PostThrowWander")):
+            from .huntfly import FlyHunter
+            probe = FlyHunter(self.win, self.rng, self)
+            if probe._flies() and (probe._ground_stones() or probe._ground_spears()
+                                   or self.body.carried_stone is not None
+                                   or self.body.carried_spear is not None):
+                self._break_active_controllers()
+                self._act_or_wake("HuntFly")
 
         # 满饱食即冬眠
         if (not self._hibernating and not self.grab.active and not self._exhausted
@@ -730,6 +756,11 @@ class BehaviorFSM:
             self.gfx.hand_aim["l"] = None
             self.gfx.hand_aim["r"] = None
             self.stonethrow = StoneThrower(self.win, self.rng, self)
+        elif st == "HuntFly":
+            from .huntfly import FlyHunter
+            self.gfx.hand_aim["l"] = None
+            self.gfx.hand_aim["r"] = None
+            self.flyhunt = FlyHunter(self.win, self.rng, self)
         elif st == "Stunned":
             b.set_posture(False)
             b.stop_walk()
@@ -1897,6 +1928,42 @@ class BehaviorFSM:
                 self._transition("PostThrowStand")
             else:
                 self._transition("PostThrowWander")
+
+    def _st_huntfly(self, cursor, disturbed):
+        """狩猎飞虫：控制器给出路由串，本函数只做态切换与收尾。"""
+        if self.grab.active:
+            self._flyhunt_release()
+            self._transition("Dragged")
+            return
+        if self.flyhunt is None:
+            self._transition("IdleStand")
+            return
+        want = (self.body.food < self.body.food_max and not self._exhausted)
+        status = self.flyhunt.update(want)
+        if status in ("thrown", "giveup", "idle"):
+            self._flyhunt_release()
+            self._hunt_cd = HUNT_CD
+            self._transition("IdleStand")
+        elif status == "revert_wander":
+            self._flyhunt_release()
+            self._hunt_cd = HUNT_CD
+            self._transition("PostThrowWander")
+
+    def _flyhunt_release(self):
+        """收尾：松手、清瞄准、清控制器。"""
+        for o in (self.body.carried_spear, self.body.carried_stone):
+            if o is not None and o.state == "carried":
+                o.state = "free"
+        if self.body.carried_spear is not None:
+            self.body.release_spear(to_free=True)
+        if self.body.carried_stone is not None:
+            self.body.release_stone(to_free=True)
+        self.body.stop_walk()
+        self.flyhunt = None
+        self.body.arm_aim["l"] = None
+        self.body.arm_aim["r"] = None
+        self.gfx.hand_aim["l"] = None
+        self.gfx.hand_aim["r"] = None
 
     def _angrystone_release(self):
         if self.body.carried_stone is not None:

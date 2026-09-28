@@ -8,6 +8,7 @@ from ..cats.stats import DEFAULT_STATS
 from ..core import chunkphys as cp
 from ..core.chunkphys import BodyChunk, solve_conn
 from ..core.units import K_VEL, K_IMP, lerp, inv_lerp, clampf
+from ..world.enums import ItemState
 
 RUN_UPPER = 4.2 * K_VEL
 RUN_LOWER = 4.0 * K_VEL
@@ -202,6 +203,7 @@ class SlugcatBody:
         self.carried_fruit = None
         self.carry_hand = None
         self.carried_stone = None
+        self.carried_spear = None
         self.stun = 0
         self.arm_aim = {"l": None, "r": None}
         self.arm_full_reach = 24.0
@@ -388,6 +390,8 @@ class SlugcatBody:
             self.release_fruit()
         if self.carried_stone is not None:
             self.release_stone(to_free=True)
+        if self.carried_spear is not None:
+            self.release_spear(to_free=True)
         self.stun = 0
         self.zerog_pole = None
 
@@ -462,6 +466,7 @@ class SlugcatBody:
         self._breath_update()
         self._apply_carry()
         self._apply_carry_stone()
+        self._apply_carry_spear()
 
     def _step_hover(self):
         ws = self.water_surface
@@ -643,6 +648,7 @@ class SlugcatBody:
         self._breath_update()
         self._apply_carry()          # 游泳时也要跟手
         self._apply_carry_stone()
+        self._apply_carry_spear()
 
     def _decide_swim_mode(self, ws):
         """深泳/浮泳二分（y↓）。"""
@@ -812,6 +818,7 @@ class SlugcatBody:
         self._breath_update()
         self._apply_carry()          # 零重力叼持也要跟手
         self._apply_carry_stone()
+        self._apply_carry_spear()
 
     def _zerog_pole_grab(self) -> bool:
         """抓杆动力学。"""
@@ -1291,8 +1298,13 @@ class SlugcatBody:
         if side is not None:
             self.arm_aim[side] = None
 
-    def throw_stone(self, dir_x, base_speed, up=3.0, recoil=1.0):
-        """Throw carried stone; return stone (free + velocity) or None."""
+    def throw_stone(self, dir_x, base_speed, up=3.0, recoil=1.0,
+                    vel=None, fling=False, by_saint=True):
+        """Throw carried stone; return stone (free + velocity) or None.
+
+        vel 给定 (vx, vy) 时直接采用（狩猎预判用）；fling=True 才进入
+        「投掷物可伤生物」通道（同原版 fling 石头）。
+        """
         s = self.carried_stone
         if s is None:
             return None
@@ -1301,13 +1313,17 @@ class SlugcatBody:
         sx, sy = self._carry_pos(side)
         s.last_x, s.last_y = s.x, s.y
         s.last_rotation = s.rotation_deg
-        s.x = sx + float(dir_x) * 10.0
+        s.x = sx + float(dir_x) * 18.0
         s.y = sy - 4.0
-        s.vx = c0.vx * 0.2 + float(dir_x) * base_speed
-        s.vy = c0.vy * 0.5 - up
+        if vel is None:
+            s.vx = c0.vx * 0.2 + float(dir_x) * base_speed
+            s.vy = c0.vy * 0.5 - up
+        else:
+            s.vx = c0.vx * 0.2 + float(vel[0])
+            s.vy = c0.vy * 0.2 + float(vel[1])
         s.spin = float(dir_x) * 8.0
-        s.fling = False
-        s.thrown_by_saint = True
+        s.fling = bool(fling)
+        s.thrown_by_saint = bool(by_saint)
         s.state = "free"
         self.release_stone(to_free=False)
         c0.vx += float(dir_x) * 8.0 * recoil
@@ -1324,6 +1340,80 @@ class SlugcatBody:
         s.last_x, s.last_y = s.x, s.y
         s.last_rotation = s.rotation_deg
         s.x, s.y = cx, cy
+        self.arm_aim[side] = (cx, cy)
+        self.arm_aim["l" if side == "r" else "r"] = None
+
+    # ── 矛（原版 Spear：玩家持矛时杆斜指前上方，掷出后走弹道）──
+    def grab_spear(self, spear, side):
+        """Grab a spear with one hand; convert to carried (kinematic)."""
+        self.carried_spear = spear
+        self.carry_hand = side
+        spear.state = ItemState.CARRIED
+        spear.stuck = False
+        spear.stuck_to = None
+        spear.held_by = self
+        self.eat_raise = 0.0
+
+    def release_spear(self, to_free=False):
+        """Release grip on spear; optionally convert back to free."""
+        side = self.carry_hand
+        sp = self.carried_spear
+        self.carried_spear = None
+        self.carry_hand = None
+        self.eat_raise = 0.0
+        if sp is not None:
+            sp.held_by = None
+            if to_free:
+                sp.state = ItemState.FREE
+        if side is not None:
+            self.arm_aim[side] = None
+
+    def spear_hold_angle(self, up_frac=0.35):
+        """持矛朝向：面朝方向 + 抬起的杆（0=上、顺时针；同原版握矛姿态）。"""
+        dx = self.chunk0.x - self.chunk1.x
+        if abs(dx) < 1e-6:
+            dx = 1.0
+        fdir = 1.0 if dx >= 0.0 else -1.0
+        return _ang_from_up(fdir, -up_frac)
+
+    def throw_spear(self, dir_x, base_speed, up=3.0, recoil=1.0, vel=None):
+        """Throw carried spear; return spear (free + velocity) or None."""
+        sp = self.carried_spear
+        if sp is None:
+            return None
+        c0, c1 = self.chunk0, self.chunk1
+        side = self.carry_hand
+        sx, sy = self._carry_pos(side)
+        sp.last_x, sp.last_y = sp.x, sp.y
+        sp.x = sx + float(dir_x) * 18.0
+        sp.y = sy - 4.0
+        if vel is None:
+            sp.vx = c0.vx * 0.2 + float(dir_x) * base_speed
+            sp.vy = c0.vy * 0.5 - up
+        else:
+            sp.vx = c0.vx * 0.2 + float(vel[0])
+            sp.vy = c0.vy * 0.2 + float(vel[1])
+        sp.spin = 0.0
+        sp.angle_deg = sp.last_angle = self.spear_hold_angle()
+        sp.stuck = False
+        sp.stuck_to = None
+        sp.state = ItemState.FREE
+        self.release_spear(to_free=False)
+        c0.vx += float(dir_x) * 8.0 * recoil
+        c1.vx -= float(dir_x) * 4.0 * recoil
+        return sp
+
+    def _apply_carry_spear(self):
+        """Each tick: write carried spear to hand position, aim arm."""
+        sp = self.carried_spear
+        if sp is None:
+            return
+        side = self.carry_hand
+        cx, cy = self._carry_pos(side)
+        sp.last_x, sp.last_y = sp.x, sp.y
+        sp.x, sp.y = cx, cy
+        sp.last_angle = sp.angle_deg
+        sp.angle_deg = self.spear_hold_angle()
         self.arm_aim[side] = (cx, cy)
         self.arm_aim["l" if side == "r" else "r"] = None
 

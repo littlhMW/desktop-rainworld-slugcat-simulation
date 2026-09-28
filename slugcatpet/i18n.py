@@ -45,6 +45,7 @@ _STR = {
     "tip_scavenger": {"zh": "放拾荒者", "en": "Place scavenger"},
     "tip_pearl":   {"zh": "放珍珠", "en": "Place pearl"},
     "tip_spear":   {"zh": "放矛", "en": "Place spear"},
+    "tip_seedcob": {"zh": "放爆米花", "en": "Place popcorn plant"},
     "tip_clear":   {"zh": "清除可交互实体", "en": "Clear placed items"},
 
 
