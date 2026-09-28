@@ -106,7 +106,7 @@ _STR = {
     "settings_cats_section": {"zh": "蛞蝓猫", "en": "Slugcats"},
     "settings_add":          {"zh": "添加", "en": "Add"},
     "settings_remove":       {"zh": "移除", "en": "Remove"},
-    "settings_max_pets":     {"zh": "最多 3 只", "en": "At most 3 cats"},
+    "settings_max_pets":     {"zh": "最多 10 只", "en": "At most 10 cats"},
     "settings_min_pets":     {"zh": "至少保留 1 只", "en": "Keep at least 1 cat"},
     "settings_remove_confirm": {"zh": "确定移除 {name}？", "en": "Remove {name}?"},
     "settings_env_section":  {"zh": "环境", "en": "Environment"},

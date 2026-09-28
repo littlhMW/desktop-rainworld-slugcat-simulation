@@ -1,6 +1,7 @@
 """状态面板 HUD：每猫一行体征，可拖动可隐藏。"""
 from __future__ import annotations
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QFrame, QLayout
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QFrame, QLayout,
+                               QScrollArea, QSizePolicy)
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 
@@ -47,13 +48,47 @@ class HudPanel(QWidget):
         outer.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)   # 尺寸随内容自适应
         self._panel = QWidget()
         self._panel.setObjectName("hudPanel")
-        self._vbox = QVBoxLayout(self._panel)
-        self._vbox.setContentsMargins(10, 8, 10, 8)
-        self._vbox.setSpacing(6)
         self._panel.setStyleSheet(_PANEL_QSS)
+        pbox = QVBoxLayout(self._panel)
+        pbox.setContentsMargins(10, 8, 10, 8)
+        pbox.setSpacing(0)
         outer.addWidget(self._panel)
+
+        # 行容器塞进滚动区：猫多到超过屏高时可以滚，不再被任务栏切掉
+        self._rows_host = QWidget()
+        self._vbox = QVBoxLayout(self._rows_host)
+        self._vbox.setContentsMargins(0, 0, 0, 0)
+        self._vbox.setSpacing(6)
+        self._scroll = QScrollArea()
+        self._scroll.setWidget(self._rows_host)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self._scroll.setStyleSheet(
+            "QScrollArea{background:transparent;border:none;}"
+            "QScrollBar:vertical{background:transparent;width:8px;margin:0;}"
+            "QScrollBar::handle:vertical{background:rgba(150,180,120,150);"
+            "border-radius:4px;min-height:24px;}"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
+            "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}")
+        self._scroll.setMaximumHeight(self._max_view_h())
+        pbox.addWidget(self._scroll)
         self._rows = []
         self._build_rows()
+        self._fit_scroll()
+
+    def _fit_scroll(self):
+        """行区高度跟着行数走，直到撞上屏高上限才变滚动。"""
+        self._vbox.activate()
+        want = self._rows_host.sizeHint().height() + 4
+        self._scroll.setFixedHeight(min(max(want, 40), self._max_view_h()))
+
+    @staticmethod
+    def _max_view_h() -> int:
+        """行区最高不超过屏幕可用高度（留点余量给任务栏与窗口边）。"""
+        scr = QGuiApplication.primaryScreen().availableGeometry()
+        return max(160, scr.height() - 96)
 
     def _build_rows(self):
         for i, pet_unit in enumerate(self._pets()):
@@ -80,6 +115,7 @@ class HudPanel(QWidget):
                 w.deleteLater()
         self._rows = []
         self._build_rows()
+        self._fit_scroll()
         self._refresh()
         self._place()
 

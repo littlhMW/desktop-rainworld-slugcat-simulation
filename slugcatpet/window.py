@@ -20,7 +20,7 @@ from .world.effects import EffectsMixin
 from .world.items import ItemInteractionMixin
 from .world.enums import ItemState
 
-MAX_PETS = 3
+MAX_PETS = 10
 
 STONE_FAST_REDRAW = 3.0    # 速度超此整窗重绘
 
