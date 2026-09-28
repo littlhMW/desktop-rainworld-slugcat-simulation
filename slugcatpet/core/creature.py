@@ -225,6 +225,8 @@ class SlugcatBody:
         self.wall_side = 0
         self.wall_climb_dir = 0         # -1 上 / +1 下
         self.wall_cd = 0                # 蹬墙跳硬直
+        self.wall_top_y = None          # 这面墙的可攀爬上沿 y（原版墙有高有低）
+        self.at_wall_top = False        # 是否已抓在墙上沿
         self.ceil_cling = False         # 上边缘吊挂
         self.ceil_x = 0.0
         self.ceil_y = 0.0
@@ -423,6 +425,8 @@ class SlugcatBody:
         self.zerog_pole = None
         self.wall_side = 0
         self.wall_climb_dir = 0
+        self.wall_top_y = None
+        self.at_wall_top = False
         self.ceil_cling = False
         self.crawl_want = False
         self.animation = None
@@ -437,6 +441,8 @@ class SlugcatBody:
         self.wall_side = 0
         self.wall_climb_dir = 0
         self.wall_cd = 0
+        self.wall_top_y = None
+        self.at_wall_top = False
         self.ceil_cling = False
 
     # ── 窗口边缘＝实体墙/天花（原版房间边界）──
@@ -444,12 +450,14 @@ class SlugcatBody:
         from .edges import wall_hold_x
         return wall_hold_x(side, self.W)
 
-    def grab_wall(self, side: int) -> bool:
-        """吸附到左右墙；side=-1 左 / +1 右。"""
+    def grab_wall(self, side: int, top_y=None) -> bool:
+        """吸附到左右墙；side=-1 左 / +1 右。top_y=这面墙的可攀爬上沿（None=无限高）。"""
         if self.dead or self.wall_cd > 0 or not side:
             return False
         self.wall_side = int(side)
         self.wall_climb_dir = 0
+        self.wall_top_y = None if top_y is None else float(top_y)
+        self.at_wall_top = False
         self.feet_stuck = None
         self.crawl_anchor = None
         self.crawl_pose = 0.0
@@ -471,6 +479,8 @@ class SlugcatBody:
     def release_wall(self):
         self.wall_side = 0
         self.wall_climb_dir = 0
+        self.wall_top_y = None
+        self.at_wall_top = False
         if self.animation == "ClimbOnBeam":
             self.animation = None
 
@@ -1232,6 +1242,12 @@ class SlugcatBody:
         x = self.wall_hold_x(self.wall_side)
         g = 0.9 * self.room_gravity
         climb = WALL_CLIMB_SPEED * self.wall_climb_dir   # dir=-1 → 向上
+        c0 = self.chunk0
+        top = self.wall_top_y                            # 墙面不是无限高：到上沿就抓沿
+        self.at_wall_top = bool(top is not None and climb < 0.0 and c0.y - c0.rad <= top)
+        if self.at_wall_top:
+            climb = 0.0
+            c0.y = top + c0.rad
         for c in (self.chunk0, self.chunk1):
             c.pinned = False
             c.x = x

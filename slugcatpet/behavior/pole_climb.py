@@ -33,6 +33,8 @@ class PoleClimber:
         # 换杆请求：("h", 横杆, 交点x) 交叉杆转横 / ("v", 竖杆, None) 跳向另一根杆
         self.handoff = None
         self._cross_t = 0            # 在交点附近逗留的 tick 数
+        # 刚从横杆换过来时先离开交点，否则会在交点被反复换回去（卡死）
+        self._cross_armed = (start != "climb")
         if start == "climb" and pole is not None:
             self._grab()          # 交叉杆从横杆直接转竖杆，不重走 approach
 
@@ -180,7 +182,10 @@ class PoleClimber:
         if hp is None:
             return None
         c0 = self.body.chunk0
-        return hp if abs(c0.y - hp.ay) <= tuning.CROSS_PAD else None
+        if abs(c0.y - hp.ay) > tuning.CROSS_PAD:
+            self._cross_armed = True     # 离开交点，重新允许换杆
+            return None
+        return hp if self._cross_armed else None
 
     def _hop_candidate(self):
         """最近的可跳目标竖杆。"""

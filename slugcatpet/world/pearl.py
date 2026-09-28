@@ -46,9 +46,10 @@ class Pearl:
     """珍珠：单点质点 + 自旋；高弹度小球的滚动与落定。"""
     collision_layer = 2
     is_edible = False        # 不能吃：原版里珍珠是货币
-    stalk = None             # 复用果子的叼持槽，需有同名属性
 
+    # stalk = 复用果子的叼持槽（猫叼珍珠时就当果子槽用）
     __slots__ = ("x", "y", "vx", "vy", "last_x", "last_y", "rad", "mass", "gravity",
+                 "stalk",
                  "air_friction", "bounce", "surface_friction", "buoyancy",
                  "water_friction", "water_y", "room_gravity", "state",
                  "rotation_deg", "last_rotation", "spin", "tint", "_id",
@@ -67,6 +68,7 @@ class Pearl:
         self.water_y = None
         self.room_gravity = 1.0
         self.state = ItemState.FREE
+        self.stalk = None              # 复用果子的叼持槽
         self.rotation_deg = 0.0
         self.last_rotation = 0.0
         self.held_by_hand = None       # "scav" = 被拾荒者拿着（交易用）

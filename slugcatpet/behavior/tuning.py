@@ -215,6 +215,23 @@ WALL_CLIMB_TICKS_MIN = 120    # 单次爬墙时长下限
 WALL_CLIMB_TICKS_MAX = 420
 WALL_WALLJUMP_PROB = 0.02     # 贴墙时每次蹬墙跳的抽样概率
 WALL_TOP_GRAB_R = 26.0        # 胸离顶边这么近就转吊顶
+WALL_TOP_FULL_PROB = 0.22     # 这面墙直通窗口顶边（能转吊顶）的概率
+WALL_TOP_MIN_FRAC = 0.28      # 墙的可攀爬上沿：至少离地这么高（占窗高比例）
+WALL_TOP_MAX_FRAC = 0.62      # 最多能爬到这么高：多数墙够不着顶边
+WALL_CLIMB_MIN_SPAN = 90.0    # 墙再矮也留这么高的可爬段
+WALL_TOP_TIRED_FRAC = 0.45    # 力竭时上沿更低（爬不动这么远）
+WALL_LEDGE_HOLD = 26          # 够到墙头后抓沿悬住的 tick
+WALL_LEDGE_JUMP_PROB = 0.55   # 抓沿后蹬墙跳（否则松手掉下）
+
+# 被抓：偶尔挣扎（原版 Player 被叼住时蹬腿乱蹬）
+DRAG_STRUGGLE_PROB = 0.012    # 每 tick 起挣扎的概率
+DRAG_STRUGGLE_MIN_FRAMES = 20 # 刚抓起先愣一下
+DRAG_STRUGGLE_TICKS_MIN = 14
+DRAG_STRUGGLE_TICKS_MAX = 34
+DRAG_STRUGGLE_KICK = 2.6      # 挣扎蹬腿冲量
+DRAG_STRUGGLE_VMAX = 3.2      # 自由那截的挣扎速度上限（别甩飞）
+DRAG_STRUGGLE_TEMPER = 0.03   # 每次挣扎的心烦增量
+DRAG_STRUGGLE_COST = 0.004    # 每次挣扎的体力消耗
 
 # 吊顶（窗口上边缘＝地面/天花）
 CEIL_BASE = 1.00
@@ -227,6 +244,12 @@ CEIL_HANG_TICKS_MIN = 160
 CEIL_HANG_TICKS_MAX = 480
 CEIL_SHIMMY_PROB = 0.02
 CEIL_GRAB_REACH = 96.0        # 跳起来够顶边的判定距离
+CEIL_SETTLE_SPEED = 3.0       # 蹭到顶边且慢到这个速度 → 吊住（顶边当平地）
+CEIL_WALK_PROB = 0.03         # 吊着时开始沿顶边走动
+CEIL_WALK_TICKS_MIN = 20
+CEIL_WALK_TICKS_MAX = 70
+CEIL_PLACED_TICKS_MIN = 600   # 鼠标放到顶边：愿意多挂一会（10s）
+CEIL_PLACED_TICKS_MAX = 1200
 
 # 玩耍：追光标/抓光标（原版蛞蝓猫对移动物体的注意）
 PLAYCUR_BASE = 1.00

@@ -36,6 +36,8 @@ class HPoleController:
         # 换杆请求：("v", 竖杆, "climb") 交叉杆转竖杆
         self.handoff = None
         self._cross_t = 0            # 在交点附近逗留的 tick 数
+        # 刚从竖杆换过来时先离开交点，否则会在交点被反复换回去（卡死）
+        self._cross_armed = (start != "hang")
         self.phase = "swing" if self.tongue is not None else "airgrab"
         self.timer = 0
         self.giveup = False
@@ -269,10 +271,15 @@ class HPoleController:
             return None
         vp = cross_partner(self.pole, self.win.poles)
         if vp is None or vp.kind != VERTICAL:
+            self._cross_armed = True
             return None
-        if abs(x - vp.x) > tuning.CROSS_PAD:
+        near = (abs(x - vp.x) <= tuning.CROSS_PAD
+                and min(vp.ay, vp.by) - tuning.CROSS_PAD <= y
+                <= max(vp.ay, vp.by) + tuning.CROSS_PAD)
+        if not near:
+            self._cross_armed = True     # 离开交点，重新允许换杆
             return None
-        return vp if min(vp.ay, vp.by) - tuning.CROSS_PAD <= y <= max(vp.ay, vp.by) + tuning.CROSS_PAD else None
+        return vp if self._cross_armed else None
 
     def _enter_swing_under(self):
         b = self.body

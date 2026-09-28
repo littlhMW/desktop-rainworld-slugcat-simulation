@@ -5,7 +5,8 @@ import os
 import random
 
 from ..behavior import tuning
-from ..core.creature import ZEROG_GRAB_DIST, WALK_STOP_EPS, _closest_on_segment
+from ..core.creature import (ZEROG_GRAB_DIST, WALK_STOP_EPS, WALL_CLIMB_SPEED,
+                             _closest_on_segment)
 from ..planning import (GIVEUP, HOLDING, MODE_STAY, PlanExecutor, Planner, obj_goal)
 from .blocking import blocks_path, yield_target_x
 from .desire import build_arbiter, MoodContext
@@ -270,7 +271,13 @@ class BehaviorFSM:
         self._wall_goal = 0
         self._wall_left = 0
         self._wall_ready = False
+        self._wall_top_y = 0.0        # 这面墙的可攀爬上沿 y
+        self._wall_ledge_t = 0        # 抓沿悬停计时
         self._ceil_left = 0
+        self._ceil_dir = 1
+        self._ceil_walk_t = 0
+        self._ceil_placed = False
+        self._struggle_left = 0
         self._play_left = 0
         self._social_left = 0
         self._social_kind = "pet"
@@ -815,6 +822,7 @@ class BehaviorFSM:
             self._hibernating = False
             b.set_posture(True)
             b.stop_walk()
+            self._struggle_left = 0
         elif st == "Airborne":
             b.set_posture(True)
             b.stop_walk()
@@ -1530,16 +1538,77 @@ class BehaviorFSM:
         if self.drag_takeover is not None and self.drag_takeover(self.grab.frames):
             return
         if not self.grab.active:
-            self._transition("Airborne")
+            self._drag_release()
+            return
+        self._struggle_tick(cursor)
+
+    def _drag_release(self):
+        """松手：在顶部放下 → 抓住上边缘吊住（窗口顶部当平地），否则照旧自由落。"""
+        if self._ceiling_reachable() and self.body.wall_cd <= 0:
+            self._ceil_placed = True     # 鼠标放到顶边 → 吊住
+            self._transition("CeilingHang")
+            return
+        self._transition("Airborne")
+
+    def _struggle_tick(self, cursor):
+        """被抓着时偶尔挣扎：扒鼠标、蹬腿扭身、心烦值上升、掉体力。"""
+        b = self.body
+        if self._struggle_left > 0:
+            self._struggle_left -= 1
+            if cursor is not None:
+                self._point_at_cursor(cursor, cover=True)
+            if self._struggle_left % 6 == 0:
+                self._struggle_kick()
+            if self._struggle_left <= 0:
+                self._clear_hands()
+            return
+        if self.grab.frames < tuning.DRAG_STRUGGLE_MIN_FRAMES:
+            return
+        p = tuning.DRAG_STRUGGLE_PROB
+        if b.temper > 0.2:
+            p *= 2.0                       # 本来就不爽：挣得更凶
+        if b.energy < 0.3:
+            p *= 0.4                       # 没力气了：挣不动
+        if self.rng.random() < p:
+            self._struggle_left = self.rng.randint(tuning.DRAG_STRUGGLE_TICKS_MIN,
+                                                   tuning.DRAG_STRUGGLE_TICKS_MAX)
+            b.temper_shift(tuning.DRAG_STRUGGLE_TEMPER)
+            b.energy_change(-tuning.DRAG_STRUGGLE_COST)
+
+    def _struggle_kick(self):
+        """蹬腿：给没被抓住的那截一个短促冲量（垂直身体轴左右甩，尾巴跟着甩）。"""
+        ch = self.grab.chunk
+        if ch is None:
+            return
+        free = self.body.chunk1 if ch is self.body.chunk0 else self.body.chunk0
+        dx, dy = free.x - ch.x, free.y - ch.y
+        d = math.hypot(dx, dy)
+        if d < 1e-6:
+            dx, dy, d = 0.0, 1.0, 1.0
+        k = tuning.DRAG_STRUGGLE_KICK
+        side = -1.0 if (self._struggle_left // 6) % 2 == 0 else 1.0   # 一左一右地甩
+        free.vx += dy / d * k * side
+        free.vy += -dx / d * k * side * 0.45 + k * 0.35               # 顺带往下蹬
+        sp = math.hypot(free.vx, free.vy)
+        if sp > tuning.DRAG_STRUGGLE_VMAX:
+            q = tuning.DRAG_STRUGGLE_VMAX / sp
+            free.vx *= q
+            free.vy *= q
+        self.gfx.look_at = (ch.x, ch.y)
 
     def _st_airborne(self, cursor, disturbed):
         b = self.body
         sp = math.hypot(b.chunk1.vx, b.chunk1.vy) + math.hypot(b.chunk0.vx, b.chunk0.vy)
-        if b.on_floor() and sp < 1.2 and b.chunk0.y < b.chunk1.y - 2:
+        on_ceil = (not b.on_floor() and b.wall_cd <= 0 and sp < tuning.CEIL_SETTLE_SPEED
+                   and (edgeqm.on_ceiling(b) or self._ceiling_reachable()))
+        if (b.on_floor() and sp < 1.2 and b.chunk0.y < b.chunk1.y - 2) or on_ceil:
             self._settle += 1
         else:
             self._settle = 0
         if self._settle >= 4:
+            if on_ceil:
+                self._transition("CeilingHang")     # 窗口顶部当平地：吊住
+                return
             self._transition("LieDown" if self._exhausted else "IdleStand")
 
     def _st_postthrowwander(self, cursor, disturbed):
@@ -2477,10 +2546,40 @@ class BehaviorFSM:
         self._wall_left = self.rng.randint(tuning.WALL_CLIMB_TICKS_MIN,
                                            tuning.WALL_CLIMB_TICKS_MAX)
         self._wall_ready = False
+        self._wall_top_y = self._roll_wall_top(b)
+        # tick 预算得够爬到这面墙的上沿（上沿才是硬上限，这里的上限只是防呆）
+        need = int(max(0.0, b.chunk0.y - self._wall_top_y) / max(0.1, WALL_CLIMB_SPEED)) + 60
+        self._wall_left = max(self._wall_left, need)
+        self._wall_ledge_t = 0
         self._save_walk_limits()
         b.set_posture(True)
         b.stop_walk()
         b.release_ceiling()
+
+    def _roll_wall_top(self, b):
+        """这面墙的可攀爬上沿 y：多数墙够不着顶边，少数直通顶边（原版墙高矮不一）。"""
+        if self.rng.random() < tuning.WALL_TOP_FULL_PROB:
+            return 0.0                                  # 直通窗口顶边 → 可转吊顶
+        frac = self.rng.uniform(tuning.WALL_TOP_MIN_FRAC, tuning.WALL_TOP_MAX_FRAC)
+        frac *= tuning.WALL_TOP_TIRED_FRAC + (1.0 - tuning.WALL_TOP_TIRED_FRAC) * b.energy
+        top = self.HL * (1.0 - frac)
+        hi = self.HL - tuning.WALL_CLIMB_MIN_SPAN
+        lo = tuning.WALL_TOP_GRAB_R + 4.0
+        return max(lo, min(hi if hi > lo else lo, top))
+
+    def _wall_ledge(self, cursor):
+        """够到墙头上沿：抓沿悬一下（原版 LedgeGrab），再蹬墙跳或松手。"""
+        b = self.body
+        b.wall_climb_dir = 0
+        self.gfx.look_at = cursor if cursor is not None else (b.chunk0.x, b.chunk0.y - 30.0)
+        self._wall_ledge_t += 1
+        if self._wall_ledge_t < tuning.WALL_LEDGE_HOLD:
+            return
+        b.release_wall()
+        self._wall_cd = T_WALL_RETRY
+        if self.rng.random() < tuning.WALL_LEDGE_JUMP_PROB:
+            b.wall_jump(up=True)                        # 蹬墙跳离开这面墙
+        self._transition("Airborne")
 
     def _st_wallclimb(self, cursor, disturbed):
         b = self.body
@@ -2495,14 +2594,17 @@ class BehaviorFSM:
                 b.facing = b.move_dir
                 return
             b.move_dir = 0
-            self._wall_ready = b.grab_wall(self._wall_goal)
+            self._wall_ready = b.grab_wall(self._wall_goal, self._wall_top_y)
             self.timer = 0
             return
         self._wall_left -= 1
         c0 = b.chunk0
-        if (c0.y - c0.rad) <= tuning.WALL_TOP_GRAB_R:      # 爬到顶：转吊顶
-            b.release_wall()
-            self._transition("CeilingHang")
+        if b.at_wall_top or (c0.y - c0.rad) <= self._wall_top_y + 0.5:
+            if self._wall_top_y <= tuning.WALL_TOP_GRAB_R:  # 这面墙直通顶边：转吊顶
+                b.release_wall()
+                self._transition("CeilingHang")
+                return
+            self._wall_ledge(cursor)                        # 够到墙头：抓沿
             return
         b.wall_climb_dir = -1                              # 向上爬
         self.gfx.look_at = (c0.x, c0.y - 40.0)
@@ -2518,8 +2620,14 @@ class BehaviorFSM:
     # ── 吊顶：窗口上边缘＝地面/天花 ──
     def _ceiling_enter(self):
         b = self.body
-        self._ceil_left = self.rng.randint(tuning.CEIL_HANG_TICKS_MIN,
-                                           tuning.CEIL_HANG_TICKS_MAX)
+        if self._ceil_placed:            # 鼠标放上去的：多挂一会（原版这里是没得挂）
+            self._ceil_left = self.rng.randint(tuning.CEIL_PLACED_TICKS_MIN,
+                                               tuning.CEIL_PLACED_TICKS_MAX)
+            self._ceil_placed = False
+        else:
+            self._ceil_left = self.rng.randint(tuning.CEIL_HANG_TICKS_MIN,
+                                               tuning.CEIL_HANG_TICKS_MAX)
+        self._ceil_walk_t = 0
         b.set_posture(True)
         b.stop_walk()
 
@@ -2542,8 +2650,14 @@ class BehaviorFSM:
             self.timer = 0
         self._ceil_left -= 1
         self.gfx.look_at = cursor
-        if self.rng.random() < tuning.CEIL_SHIMMY_PROB:
-            b.ceil_shimmy(1.0 if self.rng.random() < 0.5 else -1.0)
+        # 上边缘当平地：沿着顶边像走路一样挪动
+        if self._ceil_walk_t > 0:
+            self._ceil_walk_t -= 1
+            b.ceil_shimmy(float(self._ceil_dir))
+        elif self.rng.random() < tuning.CEIL_WALK_PROB:
+            self._ceil_dir = 1 if self.rng.random() < 0.5 else -1
+            self._ceil_walk_t = self.rng.randint(tuning.CEIL_WALK_TICKS_MIN,
+                                                 tuning.CEIL_WALK_TICKS_MAX)
         if self._ceil_left <= 0:
             b.release_ceiling()
             self._transition("Airborne")

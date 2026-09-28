@@ -534,6 +534,10 @@ class Scavenger:
             self.y = HL - BODY_RAD
             self.vy = 0.0
             self._contact_floor = True
+        elif self.y - BODY_RAD < 0:
+            self.y = BODY_RAD          # 顶边同样是实心：别被顶出窗口
+            self.vy = 0.0
+            self._contact_floor = False
         else:
             self._contact_floor = False
 

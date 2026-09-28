@@ -244,13 +244,14 @@ def aabb_wall_collide(obj, WL, HL, impact=None):
         if obj.vy > -stop:
             obj.vy = 0.0
         obj.vx *= tang
-    elif obj.y - r < 0 and obj.vy < 0:
+    elif obj.y - r < 0:
+        # 顶边同底边一样是实体：被拖上来/顶上来也夹回窗口内
         obj.y = r
-        if impact is not None:
+        if impact is not None and obj.vy < 0:
             _fire_impact(obj, (0, -1), abs(obj.vy), not prev_ceil, impact)
         if has_ceil:
             obj._contact_ceil = True
-        obj.vy = abs(obj.vy) * obj.bounce
+        obj.vy = abs(obj.vy) * obj.bounce if obj.vy < 0 else 0.0
         if obj.vy < stop:
             obj.vy = 0.0
         obj.vx *= tang

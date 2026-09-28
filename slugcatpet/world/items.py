@@ -472,7 +472,7 @@ class ItemInteractionMixin:
                     lz.rock_push_dir = 1 if s.vx >= 0.0 else -1
                 s.deflect(self._stun_rng)
                 s.fling = False
-                self._shake[0] += 0.5 * (1.0 if kx >= 0.0 else -1.0)
+                self._shake[0] += 0.5 * (1.0 if s.vx >= 0.0 else -1.0)
                 if killed:
                     self._lizard_death_fx(lz)
                 break
