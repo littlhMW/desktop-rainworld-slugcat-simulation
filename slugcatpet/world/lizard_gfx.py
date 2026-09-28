@@ -93,7 +93,10 @@ def head_color(lz, ts: float):
         return b.head_rgb
     ph = lerp(lz.last_blink, lz.blink, ts)
     a = 1.0 - (0.5 + 0.5 * math.sin(ph * math.tau)) ** (1.5 + HEAD_FLICKER_EXC * 1.5)
-    return _mix(BLACK_RGB, lz.color, a)
+    # 原版 HeadColor1 = palette.blackColor（宠物近似 = 深色躯干色），HeadColor2 = effectColor
+    # 白蜥这类「整只走个体色」的品种，深相位取近黑（原版那双色是白/迷彩，宠物里取对比更明显的黑）
+    dark = BLACK_RGB if lz.body_rgb is not None else body_color(lz)
+    return _mix(dark, lz.color, a)
 
 
 def _strip_path(pts, halfw) -> QPainterPath:
@@ -291,55 +294,44 @@ def _draw_spikes(p, atlas, lz, spine, rads):
                   size, size, 0.5, 0.85)
 
 
-def _leg_flip(lz, lg):
-    """原版 LizardGraphics.cs:1209-1215 的腿翻转符号（= LizardLimb.flip 的稳态值）。
-
-    num11 = DistanceToLine(脚, 挂点, 挂点.rotationChunk)（前腿整体取反）
-    flip -> (num11 < 0 ? +1 : -1)，scaleY = Sign(flip) * limbThickness。
-    挂点：前腿 = 第 0 节（rotationChunk = 第 1 节，连线朝体后）；
-          后腿 = 第 2 节（rotationChunk = 第 1 节，连线朝体前）。
-    因此「腿垂在体轴下方」时四条腿的 flip 同号 —— 远近腿不是镜像关系。
-    """
-    segs = lz.seg
-    if lg.back:
-        l1, l2 = segs[2], (segs[1] if len(segs) > 1 else segs[2])
-        negate = False
-    else:
-        l1, l2 = segs[0], (segs[1] if len(segs) > 1 else segs[0])
-        negate = True
-    dx, dy = l2.x - l1.x, l2.y - l1.y                      # 屏幕
-    # DistanceToLine（Unity y↑）= -cross_screen(脚-l1, l2-l1)/|d|
-    vx, vy = lg.x - l1.x, lg.y - l1.y
-    num11 = -(vx * dy - vy * dx) / (math.hypot(dx, dy) or 1.0)
-    if negate:
-        num11 = -num11
-    return 1.0 if num11 < 0.0 else -1.0
-
-
 def _draw_leg(p, atlas, lz, i, ts):
-    """一条腿：游戏 LizardArm_XX（锚点=中心、按髋→脚距离选帧）+ 品种色层。"""
+    """一条腿：游戏 LizardArm_XX（锚点=中心、按髋→脚距离选帧）+ 品种色层。
+
+    LizardGraphics.cs:1774-1806：
+      val = clamp(int(|脚-髋| / (4*limbSize)) + 1, 1, 9)
+            + 9 * (2 - int(clamp(|flip| * 3, 0, 2)))      # flip 越小越取「中段」帧
+      后腿 +27；rotation = aim(髋→脚) - 90；scaleY = Sign(flip) * limbThickness
+    贴图从脚点向髋方向长（锚点在画布中心，内容偏下），与游戏一致。
+    """
     lg = lz.legs[i]
     fx = lerp(lg.lx, lg.x, ts)
-    fy = lerp(lg.ly, lg.y, ts) - lg.lift
+    fy = lerp(lg.ly, lg.y, ts)
     hx, hy = _leg_anchor(lz, lg, ts)
     if not lg.back and len(lz.seg) > 1:              # 游戏：前腿髋 20% 拉向第 1 节
         s1 = lz.seg[1]
         hx = lerp(hx, lerp(s1.lx, s1.x, ts), 0.2)
         hy = lerp(hy, lerp(s1.ly, s1.y, ts), 0.2)
     ux, uy = hx - fx, hy - fy                        # 脚→髋
-    if math.hypot(ux, uy) < 1e-3:
+    dist = math.hypot(ux, uy)
+    if dist < 1e-3:
         return
     b = lz.breed
-    val = int(math.hypot(ux, uy) / (4.0 * b.limb_size)) + 1
-    val = max(1, min(9, val)) + (27 if lg.back else 0)
+    flip = lg.flip
+    val = int(dist / (4.0 * max(0.05, b.limb_size))) + 1
+    val = max(1, min(9, val))
+    val += 9 * (2 - int(clampf(abs(flip) * 3.0, 0.0, 2.0)))
+    if lg.back:
+        val += 27
     rot = math.degrees(math.atan2(-uy, -ux))         # = 原版 aim(髋→脚) - 90
-    sx = b.limb_size
-    sy = _leg_flip(lz, lg) * b.limb_thickness
+    sx = 1.0                                         # 原版只设 scaleY，scaleX 恒为 1
+    sy = (1.0 if flip >= 0.0 else -1.0) * b.limb_thickness
+    # 远侧腿的色层按 |depthRotation| 压暗（原版 Lerp(1, 0.3, |depth|)，只压偶数号腿）
+    far_a = lerp(1.0, 0.3, abs(lerp(lz.last_depth, lz.depth, ts)))
     _blit(p, atlas, "LizardArm_%02d" % val, body_color(lz),
           fx, fy, rot, sx, sy, 0.5, 0.5)
     _blit(p, atlas, "LizardArmColor_%02d" % val, b.head_rgb or lz.color,
           fx, fy, rot, sx, sy, 0.5, 0.5,
-          opacity=LIMB_NEAR_A if lg.near else LIMB_FAR_A)
+          opacity=LIMB_NEAR_A if lg.near else far_a)
 
 
 

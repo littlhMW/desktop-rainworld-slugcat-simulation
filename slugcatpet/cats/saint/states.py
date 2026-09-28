@@ -20,6 +20,21 @@ def mount(fsm):
         _mount_dodgekill(fsm)
     if caps.ascension:
         _mount_ascension(fsm)
+
+        def ascend_threat_tick():
+            """威胁圈（≈1/3 桌面宽）内有活威胁且满足超度门 → 主动超度它。
+
+            超度门本身要求业力满 + 饱食度满，所以不会滥用；每超度一次饱食度清零。
+            睡着也照做（恐惧优先级最高，醒着才有机会跑）。
+            """
+            if fsm.state in ("Ascension", "Dead", "Dragged", "Stunned"):
+                return
+            if fsm.grab.active or fsm.karma is not None:
+                return
+            if _ascend_ready(fsm) and fsm._threat_present():
+                fsm._transition("Ascension")
+
+        fsm.register_ticker(ascend_threat_tick)
     if caps.tongue or caps.ascension:
 
         def threat_response():

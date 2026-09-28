@@ -385,6 +385,7 @@ class BehaviorFSM:
         self._social_cd = 0
         self._help_cd = 0
         self._fight_cd = 0
+        self._arm_cd = 0                 # 「为了威胁去捡家伙」的冷却
         self._air_throw_cd = 0
         self._crawl_cd = 0
         self._protest_cd = 0
@@ -831,6 +832,11 @@ class BehaviorFSM:
                 self._transition("FleeLizard")
 
         # 六类欲望：社交 / 帮取食 / 反击 / 匍匐躲避 / 被抢抗议
+        # 但在那之前：威胁圈（≈1/3 桌面宽）内有活威胁时恐惧优先级最高 —— 睡着也要立刻醒
+        if (self.state in ("LieDown", "Sleep") and not self.grab.active
+                and self._threat_present()):
+            self._hibernating = False
+            self._transition("WakeSequence")
         self._wants_tick(cursor)
 
         # 体力告急强制休息
@@ -1762,9 +1768,9 @@ class BehaviorFSM:
         return f is not None and getattr(f, "is_tame_food", False)
 
     def _nearby_lizard(self):
-        """水平距离最近且在 FLEE_R 内的蜥蜴；没有则 None。"""
+        """水平距离最近且在威胁圈内的蜥蜴；没有则 None。"""
         x = self.body.chunk1.x
-        best, bd = None, FLEE_R
+        best, bd = None, self._threat_r()
         for lz in getattr(self.win, "lizards", ()):
             if getattr(lz, "state", None) != ItemState.FREE:
                 continue
@@ -1798,6 +1804,27 @@ class BehaviorFSM:
             self._break_active_controllers()
             self._transition("FleeLizard")
             return
+        # 往高处躲：旁边就是墙 / 近处有竖杆 → 先爬上去（离地才是真的安全）
+        if self.rng.random() < tuning.FLEE_CLIMB_P:
+            if self._near_wall():
+                self._wall_enter()
+                self._flee_from = lz
+                self._flee_cd = FLEE_COOLDOWN
+                self._crawl_cd = T_CRAWL_RETRY
+                self._break_active_controllers()
+                self._transition("WallClimb")
+                return
+            pole = self._pick_climbable_pole()
+            if (pole is not None
+                    and abs(pole.x - b.chunk1.x) <= tuning.FLEE_POLE_R):
+                self._poleclimb_pole = pole
+                self._poleclimb_start = None
+                self._flee_from = lz
+                self._flee_cd = FLEE_COOLDOWN
+                self._crawl_cd = T_CRAWL_RETRY
+                self._break_active_controllers()
+                self._transition("PoleClimb")
+                return
         behind = self._behind_creature(lz)
         # 性格：crawl_like 低的猫宁可拔腿就跑，不肯趴下
         can_crawl = (self.rng.random()
@@ -3691,11 +3718,22 @@ class BehaviorFSM:
         return best
 
     def _threat_level(self) -> float:
-        lz = self._nearest_lizard(tuning.FIGHT_R)
+        lz = self._threat_lizard()
         if lz is None:
             return 0.0
         c1 = self.body.chunk1
-        return clampf(1.0 - math.hypot(lz.x - c1.x, lz.y - c1.y) / tuning.FIGHT_R, 0.0, 1.0)
+        return clampf(1.0 - math.hypot(lz.x - c1.x, lz.y - c1.y) / self._threat_r(), 0.0, 1.0)
+
+    def _threat_r(self) -> float:
+        """恐惧半径 ≈ 1/3 桌面宽度（原版 Player 见威胁的恐惧圈按窗口缩放，不写死）。"""
+        return max(tuning.THREAT_MIN_R, self.WL * tuning.THREAT_WIN_FRAC)
+
+    def _threat_lizard(self):
+        """威胁圈内最近的活蜥蜴（唤醒 / 持械 / 超度 / 逃跑都用它）。"""
+        return self._nearest_lizard(self._threat_r())
+
+    def _threat_present(self) -> bool:
+        return self._threat_lizard() is not None
 
     def _nearest_peer(self, r=None):
         """最近的同伴；给了 r 就只找这么近的。"""
@@ -3795,7 +3833,8 @@ class BehaviorFSM:
         """社交/帮助/反击/匍匐躲避在「没正事」的态里按优先级抢班。"""
         for k in ("_social_cd", "_help_cd", "_fight_cd", "_crawl_cd",
                   "_protest_cd", "_revive_cd", "_wall_cd", "_scold_cd",
-                  "_pole_nudge_cd", "_act_cd", "_apology_t", "_thank_t"):
+                  "_pole_nudge_cd", "_act_cd", "_apology_t", "_thank_t",
+                  "_arm_cd"):
             v = getattr(self, k)
             if v > 0:
                 setattr(self, k, v - 1)
@@ -3812,7 +3851,7 @@ class BehaviorFSM:
         #    FEAR_TOO_CLOSE_R 内一律逃跑（被逼到角落就跳过它跑）。
         #    手里端着要送蜥蜴的蝉乌贼时不慌（原版送礼不躲）——但空手绝不会靠近。
         if not b.swimming and b.on_floor() and not self._carrying_gift():
-            flz = self._nearest_lizard(tuning.CRAWL_FEAR_R)
+            flz = self._threat_lizard()
             if flz is not None:
                 fd = math.hypot(flz.x - b.chunk1.x, flz.y - b.chunk1.y)
                 close = fd <= tuning.FEAR_TOO_CLOSE_R
@@ -3929,10 +3968,28 @@ class BehaviorFSM:
                 self._break_active_controllers()
                 self._transition("FightThreat")
                 return
+        # 4b) 威胁圈内有活威胁 → 倾向握家伙：空手且近处有矛/石头就过去捡起来
+        if (self._arm_cd <= 0 and not self.grab.active and not b.swimming
+                and b.on_floor() and not self._exhausted
+                and b.carried_spear is None and b.carried_stone is None
+                and b.carried_fruit is None
+                and self.state in _MAKEWAY_FROM):
+            tlz = self._threat_lizard()
+            if tlz is not None:
+                gw = self._nearest_ground_weapon()
+                if (gw is not None
+                        and math.hypot(gw.x - b.chunk1.x, gw.y - b.chunk1.y)
+                        <= tuning.ARM_SEEK_R):
+                    self._fight_target = tlz
+                    self._fight_left = tuning.FIGHT_TICKS
+                    self._arm_cd = tuning.ARM_COOLDOWN
+                    self._break_active_controllers()
+                    self._transition("FightThreat")
+                    return
         # 5) 恐惧：蜥蜴靠近 → 在它背后就趴下潜行挪开；打了照面直接跑
         if (self._crawl_cd <= 0 and not b.swimming and b.on_floor()
                 and not self._carrying_gift()):
-            lz = self._nearest_lizard(tuning.CRAWL_FEAR_R)
+            lz = self._threat_lizard()
             if lz is not None:
                 self._flee_lizard_now(lz)
                 return
@@ -4053,6 +4110,8 @@ class BehaviorFSM:
     def _sleep_roll(self) -> bool:
         """每隔 SLEEP_CHECK_TICKS 掷一次骰，概率 = 当前睡意。"""
         if self.body.food < self.body.food_max or self._sleep_urge <= 0.0:
+            return False
+        if self._threat_present():          # 场上还有活威胁 → 睡不着
             return False
         self._sleep_check = (self._sleep_check + 1) % tuning.SLEEP_CHECK_TICKS
         if self._sleep_check:

@@ -63,6 +63,18 @@ python run_slugcatpet.py
 - **社交不强制**：社交对象跑出 `SOCIAL_ABANDON_R` 或者死掉就直接放弃（道谢、抚摸、指指点点都一样）。
 - **矛朝向修根因**：手里/背上的矛的朝向改用 `facing` 决定，不再拿两个躯干 chunk 的差去算，随机抖动时矛不再跟着乱转。
 
+**威胁圈 · 蜥蜴物理与外观对齐反编译（第 42 轮）**：
+
+- **恐惧圈 = 1/3 桌面宽**（`THREAT_WIN_FRAC`，小窗口有 90px 下限，不写死）：这个圈里有活蜥蜴时恐惧优先级最高 —— 睡着会被立刻叫醒，圈里还有活威胁就睡不着（`_sleep_roll` 恒 False）；勇敢的才敢迎战、善良的才敢先去救人，蜥蜴贴到 `FEAR_TOO_CLOSE_R` 一律逃。
+- **有威胁先上高处**：圈里出现威胁、身边就是墙或者附近有竖杆时，先爬墙 / 上杆（`FLEE_CLIMB_P`），没得爬才掉头跑。
+- **倾向握家伙**：威胁圈内空手时会专门跑去捡附近的矛/石头再迎上去（`ARM_SEEK_R`/`ARM_COOLDOWN`）。
+- **圣徒会主动超度威胁**：业力与饱食都够时，圈内出现活威胁直接进 `Ascension`。
+- **匍匐潜行真的有用**：蜥蜴选目标时匍匐的猫权重除以 `CROUCH_TARGET_MULT`（之前方向反了，趴下反而更招咬）。
+- **躯干/尾 = 原版 BodyChunk + BodyChunkConnection**：3 节躯干按 `Lizard.cs:680-687` 的半径/连接长度/弹性串起来，杆长约束只消径向误差（切向动量保留），转身、被拖、叼猫时身体不再抻长也不再折成竖条。
+- **头色按原版 `HeadColor` 呼吸闪烁**：在 `palette.blackColor`（宠物里取深色躯干色）与 `effectColor` 之间按 blink 相位搏动；白蜥这类整只个体色的品种深相位取近黑。
+- **腿翻转公式抽出成 `_leg_flip_num`**（原版 `Custom.DistanceToLine(脚, 挂点, 挂点.rotationChunk)` × 前腿取反）：站立时四腿同号，一条腿抬到体轴另一侧才变号，和 `LizardGraphics.cs:1209-1215` 一致。
+- **端着礼物的猫不会被咬**：手里是能驯服蜥蜴的食物时，蜥蜴靠近只吃食不咬人（原版 `FriendTracker.GiftRecieved`）。
+
 **社交动作**（第六类欲望「社交」攒满后凑到同伴身边做；动作词表见 `slugcatpet/behavior/social.py`）：
 
 | 动作 | 手势 | 含义 |
@@ -196,6 +208,17 @@ Nothing has a count limit any more - place as many as you like.
 - **Occluded ground**: where a window in front covers another window's top edge, only the visible sliver counts as a floor.
 - **Sleeping**: cats take a long time to get sleepy (the urge creeps from 0 up to 100) and then sleep for a long, random while before waking up.
 - **Movement numbers match the original**: jump 8/7, hold-to-boost, wall-jump 8/7 + 6/5, run 4.2 and crawl 4 are taken straight from `Player.cs`, giving a standing jump of about 44px and a running jump of about 83px.
+
+**Threat circle, lizard physics and looks aligned with the decompile (round 42)**:
+
+- **The fear circle is one third of the desktop wide** (`THREAT_WIN_FRAC`, floored at 90px): a live lizard inside it always wins the priority check - a sleeping cat is woken at once and cannot fall asleep again while the threat is there. Only brave cats fight back and only kind ones stop to rescue first; a lizard closer than `FEAR_TOO_CLOSE_R` is always fled from.
+- **Climb first when threatened**: with a threat in the circle the cat climbs the nearest wall or vertical pole (`FLEE_CLIMB_P`) before falling back to running away.
+- **Arm yourself**: an empty-handed cat inside the circle walks over to a nearby spear or rock (`ARM_SEEK_R`/`ARM_COOLDOWN`) before facing the lizard.
+- **Crouching really hides you**: a crouching cat's target weight is divided by `CROUCH_TARGET_MULT` (the old multiplier was inverted, so crawling made you more likely to be bitten).
+- **Body and tail are the original `BodyChunk` + `BodyChunkConnection`**: three chunks with the radii, connection lengths and elasticity from `Lizard.cs:680-687`; the length constraint only removes radial error, so the chain no longer stretches when dragged and never folds into a vertical bar.
+- **Head colour breathes like the original `HeadColor`**, pulsing between `palette.blackColor` (approximated by the dark body colour) and `effectColor`.
+- **Leg flip extracted into `_leg_flip_num`** (the original `Custom.DistanceToLine(foot, hip, hip.rotationChunk)` with the front-leg sign flip): all four legs agree when standing and only a leg lifted across the body axis changes sign.
+- **A cat holding a gift is never bitten**: with tame food in hand the lizard eats instead of biting (the original `FriendTracker.GiftRecieved`).
 
 **Social actions** (the sixth desire, "social", sends a cat over to a companion once it fills up; the vocabulary lives in `slugcatpet/behavior/social.py`):
 

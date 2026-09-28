@@ -1506,7 +1506,11 @@ class ItemInteractionMixin:
             seg = lz.seg[0] if not lg.back else (lz.seg[2] if len(lz.seg) > 2 else lz.seg[-1])
             lg.x = lg.lx = seg.x + (8.0 if lg.back else -8.0)
             lg.y = lg.ly = seg.y + lz.body_rad * 2.2
-            lg.lift = 0.0
+            lg.abs_x, lg.abs_y = lg.x, lg.y
+            lg.vx = lg.vy = 0.0
+            lg.reaching = False
+            lg.snap = False
+            lg.grip = 0
 
     def _draw_lizard_hint(self, p):
         cur = self.cursor_logical()
