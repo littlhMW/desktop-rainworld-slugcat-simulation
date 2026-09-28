@@ -34,6 +34,7 @@ class PoleClimber:
         self.balance_counter = 0.0
         # 换杆请求：("h", 横杆, 交点x) 交叉杆转横 / ("v", 竖杆, None) 跳向另一根杆
         self.handoff = None
+        self.air_target = None       # 带方向跳杆：空中要抓住的那根杆
         self._cross_t = 0            # 在交点附近逗留的 tick 数
         self._cross_roll = None      # 本次经过交点的换杆掷骰结果（离开交点重置）
         # 刚从横杆换过来时先离开交点，否则会在交点被反复换回去（卡死）
@@ -176,14 +177,25 @@ class PoleClimber:
         # 主动下杆：爬下或跳下
         if self.tip_ticks > tuning.TIP_MIN_TICKS:
             # 玩耍：杆顶观望，附近有别的杆就跳过去（原版 jump-pole-hopping）
-            other = self._hop_candidate()
-            if other is not None and self._roll() < tuning.POLE_TIP_HOP_PROB:
-                self._hop_to(other)
+            plan = self._hop_candidate()
+            if plan is not None and self._roll() < tuning.POLE_TIP_HOP_PROB:
+                self._hop_to(plan)
                 return True
         if self.tip_ticks > tuning.TIP_MIN_TICKS and want_dismount:
-            other = self._hop_candidate()
-            if other is not None and self._roll() < tuning.POLE_HOP_PROB:
-                self._hop_to(other)                     # 体力见底：宁可跳杆
+            plan = self._hop_candidate()
+            if plan is not None and self._roll() < tuning.POLE_HOP_PROB:
+                self._hop_to(plan)                      # 体力见底：宁可跳杆
+                return True
+            if self._roll() < tuning.TIP_DISMOUNT_CLIMB_PROB:
+                self._begin_descend()
+                return False
+            self._jump_down()
+            return True
+        # 杆顶赖太久：主动换杆/下杆（别都挤在杆头）
+        if self.tip_ticks > tuning.POLE_TIP_LOITER_MAX:
+            plan = self._hop_candidate()
+            if plan is not None and self._roll() < tuning.POLE_HOP_PROB:
+                self._hop_to(plan)
                 return True
             if self._roll() < tuning.TIP_DISMOUNT_CLIMB_PROB:
                 self._begin_descend()
@@ -212,36 +224,24 @@ class PoleClimber:
         return hp if self._cross_armed else None
 
     def _hop_candidate(self):
-        """最近的可跳目标竖杆。"""
-        if self.win is None:
+        """杆顶能带方向跳过去抓住的杆（原版 jump-pole-hopping）。返回 hop_plan 元组。"""
+        from ..planning.pole_hop import hop_plan
+        if self.win is None or self.pole is None:
             return None
-        best, bd = None, tuning.POLE_HOP_MAX_DX
-        for p in self.win.poles:
-            if p is self.pole or p.kind != VERTICAL:
-                continue
-            dx = abs(p.x - self.pole.x)
-            if dx >= bd:                      # 滞空射程外，跳过去只会摔
-                continue
-            lo, hi = min(p.ay, p.by), max(p.ay, p.by)
-            if not (lo - tuning.POLE_AIRGRAB_PAD <= self.pole.top_y <= hi):
-                continue                      # 下落弧贴不到杆身
-            best, bd = p, dx
-        return best
+        stats = getattr(getattr(self.win, "cat", None), "stats", None)
+        c0 = self.body.chunk0
+        return hop_plan(stats, list(self.win.poles), c0.x, c0.y, exclude=self.pole)
 
-    def _hop_to(self, other):
+    def _hop_to(self, plan):
+        """按实测跳弧带方向跳出杆顶；空中由 FSM 的 _air_pole_grab 抓住目标杆。"""
         b = self.body
-        c0, c1 = b.chunk0, b.chunk1
+        pole, md, _tick = plan
         self._snap_axis()
-        c0.pinned = False
-        c1.pinned = False
-        b.on_pole = False
-        b.animation = None
-        d = 1.0 if other.x > self.pole.x else -1.0
-        c0.vx += d * tuning.POLE_HOP_VX
-        c1.vx += d * tuning.POLE_HOP_VX * 0.75
-        c0.vy -= tuning.POLE_HOP_VY
-        c1.vy -= tuning.POLE_HOP_VY * 0.85
-        self.handoff = ("v", other, None)
+        b.facing = 1 if md > 0 else -1
+        self.handoff = None
+        self.air_target = pole
+        b.pole_jump(md, move_dir=md)
+        b.chunk0.cy = b.chunk1.cy = 0   # 已经离杆：别用上一帧的落地标记
         self._reset_pose()
 
     def _begin_descend(self):

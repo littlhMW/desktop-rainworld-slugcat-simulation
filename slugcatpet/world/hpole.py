@@ -40,6 +40,7 @@ class HPoleController:
         self.rng = rng
         # 换杆请求：("v", 竖杆, "climb") 交叉杆转竖杆
         self.handoff = None
+        self.air_target = None       # 带方向跳杆：空中要抓住的那根杆
         self._cross_t = 0            # 在交点附近逗留的 tick 数
         self._cross_roll = None      # 本次经过交点的换杆掷骰结果（离开交点重置）
         # 刚从竖杆换过来时先离开交点，否则会在交点被反复换回去（卡死）
@@ -339,12 +340,35 @@ class HPoleController:
         self.gfx.look_at = (c0.x + b.facing * 60.0, c0.y)
         if self._stand_t > STAND_TICKS and self.goal_x is None:
             # 原版 StandOnBeam canJump=5：站杆面能起跳（向前上跳出去）
+            plan = self._hop_candidate()
+            if plan is not None and self._roll() < tuning.HP_HOP_PROB:
+                self._hop_to(plan)          # 带方向跳到另一根杆，空中抓住（jump-pole-hopping）
+                return True
             if self.rng is not None and self.rng.random() < tuning.HP_JUMP_PROB:
                 self._jump_off()
             else:
                 self._jump_down()
             return True
         return False
+
+    def _hop_candidate(self):
+        """站横杆能带方向跳过去抓住的杆（原版 jump-pole-hopping）。返回 hop_plan 元组。"""
+        from ..planning.pole_hop import hop_plan
+        if self.win is None or self.pole is None:
+            return None
+        stats = getattr(getattr(self.win, "cat", None), "stats", None)
+        c0 = self.body.chunk0
+        return hop_plan(stats, list(self.win.poles), c0.x, c0.y, exclude=self.pole)
+
+    def _hop_to(self, plan):
+        """按实测跳弧带方向跳出杆面；空中由 FSM 的 _air_pole_grab 抓住目标杆。"""
+        b = self.body
+        pole, md, _tick = plan
+        b.facing = 1 if md > 0 else -1
+        self.air_target = pole
+        b.pole_jump(md, move_dir=md)
+        b.chunk0.cy = b.chunk1.cy = 0   # 已经离杆：别用上一帧的落地标记
+        self._reset_pose()
 
     def _roll(self):
         return self.rng.random() if self.rng is not None else 0.5

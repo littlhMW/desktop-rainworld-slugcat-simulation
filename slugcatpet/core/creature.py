@@ -1684,12 +1684,28 @@ class SlugcatBody:
         return side
 
     def spear_hold_angle(self, up_frac=0.35):
-        """持矛朝向：面朝方向 + 抬起的杆（0=上、顺时针；同原版握矛姿态）。"""
-        dx = self.chunk0.x - self.chunk1.x
-        if abs(dx) < 1e-6:
-            dx = 1.0
-        fdir = 1.0 if dx >= 0.0 else -1.0
-        return _ang_from_up(fdir, -up_frac)
+        """手里的矛的朝向（原版 Player.GetHeldItemDirection / PlayerGraphics.spearDir）。
+
+        - 平常：杆几乎水平、矛头朝前，并带原版那种 ±4° 的步态摇摆
+          （原版 DegToVec((80 + cos((animationFrame + (leftFoot?9:3))/12*2π)*4) * spearDir)）。
+        - 爬杆时：杆顺着体轴朝上（原版 ClimbOnBeam 分支先 y=|y| 再向体轴 slerp 0.75），
+          否则横着的矛会插进竖杆里。
+        - 朝向一律取 self.facing —— 只有走动时才更新、静止保持。**不能用
+          chunk0.x - chunk1.x**：挂在竖杆上时两节水平几乎重合，dx 每帧正负乱跳，
+          矛就会原地翻 180°（用户报的「拿着矛/背着矛时矛随机旋转」）。
+        """
+        fdir = 1.0 if self.facing >= 0 else -1.0
+        if self.on_pole:
+            dx = self.chunk0.x - self.chunk1.x
+            dy = -abs(self.chunk0.y - self.chunk1.y)     # 体轴朝上（y↓）
+            if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+                dx = fdir
+                dy = -up_frac
+            return _ang_from_up(dx, dy)
+        wob = 0.0
+        if self.is_moving():
+            wob = math.cos(self.stride_phase * 2.0 * math.pi * self.walk_bob_freq) * 4.0
+        return _ang_from_up(fdir, -up_frac) + fdir * wob
 
     def throw_spear(self, dir_x, frc=1.0, up=1.5, recoil=1.0, vel=None, toss=False):
         """Throw carried spear; return spear (free + velocity) or None.
@@ -1745,11 +1761,15 @@ class SlugcatBody:
         return sp
 
     def _back_spear_pose(self):
-        """背面矛的位姿：斜背在背上、矛尖朝前上方（原版 Player.spearOnBack）。"""
+        """背面矛的位姿：斜背在背上、矛尖朝上（原版 Player.spearOnBack）。
+
+        倾角符号取 self.facing，不能用 Sign(chunk0.x - chunk1.x)：走路时体轴
+        几乎水平、dx 随步态左右抖，符号一翻背上的矛就整根转 104°（同「随机旋转」）。
+        """
         c0, c1 = self.chunk0, self.chunk1
-        dx = c0.x - c1.x
-        ang0 = _ang_from_up(dx, c0.y - c1.y)
-        face = 1.0 if dx >= 0.0 else -1.0
+        dx, dy = c0.x - c1.x, c0.y - c1.y
+        ang0 = _ang_from_up(dx, dy) if (abs(dx) > 1e-6 or abs(dy) > 1e-6) else 0.0
+        face = 1.0 if self.facing >= 0 else -1.0
         ang = ang0 + face * 52.0
         return (c0.x + (c1.x - c0.x) * 0.25 - face * 2.0,
                 c0.y + (c1.y - c0.y) * 0.25 + 2.0, ang)

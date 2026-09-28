@@ -12,6 +12,8 @@ from ..behavior import tuning
 from .fetch import (EAT_INTERVAL, EAT_HOLD_POSE, EAT_CHOMP_POSE, BITE_HEAD_NUDGE,
                     DELIVER_REACH, DELIVER_GAP, DELIVER_TIMEOUT)
 from ..cats.personality import DIET_VEGETARIAN, DIET_SPECIAL
+from ..planning.fly_reach import in_reach
+from ..world.needleworm import AGE_SMALL
 
 
 
@@ -49,12 +51,15 @@ class FlyCatcher:
             return []                       # 素食/圣徒不主动抓虫吃
         c0 = self._c0()
         out = []
+        hungry = self.body.food < self.body.food_max * tuning.CATCH_HUNGRY_FRAC
         for f in (*self.win.batflies, *self.win.squidcadas,
                   *self.win.needleworms):
             if not getattr(f, "catchable", False):
                 continue
-            if math.hypot(f.x - c0.x, f.y - c0.y) > tuning.CATCH_SEEK_R:
-                continue
+            if hungry and getattr(f, "age", None) == AGE_SMALL:
+                pass                        # 饿到一半以下：幼面条蝇先扑过去
+            elif not in_reach(self.win, f):
+                continue                    # 一跳够得到就追过去抓（像抓果子）
             out.append(f)
         return out
 

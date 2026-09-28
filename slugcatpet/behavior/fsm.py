@@ -9,6 +9,7 @@ from ..core.creature import (ZEROG_GRAB_DIST, THROW_ORIGIN_DX, THROW_ORIGIN_DY, 
                              WALL_CLIMB_SPEED,
                              _closest_on_segment)
 from ..planning import (GIVEUP, HOLDING, MODE_STAY, PlanExecutor, Planner, obj_goal)
+from ..planning.fly_reach import in_reach
 from .blocking import (blocks_path, yield_target_x, on_same_pole,
                         pole_in_the_way, pole_push_role)
 from . import social
@@ -445,6 +446,9 @@ class BehaviorFSM:
         self._hunt_cd = 0
         self.flycatch = None            # 徒手抓飞虫控制器
         self._catch_cd = 0
+        self._air_pole_cd = 0           # 刚离开杆：这段时间不把同一根杆又抓回来
+        self._left_pole = None
+        self._air_pole_target = None    # 空中想抓住的那根杆（带方向跳杆时记下）
         self._itemplay_cd = 0
         self._back_spear_cd = 0
         self._pearl_cd = 0            # 喜欢珍珠的猫：两颗珍珠之间的间隔
@@ -2488,10 +2492,92 @@ class BehaviorFSM:
             free.vy *= q
         self.gfx.look_at = (ch.x, ch.y)
 
+    # ── 空中：带方向跳杆 / 抓杆 / 抓飞虫 ──
+    def _air_steer_pole(self) -> None:
+        """带方向跳杆：空中朝目标杆漂（原版 jump-pole-hopping 的空中微调）。"""
+        p = self._air_pole_target
+        if p is None:
+            return
+        if self.body.on_floor():
+            self._air_pole_target = None
+            return
+        px = (p.x if getattr(p, "kind", None) == "vertical"
+              else (p.ax + p.bx) * 0.5)
+        c0 = self.body.chunk0
+        if px > c0.x + 1.0:
+            self.body.move_dir = 1
+        elif px < c0.x - 1.0:
+            self.body.move_dir = -1
+
+    def _air_pole_grab(self) -> bool:
+        """空中抓住杆子：贴杆即抓，抓到就转攀爬/吊杆（原版空中抓 beam）。"""
+        b = self.body
+        c0 = b.chunk0
+        tgt = self._air_pole_target
+        # 让路/被挤掉之后这阵子不抓路过的杆，否则刚松开又贴回来（挤位永远分不出胜负）
+        if tgt is None and self._pole_nudge_cd > 0:
+            return False
+        for p in self.win.poles:
+            if tgt is not None and p is not tgt:
+                continue
+            if p is self._left_pole and self._air_pole_cd > 0:
+                continue                      # 刚放开的杆别立刻抓回来（防粘杆）
+            if getattr(p, "kind", None) == "vertical":
+                top, bot = min(p.ay, p.by), max(p.ay, p.by)
+                if not (abs(c0.x - p.x) <= tuning.POLE_AIRGRAB_R
+                        and top - tuning.POLE_AIRGRAB_PAD <= c0.y
+                        <= bot + tuning.POLE_AIRGRAB_PAD):
+                    continue
+                self._air_pole_target = None
+                self._poleclimb_pole = p
+                self._poleclimb_start = None
+                self._transition("PoleClimb")
+                return True
+            lo, hi = min(p.ax, p.bx), max(p.ax, p.bx)
+            if not (lo - tuning.POLE_AIRGRAB_PAD <= c0.x <= hi + tuning.POLE_AIRGRAB_PAD
+                    and abs(c0.y - p.ay) <= tuning.HPOLE_AIRGRAB_Y):
+                continue
+            self._air_pole_target = None
+            self._hpole_pole = p
+            self._hpole_start = "hang"
+            self._hpole_start_x = c0.x
+            self._transition("HPole")
+            return True
+        return False
+
+    def _air_catch_fly(self) -> bool:
+        """空中徒手抓住飞虫（蝙蝠/蝉乌贼/幼面条蝇）：贴到手边就抓（原版上手抓）。"""
+        if self.pers.diet in (DIET_VEGETARIAN, DIET_SPECIAL):
+            return False
+        b = self.body
+        if b.carried_fruit is not None:
+            return False
+        c0 = b.chunk0
+        for f in (*self.win.batflies, *self.win.squidcadas, *self.win.needleworms):
+            if not getattr(f, "catchable", False):
+                continue
+            side = "r" if f.x >= c0.x else "l"
+            hx, hy = b._carry_pos(side)
+            if math.hypot(hx - f.x, hy - f.y) > tuning.CATCH_REACH:
+                continue
+            b.grab_fruit(f, side)
+            self._transition("CatchFly")
+            if self.flycatch is not None:      # 已经到手：直接进「拿着」相，别再追
+                self.flycatch.target = f
+                self.flycatch.phase = "hold"
+                self.flycatch.timer = 0
+            return True
+        return False
+
     def _st_airborne(self, cursor, disturbed):
         b = self.body
         self._hp_jump_grab()
         self._air_throw()                # 空中投矛
+        if self._air_pole_cd > 0:
+            self._air_pole_cd -= 1
+        self._air_steer_pole()           # 带方向跳杆：空中朝目标杆漂
+        if self._air_catch_fly() or self._air_pole_grab():
+            return                       # 空中抓到飞虫 / 贴到杆上
         sp = math.hypot(b.chunk1.vx, b.chunk1.vy) + math.hypot(b.chunk0.vx, b.chunk0.vy)
         on_ceil = (not b.on_floor() and b.wall_cd <= 0 and sp < tuning.CEIL_SETTLE_SPEED
                    and self._can_ceil_cling()
@@ -2728,9 +2814,14 @@ class BehaviorFSM:
             return
         if self._pole_eat():             # 手里有吃的：先在杆上吃完
             return
+        if self._pole_tip_grab():        # 杆上够得着的东西：伸手摘（同横杆）
+            return
+        if self._pole_leave_for_food():  # 杆上等同地面：有别的更想吃的就下杆去拿
+            return
         want_dismount = self.body.energy <= tuning.TIP_TIRED_ENERGY
         done = self.poleclimb.update(want_dismount)
         if done:
+            air_t = self.poleclimb.air_target
             ho = self.poleclimb.handoff
             if ho is not None:
                 self._pole_release()
@@ -2739,6 +2830,8 @@ class BehaviorFSM:
             giveup = self.poleclimb.giveup
             on_floor = self.body.on_floor()
             self._pole_release()
+            if air_t is not None:
+                self._air_pole_target = air_t
             self._transition("IdleStand" if (giveup or on_floor) else "Airborne")
 
     def _pole_handoff(self, ho):
@@ -2766,6 +2859,8 @@ class BehaviorFSM:
         self._pole_blocker = None
         self._act_end()
         if self.poleclimb is not None:
+            self._left_pole = self.poleclimb.pole
+            self._air_pole_cd = tuning.AIR_POLE_CD
             self.poleclimb.release()
             self.poleclimb = None
         self.body.chunk0.pinned = False
@@ -2816,12 +2911,17 @@ class BehaviorFSM:
             return
         if self._pole_eat():             # 手里有吃的：先在杆上吃完
             return
+        if self._pole_leave_for_food():  # 杆上等同地面：有别的更想吃的就下杆去拿
+            return
         if self._hpole_goal_grab():      # 上杆来够的东西：够到就摘下来
             return
         done = self.hpole.update()
         if done:
+            air_t = self.hpole.air_target
             ho = self.hpole.handoff
             self._hpole_release()
+            if air_t is not None:
+                self._air_pole_target = air_t
             if ho is not None:
                 self._pole_handoff(ho)
                 return
@@ -2885,6 +2985,51 @@ class BehaviorFSM:
             return False
         self._aim_target(lz)
         return self._throw_weapon_at(lz)
+
+    def _pole_tip_grab(self) -> bool:
+        """杆上够得着的东西：伸手摘下来（原版 beam 上伸手，同横杆 _hpole_goal_grab）。"""
+        pc = self.poleclimb
+        if pc is None or pc.phase not in ("climb", "tip"):
+            return False
+        c0 = self.body.chunk0
+        best, bd = None, None
+        for f in self.win.fetchables():
+            if getattr(f, "state", None) not in ("free", "hanging"):
+                continue
+            if not getattr(f, "fetch_ready", True):
+                continue
+            if getattr(f, "is_meat", False) and self.pers.diet in (DIET_VEGETARIAN, DIET_SPECIAL):
+                continue
+            d = math.hypot(f.x - c0.x, f.y - c0.y)
+            if d <= tuning.GRAB_REACH and (best is None or d < bd):
+                best, bd = f, d
+        if best is None:
+            return False
+        side = "r" if best.x >= c0.x else "l"
+        self.gfx.hand_aim[side] = (best.x, best.y)
+        self.gfx.hand_aim["l" if side == "r" else "r"] = None
+        self.body.grab_fruit(best, side)
+        return False                     # 抓到就交回普通流程（杆上啃/玩）
+
+    def _pole_leave_for_food(self) -> bool:
+        """杆上等同地面：有更值得拿的东西（普通路就够得到）就下杆去拿。
+
+        原版蛞蝓猫不会因为站在杆上就放弃进食欲望；杆只是脚下的地面。
+        """
+        b = self.body
+        if b.carried_fruit is not None or self.grab.active or self._exhausted:
+            return False
+        if self.timer < tuning.POLE_LEAVE_MIN_TICKS:
+            return False                 # 刚上杆先待一会儿，别上去就下来
+        if self.state == "HPole" and self._hp_goal_x is not None:
+            return False                 # 上杆本来就是为了够那个东西
+        if not (b.food < b.food_max and self._food_seek_ready()):
+            return False
+        if not fetch_ready(self.planner, self.win.fetchables(), diet=self.pers.diet):
+            return False
+        self._break_active_controllers()
+        self._act_or_wake("FetchFruit")
+        return True
 
     def _air_throw(self) -> None:
         """空中投矛：起跳/落地过程中手里有家伙且蜥蜴够近就掷（wiki Throwing midair）。"""
@@ -2981,6 +3126,8 @@ class BehaviorFSM:
         self._pole_blocker = None
         self._act_end()
         if self.hpole is not None:
+            self._left_pole = self.hpole.pole
+            self._air_pole_cd = tuning.AIR_POLE_CD
             self.hpole.release()
             self.hpole = None
         self.body.chunk0.pinned = False
@@ -3722,13 +3869,18 @@ class BehaviorFSM:
                     self._break_active_controllers()
                     self._transition("Socialize")
                     return
-        # 1b) 被同伴救活 → 去拍拍恩人（感谢）
+        # 1b) 被同伴救活 → 去拍拍恩人（感谢）。不强制：恩人跑远了就算了，
+        #     而且只有掷骰掷中才去谢（_thank_t 就是道谢窗口，来回几次机会）。
         if self._thank_t > 0 and self._thank_target is not None:
             th = self._thank_target
-            if th.body.dead or th is self:
+            far = (th is not self and th.body is not None
+                   and math.hypot(th.body.chunk1.x - b.chunk1.x,
+                                  th.body.chunk1.y - b.chunk1.y) > tuning.SOCIAL_R)
+            if th.body.dead or th is self or far:
                 self._thank_target = None
                 self._thank_t = 0
-            else:
+            elif self.rng.random() < tuning.SOCIAL_THANK_P:
+                # 不强制：每 tick 小概率才动身，窗口内基本会去；对象跑远就放弃
                 self._social_kind = "pat"         # 拍拍 = 喜欢/感谢
                 self._social_target = th
                 self._social_left = tuning.THANK_TICKS
@@ -4247,6 +4399,10 @@ class BehaviorFSM:
             b.walk_to(ob.chunk1.x)
             self.gfx.look_at = (ob.chunk0.x, ob.chunk0.y)
             self._clear_hands()
+            if d > tuning.SOCIAL_ABANDON_R and not getattr(ob, "dead", False):
+                # 活的对象自己跑远了：别一路追着硬演（倒地的同伴躺着不算，照样去救）
+                self._end_social()
+                return
         else:
             b.stop_walk()
             b.facing = 1 if ob.chunk0.x >= b.chunk0.x else -1
@@ -4482,6 +4638,9 @@ class BehaviorFSM:
         if a is None or tgt is None:
             return False
         ob = getattr(tgt, "body", None)
+        # 社交动作不强制：对象自己跑远了就收手（被救活后的道谢、平时的小动作都算）
+        if ob is not None and self._touch_dist(ob) > tuning.SOCIAL_ABANDON_R:
+            return False
         g = a.gesture
         if a.crouch:
             self.body.set_crawl(True)          # 匍匐族：整段都趴着
@@ -5282,15 +5441,27 @@ class BehaviorFSM:
         if self.pers.diet in (DIET_VEGETARIAN, DIET_SPECIAL):
             return None
         c0 = self.body.chunk0
-        best, bd = None, tuning.CATCH_SEEK_R
+        b = self.body
+        # 饿到一半以下：幼年面条蝇直接进入猎物名单（认距也放大），不管够不够得着先扑过去
+        hungry = b.food < b.food_max * tuning.CATCH_HUNGRY_FRAC
+        best, bd = None, None
         for f in (*self.win.batflies, *self.win.squidcadas,
                   *self.win.needleworms):
             if not getattr(f, "catchable", False):
                 continue
             d = math.hypot(f.x - c0.x, f.y - c0.y)
-            if d < bd:
+            if hungry and self._is_infant(f):
+                ok = d <= tuning.CATCH_HUNGRY_R
+            else:
+                ok = in_reach(self.win, f)      # 一跳够得到就追过去（像抓果子）
+            if ok and (best is None or d < bd):
                 best, bd = f, d
         return best
+
+    def _is_infant(self, f) -> bool:
+        """幼年面条蝇（饿到一半以下时主动攻击/抓取的对象）。"""
+        from ..world.needleworm import AGE_SMALL
+        return getattr(f, "age", None) == AGE_SMALL
 
     def _st_catchfly(self, cursor, disturbed):
         if self.grab.active:
