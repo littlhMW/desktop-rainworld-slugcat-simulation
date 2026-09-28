@@ -1,0 +1,122 @@
+====================================================================================================
+# CicadaGraphics.cs   精灵总数: ?
+# 层级 = 下标顺序（同容器内后画的盖在前面的）；atlas WxH = 元件原始像素，
+# 实际屏幕尺寸 = 该尺寸 × DrawSprites 里对应的 scale/scaleX/scaleY。
+   idx  下标写法                   元件                         atlas WxH   变换(DrawSprites/Palette)
+   (0)  BodySprite             "Cicada" + num3 + "body"   0:19x33 1:23x29 2:30x24 3:35x19 4:35x18 5:31x23 6:26x27 7:20x33 8:19x29
+            · sLeaser.sprites[BodySprite] = new FSprite("pixel");
+            · sLeaser.sprites[BodySprite].scale = iVars.fatness;
+            · sLeaser.sprites[BodySprite].element = Futile.atlasManager.GetElementWithName("Cicada" + num3 + "body");
+            · sLeaser.sprites[BodySprite].color = color;
+     i  i                      ?                          -          
+            · sLeaser.sprites[i].x = vector.x - camPos.x + lookDir.x * num5;
+            · sLeaser.sprites[i].y = vector.y - camPos.y + lookDir.y * num5;
+            · sLeaser.sprites[i].rotation = num6 - num4;
+            · sLeaser.sprites[i].scaleX = ((num2 > 0f) ? (-1f) : 1f);
+   (1)  HighlightSprite        Circle20                   20x20      
+            · sLeaser.sprites[HighlightSprite] = new FSprite("Circle20");
+            · sLeaser.sprites[HighlightSprite].scaleX = Mathf.Lerp(5f, 3f, Mathf.Abs(iVars.fatness - 1f) * 10f) / 20f;
+            · sLeaser.sprites[HighlightSprite].scaleY = Mathf.Lerp(12f, 8f, Mathf.Abs(iVars.fatness - 1f) * 10f) / 20f;
+            · sLeaser.sprites[HighlightSprite].x = Mathf.Lerp(cicada.bodyChunks[1].lastPos.x, cicada.bodyChunks[1].pos.x, timeStacker) - 2f - camPos.x;
+            · sLeaser.sprites[HighlightSprite].y = Mathf.Lerp(cicada.bodyChunks[1].lastPos.y, cicada.bodyChunks[1].pos.y, timeStacker) + 3f - camPos.y;
+            · sLeaser.sprites[HighlightSprite].rotation = num + 12f;
+            · sLeaser.sprites[HighlightSprite].color = Color.Lerp(color, new Color(1f, 1f, 1f), 0.7f);
+            · sLeaser.sprites[HighlightSprite].color = Color.Lerp(color, cicada.iVars.color.rgb, 0.07f);
+   (6)  HeadSprite             "Cicada" + num3 + "head"   0:23x18 1:22x21 2:22x19 3:17x17 4:16x16 5:19x15 6:21x20 7:22x19 8:23x17
+            · sLeaser.sprites[HeadSprite] = new FSprite("pixel");
+            · sLeaser.sprites[HeadSprite].element = Futile.atlasManager.GetElementWithName("Cicada" + num3 + "head");
+            · sLeaser.sprites[HeadSprite].color = color;
+   (7)  ShieldSprite           "Cicada" + num3 + "shield" 0:15x13 1:13x12 2:12x12 3:11x11 4:11x12 5:11x9 6:8x6 7:7x7 8:3x3
+            · sLeaser.sprites[ShieldSprite] = new FSprite("pixel");
+            · sLeaser.sprites[ShieldSprite].element = Futile.atlasManager.GetElementWithName("Cicada" + num3 + "shield");
+            · sLeaser.sprites[ShieldSprite].color = shieldColor;
+   (8)  EyesASprite            "Cicada" + num3 + "eyes1"  0:15x7 1:12x8 2:12x7 3:7x7 4:7x7 5:11x7 6:12x7 7:13x7 8:15x7
+            · sLeaser.sprites[EyesASprite] = new FSprite("pixel");
+            · sLeaser.sprites[EyesASprite].element = Futile.atlasManager.GetElementWithName("Cicada" + num3 + "eyes1");
+            · sLeaser.sprites[EyesASprite].color = ((blinkCounter > 0) ? eyeColor : shieldColor);
+            · sLeaser.sprites[EyesASprite].color = eyeColor;
+            · sLeaser.sprites[EyesASprite].color = eyeColor;
+   (9)  EyesBSprite            "Cicada" + num3 + "eyes2"  0:13x5 1:11x6 2:11x5 3:5x5 4:5x5 5:5x5 6:11x5 7:11x5 8:13x5
+            · sLeaser.sprites[EyesBSprite] = new FSprite("pixel");
+            · sLeaser.sprites[EyesBSprite].element = Futile.atlasManager.GetElementWithName("Cicada" + num3 + "eyes2");
+            · sLeaser.sprites[EyesBSprite].color = iVars.color.rgb;
+            · sLeaser.sprites[EyesBSprite].color = palette.blackColor;
+WingSprite(i, j)  WingSprite(i, j)       CicadaWing" + ((j == 0) ? "A" : "B -          
+            · sLeaser.sprites[WingSprite(i, j)] = new FSprite("CicadaWing" + ((j == 0) ? "A" : "B"));
+            · sLeaser.sprites[WingSprite(i, j)].scaleY = iVars.wingThickness;
+            · sLeaser.sprites[WingSprite(i, j)].color = shieldColor;
+TentacleSprite(i, j)  TentacleSprite(i, j)   TriangleMesh([3, pointyTip: true, customColor: false]) -          
+            · sLeaser.sprites[TentacleSprite(i, j)] = TriangleMesh.MakeLongMesh(3, pointyTip: true, customColor: false);
+            · sLeaser.sprites[TentacleSprite(i, j)].color = color;
+WingSprite(k, j)  WingSprite(k, j)       ?                          -          
+            · sLeaser.sprites[WingSprite(k, j)].x = p2.x - camPos.x;
+            · sLeaser.sprites[WingSprite(k, j)].y = p2.y - camPos.y;
+            · sLeaser.sprites[WingSprite(k, j)].alpha = Mathf.Pow(Mathf.Abs(a), 3f);
+            · sLeaser.sprites[WingSprite(k, j)].color = Color.Lerp(new Color(0f, 0f, 0f), shieldColor, Mathf.Abs(a) + 0.2f);
+            · sLeaser.sprites[WingSprite(k, j)].rotation = num - 180f + (num8 + num10) * ((k == 0) ? (-1f) : 1f);
+            · sLeaser.sprites[WingSprite(k, j)].scaleX = Mathf.Pow(Mathf.Max(0f, Mathf.Lerp(Mathf.Abs(p.y), 1f, Mathf.Abs(0.5f - num10) * 1.4f)), 1f) * ((k == 0) ? 
+            · sLeaser.sprites[WingSprite(k, j)].scaleX = ((k == 0) ? (-1f) : 1f) * iVars.wingLength;
+            · sLeaser.sprites[WingSprite(k, j)].rotation = Custom.AimFromOneVectorToAnother(p2, Vector2.Lerp(wings[k, j].lastPos, wings[k, j].pos, timeStacker)) - 9
+====================================================================================================
+# SeedCob.cs   精灵总数: 5 + leaves.GetLength(0) + seedPositions.Length * 3
+# 层级 = 下标顺序（同容器内后画的盖在前面的）；atlas WxH = 元件原始像素，
+# 实际屏幕尺寸 = 该尺寸 × DrawSprites 里对应的 scale/scaleX/scaleY。
+   idx  下标写法                   元件                         atlas WxH   变换(DrawSprites/Palette)
+   (0)  StalkSprite(0)         TriangleMesh([stalkSegments, pointyTip: false, customColor: false]) -          
+            · sLeaser.sprites[StalkSprite(0)] = TriangleMesh.MakeLongMesh(stalkSegments, pointyTip: false, customColor: false);
+            · sLeaser.sprites[StalkSprite(0)].color = palette.blackColor;
+            · sLeaser.sprites[StalkSprite(0)].color = color;
+ShellSprite(i)  ShellSprite(i)         TriangleMesh([cobSegments, pointyTip: false, customColor: true]) -          
+            · sLeaser.sprites[ShellSprite(i)] = TriangleMesh.MakeLongMesh(cobSegments, pointyTip: false, customColor: true);
+LeafSprite(k)  LeafSprite(k)          CentipedeLegB              4x26       
+            · sLeaser.sprites[LeafSprite(k)] = new FSprite("CentipedeLegB");
+            · sLeaser.sprites[LeafSprite(k)].scaleX = leaves[k, 3].x;
+LeafSprite(num14)  LeafSprite(num14)      ?                          -          
+            · sLeaser.sprites[LeafSprite(num14)].x = vector2.x - camPos.x;
+            · sLeaser.sprites[LeafSprite(num14)].y = vector2.y - camPos.y;
+            · sLeaser.sprites[LeafSprite(num14)].rotation = Custom.AimFromOneVectorToAnother(vector2, vector19);
+            · sLeaser.sprites[LeafSprite(num14)].scaleY = Vector2.Distance(vector2, vector19) / 26f;
+LeafSprite(m)  LeafSprite(m)          ?                          -          
+            · sLeaser.sprites[LeafSprite(m)].color = palette.blackColor;
+            · sLeaser.sprites[LeafSprite(m)].color = color;
+   (1)  StalkSprite(1)         TriangleMesh([stalkSegments, pointyTip: false, customColor: true]) -          
+            · sLeaser.sprites[StalkSprite(1)] = TriangleMesh.MakeLongMesh(stalkSegments, pointyTip: false, customColor: true);
+   (2)  CobSprite              TriangleMesh([cobSegments, pointyTip: false, customColor: false]) -          
+            · sLeaser.sprites[CobSprite] = TriangleMesh.MakeLongMesh(cobSegments, pointyTip: false, customColor: false);
+            · sLeaser.sprites[CobSprite].color = yellowColor;
+            · sLeaser.sprites[CobSprite].color = yellowColor;
+SeedSprite(j, 0)  SeedSprite(j, 0)       JetFishEyeA                6x6        
+            · sLeaser.sprites[SeedSprite(j, 0)] = new FSprite("JetFishEyeA");
+SeedSprite(j, 1)  SeedSprite(j, 1)       JetFishEyeA                6x6        
+            · sLeaser.sprites[SeedSprite(j, 1)] = new FSprite("JetFishEyeA");
+SeedSprite(j, 2)  SeedSprite(j, 2)       pixel                      1x1        
+            · sLeaser.sprites[SeedSprite(j, 2)] = new FSprite("pixel");
+SeedSprite(n, 0)  SeedSprite(n, 0)       ?                          -          
+            · sLeaser.sprites[SeedSprite(n, 0)].scale = (seedsPopped[n] ? num13 : 0.35f);
+            · sLeaser.sprites[SeedSprite(n, 0)].x = vector17.x - camPos.x;
+            · sLeaser.sprites[SeedSprite(n, 0)].y = vector17.y - camPos.y;
+SeedSprite(n, 1)  SeedSprite(n, 1)       ?                          -          
+            · sLeaser.sprites[SeedSprite(n, 1)].x = vector17.x + vector18.x * 0.35f - camPos.x;
+            · sLeaser.sprites[SeedSprite(n, 1)].y = vector17.y + vector18.y * 0.35f - camPos.y;
+            · sLeaser.sprites[SeedSprite(n, 1)].scale = (seedsPopped[n] ? num13 : 0.4f) * 0.5f;
+SeedSprite(n, 2)  SeedSprite(n, 2)       "tinyStar"                 -          
+            · sLeaser.sprites[SeedSprite(n, 2)].element = Futile.atlasManager.GetElementWithName("tinyStar");
+            · sLeaser.sprites[SeedSprite(n, 2)].rotation = Custom.VecToDeg(vector15);
+            · sLeaser.sprites[SeedSprite(n, 2)].scaleX = Mathf.Pow(1f - Mathf.Abs(seedPositions[n].x), 0.2f);
+            · sLeaser.sprites[SeedSprite(n, 2)].x = vector17.x + vector18.x - camPos.x;
+            · sLeaser.sprites[SeedSprite(n, 2)].y = vector17.y + vector18.y - camPos.y;
+SeedSprite(l, 0)  SeedSprite(l, 0)       ?                          -          
+            · sLeaser.sprites[SeedSprite(l, 0)].color = yellowColor;
+            · sLeaser.sprites[SeedSprite(l, 0)].color = Color.Lerp(sLeaser.sprites[SeedSprite(l, 0)].color, palette.blackColor, 0.7f);
+            · sLeaser.sprites[SeedSprite(l, 0)].color = yellowColor;
+            · sLeaser.sprites[SeedSprite(l, 0)].color = Color.Lerp(sLeaser.sprites[SeedSprite(l, 0)].color, color, 0.7f);
+SeedSprite(l, 1)  SeedSprite(l, 1)       ?                          -          
+            · sLeaser.sprites[SeedSprite(l, 1)].color = color2;
+            · sLeaser.sprites[SeedSprite(l, 1)].color = Color.Lerp(sLeaser.sprites[SeedSprite(l, 1)].color, palette.blackColor, 0.5f);
+            · sLeaser.sprites[SeedSprite(l, 1)].color = color2;
+            · sLeaser.sprites[SeedSprite(l, 1)].color = Color.Lerp(sLeaser.sprites[SeedSprite(l, 1)].color, color, 0.5f);
+SeedSprite(l, 2)  SeedSprite(l, 2)       ?                          -          
+            · sLeaser.sprites[SeedSprite(l, 2)].color = Color.Lerp(color, palette.blackColor, AbstractCob.dead ? 0.6f : 0.3f);
+            · sLeaser.sprites[SeedSprite(l, 2)].color = Color.Lerp(sLeaser.sprites[SeedSprite(l, 2)].color, palette.blackColor, 0.9f);
+            · sLeaser.sprites[SeedSprite(l, 2)].color = Color.Lerp(a2, color, (!AbstractCob.dead) ? 0.3f : 0.6f);
+            · sLeaser.sprites[SeedSprite(l, 2)].color = Color.Lerp(sLeaser.sprites[SeedSprite(l, 2)].color, color, 0.9f);

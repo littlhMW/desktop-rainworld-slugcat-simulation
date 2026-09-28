@@ -486,43 +486,7 @@ def draw_seedcob(painter, atlas, cob, ts: float = 1.0, black=PALETTE_BLACK) -> N
               yellow)
         prev, prev_num = cur, 2.0
 
-    # ── 两片外壳：随 open 张开 ──
-    open_amt = lerp(cob.last_open, cob.open, ts)
-    for l in (0, 1):
-        num8 = -1.0 + l * 2.0
-        num = 2.0
-        base = (p0[0], p0[1])
-        d01x, d01y = _dir(p1[0], p1[1], p0[0], p0[1])
-        start = (p0[0] + d01x * 7.0, p0[1] + d01y * 7.0)
-        num9 = _aim(p0[0], p0[1], p1[0], p1[1])
-        cur = p0
-        prev = start
-        for m in range(cs):
-            num10 = m / (cs - 1) if cs > 1 else 0.0
-            ang = num9 + num8 * math.pow(open_amt, lerp(1.0, 0.1, num10)) * 50.0 * math.pow(num10, 0.5)
-            step = (math.dist(base, p1) * 1.1 + 8.0) / cs
-            gx, gy = _deg_to_vec(ang)
-            cur = (cur[0] + gx * step, cur[1] + gy * step)
-            nx, ny = _dir(prev[0], prev[1], cur[0], cur[1])
-            px, py = _perp(nx, ny)
-            seg = math.dist(prev, cur) / 5.0
-            num12 = lerp(2.0, 6.0,
-                         math.pow(math.sin(math.pow(num10, 0.5) * math.pi), 0.5))
-            f = 1.0 - m / (cs - 1) if cs > 1 else 1.0
-            sh = _mix(black, SHELL_RED, math.pow(max(0.0, f), 2.5) * 0.4)
-            w0 = (num12 + num) * 0.5 * (1 - l)
-            w1 = num12 * (1 - l)
-            z0 = (num12 + num) * 0.5 * l
-            z1 = num12 * l
-            _quad(painter,
-                  (prev[0] - nx * seg - px * w0, prev[1] - ny * seg - py * w0),
-                  (prev[0] - nx * seg + px * z0, prev[1] - ny * seg + py * z0),
-                  (cur[0] + nx * seg - px * w1, cur[1] + ny * seg - py * w1),
-                  (cur[0] + nx * seg + px * z1, cur[1] + ny * seg + py * z1),
-                  sh)
-            prev = cur
-            num = num12
-            num9 = _aim(0.0, 0.0, nx, ny)
+    open_amt = lerp(cob.last_open, cob.open, ts)   # 外壳与种子都要用，先算好
 
     # ── 种子 ──
     if open_amt > 0.0:
@@ -564,6 +528,44 @@ def draw_seedcob(painter, atlas, cob, ts: float = 1.0, black=PALETTE_BLACK) -> N
             blit(painter, atlas, dot_frame, v17[0] + v18[0], v17[1] + v18[1],
                  _aim(0.0, 0.0, v15[0], v15[1]),
                  math.pow(1.0 - abs(sx0), 0.2) if pop else 1.0, 1.0, dot)
+
+    # ── 两片外壳：随 open 张开 ──（原版下标在种子之上 ⇒ 必须最后画，
+    # 否则种子会盖住红色的壳）
+    for l in (0, 1):
+        num8 = -1.0 + l * 2.0
+        num = 2.0
+        base = (p0[0], p0[1])
+        d01x, d01y = _dir(p1[0], p1[1], p0[0], p0[1])
+        start = (p0[0] + d01x * 7.0, p0[1] + d01y * 7.0)
+        num9 = _aim(p0[0], p0[1], p1[0], p1[1])
+        cur = p0
+        prev = start
+        for m in range(cs):
+            num10 = m / (cs - 1) if cs > 1 else 0.0
+            ang = num9 + num8 * math.pow(open_amt, lerp(1.0, 0.1, num10)) * 50.0 * math.pow(num10, 0.5)
+            step = (math.dist(base, p1) * 1.1 + 8.0) / cs
+            gx, gy = _deg_to_vec(ang)
+            cur = (cur[0] + gx * step, cur[1] + gy * step)
+            nx, ny = _dir(prev[0], prev[1], cur[0], cur[1])
+            px, py = _perp(nx, ny)
+            seg = math.dist(prev, cur) / 5.0
+            num12 = lerp(2.0, 6.0,
+                         math.pow(math.sin(math.pow(num10, 0.5) * math.pi), 0.5))
+            f = 1.0 - m / (cs - 1) if cs > 1 else 1.0
+            sh = _mix(black, SHELL_RED, math.pow(max(0.0, f), 2.5) * 0.4)
+            w0 = (num12 + num) * 0.5 * (1 - l)
+            w1 = num12 * (1 - l)
+            z0 = (num12 + num) * 0.5 * l
+            z1 = num12 * l
+            _quad(painter,
+                  (prev[0] - nx * seg - px * w0, prev[1] - ny * seg - py * w0),
+                  (prev[0] - nx * seg + px * z0, prev[1] - ny * seg + py * z0),
+                  (cur[0] + nx * seg - px * w1, cur[1] + ny * seg - py * w1),
+                  (cur[0] + nx * seg + px * z1, cur[1] + ny * seg + py * z1),
+                  sh)
+            prev = cur
+            num = num12
+            num9 = _aim(0.0, 0.0, nx, ny)
 
     # ── 叶片 ──
     for lf in cob.leaves:

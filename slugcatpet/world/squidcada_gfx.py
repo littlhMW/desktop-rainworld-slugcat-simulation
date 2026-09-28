@@ -123,9 +123,11 @@ def draw_squidcada(painter, atlas, sc, ts) -> None:
     painter.save()
     aa_hint(painter)
     blit(painter, atlas, "Cicada%dbody" % n, mx, my, rot, sfx, fat, body)
-    hs = lerp(1.0, 0.6, clampf(abs(fat - 1.0) * 10.0, 0.0, 1.0))
-    blit(painter, atlas, "Circle20", c1x - 2.0, c1y - 3.0, -(num + 12.0),
-         5.0 / 20.0 * hs, 12.0 / 20.0 * hs, glow)
+    # 原版 CicadaGraphics.DrawSprites:605-607 —— 钉在 chunk1 + (-2, +3)，rotation = num + 12；
+    # 缩放 CicadaGraphics.cs:430-431 的 Lerp(5,3)/Lerp(12,8)（20 = Circle20 元件尺寸）。
+    t_full = clampf(abs(fat - 1.0) * 10.0, 0.0, 1.0)
+    blit(painter, atlas, "Circle20", c1x - 2.0, c1y + 3.0, num + 12.0,
+         lerp(5.0, 3.0, t_full) / 20.0, lerp(12.0, 8.0, t_full) / 20.0, glow)
     for m in (0, 1):
         for l in (0, 1):
             pts = _tent_points(sc, ux, uy, px, py, zx, zy, ax, m, l, ts)
