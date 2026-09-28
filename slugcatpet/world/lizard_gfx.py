@@ -24,7 +24,7 @@ from .lizard import BODY_SCALE, BLACK_RGB, _ang_from_up
 
 HEAD_KEY = "base"
 NUM14 = 0                      # 头片行号：0 = 正侧面（游戏 |headDepthRotation|≈1）
-HEAD_FLIP = 180.0              # 头贴图吻部朝下，绘制前翻正
+HEAD_FLIP = 90.0               # 头贴图吻部朝左（齿列在左缘），需整体转 90°
 
 BODY_TOP_K = 1.16              # 体色很轻的垂向受光（原版体色近黑，不能提亮太多）
 BODY_BOT_K = 0.72
@@ -56,7 +56,10 @@ def body_color(lz):
     才像游戏里那种深绿 / 深粉的躯干。
     """
     rgb = lz.breed.body_rgb
-    return _mix(rgb, lz.color, BODY_TINT) if rgb == BLACK_RGB else rgb
+    rgb = _mix(rgb, lz.color, BODY_TINT) if rgb == BLACK_RGB else rgb
+    if lz.hurt_flash > 0:                 # 受击白闪（同游戏被创瞬间整体发白）
+        rgb = _mix(rgb, (255, 255, 255), 0.45 * lz.hurt_flash / 8.0)
+    return rgb
 
 
 def head_color(lz, ts: float):
@@ -65,6 +68,11 @@ def head_color(lz, ts: float):
     白蜥／蝾螈／黑蜥在原版是恒定色分支（发光、雪盖等），宠物里直接取品种定色。
     """
     b = lz.breed
+    if lz.hurt_flash > 0:
+        base = b.head_rgb if b.head_rgb is not None else lz.color
+        return _mix(base, (255, 255, 255), 0.45 * lz.hurt_flash / 8.0)
+    if lz.dead:                            # 尸体：头色定住、不再呼吸闪烁
+        return b.head_rgb if b.head_rgb is not None else _mix(BLACK_RGB, lz.color, 0.22)
     if b.head_rgb is not None:
         return b.head_rgb
     ph = lerp(lz.last_blink, lz.blink, ts)
@@ -297,18 +305,20 @@ def _draw_head(p, atlas, lz, hx, hy, rot, jaw, color, ts=1.0):
     hg = b.head_graphics
     a = math.radians(rot)
     hdx, hdy = math.sin(a), -math.cos(a)     # 头前向
-    face = 1.0 if hdx >= 0.0 else -1.0       # 朝左时 sprite 水平镜像（同游戏 scaleX=Sign(num)）
+    face = 1.0 if lz.facing >= 0 else -1.0   # 同游戏 scaleX=Sign(depthRotation)：按朝向整体镜像
     nx, ny = hdy * face, -hdx * face         # 背侧法线：恒指头的上方一侧
     apart = b.jaw_apart * jaw * BODY_SCALE
     lf = b.jaw_lower_fac
     up_off = apart * (1.0 - lf)
     lo_off = -apart * lf
-    # 头部贴图在纹理里是「吻部朝下」（牙齿列竖直），所以整体要先翻 180°
-    rt = rot + HEAD_FLIP
+    # 贴图吻部朝左、背侧朝上；rot 是「头-颈」向量角（0=上，顺时针），
+    # 故右向 rt=rot-90、左向 rt=rot+90，再按朝向取镜像（同游戏
+    # rotation=AimFromOneVectorToAnother(...) + scaleX=Sign(num)）。
+    rt = rot - HEAD_FLIP * face
     up_rot = rt - b.jaw_open_angle * (1.0 - lf) * jaw
     lo_rot = rt + b.jaw_open_angle * lf * jaw
     sc = b.head_size * BODY_SCALE
-    sx = face * sc
+    sx = -face * sc
     head_rgb = color                        # 游戏 HeadColor（含呼吸闪烁，见 head_color）
     teeth_rgb = BLACK_RGB                   # 游戏 ApplyPalette：齿与眼都是 palette.blackColor
     ay = 1.0 - b.anchor_y

@@ -28,7 +28,7 @@ class Spear:
                  "air_friction", "bounce", "surface_friction", "water_y", "room_gravity",
                  "state", "angle_deg", "last_angle", "spin", "stuck", "stuck_angle",
                  "_id", "_contact_floor", "_contact_x", "_impact_cb",
-                 "collide_with_objects", "held_by", "embedded")
+                 "collide_with_objects", "held_by", "embedded", "stuck_to")
 
     def __init__(self, x: float, y: float, seed: int = 0, angle_deg: float = 90.0):
         self.x = self.last_x = float(x)
@@ -50,6 +50,7 @@ class Spear:
         self._impact_cb = None
         self.collide_with_objects = True
         self.held_by = None            # 拾荒者手上
+        self.stuck_to = None           # 插在生物身上的 (obj, dx, dy)；由 items 层维护
 
     @property
     def pos(self):

@@ -264,6 +264,16 @@ class BatFly:
             return True
         return False
 
+    def hurt(self, dmg: float, kx: float = 0.0, ky: float = 0.0) -> bool:
+        """被武器打中：蝙蝠一碰就死（同游戏 Fly，血量 0.1），并被打飞下坠。"""
+        self.vx += kx
+        self.vy += ky
+        if not self.dead:
+            self.die()
+        if ky < 0.0:
+            self.vy = min(self.vy, ky)
+        return True
+
     def die(self) -> None:
         """死亡处理。"""
         self.dead = True

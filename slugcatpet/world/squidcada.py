@@ -46,7 +46,8 @@ class Squidcada:
                  "rad", "mass", "gravity", "air_friction", "bounce", "surface_friction",
                  "buoyancy", "water_friction", "water_y", "room_gravity",
                  "state", "held_by_hand", "stalk", "bites", "dead", "eaten",
-                 "is_meat", "is_tame_food", "collide_with_objects", "_id", "_impact_cb",
+                 "is_meat", "is_tame_food", "food_value", "health",
+                 "collide_with_objects", "_id", "_impact_cb",
                  "male", "hue", "_rng", "flap", "flap_ph", "rest", "flaps", "wings",
                  "dir_x", "dir_y", "facing", "rotation", "last_rotation",
                  "_goal", "_goal_timer", "_contact_floor", "_contact_x")
@@ -67,8 +68,10 @@ class Squidcada:
         self.bites = 1
         self.dead = False
         self.eaten = 0
-        self.is_meat = False               # 不是猫的常规食物，只作驯服礼物
+        self.is_meat = True                # 原版：蝉乌贼是肉食（3 口 = 3 格食物）
         self.is_tame_food = True
+        self.food_value = 3                # 原版：一只蝉乌贼 3 格食物
+        self.health = 0.6
         self.collide_with_objects = True
         self._id = int(seed)
         self._impact_cb = None
@@ -121,8 +124,20 @@ class Squidcada:
             return True
         return False
 
+    def hurt(self, dmg: float, kx: float = 0.0, ky: float = 0.0) -> bool:
+        """被武器打中：蝉乌贼脆皮，一下即死（同游戏 0.6 血）。"""
+        self.vx += kx
+        self.vy += ky
+        if self.health > 0.0:
+            self.health -= dmg
+        if self.health <= 0.0 and not self.dead:
+            self.die()
+            return True
+        return self.dead
+
     def die(self) -> None:
         self.dead = True
+        self.bites = 1
         self.surface_friction = 0.4
 
     # ── 主循环 ──

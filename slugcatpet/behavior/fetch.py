@@ -285,7 +285,7 @@ class FruitFetcher:
                 f.state = "eaten"
                 self.eaten += 1
                 self.body.temper_shift(tuning.TEMPER_FEED)
-                self.body.food_eat(1)
+                self.body.food_eat(getattr(f, "food_value", 1))
                 self.body.energy_change(tuning.EN_EAT_RESTORE)
                 self.body.release_fruit()
                 if self.body.food >= self.body.food_max:

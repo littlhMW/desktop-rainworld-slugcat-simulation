@@ -98,6 +98,10 @@ SPEAR_GRAB_PAD = 8.0
 SCAVENGER_GRAB_PAD = 14.0
 SPEAR_HIT_SPEED = 7.0            # 飞矛扎猫的最低速度
 SPEAR_HIT_PAD = 6.0
+SPEAR_DMG = 1.0                   # 矛伤害（同游戏 Spear.damage 1.0）
+SPEAR_LIZ_KNOCK = 1.4             # 扎中动物的击退
+STONE_DMG = 0.05                  # 石头伤害（同游戏 Rock 几乎不致命）
+STONE_LIZ_STUN = 90               # 石头砸晕动物 tick
 SPEAR_THROW_SPEED = 11.0         # 拾荒者掷矛初速
 SPEAR_THROW_LIFT = 1.5           # 掷出时的上抬
 # 翅本地多边形（锚在本体，向 -y 伸展）
@@ -147,6 +151,16 @@ def _slerp2(ax, ay, bx, by, t):
     s = math.sin(theta)
     return (ax * math.sin((1.0 - t) * theta) / s + bx * math.sin(t * theta) / s,
             ay * math.sin((1.0 - t) * theta) / s + by * math.sin(t * theta) / s)
+
+
+def _ball_hit(creature, ball, pad: float = 0.0):
+    """球体命中生物判定：头 + 各链节；返回命中点或 None。"""
+    if math.hypot(ball.x - creature.x, ball.y - creature.y) < ball.rad + creature.head_rad + pad:
+        return (ball.x, ball.y)
+    for s in creature.seg:
+        if math.hypot(ball.x - s.x, ball.y - s.y) < ball.rad + s.rad + pad:
+            return (ball.x, ball.y)
+    return None
 
 
 def _dist_to_path(pts, x, y):
@@ -386,6 +400,33 @@ class ItemInteractionMixin:
                             s.deflect(self._stun_rng)
                             s.fling = False
                         break
+            for lz in self.lizards:
+                if lz.dead or not s.fling or s.state != ItemState.FREE:
+                    continue
+                if math.hypot(s.vx, s.vy) < STONE_STUN_SPEED:
+                    continue
+                if _ball_hit(lz, s, 2.0) is None:
+                    continue
+                kx = (1.0 if s.vx >= 0.0 else -1.0) * 1.2
+                killed = lz.hurt(STONE_DMG, kx=kx)
+                lz.stun = max(lz.stun, STONE_LIZ_STUN)
+                s.deflect(self._stun_rng)
+                s.fling = False
+                self._shake[0] += 0.5 * (1.0 if kx >= 0.0 else -1.0)
+                if killed:
+                    self._lizard_death_fx(lz)
+                break
+            for small in (*self.batflies, *self.squidcadas):   # 砸中就打下来
+                if small.dead or not s.fling or s.state != ItemState.FREE:
+                    continue
+                if math.hypot(s.vx, s.vy) < STONE_STUN_SPEED:
+                    continue
+                if math.hypot(s.x - small.x, s.y - small.y) >= s.rad + small.rad:
+                    continue
+                small.hurt(STONE_DMG, kx=s.vx * 0.10, ky=min(s.vy * 0.10 - 1.0, -1.0))
+                s.deflect(self._stun_rng)
+                s.fling = False
+                break
 
     def _step_stone_cursor_hit(self):
         if self.cursor_hijack is not None or self.behavior is None:
@@ -1180,6 +1221,11 @@ class ItemInteractionMixin:
             lz.step(self._WL, self._HL, targets=targets, cursor=cur)
             self._lizard_bite(lz)
 
+    def _lizard_death_fx(self, lz):
+        """蜥蜴被击杀：重震一下（原版会有血花，这里只用震动表示）。"""
+        self._shake[0] += 2.0 * lz.facing
+        self._shake[1] += 1.4
+
     def _lizard_bite(self, lz):
         """蜥蜴咬到猫：眩晕（apply_stun 内部已扣脾气）+ 轻微震动。"""
         ev = lz.bite_event
@@ -1739,7 +1785,7 @@ class ItemInteractionMixin:
         return True
 
     def _step_spear_hit(self):
-        """飞矛扎到猫：眩晕 + 震动（同抛石）。"""
+        """飞矛扎到猫：眩晕 + 震动；扎到蜥蜴：受伤并插在身上跟着走。"""
         for pet in self.pets:
             if pet.behavior is None or pet.behavior.blocks_interaction():
                 continue
@@ -1756,11 +1802,54 @@ class ItemInteractionMixin:
                             self._shake[1] += 0.8
                         sp.vx = sp.vy = 0.0
                         break
+        for sp in self.spears:
+            if sp.stuck_to is not None or sp.stuck or sp.state != ItemState.FREE:
+                continue
+            if math.hypot(sp.vx, sp.vy) < SPEAR_HIT_SPEED:
+                continue
+            for lz in self.lizards:
+                if lz.dead:
+                    continue
+                if _ball_hit(lz, sp, SPEAR_HIT_PAD) is None:
+                    continue
+                hit_x, hit_y = sp.x, sp.y
+                kx = (1.0 if sp.vx >= 0.0 else -1.0) * SPEAR_LIZ_KNOCK
+                killed = lz.hurt(SPEAR_DMG, kx=kx)
+                sp.vx = sp.vy = 0.0
+                sp.stuck = True
+                sp.stuck_angle = sp.angle_deg
+                sp.stuck_to = (lz, hit_x - lz.x, hit_y - lz.y)
+                self._shake[0] += 1.0 * (1.0 if kx >= 0.0 else -1.0)
+                self._shake[1] += 0.6
+                if killed:
+                    self._lizard_death_fx(lz)
+                break
+            for small in (*self.batflies, *self.squidcadas):   # 小生物：一矛带走
+                if small.dead or small.state != ItemState.FREE:
+                    continue
+                if math.hypot(sp.x - small.x, sp.y - small.y) >= sp.rad + small.rad + SPEAR_HIT_PAD:
+                    continue
+                kx = sp.vx * 0.10
+                ky = min(sp.vy * 0.10 - 1.2, -1.0)
+                small.hurt(SPEAR_DMG, kx=kx, ky=ky)
+                sp.vx *= 0.55
+                self._shake[0] += 0.5 * (1.0 if kx >= 0.0 else -1.0)
+                break
 
     def _tick_spears(self):
         self._step_spear_drag()
         if self.spears:
             for sp in self.spears:
+                if sp.stuck_to is not None:      # 插在生物身上：跟着它走
+                    host, ox, oy = sp.stuck_to
+                    if host.state == ItemState.GONE:
+                        sp.unstuck()
+                        sp.stuck_to = None
+                    else:
+                        sp.last_x, sp.last_y = sp.x, sp.y
+                        sp.x, sp.y = host.x + ox, host.y + oy
+                        continue
+                sp.stuck_to = None
                 sp._impact_cb = self._shake_impact
                 sp.step(self._WL, self._HL)
             self._step_spear_hit()
