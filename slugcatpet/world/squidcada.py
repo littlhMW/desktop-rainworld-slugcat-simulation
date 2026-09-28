@@ -12,14 +12,14 @@ from ..core.chunkphys import aabb_wall_collide, apply_water
 from ..core.units import clampf, lerp, inv_lerp
 from .enums import ItemState
 
-RAD = 7.0
-MASS = 0.35
-GRAVITY = 0.9
-AIR_FRICTION = 0.985
-BOUNCE = 0.25
-SURFACE_FRICTION = 0.6
-BUOYANCY = 0.2
-WATER_FRICTION = 0.94
+RAD = 7.5                 # Cicada.cs:131 bodyChunks[0].rad
+MASS = 0.3                # Cicada.cs:129 总质量 0.65(雄)/0.55(雌)，单点取均值
+GRAVITY = 0.9             # Cicada.cs:136
+AIR_FRICTION = 0.999
+BOUNCE = 0.1              # Cicada.cs:137
+SURFACE_FRICTION = 0.4    # Cicada.cs:138
+BUOYANCY = 0.95           # Cicada.cs:141
+WATER_FRICTION = 0.96     # Cicada.cs:140
 
 HOVER_H = 78.0            # 巡航高度（离地）
 HOVER_BAND = 18.0         # 高度带：出带才修正

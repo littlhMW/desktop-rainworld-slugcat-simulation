@@ -6,14 +6,14 @@ import random as _random
 from ..core.chunkphys import aabb_wall_collide, apply_water
 from .enums import ItemState
 
-RAD = 4.5
-MASS = 0.04
+RAD = 5.0                # DataPearl.cs:184 bodyChunks[0].rad
+MASS = 0.07              # DataPearl.cs:184 bodyChunks[0].mass
 GRAVITY = 0.9
 AIR_FRICTION = 0.999
-BOUNCE = 0.62            # 原版珍珠很弹
-SURFACE_FRICTION = 0.5
-BUOYANCY = 0.5
-WATER_FRICTION = 0.99
+BOUNCE = 0.4             # DataPearl.cs:188
+SURFACE_FRICTION = 0.4   # DataPearl.cs:189
+BUOYANCY = 0.4           # DataPearl.cs:192
+WATER_FRICTION = 0.98    # DataPearl.cs:191
 
 REST_VEL_EPS = 0.5
 

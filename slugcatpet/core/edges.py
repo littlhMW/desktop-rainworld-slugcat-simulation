@@ -9,8 +9,8 @@ from __future__ import annotations
 
 WALL_TOUCH_PAD = 3.0     # chunk 圆心离边缘多近算贴墙
 CEIL_TOUCH_PAD = 3.0
-WALL_HUG_PAD = 18.0      # 攀墙时髋心离墙距离：手够得到墙、又不把身体画出屏
-CEIL_EDGE_PAD = 10.0     # 吊顶时胸心离左右边缘的余量
+WALL_HUG_PAD = 34.0    # 攀墙时身体线离墙距离：伸手够墙、整只猫又不出画面
+CEIL_EDGE_PAD = 26.0   # 吊顶时胸心离左右边缘的余量
 
 
 def wall_side(chunk, WL: float, pad: float = WALL_TOUCH_PAD) -> int:

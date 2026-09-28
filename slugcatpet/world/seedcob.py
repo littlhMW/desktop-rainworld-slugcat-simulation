@@ -118,9 +118,13 @@ class Seed(Fruit):
 
     def __init__(self, x: float, y: float, seed: int = 0):
         super().__init__(x, y, seed=seed)
-        self.rad = 4.0
-        self.mass = 0.03
-        self.bounce = 0.55
+        # 原版 AbstractObjectType.Seed 实现为 SlimeMold(bites=1)：SlimeMold.cs:213-223
+        self.rad = 5.0
+        self.mass = 0.12
+        self.bounce = 0.2
+        self.surface_friction = 0.7
+        self.buoyancy = 1.1
+        self.water_friction = 0.95
         self.bites = 1
 
 
@@ -171,7 +175,7 @@ class SeedCob:
         self.rotted = False
         self.pop_counter = -1
         self.state = ItemState.FREE
-        self.rad = 14.0
+        self.rad = 8.0            # SeedCob.cs:106-107 双 chunk rad 8
 
     @property
     def pos(self):

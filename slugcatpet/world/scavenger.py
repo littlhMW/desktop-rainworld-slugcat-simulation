@@ -14,11 +14,11 @@ from .enums import ItemState
 from .spear import Spear
 
 GRAVITY = 0.9
-AIR_FRICTION = 0.98
+AIR_FRICTION = 0.999        # Scavenger.cs:1719
 GROUND_FRICTION = 0.86
 WALL_BOUNCE = 0.1
 
-BODY_RAD = 7.0
+BODY_RAD = 7.0             # Scavenger.cs:1611 bodyChunks[1].rad（髋）
 HEAD_RAD = 6.0
 STAND_H = 26.0            # 站立时躯干中心离地高度
 SPEED_WALK = 0.85
@@ -293,7 +293,7 @@ class Scavenger:
         self.y = self.last_y = float(y)
         self.vx = self.vy = 0.0
         self.rad = BODY_RAD
-        self.mass = 1.2
+        self.mass = 0.85           # 0.5 + 0.3 + 0.05（三节合计）
         self.gravity = GRAVITY
         self.air_friction = AIR_FRICTION
         self.surface_friction = GROUND_FRICTION

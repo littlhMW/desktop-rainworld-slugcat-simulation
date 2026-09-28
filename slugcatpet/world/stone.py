@@ -1,8 +1,10 @@
 """石头物理内核：单点质点，重力积分+碰撞+自旋。"""
 from __future__ import annotations
 import math
+import random as _random
 from ..core.chunkphys import aabb_wall_collide, apply_water
 from ..core.units import lerp
+from . import weaponphys as wp
 from .enums import ItemState
 
 RAD = 5.0
@@ -29,6 +31,7 @@ class Stone:
                  "buoyancy", "water_friction", "water_y", "room_gravity",
                  "state", "rotation_deg", "last_rotation", "spin", "vibrate", "fling",
                  "thrown_by_saint", "frame", "collide_with_objects",
+                 "_rng", "_thrown", "_throw_dir", "_exit_spd", "_throw_x", "_throw_y",
                  "_id", "_contact_floor", "_contact_ceil", "_contact_x", "_impact_cb",
                  "unfetchable", "fetch_fails")
 
@@ -63,6 +66,11 @@ class Stone:
         self._impact_cb = None        # 窗口抖动回调；None=不触发
         self.unfetchable = False
         self.fetch_fails = 0
+        self._rng = _random.Random(int(seed) * 977 + 5)
+        self._thrown = False          # 原版 Weapon.Mode.Thrown
+        self._throw_dir = 0
+        self._exit_spd = 0.0
+        self._throw_x = self._throw_y = 0.0
 
     @property
     def pos(self):
@@ -71,7 +79,7 @@ class Stone:
     def collision_chunks(self):
         """通用碰撞暴露；拖拽/携带/消失本 tick 豁免。"""
         self.collide_with_objects = self.state not in (
-            ItemState.CARRIED, ItemState.MOUSE, ItemState.GONE) and not self.fling
+            ItemState.CARRIED, ItemState.MOUSE, ItemState.GONE) and not self._thrown
         return (self,)
 
     def at_rest_on_ground(self, HL: float) -> bool:
@@ -100,6 +108,11 @@ class Stone:
         self.y += self.vy
 
         self._collide(WL, HL)
+
+        if self._thrown and wp.exit_check(self):
+            # 原版 Weapon.Update(Thrown)：速度跌破阈值 → SetRandomSpin + ChangeMode(Free)
+            self._thrown = False
+            self.spin = wp.set_random_spin(self._rng, self.room_gravity)
 
         if self._contact_floor or self._contact_ceil:
             self.spin = (self.spin * 2.0 + self.vx * 5.0) / 3.0

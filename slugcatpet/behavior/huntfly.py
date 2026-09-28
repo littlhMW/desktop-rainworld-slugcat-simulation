@@ -7,6 +7,7 @@ from __future__ import annotations
 import math
 
 from ..core.units import clampf
+from ..world import weaponphys
 from ..cats.personality import DIET_VEGETARIAN, DIET_SPECIAL
 
 GRAB_REACH = 18.0
@@ -100,8 +101,8 @@ class FlyHunter:
                 out.append(s)
         return out
 
-    def _predict(self, f, speed):
-        """迭代预判落点：返回 (t, vx, vy) 或 None。"""
+    def _predict(self, f, speed, grav=0.9):
+        """迭代预判落点：返回 (t, vx, vy) 或 None（grav = 武器飞行时的等效重力）。"""
         c0 = self._c0()
         lx, ly = c0.x, c0.y - 6.0
         t = MIN_FLIGHT
@@ -114,7 +115,7 @@ class FlyHunter:
         tx = f.x + f.vx * t
         ty = f.y + f.vy * t
         vx = (tx - lx) / t
-        vy = (ty - ly - 0.5 * 0.9 * t * t) / t   # g=0.9 同石头/矛
+        vy = (ty - ly - 0.5 * grav * t * t) / t  # 矛飞行时重力减半
         if abs(vx) > speed * 1.6 or abs(vy) > speed * 1.6:
             return None
         return t, vx, vy
@@ -192,8 +193,9 @@ class FlyHunter:
             return "giveup"
         self.body.stop_walk()
         self.gfx.look_at = (f.x, f.y)
-        sp = SPEED_SPEAR if self.body.carried_spear is not None else SPEED_STONE
-        pr = self._predict(f, sp)
+        spear = self.body.carried_spear is not None
+        sp = SPEED_SPEAR if spear else SPEED_STONE
+        pr = self._predict(f, sp, 0.9 - weaponphys.SPEAR_FLIGHT_LIFT if spear else 0.9)
         if pr is None:
             return "running"
         _t, vx, _vy = pr
@@ -216,11 +218,14 @@ class FlyHunter:
     def _phase_throw(self, want):
         if self.throw_t == 0:
             c0 = self._c0()
+            weak, toss = weaponphys.player_throw_mode(
+                getattr(self.win, "variant", ""), getattr(self.fsm, "_exhausted", False),
+                self.body.carried_spear is not None, False)
             if self.body.carried_spear is not None:
-                self.body.throw_spear(self.throw_dir, SPEED_SPEAR,
-                                      vel=self._vel, recoil=RECOIL)
+                self.body.throw_spear(self.throw_dir, weaponphys.frc(weak=weak),
+                                      vel=self._vel, recoil=RECOIL, toss=toss)
             else:
-                self.body.throw_stone(self.throw_dir, SPEED_STONE,
+                self.body.throw_stone(self.throw_dir, weaponphys.frc(weak=weak),
                                       vel=self._vel, fling=True, recoil=RECOIL)
             self.gfx.blink = 15
             self._c0().vx -= self.throw_dir * 0.4

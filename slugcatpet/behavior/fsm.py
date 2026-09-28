@@ -17,6 +17,7 @@ from ..control.mouse import GrabController
 from ..cats.saint.cursorlick import (BAND_LO as LICK_BAND_LO, BAND_HI as LICK_BAND_HI,
                                      DWELL_TICKS as LICK_DWELL, DWELL_TOL as LICK_DWELL_TOL,
                                      GATE_FRAC as LICK_GATE_FRAC)
+from ..world import weaponphys
 from ..world.enums import ItemState
 from ..core import edges as edgeqm
 from ..core.units import clampf
@@ -2781,7 +2782,7 @@ class BehaviorFSM:
             self._fight_throw_t = 0
             self._throw_weapon_at(tgt)
 
-    def _lead_throw_vel(self, tgt, speed):
+    def _lead_throw_vel(self, tgt, speed, grav=0.9):
         """迭代预判落点求初速（同原版投掷预判）。"""
         c0 = self.body.chunk0
         lx, ly = c0.x, c0.y - 6.0
@@ -2793,7 +2794,7 @@ class BehaviorFSM:
             ty = tgt.y + tvy * t
             t = clampf(math.hypot(tx - lx, ty - ly) / speed, 4.0, 26.0)
         vx = (tgt.x + tvx * t - lx) / t
-        vy = (tgt.y + tvy * t - ly - 0.5 * 0.9 * t * t) / t
+        vy = (tgt.y + tvy * t - ly - 0.5 * grav * t * t) / t
         if abs(vx) > speed * 1.6 or abs(vy) > speed * 1.6:
             return None
         return (vx, vy)
@@ -2802,14 +2803,21 @@ class BehaviorFSM:
         b = self.body
         spear = b.carried_spear
         sp = SPEAR_AI_SPEED if spear is not None else STONE_AI_SPEED
-        vel = self._lead_throw_vel(tgt, sp)
+        # 飞行中的矛重力减半（Spear.Update: vel.y += 0.45），预判要用真实值
+        grav = 0.9 - weaponphys.SPEAR_FLIGHT_LIFT if spear is not None else 0.9
+        vel = self._lead_throw_vel(tgt, sp, grav)
         if vel is None:
             return False
         dir_x = 1 if vel[0] >= 0 else -1
+        weak, toss = weaponphys.player_throw_mode(
+            getattr(self.win, "variant", ""), self._exhausted,
+            spear is not None, False)
         if spear is not None:
-            b.throw_spear(dir_x, sp, vel=vel, recoil=0.4)
+            b.throw_spear(dir_x, weaponphys.frc(weak=weak), vel=vel,
+                          recoil=0.4, toss=toss)
         else:
-            b.throw_stone(dir_x, sp, vel=vel, fling=True, recoil=0.4)
+            b.throw_stone(dir_x, weaponphys.frc(weak=weak), vel=vel,
+                          fling=True, recoil=0.4)
         b.chunk0.vx -= dir_x * 0.35
         self.gfx.blink = 15
         return True

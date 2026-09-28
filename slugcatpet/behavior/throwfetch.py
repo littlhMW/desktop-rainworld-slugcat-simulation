@@ -2,6 +2,8 @@
 from __future__ import annotations
 import math
 
+from ..world import weaponphys
+
 # 捡石/投石参数
 GRAB_REACH = 18.0
 REACH_GATE_K = 2.0
@@ -130,9 +132,11 @@ class StoneThrower:
 
     def _phase_throw(self, still_angry):
         if self.throw_t == 0:
-            base = max(THROW_SPEED_MIN, self.win._WL * THROW_SPEED_FRAC)
-            self._thrown = self.body.throw_stone(self.throw_dir, base,
-                                                 up=3.0, recoil=THROW_RECOIL)
+            # 原版投掷：vx = dir * 40 * frc（frc = Lerp(1, 1.5, Adrenaline)）
+            # 石头不走圣徒弱投分支（Player.cs:11258），力竭才减半档
+            weak = getattr(self.fsm, "_exhausted", False)
+            self._thrown = self.body.throw_stone(
+                self.throw_dir, weaponphys.frc(weak=weak), recoil=THROW_RECOIL)
             self.gfx.blink = 15
         # follow-through：手伸向投掷方向
         side = self.grab_side

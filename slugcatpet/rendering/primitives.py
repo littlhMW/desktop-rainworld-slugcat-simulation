@@ -259,7 +259,7 @@ _IVAR_MID = {"head_size": 0.5, "fat": 0.5, "waist": 0.4, "eye_size": 0.55,
              "narrow_eyes": 0.0, "eyes_angle": 0.4, "pupil": 0.0, "deep": False,
              "pupil_hue": None, "hands": 1.0, "arm": 0.6, "legs": 0.5,
              "wide_teeth": 0.5, "elite": False, "mask": None}
-SCAV_S = 0.72                    # 相对原版像素的整体缩放（与蜥蜴同一屏幕比例）
+SCAV_S = 1.0                     # 与游戏像素 1:1（同蜥蜴/蛞蝓猫）
 SCAV_HIP_R = 7.0 * SCAV_S         # 原版 bodyChunks[1].rad = 7
 SCAV_CHEST_R = 9.5 * SCAV_S       # 原版 bodyChunks[0].rad = 9.5
 SCAV_CHEST_DY = 18.0 * SCAV_S     # 原版 髋→胸 连接长度 18

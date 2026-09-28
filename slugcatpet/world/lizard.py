@@ -16,7 +16,7 @@ GRAVITY = 0.9                 # 同石头/蝙蝠量级
 AIR_FRICTION = 0.99
 GROUND_FRICTION = 0.84
 WALL_BOUNCE = 0.2
-BODY_SCALE = 0.86             # 相对游戏像素的整体缩放
+BODY_SCALE = 1.0              # 与游戏像素 1:1（基准 = 蛞蝓猫 chunk rad 9/8）
 N_BODY = 3                    # 躯干三节（同游戏 bodyChunks）
 MAX_TAIL_SEGS = 11            # 尾段上限（原版红蜥 tailSegments=11，最长的品种）
 SEG_STIFF_BODY = 0.55         # 躯干节跟随刚度（高=挺）

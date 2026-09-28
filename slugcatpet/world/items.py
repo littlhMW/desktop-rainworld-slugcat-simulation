@@ -15,7 +15,8 @@ from .fruit import PLACE_HANGING_FRAC, make_fruit
 from ..rendering.graphics import _ang_from_up
 from ..rendering.primitives import (blit, draw_fruit, draw_rope, draw_stone,
                                     draw_stone_trail, draw_pearl, draw_spear,
-                                    draw_scavenger, draw_scavenger_spear)
+                                    draw_scavenger, draw_scavenger_spear,
+                                    PEARL_ART_RAD)
 from .enums import ItemState
 from .slimemold import (SlimeMold, _dirvec as _slime_dir, _lerp_map as _slime_lerp_map,
                         TENDRIL_JAG_K)
@@ -26,6 +27,7 @@ from .lizard_gfx import draw_lizard
 from .squidcada import Squidcada
 from .squidcada_gfx import draw_squidcada
 from .pearl import Pearl
+from . import weaponphys
 from .scavenger import PEARL_SEEK_R, PEARL_TAKE_PAD
 from .spear import Spear, LEN as SPEAR_DRAW_LEN, HALF_W as SPEAR_HALF_W
 from .seedcob import Seed, SeedCob, draw_seed, draw_seedcob
@@ -71,7 +73,7 @@ BITE_VIOLENCE_DAMAGE = 1.5
 PET_BITE_DEATH_MULT = {"monk": 0.0, "saint": 100.0}
 PET_BITE_DEATH_MULT_DEFAULT = 0.75
 STONE_KNOCKBACK = 0.5
-STONE_DRAW_SCALE = 0.7
+STONE_DRAW_SCALE = 1.0       # 原版 Pebble 贴图 1:1
 # 抛石拖尾
 STONE_TRAIL_MIN_SPEED = 6.0
 STONE_TRAIL_LEN_K = 1.6
@@ -124,8 +126,8 @@ STONE_STUN_BONUS = 45.0           # 上句里的 stunBonus = 45f
 # 原版击退：hitChunk.vel += (攻击物 vel * 攻击物 mass * 2) / hitChunk.mass。
 # 桌面尺度折算：粉蜥（bodyMass 2.1）挨满速矛（_SPEAR_FLING_CAP=18）时约 1.4 px/tick。
 KNOCK_K_PER_MASS = 1.4 * 2.1 / (18.0 * 0.12)
-SPEAR_THROW_SPEED = 11.0         # 拾荒者掷矛初速
-SPEAR_THROW_LIFT = 1.5           # 掷出时的上抬
+# 拾荒者掷矛初速走原版 Scavenger.ThrowObject → Weapon.Thrown（见 weaponphys）：
+#   frc = (Elite || Templar) ? 0.75 : 0.35，初速 = 40 * frc，方向恒为水平
 # 翅本地多边形（锚在本体，向 -y 伸展）
 _BATFLY_WING_PTS = [
     (0.0, 0.0),
@@ -1782,7 +1784,7 @@ class ItemInteractionMixin:
             x = pr.last_x + (pr.x - pr.last_x) * ts
             y = pr.last_y + (pr.y - pr.last_y) * ts
             rot = pr.last_rotation + (pr.rotation_deg - pr.last_rotation) * ts
-            draw_pearl(p, self.atlas, x, y, rot, pr.tint, pr.rad, pr.glimmer_at(ts))
+            draw_pearl(p, self.atlas, x, y, rot, pr.tint, PEARL_ART_RAD, pr.glimmer_at(ts))
 
     def _draw_pearl_hint(self, p):
         cur = self.cursor_logical()
@@ -1794,7 +1796,7 @@ class ItemInteractionMixin:
         pr = self._pearl_hint_object()
         p.save()
         p.setOpacity(0.5)
-        draw_pearl(p, self.atlas, cx, cy, 0.0, pr.tint, pr.rad, pr.glimmer_at(1.0))
+        draw_pearl(p, self.atlas, cx, cy, 0.0, pr.tint, PEARL_ART_RAD, pr.glimmer_at(1.0))
         p.restore()
 
     def _pearl_hint_object(self):
@@ -2231,20 +2233,21 @@ class ItemInteractionMixin:
         p.restore()
 
     def _step_scavenger_throws(self):
-        """拾荒者的投矛意图 → 生成一枝飞矛。"""
+        """拾荒者的投矛意图 → 生成一枝飞矛（原版 Scavenger.ThrowObject → Weapon.Thrown）。"""
         for sc in self.scavengers:
             ev = sc.throw_event
             if ev is None:
                 continue
             sc.throw_event = None
             hx, hy = sc.head_pos()
+            dir_x = 1 if ev[0] >= hx else -1
+            frc = (weaponphys.FRC_SCAVENGER_ELITE if sc.ivar.get("elite")
+                   else weaponphys.FRC_SCAVENGER)
             sp = Spear(hx, hy, seed=self._spear_seed,
-                       angle_deg=math.degrees(math.atan2(ev[0] - hx, -(ev[1] - hy))))
+                       angle_deg=90.0 if dir_x > 0 else 270.0)
             self._spear_seed += 1
-            dx, dy = ev[0] - hx, ev[1] - hy
-            d = math.hypot(dx, dy) or 1.0
-            sp.vx = dx / d * SPEAR_THROW_SPEED
-            sp.vy = dy / d * SPEAR_THROW_SPEED - SPEAR_THROW_LIFT
+            sp.vx, sp.vy = weaponphys.throw_velocity(sc, dir_x, True, frc)
+            weaponphys.begin_thrown(sp, dir_x, frc)
             self.spears.append(sp)
 
     def _tick_scavengers(self):

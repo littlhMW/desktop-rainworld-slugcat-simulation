@@ -8,6 +8,7 @@ from ..cats.stats import DEFAULT_STATS
 from ..core import chunkphys as cp
 from ..core.chunkphys import BodyChunk, solve_conn
 from ..core.units import K_VEL, K_IMP, lerp, inv_lerp, clampf
+from ..world import weaponphys
 from ..world.enums import ItemState
 
 RUN_UPPER = 4.2 * K_VEL
@@ -44,7 +45,7 @@ WALL_CLIMB_SPEED = 2.2 * K_VEL      # 爬墙垂直速度
 WALL_JUMP_VX = 5.6 * K_VEL          # 蹬墙跳离墙横速
 WALL_JUMP_VY = 6.4 * K_VEL          # 蹬墙跳上抛
 WALL_JUMP_LOCK = 14                 # 蹬墙后硬直，期内不再吸附
-CEIL_HANG_PAD = 2.0                 # 吊顶时胸心离上边缘
+CEIL_HANG_PAD = 22.0                # 吊顶时胸心离上边缘：伸手够顶、整只猫不出画面
 CEIL_SHIMMY_SPEED = 1.6 * K_VEL     # 吊顶横向挪动速度
 
 # 零重力蹬窗边推力/速度上限
@@ -1485,12 +1486,13 @@ class SlugcatBody:
         if side is not None:
             self.arm_aim[side] = None
 
-    def throw_stone(self, dir_x, base_speed, up=3.0, recoil=1.0,
+    def throw_stone(self, dir_x, frc=1.0, up=3.0, recoil=1.0,
                     vel=None, fling=False, by_saint=True):
         """Throw carried stone; return stone (free + velocity) or None.
 
-        vel 给定 (vx, vy) 时直接采用（狩猎预判用）；fling=True 才进入
-        「投掷物可伤生物」通道（同原版 fling 石头）。
+        初速走原版 Weapon.Thrown：vx = c0.vx*0.2 + dir*40*frc；vy = c0.vy*0.5 - 3（石头）。
+        vel 给定 (vx, vy) 时直接采用（狩猎/拾荒预判用）；fling=True 才进入
+        「投掷物可伤生物」通道（同原版投掷石头）。
         """
         s = self.carried_stone
         if s is None:
@@ -1503,8 +1505,7 @@ class SlugcatBody:
         s.x = sx + float(dir_x) * 18.0
         s.y = sy - 4.0
         if vel is None:
-            s.vx = c0.vx * 0.2 + float(dir_x) * base_speed
-            s.vy = c0.vy * 0.5 - up
+            s.vx, s.vy = weaponphys.throw_velocity(c0, dir_x, False, float(frc))
         else:
             s.vx = c0.vx * 0.2 + float(vel[0])
             s.vy = c0.vy * 0.2 + float(vel[1])
@@ -1512,6 +1513,7 @@ class SlugcatBody:
         s.fling = bool(fling)
         s.thrown_by_saint = bool(by_saint)
         s.state = "free"
+        weaponphys.begin_thrown(s, dir_x, float(frc))
         self.release_stone(to_free=False)
         c0.vx += float(dir_x) * 8.0 * recoil
         c1.vx -= float(dir_x) * 4.0 * recoil
@@ -1563,8 +1565,12 @@ class SlugcatBody:
         fdir = 1.0 if dx >= 0.0 else -1.0
         return _ang_from_up(fdir, -up_frac)
 
-    def throw_spear(self, dir_x, base_speed, up=3.0, recoil=1.0, vel=None):
-        """Throw carried spear; return spear (free + velocity) or None."""
+    def throw_spear(self, dir_x, frc=1.0, up=1.5, recoil=1.0, vel=None, toss=False):
+        """Throw carried spear; return spear (free + velocity) or None.
+
+        初速走原版 Weapon.Thrown：vx = c0.vx*0.2 + dir*40*frc；vy = c0.vy*0.5 - 1.5（矛上抬少）。
+        toss=True 改走 Player.TossObject 轻抛（圣徒投矛）：不进 Thrown、不插墙。
+        """
         sp = self.carried_spear
         if sp is None:
             return None
@@ -1574,17 +1580,30 @@ class SlugcatBody:
         sp.last_x, sp.last_y = sp.x, sp.y
         sp.x = sx + float(dir_x) * 18.0
         sp.y = sy - 4.0
+        if toss:
+            sp.vx, sp.vy = weaponphys.toss_velocity(
+                c0, dir_x, float(getattr(sp, "mass", 0.07)), 1, 1.0,
+                one_hand=False)   # 矛是 BigOneHand
+            sp.spin = float(dir_x) * 3.0
+            sp.angle_deg = sp.last_angle = 90.0 if float(dir_x) >= 0.0 else 270.0
+            sp.stuck = False
+            sp.stuck_to = None
+            sp.state = ItemState.FREE
+            self.release_spear(to_free=False)
+            c0.vx += float(dir_x) * 4.0 * recoil
+            c1.vx -= float(dir_x) * 2.0 * recoil
+            return sp
         if vel is None:
-            sp.vx = c0.vx * 0.2 + float(dir_x) * base_speed
-            sp.vy = c0.vy * 0.5 - up
+            sp.vx, sp.vy = weaponphys.throw_velocity(c0, dir_x, True, float(frc))
         else:
             sp.vx = c0.vx * 0.2 + float(vel[0])
             sp.vy = c0.vy * 0.2 + float(vel[1])
         sp.spin = 0.0
-        sp.angle_deg = sp.last_angle = self.spear_hold_angle()
+        sp.angle_deg = sp.last_angle = 90.0 if float(dir_x) >= 0.0 else 270.0  # setRotation = throwDir
         sp.stuck = False
         sp.stuck_to = None
         sp.state = ItemState.FREE
+        weaponphys.begin_thrown(sp, dir_x, float(frc))
         self.release_spear(to_free=False)
         c0.vx += float(dir_x) * 8.0 * recoil
         c1.vx -= float(dir_x) * 4.0 * recoil
