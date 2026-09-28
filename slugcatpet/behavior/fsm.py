@@ -1988,11 +1988,11 @@ class BehaviorFSM:
         p = self._drag_reach_pole()
         self._drag_pole = p
         if p is not None:
-            y = min(max(b.chunk0.y, min(p.ay, p.by)), max(p.ay, p.by))
-            side = "r" if p.bx >= b.chunk0.x else "l"
-            self.gfx.hand_aim[side] = (p.bx, y)      # 伸手抱杆
+            px, py, _d = self._pole_near_point(p)
+            side = "r" if px >= b.chunk0.x else "l"
+            self.gfx.hand_aim[side] = (px, py)       # 伸手抱杆
             self.gfx.hand_aim["l" if side == "r" else "r"] = None
-            self.gfx.look_at = (p.bx, y)
+            self.gfx.look_at = (px, py)
 
     def _drag_grab_item(self) -> bool:
         """够得着就抓最近的果子 / 矛 / 石头（原版：手碰到就抓，抓着不撒手）。"""
@@ -2027,30 +2027,44 @@ class BehaviorFSM:
     def _reach_dist(chunk, item) -> float:
         return math.hypot(item.x - chunk.x, item.y - chunk.y)
 
-    def _drag_reach_pole(self):
-        """够得着的竖杆（原版贴杆就能抱）。"""
-        from ..world.pole import VERTICAL
+    def _pole_near_point(self, p):
+        """杆上离本猫最近的点 (x, y) 与距离：竖杆按 y 夹、横杆按 x 夹。"""
+        from ..world.pole import HORIZONTAL
         b = self.body
+        if p.kind == HORIZONTAL:
+            lo, hi = (p.ax, p.bx) if p.ax <= p.bx else (p.bx, p.ax)
+            x = min(max(b.chunk0.x, lo), hi)
+            y = p.ay
+        else:
+            lo, hi = (p.ay, p.by) if p.ay <= p.by else (p.by, p.ay)
+            x = p.bx
+            y = min(max(b.chunk0.y, lo), hi)
+        d = min(math.hypot(x - b.chunk0.x, y - b.chunk0.y),
+                math.hypot(x - b.chunk1.x, y - b.chunk1.y))
+        return x, y, d
+
+    def _drag_reach_pole(self):
+        """够得着的杆（原版贴杆就能抱）：竖杆横杆都算。"""
         best, bd = None, tuning.DRAG_POLE_R
         for p in getattr(self.win, "poles", ()):
-            if p.kind != VERTICAL:
-                continue
-            lo, hi = (p.ay, p.by) if p.ay <= p.by else (p.by, p.ay)
-            y = min(max(b.chunk0.y, lo), hi)
-            d = min(math.hypot(p.bx - b.chunk0.x, y - b.chunk0.y),
-                    math.hypot(p.bx - b.chunk1.x, y - b.chunk1.y))
+            _x, _y, d = self._pole_near_point(p)
             if d < bd:
                 best, bd = p, d
         return best
 
     def _drag_release(self):
-        """松手：抱着杆 → 抓牢杆子；在顶部放下 → 抓住上边缘；否则自由落。"""
+        """松手：抱着杆 → 抓牢杆子（竖杆爬上去 / 横杆就地挂住）；在顶部放下 → 抓住上边缘；否则自由落。"""
         p = self._drag_pole
         self._drag_pole = None
         from ..world.pole import VERTICAL
-        if p is not None and p.kind == VERTICAL and p in getattr(self.win, "poles", ()):
-            self._pole_handoff(("v", p, "climb"))    # 原版：贴杆松手即抓牢
-            return
+        if p is not None and p in getattr(self.win, "poles", ()):
+            px, _py, d = self._pole_near_point(p)
+            if d <= tuning.DRAG_POLE_R * 1.2:        # 松手那一刻还在杆边才算抱住
+                if p.kind == VERTICAL:
+                    self._pole_handoff(("v", p, "climb"))   # 原版：贴杆松手即抓牢
+                else:
+                    self._pole_handoff(("h", p, px))        # 横杆：就地挂上去
+                return
         if (self._can_ceil_cling() and self._ceiling_reachable()
                 and self.body.wall_cd <= 0):
             self._ceil_placed = True     # 鼠标放到顶边 → 吊住（只有圣徒能）
@@ -2187,7 +2201,8 @@ class BehaviorFSM:
         c0 = self.body.chunk0
         near = (cursor is not None
                 and math.hypot(cursor[0] - c0.x, cursor[1] - c0.y) <= tuning.CURSOR_NEAR_R)
-        if near and inst < LICK_DWELL_TOL:
+        if near:
+            # 只要在附近待着就算（划过来扫一下也会待够，不需要鼠标一动不动）
             self._cursor_dwell += 1
         else:
             self._cursor_dwell = 0
