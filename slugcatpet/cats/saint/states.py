@@ -196,9 +196,13 @@ def _mount_dodgekill(fsm):
 
 
 def _ascend_ready(fsm):
-    """超度双门：业力满 + 好感疏远。"""
-    return (fsm.body.karma >= fsm.body.karma_max
-            and fsm.body.temper <= fsm.win.cat.tuning["temper_ascend_gate"])
+    """超度三门：业力满 + 饱食度满 + 好感疏远。
+
+    业力不满或没吃饱都不能超度（每次超度会立刻耗尽饱食度，见 Ascension._flash）。
+    """
+    b = fsm.body
+    return (b.karma >= b.karma_max and b.food >= b.food_max
+            and b.temper <= fsm.win.cat.tuning["temper_ascend_gate"])
 
 
 def _mount_ascension(fsm):

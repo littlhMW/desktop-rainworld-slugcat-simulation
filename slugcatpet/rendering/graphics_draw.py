@@ -10,7 +10,7 @@ from ..core.units import clampf
 from ..core.gfxmath import (_hsl2rgb, _ang_from_up, _rot, _lerp, _catmull,
                             SHOULDER_OFF_Y, ARM_DIV, ARM_MAX, TAIL_RAD, TONGUE_WIDTH_SCALE)
 from ..rendering.primitives import blit, mesh, ribbon
-from .pixelmode import aa_hint
+from .pixelmode import aa_hint, pen_width
 
 
 class GraphicsDrawMixin:
@@ -158,7 +158,7 @@ class GraphicsDrawMixin:
         col = QColor(*self.BODY)
         p.save()
         aa_hint(p)
-        p.setPen(QPen(col, 0.5))                         # 同色细描边
+        p.setPen(QPen(col, pen_width(0.5)))              # 同色描边；像素模式 ≥1px，无半透明毛边
         p.setBrush(col)
         p.drawPath(path)
         p.restore()

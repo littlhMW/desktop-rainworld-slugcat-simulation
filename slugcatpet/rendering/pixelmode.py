@@ -15,3 +15,14 @@ PIXEL = False
 def aa_hint(p: QPainter, on: bool = True) -> None:
     """按像素模式设置抗锯齿；像素模式下恒关。"""
     p.setRenderHint(QPainter.RenderHint.Antialiasing, bool(on) and not PIXEL)
+
+
+def pen_width(w: float) -> float:
+    """描边宽度：像素模式下 <1px 的宽度只会画出 alpha≈w 的半透明像素（锯齿发虚）。
+
+    原版没有半透明描边，细描边在低分辨率缓冲里会留下 50% 透明度的「毛边」，
+    放大后就是用户看到的半透明锯齿。像素模式下抬到 1px，得到干净硬边。
+    """
+    if PIXEL and w < 1.0:
+        return 1.0
+    return float(w)

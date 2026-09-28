@@ -28,7 +28,9 @@ FRC_NORMAL = (1.0, 1.5)       # Player.ThrowObject: Lerp(1, 1.5, Adrenaline)
 FRC_WEAK = (0.5, 0.75)        # 圣徒 / 力竭：Lerp(0.5, 0.75, Adrenaline)
 FRC_SCAVENGER = 0.35          # Scavenger.ThrowObject（DLC 普通个体）
 FRC_SCAVENGER_ELITE = 0.75    # Elite / Templar
-SPIN_MIN, SPIN_MAX = 100.0, 100.0   # SetRandomSpin: Lerp(-100, 100, rand)
+SPIN_MIN, SPIN_MAX = 100.0, 100.0   # Weapon.SetRandomSpin: Lerp(-100, 100, rand)
+# Spear 覆写 SetRandomSpin（Spear.cs:1150）：(±1) * Lerp(50, 150, rand) * Lerp(0.05, 1, gravity)
+SPEAR_SPIN_MIN, SPEAR_SPIN_MAX = 50.0, 150.0
 
 
 def frc(adrenaline: float = 0.0, weak: bool = False) -> float:
@@ -78,6 +80,20 @@ def set_random_spin(rng, room_gravity: float = 1.0) -> float:
     """Weapon.SetRandomSpin：rotationSpeed = Lerp(-100, 100, rand) * Lerp(0.05, 1, roomGravity)。"""
     k = 0.05 + 0.95 * (0.0 if room_gravity < 0.0 else (1.0 if room_gravity > 1.0 else room_gravity))
     return rng.uniform(-SPIN_MIN, SPIN_MAX) * k
+
+
+def spear_random_spin(rng, room_gravity: float = 1.0) -> float:
+    """Spear.SetRandomSpin：固定正负号，幅值 Lerp(50, 150, rand)（矛比石头轻，翻滚更稳）。"""
+    k = 0.05 + 0.95 * (0.0 if room_gravity < 0.0 else (1.0 if room_gravity > 1.0 else room_gravity))
+    sgn = -1.0 if rng.random() < 0.5 else 1.0
+    return sgn * rng.uniform(SPEAR_SPIN_MIN, SPEAR_SPIN_MAX) * k
+
+
+def vel_angle(vx: float, vy: float) -> float:
+    """投掷物朝向角：0=上、顺时针为正（y↓），与 Spear.tip()/draw_spear 一致。"""
+    if abs(vx) < 1e-9 and abs(vy) < 1e-9:
+        return 90.0
+    return math.degrees(math.atan2(vx, -vy)) % 360.0
 
 
 # ── Player.TossObject（轻抛：圣徒投矛、非武器投掷）──

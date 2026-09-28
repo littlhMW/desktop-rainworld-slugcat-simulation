@@ -7,7 +7,7 @@ from PySide6.QtGui import (QColor, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtCore import QPointF, Qt
 
 from ..core.units import clampf, lerp
-from .pixelmode import aa_hint
+from .pixelmode import aa_hint, pen_width
 
 
 def draw_rope(painter, points, widths, color) -> None:
@@ -166,8 +166,8 @@ def mesh(painter, verts, tris, vcolors, outline: bool = True) -> None:
         b = int((ci[2] + cj[2] + ck[2]) / 3.0)
         col = QColor(r, g, b)
         if outline:
-            # 同色细描边封住 AA 接缝
-            painter.setPen(QPen(col, 0.5))
+            # 同色描边封住三角接缝；像素模式下抬到 1px，避免半透明毛边
+            painter.setPen(QPen(col, pen_width(0.5)))
         painter.setBrush(col)
         poly = QPolygonF([QPointF(vi[0], vi[1]),
                           QPointF(vj[0], vj[1]),
@@ -182,7 +182,6 @@ def mesh(painter, verts, tris, vcolors, outline: bool = True) -> None:
 SPEAR_DRAW_LEN = 46.0       # 与世界 Spear.LEN 一致
 SPEAR_SPRITE = "SmallSpear"
 SPEAR_ART_LEN = 53.0        # SmallSpear 贴图里杆本身的可视长度（像素）
-SPEAR_TIP_PIVOT_Y = 0.85    # 原版：插住时以杆尖为轴（anchorY 0.85）
 SPEAR_RGB = (27, 11, 33)    # 原版 Spear.ApplyPalette：color = palette.blackColor
 PEARL_SPRITE = "JetFishEyeA"      # 原版珍珠本体（6x6 圆）
 PEARL_ART_RAD = 3.0               # 本体贴图半径（像素），用于换算缩放
@@ -213,11 +212,14 @@ def draw_pearl(painter, atlas, x, y, rot_deg=0.0, tint=(255, 255, 255), rad=4.5,
 
 
 def draw_spear(painter, atlas, x, y, ang_deg, length=46.0,
-               tint=SPEAR_RGB, pivot_tip=False) -> None:
-    """矛：原版 SmallSpear 贴图（白剪影按杆色染色）；ang 0=朝上、顺时针为正（y↓）。"""
+               tint=SPEAR_RGB) -> None:
+    """矛：原版 SmallSpear 贴图（白剪影按杆色染色）；ang 0=朝上、顺时针为正（y↓）。
+
+    锚点恒为杆中点（与 Spear.tip()/butt() 的世界系一致）：贴图尖端在图像顶部，
+    所以角度方向即尖端方向。
+    """
     k = length / SPEAR_ART_LEN
-    blit(painter, atlas, SPEAR_SPRITE, x, y, ang_deg, k, k, tint,
-         ax=0.5, ay=SPEAR_TIP_PIVOT_Y if pivot_tip else 0.5)
+    blit(painter, atlas, SPEAR_SPRITE, x, y, ang_deg, k, k, tint, ax=0.5, ay=0.5)
 
 
 def _scale_rgb(rgb, k):

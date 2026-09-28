@@ -35,7 +35,7 @@ from .scavenger import (Scavenger, BODY_RAD as SCAV_BODY_RAD,
                         STAND_H as SCAV_STAND_H)
 from .pole import POLE_RAD, MIN_LENGTH as POLE_MIN_LENGTH, TOP_MARGIN as POLE_TOP_MARGIN
 from ..behavior import tuning
-from ..rendering.pixelmode import aa_hint
+from ..rendering.pixelmode import aa_hint, pen_width
 
 
 STALK_ROOT_W = 3.0
@@ -582,7 +582,7 @@ class ItemInteractionMixin:
     def _draw_pole_rod(self, p, ax, ay, bx, by, rad):
         """单层均一色杆体，无描边。"""
         core = QPen(QColor(*POLE_COLOR))
-        core.setWidthF(rad * 2.0)
+        core.setWidthF(pen_width(rad * 2.0))
         core.setCapStyle(Qt.PenCapStyle.FlatCap)
         p.setPen(core)
         p.drawLine(QPointF(ax, ay), QPointF(bx, by))
@@ -2011,8 +2011,7 @@ class ItemInteractionMixin:
             x = sp.last_x + (sp.x - sp.last_x) * ts
             y = sp.last_y + (sp.y - sp.last_y) * ts
             ang = sp.stuck_angle if sp.stuck else _ang_lerp(sp.last_angle, sp.angle_deg, ts)
-            draw_spear(p, self.atlas, x, y, ang, length=SPEAR_DRAW_LEN,
-                       pivot_tip=sp.stuck)
+            draw_spear(p, self.atlas, x, y, ang, length=SPEAR_DRAW_LEN)
 
     def _draw_spear_hint(self, p):
         cur = self.cursor_logical()

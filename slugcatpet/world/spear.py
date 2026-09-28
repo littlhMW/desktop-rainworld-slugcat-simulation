@@ -39,10 +39,10 @@ class Spear:
     __slots__ = ("x", "y", "vx", "vy", "last_x", "last_y", "rad", "mass", "gravity",
                  "air_friction", "bounce", "surface_friction", "buoyancy", "water_friction",
                  "water_y", "room_gravity",
-                 "state", "angle_deg", "last_angle", "spin", "stuck", "stuck_angle",
+                 "state", "angle_deg", "last_angle", "spin", "spinning", "stuck", "stuck_angle",
                  "_id", "_rng", "_contact_floor", "_contact_x", "_impact_cb",
                  "_thrown", "_throw_dir", "_exit_spd", "_throw_x", "_throw_y",
-                 "collide_with_objects", "held_by", "embedded", "stuck_to")
+                 "collide_with_objects", "held_by", "embedded", "stuck_to", "_still")
 
     def __init__(self, x: float, y: float, seed: int = 0, angle_deg: float = 90.0):
         self.x = self.last_x = float(x)
@@ -56,6 +56,8 @@ class Spear:
         self.state = ItemState.FREE
         self.angle_deg = self.last_angle = float(angle_deg)
         self.spin = 0.0
+        self.spinning = False          # Spear.spinning：翻滚中（控制触地收势）
+        self._still = 0                # stillCounter：spinning 期间连续静止帧
         self.stuck = False
         self.stuck_angle = float(angle_deg)
         self.embedded = STUCK_SINK
@@ -99,6 +101,8 @@ class Spear:
         self._thrown = False
         self.vx = self.vy = 0.0
         self.spin = 0.0
+        self.spinning = False
+        self._still = 0
         if wall:                                    # 掷进侧墙：杆横着插住
             self.stuck_angle = 90.0 if wall > 0 else 270.0
             self.x = (WL - LEN * 0.5 + self.embedded) if wall > 0 else (LEN * 0.5 - self.embedded)
@@ -111,10 +115,26 @@ class Spear:
         self.embedded = STUCK_SINK
 
     def _enter_free(self) -> None:
-        """Weapon.ChangeMode(Free)：SetRandomSpin + 退出投掷态。"""
+        """Weapon.Update 退出 Thrown：SetRandomSpin + ChangeMode(Free)。"""
         self._thrown = False
         self._exit_spd = 0.0
-        self.spin = wp.set_random_spin(self._rng, self.room_gravity)
+        self.spinning = True
+        self._still = 0
+        self.spin = wp.spear_random_spin(self._rng, self.room_gravity)
+
+    def rest_on_ground(self) -> None:
+        """Spear.Update(Free+spinning) 的收势：停转、速度清零、杆尖朝下插进地面。
+
+        原版：rotation = DegToVec(Lerp(-50,50,rand)+180) —— 杆尖向地，杆身斜插出地面。
+        位置不动（不像旧实现那样瞬移到立杆位），所以落地不再有跳动/抖动。
+        """
+        self.spinning = False
+        self._still = 0
+        self.spin = 0.0
+        self.angle_deg = self.last_angle = 180.0 + self._rng.uniform(-50.0, 50.0)
+        self.stuck_angle = self.angle_deg
+        self.vx = self.vy = 0.0
+        self.stuck = True
 
     def step(self, WL: float, HL: float) -> None:
         if self.stuck or self.state in (ItemState.MOUSE, ItemState.CARRIED):
@@ -141,8 +161,18 @@ class Spear:
             elif wp.exit_check(self):
                 self._enter_free()
             return
-        # Mode.Free：位移够大就乱转（原版 !DistLess(lastPos, pos, 6f) → SetRandomSpin）
-        if math.hypot(self.x - self.last_x, self.y - self.last_y) > 6.0:
-            self.spin = wp.set_random_spin(self._rng, self.room_gravity)
-        if self._contact_floor:                     # 旋转中的矛碰地即插住
-            self.stick(WL, HL)
+        # Mode.Free（Spear.cs:470-492）
+        moved = math.hypot(self.x - self.last_x, self.y - self.last_y)
+        if self.spinning:
+            # 翻滚中：触地 或 连续 20 帧几乎不动 → 收势插地
+            if moved < 4.0 * self.room_gravity:
+                self._still += 1
+            else:
+                self._still = 0
+            if self._contact_floor or self._still > 20:
+                self.rest_on_ground()
+        elif moved > 6.0:
+            # 未翻滚且位移够大 → 起转（SetRandomSpin 后 spinning=True，之后转速固定）
+            self.spinning = True
+            self._still = 0
+            self.spin = wp.spear_random_spin(self._rng, self.room_gravity)

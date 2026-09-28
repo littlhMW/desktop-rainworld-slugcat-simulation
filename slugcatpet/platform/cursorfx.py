@@ -82,7 +82,8 @@ class CursorHijack:
     """光标劫持。坐标 = Win32 物理像素（屏幕全局，已由 window 按 dpr 换算）。"""
 
     def __init__(self, dev_x, dev_y, screen_w, screen_h, screen_x=0, screen_y=0, mock=False,
-                 lock_ticks=T_CURSOR_LOCK, mode="fall", watchdog_max=WATCHDOG_MAX):
+                 lock_ticks=T_CURSOR_LOCK, mode="fall", watchdog_max=WATCHDOG_MAX,
+                 restore_on_land=False):
         self.mock = mock or not _IS_WIN
         self.x = float(dev_x)
         self.y = float(dev_y)
@@ -98,6 +99,7 @@ class CursorHijack:
         self.lock_t = 0
         self.watchdog = 0
         self.watchdog_max = int(watchdog_max)
+        self.restore_on_land = bool(restore_on_land)   # 落到屏幕底边即恢复系统光标
         self.use_setpos = False     # ClipCursor 失败降级标志
         self.active = True
         _ACTIVE.append(self)
@@ -123,6 +125,9 @@ class CursorHijack:
             if self.y >= self.bottom:
                 self.y = self.bottom
                 self.vy = 0.0
+                if self.restore_on_land:          # 超度：落地立刻还回光标，不再锁定
+                    self.release()
+                    return False
                 self.phase = "lock"
                 self.lock_t = 0
         elif self.phase == "lock":

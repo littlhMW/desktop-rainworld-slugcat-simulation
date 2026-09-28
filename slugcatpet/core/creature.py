@@ -71,6 +71,9 @@ ZEROG_POLE_LEAN = 5.0
 
 CARRY_OFF_X = 20.0
 CARRY_OFF_Y = 12.0
+# 出膛点：Player.ThrowObject → thrownPos = firstChunk.pos + throwDir*10 + (0,4)（游戏 y↑）
+THROW_ORIGIN_DX = 10.0
+THROW_ORIGIN_DY = 4.0
 EAT_BITES_MIN = 1
 
 # 浅水浮沉常量
@@ -1498,12 +1501,12 @@ class SlugcatBody:
         if s is None:
             return None
         c0, c1 = self.chunk0, self.chunk1
-        side = self.carry_hand
-        sx, sy = self._carry_pos(side)
+        sx = c0.x + float(dir_x) * THROW_ORIGIN_DX
+        sy = c0.y - THROW_ORIGIN_DY
         s.last_x, s.last_y = s.x, s.y
         s.last_rotation = s.rotation_deg
-        s.x = sx + float(dir_x) * 18.0
-        s.y = sy - 4.0
+        s.x = sx
+        s.y = sy
         if vel is None:
             s.vx, s.vy = weaponphys.throw_velocity(c0, dir_x, False, float(frc))
         else:
@@ -1575,11 +1578,11 @@ class SlugcatBody:
         if sp is None:
             return None
         c0, c1 = self.chunk0, self.chunk1
-        side = self.carry_hand
-        sx, sy = self._carry_pos(side)
+        sx = c0.x + float(dir_x) * THROW_ORIGIN_DX
+        sy = c0.y - THROW_ORIGIN_DY
         sp.last_x, sp.last_y = sp.x, sp.y
-        sp.x = sx + float(dir_x) * 18.0
-        sp.y = sy - 4.0
+        sp.x = sx
+        sp.y = sy
         if toss:
             sp.vx, sp.vy = weaponphys.toss_velocity(
                 c0, dir_x, float(getattr(sp, "mass", 0.07)), 1, 1.0,
@@ -1599,7 +1602,9 @@ class SlugcatBody:
             sp.vx = c0.vx * 0.2 + float(vel[0])
             sp.vy = c0.vy * 0.2 + float(vel[1])
         sp.spin = 0.0
-        sp.angle_deg = sp.last_angle = 90.0 if float(dir_x) >= 0.0 else 270.0  # setRotation = throwDir
+        # 原版 setRotation = throwDir（水平）；AI 走抛物线预判时按真实初速取角，
+        # 否则上抛的矛会横着飞（杆身与弹道/朝向不一致）。
+        sp.angle_deg = sp.last_angle = weaponphys.vel_angle(sp.vx, sp.vy)
         sp.stuck = False
         sp.stuck_to = None
         sp.state = ItemState.FREE

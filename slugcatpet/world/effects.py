@@ -19,7 +19,8 @@ class EffectsMixin:
         return ((self._area.x() + logical_x * self._scale) * dpr,
                 (self._area.y() + logical_y * self._scale) * dpr)
 
-    def start_cursor_hijack(self, logical_x, logical_y, lock_ticks=None):
+    def start_cursor_hijack(self, logical_x, logical_y, lock_ticks=None,
+                            restore_on_land=False):
         from ..platform.cursorfx import CursorHijack
 
         dpr = self.devicePixelRatioF()
@@ -27,7 +28,8 @@ class EffectsMixin:
         kw = {} if lock_ticks is None else {"lock_ticks": lock_ticks}
         self.cursor_hijack = CursorHijack(
             dev_x, dev_y, self._area.width() * dpr, self._area.height() * dpr,
-            self._area.x() * dpr, self._area.y() * dpr, **kw)
+            self._area.x() * dpr, self._area.y() * dpr,
+            restore_on_land=restore_on_land, **kw)
 
     def start_cursor_hold(self, logical_x, logical_y, max_ticks):
         from ..platform.cursorfx import CursorHijack
