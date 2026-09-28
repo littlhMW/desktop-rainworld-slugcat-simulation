@@ -7,6 +7,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QPainter, QPixmap, QRadialGradient
 
 from ..core.units import lerp, clampf
+from ..rendering.pixelmode import aa_hint
 
 _INTENSITY_PEAK = 1.8
 
@@ -89,7 +90,7 @@ class Snowfall:
             pm = QPixmap(key[0], key[1])
             pm.fill(QColor(0, 0, 0, 0))
             painter = QPainter(pm)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            aa_hint(painter)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.scale(scale, scale)
             rad = math.hypot(WL, HL) * 0.5
@@ -112,7 +113,7 @@ class Snowfall:
         if norm <= 0.0 and not self._flakes:
             return
         p.save()
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        aa_hint(p)
         p.setPen(Qt.PenStyle.NoPen)
         if norm > 0.0 and self.vignette_max > 0:
             p.save()

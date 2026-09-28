@@ -10,6 +10,7 @@ from ..core.units import clampf
 from ..core.gfxmath import (_hsl2rgb, _ang_from_up, _rot, _lerp, _catmull,
                             SHOULDER_OFF_Y, ARM_DIV, ARM_MAX, TAIL_RAD, TONGUE_WIDTH_SCALE)
 from ..rendering.primitives import blit, mesh, ribbon
+from .pixelmode import aa_hint
 
 
 class GraphicsDrawMixin:
@@ -156,7 +157,7 @@ class GraphicsDrawMixin:
         path.setFillRule(Qt.FillRule.WindingFill)        # 防自交留洞
         col = QColor(*self.BODY)
         p.save()
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        aa_hint(p)
         p.setPen(QPen(col, 0.5))                         # 同色细描边
         p.setBrush(col)
         p.drawPath(path)

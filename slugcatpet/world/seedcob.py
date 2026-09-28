@@ -14,6 +14,7 @@ from ..core.units import clampf, lerp
 from ..rendering.primitives import blit
 from .fruit import Fruit
 from .enums import ItemState
+from ..rendering.pixelmode import aa_hint
 
 ROOT_Y = -10.0                 # 原版 rootPos = (placedPos.x, -10)：锚在房顶之上
 STALK_SEG_MAX = 50
@@ -336,7 +337,7 @@ def draw_seedcob(painter, atlas, cob, ts: float = 1.0, black=PALETTE_BLACK) -> N
     root = cob.root_pos
     D = math.dist(root, cob.placed)
     painter.save()
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    aa_hint(painter)
     painter.setPen(Qt.PenStyle.NoPen)
 
     # ── 茎：Bezier 中心线 + 逐段锥形四边形 ──
@@ -483,7 +484,7 @@ def draw_seed(painter, atlas, seed, ts: float = 1.0) -> None:
     x = seed.last_x + (seed.x - seed.last_x) * ts
     y = seed.last_y + (seed.y - seed.last_y) * ts
     painter.save()
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    aa_hint(painter)
     blit(painter, atlas, SEED_SPRITE, x, y, 0.0, 1.0, 1.0, yellow_color(False))
     blit(painter, atlas, SEED_DOT_ALIVE, x, y, 0.0, 1.0, 1.0, seed_dot_color(False))
     painter.restore()

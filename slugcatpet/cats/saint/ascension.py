@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 from ...core.units import K_VEL, K_IMP, clampf
+from ...rendering.pixelmode import aa_hint
 
 T_ASCEND_TIMEOUT = 1200
 
@@ -296,7 +297,7 @@ class Ascension:
         from ...rendering.primitives import ribbon
         from PySide6.QtGui import QPainter
         p.save()
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        aa_hint(p)
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
         for i, t in enumerate(self.tentacles):
             if i >= self.tentacles_visible:
@@ -329,7 +330,7 @@ class Ascension:
         if self.flashed:
             return
         from PySide6.QtGui import QPainter
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        aa_hint(p)
         flat_x, flat_y = self.fx, self.fy   # 光斑位 = body + burst
         # 眼位 = rubber_mark + rubber_mouse，-60 向上偏移
         eye_x = self.rubber_mark_x + self.rubber_mouse_x

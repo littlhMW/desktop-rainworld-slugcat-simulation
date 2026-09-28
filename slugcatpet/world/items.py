@@ -33,6 +33,7 @@ from .scavenger import (Scavenger, BODY_RAD as SCAV_BODY_RAD,
                         STAND_H as SCAV_STAND_H)
 from .pole import POLE_RAD, MIN_LENGTH as POLE_MIN_LENGTH, TOP_MARGIN as POLE_TOP_MARGIN
 from ..behavior import tuning
+from ..rendering.pixelmode import aa_hint
 
 
 STALK_ROOT_W = 3.0
@@ -844,7 +845,7 @@ class ItemInteractionMixin:
         bx = m.last_x + (m.x - m.last_x) * ts
         by = m.last_y + (m.y - m.last_y) * ts
         p.save()
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        aa_hint(p)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QBrush(QColor(*body)))
         for idx, t in enumerate(T):
@@ -1049,7 +1050,7 @@ class ItemInteractionMixin:
         flap_depth = bat.last_flap_depth + (bat.flap_depth - bat.last_flap_depth) * ts
         steer = lerp(bat.last_steer, bat.steer, ts)
         p.save()
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        aa_hint(p)
         p.setPen(Qt.PenStyle.NoPen)
         for i in range(2):
             if (i == 0 and bat.bites != 3) or (i == 1 and bat.bites <= 1):
@@ -1127,7 +1128,7 @@ class ItemInteractionMixin:
         from PySide6.QtGui import QPainter
         p.save()
         p.setOpacity(0.5)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        aa_hint(p)
         p.setPen(Qt.PenStyle.NoPen)
         self._draw_batfly_wing(p, cx, cy, -115.0, -0.9)
         self._draw_batfly_wing(p, cx, cy, 115.0, 0.9)

@@ -4,12 +4,14 @@ import os
 import random
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, QTimer, QElapsedTimer, QRect, QPoint, QPointF, QRectF
-from PySide6.QtGui import QPainter, QColor, QGuiApplication, QCursor
+from PySide6.QtGui import QImage, QPainter, QColor, QGuiApplication, QCursor
 
 from .behavior import tuning
 from .rendering.atlas import AtlasSet
 from .rendering.layout import Layout
 from .rendering.primitives import blit
+from .rendering import pixelmode
+from .rendering.pixelmode import aa_hint
 from .petunit import PetUnit
 from .core import chunkphys
 from .core.units import clampf, lerp
@@ -96,6 +98,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         geom = compute_geometry(area, geo, s)
         self._area = area                     # 工作区（不含下延带）
         self._scale = s
+        self._pixbuf = None
+        pixelmode.PIXEL = True          # 全局像素模式：本体风格硬边像素
         self._WL = geom["WL"]
         self._HL = geom["HL"]                  # 地板线=工作区底边，下延后不变
         self._ground_inset = geom["ground_inset"] / s if s else 0.0
@@ -1109,70 +1113,108 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         p.restore()
 
     def paintEvent(self, _):
-        # 图层序：果绳/烟 → 猫身 → 杆/手 → 果石黏菌蝠 → 水 → 灯 → 特效 → 雪
+        # 像素模式：先在 WL×HL 低分辨率缓冲里 1:1 画完，再整数倍最近邻放大到窗口，
+        # 得到与本体一致的硬边像素观感。关时直接画到窗口。
+        s = self._scale or 1
+        bw = max(1, -(-self.width() // s))
+        bh = max(1, -(-self.height() // s))
+        if pixelmode.PIXEL:
+            buf = self._pixbuf
+            if buf is None or buf.width() != bw or buf.height() != bh:
+                buf = QImage(bw, bh, QImage.Format.Format_ARGB32_Premultiplied)
+                self._pixbuf = buf
+            buf.fill(Qt.GlobalColor.transparent)
+
         p = QPainter(self)
         try:
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
-            p.scale(self._scale, self._scale)
-            if self._shake[0] or self._shake[1]:
-                p.translate(self._shake[0], self._shake[1])
-
-            if self.fruits:
-                self._draw_fruit_ropes(p)
-
-            if self.seedcobs:
-                self._draw_seedcobs(p)
-
-            self._draw_fx_under(p)
-
-            for pet in self.pets:
-                fx = pet.behavior.exclusive_fx() if pet.behavior is not None else None
-                if fx is not None:
-                    fx.draw_under(p, self._ts)
-                pet.gfx.draw_sprites(p, self.atlas, timeStacker=self._ts)
-
-            if self.poles:
-                self._draw_poles(p)
-            for pet in self.pets:
-                pet.gfx._draw_hand_grips(p, self.atlas, self._ts)
-
-            if self.fruits:
-                self._draw_fruits(p)
-            if self.stones:
-                self._draw_stones(p)
-            if self.slimemolds:
-                self._draw_slimemolds(p)
-            if self.batflies:
-                self._draw_batflies(p)
-            if self.lizards:
-                self._draw_lizards(p)
-            if self.pearls:
-                self._draw_pearls(p)
-            if self.spears:
-                self._draw_spears(p)
-            if self.seeds:
-                self._draw_seeds(p)
-            if self.squidcadas:
-                self._draw_squidcadas(p)
-            if self.scavengers:
-                self._draw_scavengers(p)
-
-            if self.water_surface is not None:
-                self._draw_water(p)
-
-            if self.lamp is not None:
-                self._draw_lamp(p)
-
-            self._draw_fx(p)
-
-            if self.snow_on:
-                self._snow.draw(p, self._WL, self._HL, self._scale)
-
-            if self._place_mode:
-                self._draw_place_hint(p)
-
+            if pixelmode.PIXEL:
+                # 只重绘 Qt 标记的脏区（设备像素 → 逻辑像素）
+                cr = p.clipBoundingRect()
+                bp = QPainter(buf)
+                try:
+                    bp.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+                    aa_hint(bp, False)
+                    # 空剪辑区 = 无剪辑（Qt 对未设置剪辑的 painter 返回空 QRectF）
+                    cw_ok = cr.width() > 0.0 and cr.height() > 0.0
+                    if cw_ok and (cr.x() > 0.0 or cr.y() > 0.0
+                                  or cr.right() + 1.0 < bw * s or cr.bottom() + 1.0 < bh * s):
+                        lx0 = max(0, int(cr.x()) // s)
+                        ly0 = max(0, int(cr.y()) // s)
+                        lx1 = min(bw, -(-int(cr.right()) // s) + 1)
+                        ly1 = min(bh, -(-int(cr.bottom()) // s) + 1)
+                        bp.setClipRect(QRectF(lx0, ly0, max(0, lx1 - lx0), max(0, ly1 - ly0)))
+                    self._paint_world(bp, 1.0)
+                finally:
+                    bp.end()
+                p.drawImage(QRect(0, 0, bw * s, bh * s), buf)
+                return
+            self._paint_world(p)
         finally:
             p.end()
+
+    def _paint_world(self, p, draw_scale=None):
+        # 图层序：果绳/烟 → 猫身 → 杆/手 → 果石黏菌蝠 → 水 → 灯 → 特效 → 雪
+        # 像素模式下缓已是 1:1 逻辑像素，不再乘放大倍率
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+        sc = self._scale if draw_scale is None else draw_scale
+        p.scale(sc, sc)
+        if self._shake[0] or self._shake[1]:
+            p.translate(self._shake[0], self._shake[1])
+
+        if self.fruits:
+            self._draw_fruit_ropes(p)
+
+        if self.seedcobs:
+            self._draw_seedcobs(p)
+
+        self._draw_fx_under(p)
+
+        for pet in self.pets:
+            fx = pet.behavior.exclusive_fx() if pet.behavior is not None else None
+            if fx is not None:
+                fx.draw_under(p, self._ts)
+            pet.gfx.draw_sprites(p, self.atlas, timeStacker=self._ts)
+
+        if self.poles:
+            self._draw_poles(p)
+        for pet in self.pets:
+            pet.gfx._draw_hand_grips(p, self.atlas, self._ts)
+
+        if self.fruits:
+            self._draw_fruits(p)
+        if self.stones:
+            self._draw_stones(p)
+        if self.slimemolds:
+            self._draw_slimemolds(p)
+        if self.batflies:
+            self._draw_batflies(p)
+        if self.lizards:
+            self._draw_lizards(p)
+        if self.pearls:
+            self._draw_pearls(p)
+        if self.spears:
+            self._draw_spears(p)
+        if self.seeds:
+            self._draw_seeds(p)
+        if self.squidcadas:
+            self._draw_squidcadas(p)
+        if self.scavengers:
+            self._draw_scavengers(p)
+
+        if self.water_surface is not None:
+            self._draw_water(p)
+
+        if self.lamp is not None:
+            self._draw_lamp(p)
+
+        self._draw_fx(p)
+
+        if self.snow_on:
+            self._snow.draw(p, self._WL, self._HL, self._scale)
+
+        if self._place_mode:
+            self._draw_place_hint(p)
 
     def mousePressEvent(self, e):
         if self._place_mode:

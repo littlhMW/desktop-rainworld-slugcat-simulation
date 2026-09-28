@@ -21,6 +21,7 @@ from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath
 
 from ..core.units import clampf, lerp, inv_lerp
 from .lizard import BODY_SCALE, BLACK_RGB, _ang_from_up
+from ..rendering.pixelmode import aa_hint
 
 HEAD_KEY = "base"
 NUM14 = 0                      # 头片行号：0 = 正侧面（游戏 |headDepthRotation|≈1）
@@ -161,7 +162,7 @@ def draw_lizard(p, atlas, lz, ts: float) -> None:
     color = lz.color
 
     p.save()
-    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    aa_hint(p)
     p.setPen(Qt.PenStyle.NoPen)
 
     _draw_body(p, lz, spine, rads)

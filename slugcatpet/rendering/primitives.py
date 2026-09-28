@@ -7,6 +7,7 @@ from PySide6.QtGui import (QColor, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtCore import QPointF, Qt
 
 from ..core.units import clampf, lerp
+from .pixelmode import aa_hint
 
 
 def draw_rope(painter, points, widths, color) -> None:
@@ -40,7 +41,7 @@ def draw_rope(painter, points, widths, color) -> None:
     path.setFillRule(Qt.FillRule.WindingFill)            # 防自交留洞
 
     painter.save()
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    aa_hint(painter)
     painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(QColor(*color) if not isinstance(color, QColor) else color)
     painter.drawPath(path)
@@ -95,7 +96,7 @@ def draw_stone_trail(painter, x, y, ux, uy, length, halfwidth, color, alpha) -> 
     col = QColor(color if isinstance(color, QColor) else QColor(*color))
     col.setAlpha(alpha)
     painter.save()
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    aa_hint(painter)
     painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(col)
     painter.drawPolygon(poly)
@@ -137,7 +138,7 @@ def ribbon(painter, points, halfwidths, colors) -> None:
         grad.setColorAt(i / (n - 1), QColor(*c))
 
     painter.save()
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    aa_hint(painter)
     painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(grad)
     painter.drawPath(path)
@@ -149,7 +150,7 @@ def mesh(painter, verts, tris, vcolors, outline: bool = True) -> None:
     if not verts or not tris:
         return
     painter.save()
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    aa_hint(painter)
     if not outline:
         painter.setPen(Qt.PenStyle.NoPen)
     n = len(verts)
@@ -197,7 +198,7 @@ def draw_pearl(painter, atlas, x, y, rot_deg=0.0, tint=(255, 255, 255), rad=4.5,
     star = _mix_rgb(_scale_rgb(tint, 1.3), (255, 255, 255),
                     0.5 + 0.5 * glimmer)
     painter.save()
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    aa_hint(painter)
     if glimmer > 0.01:                       # 柔光（原版 Futile_White + 0.5*num 透明度）
         g = QRadialGradient(QPointF(x, y), 10.0 * glimmer * k)
         g.setColorAt(0.0, QColor(tint[0], tint[1], tint[2], int(150 * glimmer)))
@@ -600,7 +601,7 @@ def draw_scavenger(painter, atlas, sc, ts=1.0, body_rgb=None, head_rgb=None,
     hip_pt = (0.0, 0.0)
 
     painter.save()
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    aa_hint(painter)
     painter.setPen(Qt.PenStyle.NoPen)
 
     # ── 尾（原版 Tail：tailSegs 段，从髋向后下方垂）──

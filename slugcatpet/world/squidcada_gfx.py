@@ -19,6 +19,7 @@ from PySide6.QtGui import QPainter
 from ..core.units import clampf, lerp
 from ..core.gfxmath import _hsl2rgb
 from ..rendering.primitives import blit, draw_rope
+from ..rendering.pixelmode import aa_hint
 
 FOG_RGB = (78, 92, 104)
 BLACK_RGB = (27, 11, 33)          # 同原版 palette.blackColor
@@ -80,7 +81,7 @@ def draw_squidcada(painter, atlas, sc, ts) -> None:
     tilt = abs(ux)
 
     painter.save()
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    aa_hint(painter)
     # 后背高光（原版 HighlightSprite：Circle20）
     hx, hy = x - ux * 6.0, y - uy * 6.0 + 3.0
     blit(painter, atlas, "Circle20", hx, hy, aim + 12.0,

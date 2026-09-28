@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QPainter
+from ..rendering.pixelmode import aa_hint
 
 
 class EffectsMixin:
@@ -93,7 +94,7 @@ class EffectsMixin:
             return
         from .explosionfx_draw import draw_fx_under
         p.save()
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        aa_hint(p)
         draw_fx_under(p, self.fx)
         p.restore()
 
@@ -105,7 +106,7 @@ class EffectsMixin:
         if not (self.shockwaves or self.sparks or self.fx or pet_fx):
             return
         p.save()
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        aa_hint(p)
         p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
         from PySide6.QtGui import QPen
         for w in self.shockwaves:
