@@ -12,6 +12,7 @@ from ..planning.fly_reach import in_reach
 from .blocking import (blocks_path, yield_target_x, on_same_pole,
                         pole_in_the_way, pole_push_role)
 from . import social
+from .board import board_for
 from .desire import build_arbiter, MoodContext
 from .interest import goal_key as _interest_key
 from .fetch import (fetch_ready, BITE_HEAD_NUDGE, EAT_APPROACH, EAT_CHOMP_POSE,
@@ -339,7 +340,10 @@ class BehaviorFSM:
         self.fetch = None
         self.planner = Planner(window)
         self._fetch_cooldown = 0
-        self._fetch_check = 0
+        # 取果闸相位错峰：_fetch_check 每 tick 加一，初值按猫的序号错开 ⇒ 十只猫
+        # 的「什么时候重新挑目标」天然分散，不再同一个心跳一起重算、一起扑同一个
+        # 目标。用序号推导（不抽自己的 rng），行为序列对同一种子仍完全可复现。
+        self._fetch_check = (int(getattr(window, "index", 0) or 0) * 3) % T_FETCH_CHECK
         self._shoved_ticks = 0
         self._makeway_of = None
         self._flee_from = None
@@ -381,6 +385,7 @@ class BehaviorFSM:
         self._help_target = None
         self._protest_left = 0
         self._protest_target = None
+        self._grudge = {}                # 被抢的记忆：(对方 id, 自己 id) → (对象, 到期)
         self._fight_left = 0
         self._fight_target = None
         self._fight_climber = None       # 为够到高处的目标而爬的那根竖杆
@@ -862,6 +867,11 @@ class BehaviorFSM:
 
         # 挡路互动扫描
         self._scan_blocking()
+
+        # 认领板：把这只猫此刻的「正事目标」登记成认领（认领 / 拥挤成本 /
+        # 失败黑名单都从这里来，见 board.py）。放在仲裁之前，本 tick 的
+        # 选择就能看到同伴们此刻盯上了什么。
+        board_for(self.win).sync(self.win, getattr(self.win, "_pole_tick", 0))
 
         # 面敌逻辑（合并旧「躲蜥蜴」+「恐惧」两套）：威胁的唯一入口。
         # 恐慌区（FEAR_TOO_CLOSE_R 内）不管手头有没有正事一律接管；中距离只在
@@ -4698,11 +4708,14 @@ class BehaviorFSM:
         soc = getattr(pers, "sociability", 0.5)
         pl = getattr(pers, "point_like", 0.5)
         cl = getattr(pers, "crawl_like", 0.5)
+        # 被它抢过东西：这笔账还没过期的话，社交动作明显偏向「指指点点」
+        # （性格只决定平常的分布，记仇是跨性格的）
+        grudge = tuning.GRUDGE_SCOLD_MUL if self._grudge_alive(tgt) else 1.0
         opts = [
             ("pet", tuning.PET_BASE * (0.4 + 1.2 * soc)),      # 抚摸：喜欢/安抚
             ("pat", tuning.PAT_BASE * (0.4 + 1.2 * soc)),      # 拍拍：喜欢/安抚
             ("point", tuning.POINTHOLD_BASE),                  # 指向：想要/注意
-            ("scold", tuning.SOCIAL_SCOLD_BASE * (0.3 + 1.4 * pl)),   # 指指点点
+            ("scold", tuning.SOCIAL_SCOLD_BASE * (0.3 + 1.4 * pl) * grudge),  # 指指点点
         ]
         if cl > 0.25:
             # 匍匐族只剩「匍匐行走（害怕强敌潜行）」，而且必须是附近真有蜥蜴才抽得到：
@@ -4721,12 +4734,35 @@ class BehaviorFSM:
         return opts[-1][0]
 
     def _start_protest(self, thief):
-        """被抢东西 → 过去扒拉指指点点。"""
+        """被抢东西 → 过去扒拉指指点点（旁边的同伴看见也会跟着起哄）。"""
         self._social_kind = "protest"
         self._social_target = thief
         self._social_left = tuning.PROTEST_TICKS
         self._break_active_controllers()
         self._transition("Socialize")
+        self._witness_protest(thief)
+
+    def _witness_protest(self, thief):
+        """目击同伴被抢：闲着又看得见的猫有概率跟着一起指指点点。
+
+        原版拾荒者的威吓/指认本来就是群体行为；这里让「一个猫的动作被另一只
+        猫看见、然后产生下一个动作」自然成链。不会引爆全场：只挑此刻无事、
+        还没在抗议冷却里的猫，而且每只猫抗议完自己也会进冷却。
+        """
+        for p in self._living_peers():
+            if p is self.win or getattr(p.body, "dead", False):
+                continue
+            beh = getattr(p, "behavior", None)
+            if (beh is None or beh._protest_cd > 0 or beh.grab.active
+                    or beh.state not in _WANTS_FROM):
+                continue
+            d = math.hypot(p.body.chunk1.x - self.body.chunk1.x,
+                           p.body.chunk1.y - self.body.chunk1.y)
+            if d > tuning.PROTEST_WITNESS_R:
+                continue
+            if self.rng.random() >= tuning.PROTEST_WITNESS_P:
+                continue
+            beh._protest_target = thief
 
     def _watch_fetch_steal(self):
         """盯住正在取的果子：被别人抢先拿走 → 记下小偷，回头去扒拉。"""
@@ -4743,17 +4779,43 @@ class BehaviorFSM:
                 self._fetch_watch = None
             return
         self._fetch_watch = None
-        thief = None
-        for p in self._living_peers():
-            if p.body.carried_fruit is f:
-                thief = p
-                break
+        thief = self._thief_of(f)
         if thief is None:
-            thief = self._nearest_peer()
-        if thief is not None:
-            self._protest_target = thief
-            if self.state in _WANTS_FROM and self._protest_cd <= 0:
-                self._start_protest(thief)
+            # 认不出是谁拿走的：只当「东西没了」，不冤枉最近的同伴
+            # （旧版找不到人就退化成 _nearest_peer()，于是经常骂错人）
+            return
+        self._remember_grievance(thief)
+        self._protest_target = thief
+        if self.state in _WANTS_FROM and self._protest_cd <= 0:
+            self._start_protest(thief)
+
+    def _thief_of(self, f):
+        """谁拿走了这件东西：先看手上，再看谁正认领它（认领板）。认不出则 None。"""
+        for p in self._living_peers():
+            if p.body.carried_fruit is f or p.body.carried_stone is f:
+                return p
+        holder = board_for(self.win).owner(f)
+        if (holder is not None and holder is not self.win
+                and not getattr(holder.body, "dead", False)):
+            return holder
+        return None
+
+    # ── 被抢的记忆：下次它再靠近我的东西，这笔账还在 ──
+    def _remember_grievance(self, other) -> None:
+        self._grudge[(id(other), id(self.win))] = (other,
+                                                   getattr(self.win, "_pole_tick", 0)
+                                                   + tuning.GRUDGE_TICKS)
+
+    def _grudge_alive(self, other) -> bool:
+        """这笔账还没过期（对象还活着）。"""
+        e = self._grudge.get((id(other), id(self.win)))
+        if e is None:
+            return False
+        obj, until = e
+        if getattr(obj.body, "dead", False) or until < getattr(self.win, "_pole_tick", 0):
+            del self._grudge[(id(other), id(self.win))]
+            return False
+        return True
 
     # ── 睡眠欲望：吃饱后入睡概率从 0 缓慢升到 100 ──
     def _settle_to_rest(self):

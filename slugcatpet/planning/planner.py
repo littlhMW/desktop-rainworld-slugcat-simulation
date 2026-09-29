@@ -2,6 +2,7 @@
 from __future__ import annotations
 import time
 
+from ..behavior import tuning
 from .ability import Candidate
 from .cooldown import CooldownRegistry
 from .backflip_reach import BackflipReach
@@ -53,8 +54,35 @@ class Planner:
                 continue
             out.append(Candidate(ab.key, est.time_est, est.energy_est,
                                  lambda ab=ab, g=goal: ab.make_controller(g)))
-        out.sort(key=lambda c: c.time_est)
+        out.sort(key=self._route_cost)
         return out
+
+    # ── 路线打分：耗时 × 动作风险（按性格）──
+    # 原版生物不会精确追求「最短时间」：谨慎的个体宁可绕路走，急躁 / 勇敢的
+    # 才愿意为省几 tick 去赌一个跳跃。这里给每种动作一个风险系数，再按性格
+    # （bravery 越高越不在乎风险）缩放成排序用的代价 —— 只改**排序**，
+    # Candidate.time_est 原样保留（执行器的超时/进度判断仍用真实耗时）。
+    _ROUTE_RISK = {
+        "walk": 0.0, "tongue": 0.15, "tonguehang": 0.15, "climb": 0.20,
+        "hop": 0.25, "poledrop": 0.25, "poletongue": 0.30, "jump": 0.45,
+        "polejump": 0.50, "ceildrop": 0.60, "backflip": 0.70, "pyrojump": 0.90,
+    }
+
+    def _route_cost(self, c) -> float:
+        fac = 1.15 - 0.9 * self._bravery()           # 谨慎 ←→ 莽
+        risk = self._ROUTE_RISK.get(c.ability_key, 0.3)
+        return c.time_est * (1.0 + tuning.ROUTE_RISK_W * risk * fac)
+
+    def _bravery(self) -> float:
+        """本猫的勇敢度：优先取行为层当前的人格（运行期可能被替换）。"""
+        beh = getattr(self.pet, "behavior", None)
+        pers = getattr(beh, "pers", None)
+        if pers is None:
+            pers = getattr(getattr(self.pet, "cat", None), "personality", None)
+        try:
+            return min(1.0, max(0.0, float(getattr(pers, "bravery", 0.5))))
+        except (TypeError, ValueError):
+            return 0.5
 
     def touch_candidates(self, goal):
         return self._candidates(goal, "can_touch")

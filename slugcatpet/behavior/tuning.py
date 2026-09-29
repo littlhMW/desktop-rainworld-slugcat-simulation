@@ -664,6 +664,11 @@ POLE_THROW_CLIMB_DY = 40.0      # 目标高出这么多（≈一次跳跃的高�
 T_POLE_THROW_RETRY  = 300       # 爬杆也没够到目标：这么久之内不再试
 
 # ── 喜欢珍珠的猫（溪流）：闲着会把地上的珍珠叼起来拿着 ──
+PROTEST_WITNESS_R = 200.0   # 看见同伴被抢的半径（会跟着起哄的目击者范围）
+PROTEST_WITNESS_P = 0.5     # 目击者跟着一起指指点点的概率
+ROUTE_RISK_W = 0.25         # 路线风险权重（越谨慎的猫越不愿为省时间去跳）
+GRUDGE_TICKS = 2400         # 被抢的记忆保留多久（≈60 秒）
+GRUDGE_SCOLD_MUL = 3.0      # 被抢过的人靠近时，「指指点点」权重放大倍数
 PEARL_HOARD_P       = 0.25      # 每次重算的概率
 PEARL_HOARD_CD      = 900       # 放下之后这么久才会再去叼
 PEARL_LOOK_TICKS    = 90        # 拿到珍珠后「端在手里看一眼」的时长
