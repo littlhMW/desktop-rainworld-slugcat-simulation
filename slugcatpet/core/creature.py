@@ -46,15 +46,14 @@ TOSS_COB_T = 40
 
 WALK_STOP_EPS = 2.0
 
-# 窗口边缘＝墙/天花：吸附、攀爬、蹬墙跳、吊顶（手感对齐原版攀杆）
-WALL_CLIMB_SPEED = 2.2 * K_VEL      # 爬墙垂直速度
+# 窗口边缘＝墙/天花：实体阻挡 + 扶墙下滑 + 蹬墙跳（**墙不可攀爬**，
+# 对照 Controls：蛞蝓猫按住前进键只能沿墙下滑，跳起来才是蹬墙跳）
 WALL_JUMP_VX = 6.0 * K_VEL          # Player.WallJump：胸 6、胯 5
 WALL_JUMP_VX_FEET = 5.0 * K_VEL
 WALL_JUMP_VY = 8.0 * K_VEL          # Player.WallJump：胸 8、胯 7
 WALL_JUMP_VY_FEET = 7.0 * K_VEL
 WALL_JUMP_LOCK = 14                 # 蹬墙后硬直，期内不再吸附
-WALL_CLIMB_MAX_H = 30.0             # 墙最多只能攀爬「一只蛞蝓猫的高度」
-WALL_LEDGE_SLIDE = 0.5 * K_VEL      # 抓不住墙头时贴墙缓慢下滑速度
+WALL_LEDGE_SLIDE = 0.5 * K_VEL      # 扶墙下滑速度（原版 WallClimb 的缓降）
 CEIL_HANG_PAD = 22.0                # 吊顶时胸心离上边缘：伸手够顶、整只猫不出画面
 CEIL_SHIMMY_SPEED = 1.6 * K_VEL     # 吊顶横向挪动速度
 
@@ -232,14 +231,9 @@ class SlugcatBody:
         self.arm_full_reach = 24.0
         self.eat_raise = 0.0
 
-        # 窗口边缘当墙：-1 左墙 / +1 右墙 / 0 未吸附
+        # 窗口边缘当墙：-1 左墙 / +1 右墙 / 0 未吸附（只能扶墙下滑，不能爬）
         self.wall_side = 0
-        self.wall_climb_dir = 0         # -1 上 / +1 下
         self.wall_cd = 0                # 蹬墙跳硬直
-        self.wall_top_y = None          # 这面墙的可攀爬上沿 y（原版墙有高有低）
-        self.at_wall_top = False        # 是否已抓在墙上沿
-        self.wall_grab_y = None         # 抓上墙那一刻的胸心 y（单次攀爬高度起点）
-        self.wall_slide = False         # 抓不住墙头：贴墙缓慢下滑
         self.ceil_cling = False         # 上边缘吊挂
         self.ceil_x = 0.0
         self.ceil_y = 0.0
@@ -420,7 +414,6 @@ class SlugcatBody:
             if not keep_vel:
                 c.vx = c.vy = 0.0
         self.wall_side = 0
-        self.wall_climb_dir = 0
         self.ceil_cling = False
         self.chunk0.pinned = False
         for f in (self.lfoot, self.rfoot):
@@ -444,11 +437,6 @@ class SlugcatBody:
         self.stun = 0
         self.zerog_pole = None
         self.wall_side = 0
-        self.wall_climb_dir = 0
-        self.wall_top_y = None
-        self.at_wall_top = False
-        self.wall_grab_y = None
-        self.wall_slide = False
         self.ceil_cling = False
         self.crawl_want = False
         self.animation = None
@@ -461,10 +449,7 @@ class SlugcatBody:
         self.submerged = False
         self.pyro_drown = False
         self.wall_side = 0
-        self.wall_climb_dir = 0
         self.wall_cd = 0
-        self.wall_top_y = None
-        self.at_wall_top = False
         self.ceil_cling = False
 
     # ── 窗口边缘＝实体墙/天花（原版房间边界）──
@@ -472,16 +457,15 @@ class SlugcatBody:
         from .edges import wall_hold_x
         return wall_hold_x(side, self.W)
 
-    def grab_wall(self, side: int, top_y=None) -> bool:
-        """吸附到左右墙；side=-1 左 / +1 右。top_y=这面墙的可攀爬上沿（None=无限高）。"""
+    def grab_wall(self, side: int) -> bool:
+        """扶住左右墙；side=-1 左 / +1 右。
+
+        原版 WallClimb 只能扶着墙往下滑（Player.cs:9599-9614 只有 gravity 的重力项，
+        没有任何向上推进），上升只能靠蹬墙跳 —— 所以这里也不叫「爬墙」了。
+        """
         if self.dead or self.wall_cd > 0 or not side:
             return False
         self.wall_side = int(side)
-        self.wall_climb_dir = 0
-        self.wall_top_y = None if top_y is None else float(top_y)
-        self.at_wall_top = False
-        self.wall_grab_y = self.chunk0.y
-        self.wall_slide = False
         self.feet_stuck = None
         self.crawl_anchor = None
         self.crawl_pose = 0.0
@@ -489,7 +473,7 @@ class SlugcatBody:
         self.move_dir = 0
         self.on_pole = False
         self.ceil_cling = False
-        self.animation = "ClimbOnBeam"
+        self.animation = "WallClimb"
         self.standing = True
         self.facing = 1 if side > 0 else -1
         x = self.wall_hold_x(self.wall_side)
@@ -502,12 +486,7 @@ class SlugcatBody:
 
     def release_wall(self):
         self.wall_side = 0
-        self.wall_climb_dir = 0
-        self.wall_top_y = None
-        self.at_wall_top = False
-        self.wall_grab_y = None
-        self.wall_slide = False
-        if self.animation == "ClimbOnBeam":
+        if self.animation == "WallClimb":
             self.animation = None
 
     def wall_jump(self, up: bool = True) -> bool:
@@ -1299,32 +1278,22 @@ class SlugcatBody:
         return self._floor_h if s is None else s
 
     def _wall_update(self):
-        """贴墙：钉 x、按墙爬方向驱动 y（原版 ClimbOnBeam 位姿）。"""
+        """扶墙**下滑**（原版 Player.cs:9599-9614 的 WallClimb 分支）。
+
+        原版墙态里没有任何向上推进：贴着实心墙时只按
+        LerpMap(wallSlideCounter,0,30,0.8,0) 的重力系数往下滑，
+        上升只能靠 WallJump。所以这里只有滑，没有「爬」。
+        """
         x = self.wall_hold_x(self.wall_side)
         g = 0.9 * self.room_gravity
-        if self.wall_slide and self.wall_climb_dir > 0:
-            # 抓不住：贴墙缓慢下滑。climb 是「净下降速度」，底下 vy = climb - g，
-            # 旧写法让重力吃掉大半（0.5 → 0.14px/帧），猫在墙边挂 20 秒像卡死。
-            climb = WALL_LEDGE_SLIDE + g
-        else:
-            climb = WALL_CLIMB_SPEED * self.wall_climb_dir   # dir=-1 → 向上
-        c0 = self.chunk0
-        top = self.wall_top_y                            # 墙面不是无限高：到上沿就抓沿
-        if self.wall_grab_y is not None:                 # 单次攀爬最多一只蛞蝓猫的高度
-            cap = self.wall_grab_y - WALL_CLIMB_MAX_H
-            if top is None or top < cap:
-                top = cap
-        self.at_wall_top = bool(top is not None and climb < 0.0 and c0.y - c0.rad <= top)
-        if self.at_wall_top:
-            climb = 0.0
-            c0.y = top + c0.rad
+        climb = WALL_LEDGE_SLIDE + g      # 净下降速度（底下 vy = climb - g）
         for c in (self.chunk0, self.chunk1):
             c.pinned = False
             c.x = x
             c.vx = 0.0
             c.vy = climb - g
         self.bodyMode = "ClimbingOnBeam"
-        self.animation = "ClimbOnBeam"
+        self.animation = "WallClimb"
         self.feet_stuck = None
         self.crawl_anchor = None
         self.crawl_pose = 0.0

@@ -168,15 +168,8 @@ def build_arbiter(rng, personality=None):
         energy_factor=lambda e: _lerp(e, 0.0, 1.0, tuning.CEIL_SF_TIRED, tuning.CEIL_SF_FRESH),
         temper_factor=lambda t: 1.0,
         one_shot=False, init=tuning.CEIL_INIT))
-    # 玩耍：窗口边缘爬墙（左右边缘＝墙）
-    arb.add(Candidate(
-        "wall_climb", base=tuning.WALL_BASE * _pm("pole_climb"),
-        start=tuning.WALL_START, quit=tuning.WALL_QUIT,
-        decay=tuning.WALL_DECAY, recover=tuning.WALL_RECOVER,
-        gate=lambda ctx: ctx.near_wall and ctx.energy >= _gate and not ctx.submerged,
-        energy_factor=lambda e: _lerp(e, 0.0, 1.0, tuning.WALL_SF_TIRED, tuning.WALL_SF_FRESH),
-        temper_factor=lambda t: 1.0,
-        one_shot=True, init=tuning.WALL_INIT))
+    # 窗口左右边缘＝墙：**不可攀爬**（Controls/zh-hans：蛞蝓猫扶墙只能沿墙下滑，
+    # 下滑时按跳跃才是蹬墙跳，没有「顺着墙爬上去」这一说），所以这里没有 wall_climb。
     # 玩耍：上边缘吊挂
     arb.add(Candidate(
         "ceiling_hang", base=tuning.CEIL_BASE * _pm("ceiling_play"),

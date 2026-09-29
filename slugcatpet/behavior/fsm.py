@@ -6,7 +6,6 @@ import random
 
 from ..behavior import tuning
 from ..core.creature import (ZEROG_GRAB_DIST, THROW_ORIGIN_DX, THROW_ORIGIN_DY, WALK_STOP_EPS,
-                             WALL_CLIMB_SPEED,
                              _closest_on_segment)
 from ..planning import (GIVEUP, HOLDING, MODE_STAY, PlanExecutor, Planner, obj_goal)
 from ..planning.fly_reach import in_reach
@@ -51,7 +50,6 @@ HPOLE_MAX_CLIMBS = 3
 WAKE_STABILIZE_TICKS = 30
 
 # ── 六类欲望（进食/恐惧/战斗/玩耍/睡眠/社交）计时常量 ──
-T_WALL_RETRY = 120        # 爬墙失败后的冷却
 T_SOCIAL_RETRY = 280      # 社交冷却
 T_HELP_RETRY = 480        # 帮取食冷却
 T_FIGHT_RETRY = 380       # 战斗冷却
@@ -86,7 +84,7 @@ SLUG_STUN_RESISTANCE = 1.0
 _WANTS_FROM = frozenset(("IdleStand", "PostThrowWander", "PostThrowStand", "MakeWay"))
 # 这些态靠 _wants_break 收尾（释放墙/天花/手持、恢复行走边界）；
 # 必须保证「离开该态」时一定跑到一次，否则 walk_min/walk_max 会永久留 None
-_WANTS_STATES = frozenset(("WallClimb", "CeilingHang", "ChaseCursor", "Socialize",
+_WANTS_STATES = frozenset(("CeilingHang", "ChaseCursor", "Socialize",
                            "HelpFeed", "FightThreat", "CrawlAway", "EatCob",
                            "ScoldBlocker", "CatchFly", "ItemPlay", "CoverAlly"))
 
@@ -120,6 +118,7 @@ ARM_REACH_NEAR = 24.0
 ARM_REACH_FAR = 48.0
 THROW_JUMP_DY = 12.0      # 目标高出这么多 → 先起跳再水平投（原版只能横着发射）
 JUMPCUR_DY = 52.0         # 追鼠标：高度差在这以内才值得跳着够
+JUMPCUR_DY_SLACK = 1.35     # 「差不多够得到」：稍微高一点也跳一下试试（用户规格）
 JUMPCUR_R = 130.0         # 追鼠标：水平距离上限
 JUMPCUR_CD = 24
 JUMPCUR_P = 0.6
@@ -136,7 +135,7 @@ EN_REC_IDLE = 1.0 / 1600.0
 
 _STATE_TO_MOOD = {"PoleClimb": "pole_climb",
                   "SeekHPole": "hpole", "HPole": "hpole",
-                  "WallClimb": "wall_climb", "CeilingHang": "ceiling_hang",
+                  "CeilingHang": "ceiling_hang",
                   "ChaseCursor": "play_cursor", "Socialize": "socialize"}
 # 疲劳强制休息不打断的态
 _EXHAUST_BLOCKED = frozenset(("Dragged", "Dead", "Stunned", "Ascension",
@@ -316,20 +315,15 @@ class BehaviorFSM:
         self._makeway_of = None
         self._flee_from = None
         self._flee_cd = 0
-        # 六类欲望：匍匐/爬墙/吊顶/玩耍/社交/帮取食/抗议/战斗/复活/睡眠
-        self._wall_goal = 0
-        self._wall_approach_t = 0        # 走向这面墙已经用掉的 tick（超时就放弃）
-        self._wall_left = 0
-        self._wall_ready = False
-        self._wall_top_y = 0.0        # 这面墙的可攀爬上沿 y
-        self._wall_ledge_t = 0        # 抓沿悬停计时
-        self._wall_sliding = False    # 抓不住墙头：贴墙缓慢下滑中
+        # 六类欲望：匍匐/吊顶/玩耍/社交/帮取食/抗议/战斗/复活/睡眠
         self._ceil_left = 0
         self._ceil_dir = 1
         self._ceil_walk_t = 0
         self._ceil_placed = False
         self._struggle_left = 0
         self._cob = None              # 正在啃/要打的爆米花豆荚
+        self._cob_climber = None      # 为够到高处的豆荚而爬的那根**真竖杆**
+        self._cob_climb_thrown = False
         self._cob_eat_t = 0           # 本口剩余 tick（原版 eatExternalFoodSourceCounter）
         self._cob_cd = 0              # 两口之间的冷却（原版 dontEatExternalFoodSource…）
         self._cob_left = 0            # 啃食态超时
@@ -379,7 +373,6 @@ class BehaviorFSM:
         self._crawl_cd = 0
         self._protest_cd = 0
         self._revive_cd = 0
-        self._wall_cd = 0
         self._saved_walk = None
         self._fight_throw_t = 0
         self._blocked_ticks = 0
@@ -538,7 +531,7 @@ class BehaviorFSM:
     def apply_stun(self, ticks):
         if self.state in ("Ascension", "Dead", "Dragged"):
             return False
-        if self.state in ("WallClimb", "CeilingHang", "ChaseCursor", "Socialize",
+        if self.state in ("CeilingHang", "ChaseCursor", "Socialize",
                           "HelpFeed", "FightThreat", "CrawlAway", "EatCob",
                           "ScoldBlocker", "CatchFly", "ItemPlay"):
             self._wants_break(self.state)
@@ -600,7 +593,7 @@ class BehaviorFSM:
             self._seekwarmth_break()
         elif self.state == "SeekHPole":
             self._seekhpole_break()
-        elif self.state in ("WallClimb", "CeilingHang", "ChaseCursor", "Socialize",
+        elif self.state in ("CeilingHang", "ChaseCursor", "Socialize",
                             "HelpFeed", "FightThreat", "CrawlAway", "EatCob",
                             "ScoldBlocker", "CatchFly", "ItemPlay"):
             self._wants_break(self.state)
@@ -725,7 +718,7 @@ class BehaviorFSM:
             self._seekhpole_break()
         elif st == "Swimming":
             self.body.swim_target = None
-        elif st in ("WallClimb", "CeilingHang", "ChaseCursor", "Socialize",
+        elif st in ("CeilingHang", "ChaseCursor", "Socialize",
                     "HelpFeed", "FightThreat", "CrawlAway", "EatCob",
                     "ScoldBlocker", "CatchFly", "ItemPlay", "CoverAlly"):
             self._wants_break(st)
@@ -1107,8 +1100,6 @@ class BehaviorFSM:
             self._cover_enter()
         elif st == "FleeLizard":
             self._enter_fleelizard()
-        elif st == "WallClimb":
-            self._wall_enter()
         elif st == "CeilingHang":
             self._ceiling_enter()
         elif st == "ChaseCursor":
@@ -1247,10 +1238,6 @@ class BehaviorFSM:
         if choice == "ceiling_play":
             self._wall_side = -1 if self.body.chunk1.x < self.WL / 2 else 1
             self._transition("RelocateToWall")
-            return
-        if choice == "wall_climb":
-            self._wall_enter()
-            self._transition("WallClimb")
             return
         if choice == "ceiling_hang":
             self._ceiling_enter()
@@ -1819,16 +1806,10 @@ class BehaviorFSM:
             self._break_active_controllers()
             self._transition("FleeLizard")
             return
-        # 往高处躲：旁边就是墙 / 近处有竖杆 → 先爬上去（离地才是真的安全）
+        # 往高处躲：近处有竖杆 → 爬上去（离地才是真的安全）。
+        # 墙爬不了（Controls：蛞蝓猫只能扶墙下滑/蹬墙跳，没有「爬上去」），
+        # 只有杆是上升通道。
         if self.rng.random() < tuning.FLEE_CLIMB_P:
-            if self._near_wall():
-                self._wall_enter()
-                self._flee_from = lz
-                self._flee_cd = FLEE_COOLDOWN
-                self._crawl_cd = T_CRAWL_RETRY
-                self._break_active_controllers()
-                self._transition("WallClimb")
-                return
             pole = self._pick_climbable_pole()
             if (pole is not None
                     and abs(pole.x - b.chunk1.x) <= tuning.FLEE_POLE_R):
@@ -3759,12 +3740,6 @@ class BehaviorFSM:
     def _near_wall(self) -> bool:
         return edgeqm.on_wall(self.body, self.WL, tuning.WALL_SEEK_R) != 0
 
-    def _wall_side_now(self) -> int:
-        s = edgeqm.on_wall(self.body, self.WL, tuning.WALL_SEEK_R)
-        if s:
-            return s
-        return -1 if self.body.chunk1.x < self.WL * 0.5 else 1
-
     def _ceiling_reachable(self) -> bool:
         c0 = self.body.chunk0
         return edgeqm.on_ceiling(self.body) or (c0.y - c0.rad <= tuning.CEIL_GRAB_REACH)
@@ -3986,7 +3961,7 @@ class BehaviorFSM:
     def _wants_tick(self, cursor):
         """社交/帮助/反击/匍匐躲避在「没正事」的态里按优先级抢班。"""
         for k in ("_social_cd", "_help_cd", "_fight_cd", "_crawl_cd",
-                  "_protest_cd", "_revive_cd", "_wall_cd", "_scold_cd",
+                  "_protest_cd", "_revive_cd", "_scold_cd",
                   "_pole_nudge_cd", "_act_cd", "_apology_t", "_thank_t",
                   "_arm_cd", "_cover_cd"):
             v = getattr(self, k)
@@ -4345,10 +4320,7 @@ class BehaviorFSM:
     def _wants_break(self, st):
         """中断新欲望态时的收尾（不切换状态）。"""
         b = self.body
-        if st == "WallClimb":
-            b.release_wall()
-            self._wall_cd = T_WALL_RETRY
-        elif st == "CeilingHang":
+        if st == "CeilingHang":
             b.release_ceiling()
         elif st == "CrawlAway":
             b.set_crawl(False)
@@ -4371,6 +4343,7 @@ class BehaviorFSM:
             self.gfx.hand_aim["r"] = None
             self.body.eat_raise = 0.0
             self._cob = None
+            self._cob_climber_release()
             self._cob_eat_t = 0
             self._cob_seek_cd = T_COB_RETRY
         elif st == "CatchFly":
@@ -4472,112 +4445,6 @@ class BehaviorFSM:
         b.facing = 1 if th.x >= b.chunk0.x else -1      # 面朝威胁，随时能跑
         self.gfx.look_at = (th.x, th.y)
 
-    # ── 爬墙：窗口左右边缘＝墙（原版 ClimbOnBeam 位姿）──
-    def _wall_enter(self):
-        b = self.body
-        self._wall_goal = self._wall_side_now()
-        self._wall_approach_t = 0
-        self._wall_left = self.rng.randint(tuning.WALL_CLIMB_TICKS_MIN,
-                                           tuning.WALL_CLIMB_TICKS_MAX)
-        self._wall_ready = False
-        self._wall_top_y = self._roll_wall_top(b)
-        # tick 预算得够爬到这面墙的上沿（上沿才是硬上限，这里的上限只是防呆）
-        need = int(max(0.0, b.chunk0.y - self._wall_top_y) / max(0.1, WALL_CLIMB_SPEED)) + 60
-        self._wall_left = max(self._wall_left, need)
-        self._wall_ledge_t = 0
-        self._wall_sliding = False
-        self._save_walk_limits()
-        b.set_posture(True)
-        b.stop_walk()
-        b.release_ceiling()
-
-    def _roll_wall_top(self, b):
-        """这面墙的可攀爬上沿 y：最高只到「一只蹬辜猫的高度」（力竭更短）。"""
-        frac = tuning.WALL_TOP_TIRED_FRAC + (1.0 - tuning.WALL_TOP_TIRED_FRAC) * b.energy
-        top = b.chunk0.y - tuning.WALL_CLIMB_MAX_H * frac
-        return max(tuning.WALL_TOP_GRAB_R + 4.0, top)
-
-    def _wall_ledge(self, cursor):
-        """够到墙头上沿：抓沿悬一下（原版 LedgeGrab），再蹬墙跳或贴墙缓慢滑下。"""
-        b = self.body
-        self.gfx.look_at = cursor if cursor is not None else (b.chunk0.x, b.chunk0.y - 30.0)
-        if self._wall_sliding:                          # 已决定下滑：贴墙缓降到地
-            b.wall_climb_dir = 1
-            b.wall_slide = True
-            if b.on_floor():
-                b.release_wall()
-                self._wall_cd = T_WALL_RETRY
-                self._transition("IdleStand")
-            return
-        b.wall_climb_dir = 0
-        self._wall_ledge_t += 1
-        if self._wall_ledge_t < tuning.WALL_LEDGE_HOLD:
-            return
-        if self.rng.random() < tuning.WALL_LEDGE_JUMP_PROB:
-            b.release_wall()
-            self._wall_cd = T_WALL_RETRY
-            b.wall_jump(up=True)                        # 蹬墙跳离开这面墙
-            self._transition("Airborne")
-            return
-        self._wall_sliding = True                       # 抓不住：缓慢滑下
-        b.wall_climb_dir = 1
-        b.wall_slide = True
-
-    def _st_wallclimb(self, cursor, disturbed):
-        b = self.body
-        if self.grab.active:
-            self._wants_break("WallClimb")
-            self._transition("Dragged")
-            return
-        if not self._wall_ready:
-            self._wall_approach_t += 1
-            tx = edgeqm.wall_hold_x(self._wall_goal, self.WL)
-            if self._wall_approach_t > (tuning.WALL_APPROACH_TIMEOUT
-                                        + abs(tx - b.chunk1.x) * 1.5):
-                # 走不到墙上（被同伴顶住 / 目标墙太远）：收工，别一直朝墙走
-                self._wall_cd = T_WALL_RETRY
-                self._transition("IdleStand")
-                return
-            if abs(b.chunk1.x - tx) > 6.0:
-                b.move_dir = 1 if tx > b.chunk1.x else -1
-                b.facing = b.move_dir
-                return
-            b.move_dir = 0
-            self._wall_ready = b.grab_wall(self._wall_goal, self._wall_top_y)
-            self.timer = 0
-            return
-        self._wall_left -= 1
-        c0 = b.chunk0
-        if self._wall_sliding or b.at_wall_top or (c0.y - c0.rad) <= self._wall_top_y + 0.5:
-            if self._wall_left <= 0:
-                # 预算用完：贴墙滑降也不能无限挂着（旧实现滑降期不再看 _wall_left，
-                # 缓慢下滑看起来就是「卡死在屏幕边缘」）
-                b.release_wall()
-                self._wall_cd = T_WALL_RETRY
-                self._transition("Airborne" if not b.on_floor() else "IdleStand")
-                return
-            if self._wall_top_y <= tuning.WALL_TOP_GRAB_R:  # 这面墙直通顶边
-                b.release_wall()
-                if self._can_ceil_cling():                  # 圣徒的舌头才能上去吊顶
-                    self._transition("CeilingHang")
-                else:                                       # 普通猫：顶上没得抓，蹬墙跳开
-                    self._wall_cd = T_WALL_RETRY
-                    b.wall_jump()
-                    self._transition("Airborne")
-                return
-            self._wall_ledge(cursor)                        # 够到墙头：抓沿
-            return
-        b.wall_climb_dir = -1                              # 向上爬
-        self.gfx.look_at = (c0.x, c0.y - 40.0)
-        if self.rng.random() < tuning.WALL_WALLJUMP_PROB * 0.5:   # 蹬墙跳
-            b.wall_jump()
-            self._transition("Airborne")
-            return
-        if self._wall_left <= 0:
-            b.release_wall()
-            self._wall_cd = T_WALL_RETRY
-            self._transition("Airborne")
-
     # ── 吊顶：窗口上边缘＝地面/天花 ──
     def _ceiling_enter(self):
         b = self.body
@@ -4648,6 +4515,16 @@ class BehaviorFSM:
         cx, cy = cursor
         self.gfx.look_at = cursor
         d = math.hypot(cx - b.chunk0.x, cy - b.chunk0.y)
+        # 光标落在「差不多跳得够」的一层：有概率跳起来拿身子碰它（原版跳抓）。
+        # 竖直容差在光标偏高时放宽（用户规格：稍微高一点也会试一下），水平用 JUMPCUR_R；
+        # 这一条不要求在 ARRIVE 圈里 —— 边走边跳着够鼠标也算「追」。
+        up = b.chunk0.y - cy                       # >0：光标在猫上方
+        far = JUMPCUR_DY * JUMPCUR_DY_SLACK if up > 0.0 else JUMPCUR_DY
+        ok_dy = abs(up) <= far
+        if (b.on_floor() and abs(cx - b.chunk0.x) <= JUMPCUR_R and ok_dy
+                and self.timer % JUMPCUR_CD == 0
+                and self.rng.random() < JUMPCUR_P):
+            b.request_jump("protest")
         if d > tuning.PLAYCUR_ARRIVE:
             b.walk_to(cx)
             self._act_end()
@@ -4657,11 +4534,6 @@ class BehaviorFSM:
                 # 指着鼠标：指向（hold）或指指点点（scold），性格说了算
                 self._act_begin(self._cursor_social_kind(), cursor, mode="cursor")
             self._act_tick()
-            # 鼠标落在跳跃够得到的一层：有概率跳起来拿身子碰它（原版跳抓）
-            if (b.on_floor() and self.timer % JUMPCUR_CD == 0
-                    and abs(cy - b.chunk0.y) <= JUMPCUR_DY and d <= JUMPCUR_R
-                    and self.rng.random() < JUMPCUR_P):
-                b.request_jump("protest")
         if self._play_left <= 0 or d > tuning.PLAYCUR_R * 1.6:
             self._act_end()
             self._transition("IdleStand")
@@ -5226,10 +5098,50 @@ class BehaviorFSM:
         self.gfx.hand_aim["r"] = None
         self.body.eat_raise = 0.0
         self.body.stop_walk()
+        self._cob_climber_release()
         self._cob = None
         self._cob_eat_t = 0
         self._cob_seek_cd = T_COB_RETRY
         self._transition("IdleStand")
+
+    # ── 够不着的豆荚：爬到**真竖杆**同一高度再横着投矛 ──
+    #    原版矛只能水平发射（Weapon.cs:463-502 玩家只有水平分支），而植株本身
+    #    不是杆子（不许爬），所以唯一的上升通道是旁边的真竖杆。
+    def _start_cob_climb(self, cb) -> bool:
+        cx = (cb.p0[0] + cb.p1[0]) * 0.5
+        cy = min(cb.p0[1], cb.p1[1])           # 瞄靠上的那个 chunk
+        pole = self._throw_climb_pole_at(cx, cy)
+        if pole is None:
+            return False
+        from .pole_climb import PoleClimber
+        self._cob_climber_release()
+        self._cob_climber = PoleClimber(self.win, pole, self.rng, no_handoff=True)
+        self._cob_climb_thrown = False
+        return True
+
+    def _cob_climber_release(self):
+        if self._cob_climber is not None:
+            self._cob_climber.release()
+            self._cob_climber = None
+
+    def _cob_climb_tick(self, cb) -> None:
+        """爬杆途中：爬到和豆荚同高就横着投一矛；杆爬完（到顶/跳走）就收工。"""
+        b = self.body
+        cl = self._cob_climber
+        px = (cb.p0[0] + cb.p1[0]) * 0.5
+        py = (cb.p0[1] + cb.p1[1]) * 0.5
+        dir_x = 1 if px >= b.chunk0.x else -1
+        b.facing = dir_x
+        b.stop_walk()
+        self.gfx.look_at = (px, py)
+        if not self._cob_climb_thrown and b.carried_spear is not None:
+            if self._cob_would_hit(cb, dir_x) and self._launch_weapon(dir_x):
+                self._cob_climb_thrown = True
+                self._cob_try += 1
+                self._cob_throw_cd = COB_THROW_CD
+        if cl.update(self._cob_climb_thrown):
+            self._cob_climber_release()
+            self._cob_end()
 
     def _cob_chew(self, cb):
         """原版 Player.cs:5168-5208：手搭豆荚啃 15 tick → AddFood(1)，再冷却 45 tick。"""
@@ -5351,6 +5263,9 @@ class BehaviorFSM:
         if self._cob_eat_t > 0:                          # 正啃着这一口：原地不动
             self._cob_chew(cb)
             return
+        if self._cob_climber is not None:            # 正在爬竖杆去够高处的豆荚
+            self._cob_climb_tick(cb)
+            return
         px, py = cb.feed_point(b.chunk0.x, b.chunk0.y)
         d = math.hypot(px - b.chunk0.x, py - b.chunk0.y)
         self.gfx.look_at = (px, py)
@@ -5417,7 +5332,12 @@ class BehaviorFSM:
                     b.request_jump("stand")
                     self._cob_try += 1
                 return                       # 空中就等预演能中
-            self._cob_end()                  # 跳也够不着：放弃（植株不是杆子，不许爬）
+            # 跳也够不着：植株不是杆子（不许爬），但旁边的**真竖杆**可以爬上去 ——
+            # 爬到和豆荚同一高度再横着投矛（原版矛只有水平分支）。
+            if (b.on_floor() and not b.on_pole and self._pole_throw_cd <= 0
+                    and self._cob_try < COB_TRY_MAX and self._start_cob_climb(cb)):
+                return
+            self._cob_end()                  # 附近没杆可爬：放弃
             return
         self._cob_end()                      # 豆荚在掷矛线下方：站着够不着
 
@@ -5441,15 +5361,23 @@ class BehaviorFSM:
     #    所以要先爬到和猎物同一高度。爬杆动作/物理全交给 PoleClimber（原版
     #    ClimbOnBeam 的驱动、杆顶 BeamTip 的失衡与跳杆都在里面）。──
     def _throw_climb_pole(self, tgt):
-        """能爬到目标那一层的竖杆：杆顶高过目标，且尽量靠近目标的 x（水平掷矛）。"""
+        """能爬到目标那一层的竖杆（目标带 .x/.y）。"""
+        return self._throw_climb_pole_at(tgt.x, tgt.y)
+
+    def _throw_climb_pole_at(self, tx: float, ty: float):
+        """能爬到 (tx,ty) 那一层的竖杆：杆顶不低于目标，且尽量靠近目标的 x。
+
+        矛在原版只有水平分支（Weapon.cs:463-502），所以要爬到自己和目标的
+        高度对齐才打得到 —— 爬的是**真竖杆**，不是爆米花植株。
+        """
         c0 = self.body.chunk0
         best, best_c = None, None
         for p in getattr(self.win, "poles", ()):
             if getattr(p, "kind", None) != VERTICAL:
                 continue
-            if p.top_y > tgt.y + tuning.POLE_THROW_CLIMB_DY:
+            if p.top_y > ty + tuning.POLE_THROW_CLIMB_DY:
                 continue                    # y↓：杆顶比目标还低，爬上去也够不着
-            c = abs(p.x - tgt.x) + abs(p.x - c0.x) * 0.5
+            c = abs(p.x - tx) + abs(p.x - c0.x) * 0.5
             if best_c is None or c < best_c:
                 best, best_c = p, c
         return best

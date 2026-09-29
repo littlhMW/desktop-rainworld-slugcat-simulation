@@ -218,24 +218,7 @@ SOCIAL_WANDER_STAY_SPAN_FRAC = 0.06
 
 # ── 六类欲望（进食/恐惧/战斗/玩耍/睡眠/社交）──
 # 爬墙（窗口左右边缘＝墙）
-WALL_BASE = 1.00
-WALL_START = 0.68
-WALL_QUIT = 0.30
-WALL_INIT = 0.30
-WALL_DECAY = 0.0038
-WALL_RECOVER = 0.00100
-WALL_SF_FRESH = 1.30
-WALL_SF_TIRED = 0.10
-WALL_SEEK_R = 90.0            # 墙在这么近内才想起来爬
-WALL_CLIMB_TICKS_MIN = 120    # 单次爬墙时长下限
-WALL_CLIMB_TICKS_MAX = 420
-WALL_WALLJUMP_PROB = 0.02     # 贴墙时每次蹬墙跳的抽样概率
-WALL_TOP_GRAB_R = 26.0        # 胸离顶边这么近就转吊顶
-WALL_CLIMB_MAX_H = 30.0       # 墙最多只能攀爬「一只蛞蝓猫的高度」
-WALL_TOP_TIRED_FRAC = 0.55    # 力竭时上沿更低（爬不动这么远）
-WALL_LEDGE_HOLD = 26          # 够到墙头后抓沿悬住的 tick
-WALL_LEDGE_JUMP_PROB = 0.55   # 抓沿后蹬墙跳（否则贴墙缓慢滑下）
-WALL_APPROACH_TIMEOUT = 900   # 走向墙的硬上限：走不到就放弃（防「永远朝墙走」卡死）
+WALL_SEEK_R = 90.0            # 墙多近算「贴着墙」（退无可退的角落判定用）
 
 # 被抓：偶尔挣扎（原版 Player 被叼住时蹬腿乱蹬）
 DRAG_STRUGGLE_PROB = 0.012    # 每 tick 起挣扎的概率

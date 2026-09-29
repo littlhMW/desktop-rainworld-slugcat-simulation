@@ -17,9 +17,8 @@ from .enums import ItemState
 from ..rendering.pixelmode import aa_hint
 
 MIN_CLEAR = 70.0               # 豆荚最低点离地面至少留这么多（原版豆荚不会埋进地里）
-COB_MAX_REACH = 132.0          # 豆荚最高只能挂到离地这么高：植株**不是杆子**（不许爬），
-                               # 只有站在地上的一记水平矛或起跳那一帧的矛能打到，
-                               # 再高就永远打不着了 —— 干脆别让它长那么高
+# 长度随意：植株**不是杆子**（不许爬），但挂得再高也有办法 —— 蛞蝓猫可以爬到
+# 旁边的**真竖杆**同一高度上横着投矛（原版矛只有水平分支，见 fsm._st_eatcob）。
 ROOT_Y = -10.0                 # 原版 rootPos = (placedPos.x, -10)：锚在房顶之上；
                                # 宠物里改为锚在窗口底边（地面），从地上长起来
 STALK_SEG_MAX = 50
@@ -138,11 +137,11 @@ class Seed(Fruit):
 
 
 def _clamp_placed(y: float, root_y: float) -> float:
-    """把豆荚夹在「离地 MIN_CLEAR ~ COB_MAX_REACH」之间。
+    """只把豆荚夹在「不低于离地 MIN_CLEAR」的位置（长度随意）。
 
-    太低会埋进地里；太高则猫永远打不到 —— 植株不是杆子，不许爬上去。
+    太低会埋进地里；挂多高都行 —— 植株不是杆子，但旁边的真竖杆能爬上去打。
     """
-    return min(max(float(y), float(root_y) - COB_MAX_REACH), float(root_y) - MIN_CLEAR)
+    return min(float(y), float(root_y) - MIN_CLEAR)
 
 
 class SeedCob:
