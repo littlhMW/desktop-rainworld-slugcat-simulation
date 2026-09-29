@@ -2085,19 +2085,17 @@ class Lizard:
                 if abs(self.vx) + abs(self.vy) > 0.4:  # 被拎着：头随拖拽方向
                     want = _ang_from_up(self.vx, self.vy)
             else:
-                vx, vy = self.x - nx, self.y - ny
-                if math.hypot(vx, vy) > 0.5:
-                    want = _ang_from_up(vx, vy)
+                # 没有观察目标时，头跟随行走方向，不再从头与第0节的瞬时几何位置猜方向。
+                want = 90.0 if self.chain_dir > 0.0 else 270.0
             if want is not None:
                 self.head_angle = _ang_lerp(self.head_angle, want, self._look_rate())
             self.head_driven = True
         else:
             self.head_angle = _ang_lerp(self.head_angle, 90.0 * self.facing, 0.04)
-        # 原版没有独立 facing：朝向 = 头相对躯干 0 的侧别（头旋转角 num12 用的是同一向量）。
-        # 用头角推 facing 会在绳约束把躯干甩到头前面时给出相反值（看起来「朝反方向走」）。
-        dxf = self.x - self.seg[0].x
-        if abs(dxf) > 2.0:
-            self.facing = 1 if dxf > 0.0 else -1
+        # facing 是移动方向状态，不再从“头相对第0节的位置”反推。
+        # 头可以独立回头看；只有明确的水平移动才改变实际行进朝向。
+        if abs(self.vx) > TURN_VX:
+            self.facing = 1 if self.vx > 0.0 else -1
         # 下颚：单一目标 + 开/闭双速率（原版 jaw 是独立通道，不是「追猎就一路张着」）
         target = self.anim.jaw_open if self.anim is not None else self._jaw_target()
         rate = JAW_OPEN_RATE if target > self.jaw else JAW_CLOSE_RATE
