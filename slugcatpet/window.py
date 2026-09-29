@@ -295,6 +295,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self.poles = []
         self._pole_seed = 0
         # 光标那一小截竖杆（不渲染、不换代、不存档）
+        self._cursor_world = None          # 本 tick 的光标（逻辑坐标）；矛钉光标用
+        self._cursor_pin_prev = None       # 上一 tick 光标（算甩动速度）
         self._mouse_pole = None
         self._mouse_pole_on = bool(self._params.get("mouse_pole", True))
         self._mouse_pole_prev = None       # 上一 tick 光标位置（算甩动速度）
@@ -826,6 +828,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if abs(self._shake[0]) + abs(self._shake[1]) < SHAKE_EPS:
             self._shake[0] = self._shake[1] = 0.0
         cur = self.cursor_logical()
+        self._cursor_world = cur          # 矛的「钉在光标上」判定用（见 items._tick_spears）
         self._mouse_pole_tick(cur)
 
         self._zerog_update()

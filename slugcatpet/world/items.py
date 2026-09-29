@@ -305,6 +305,9 @@ class ItemInteractionMixin:
     _SPEAR_FLING_CAP = 18.0
     _SEEDCOB_GRAB_PAD = 14.0
     _KARMAFLOWER_GRAB_PAD = 9.0
+    # 钉在光标上的矛（猎手怪癖）：命中判定半径 / 甩鼠标脱钉的每 tick 光标位移
+    CURSOR_PIN_R = 14.0
+    CURSOR_PIN_SLIP_V = 40.0
 
     def can_place_fruit(self) -> bool:
         return True
@@ -2634,6 +2637,9 @@ class ItemInteractionMixin:
         self._step_spear_drag()
         if self.spears:
             for sp in self.spears:
+                if sp.cursor_pin is not None:    # 钉在光标上：跟着光标走，甩鼠标脱钉
+                    if self._step_cursor_pin(sp):
+                        continue
                 if sp.stuck_to is not None:      # 插在生物身上：跟着它走
                     host, ox, oy = sp.stuck_to
                     if host.state == ItemState.GONE:
@@ -2646,9 +2652,60 @@ class ItemInteractionMixin:
                 sp.stuck_to = None
                 sp._impact_cb = self._shake_impact
                 sp.step(self._WL, self._HL)
+                if (sp.aim_cursor and sp._thrown and sp.moving()
+                        and self._cursor_pin_try(sp)):
+                    continue
             self._step_spear_hit()
             self.spears = [sp for sp in self.spears if sp.state != ItemState.GONE]
         self._sync_spear_poles()
+
+    # ── 钉在光标上的矛（猎手怪癖）──
+    def _step_cursor_pin(self, sp) -> bool:
+        """推进一支钉在光标上的矛；返回 True = 本 tick 这只矛不再走普通物理。"""
+        cur = getattr(self, "_cursor_world", None)
+        prev = getattr(self, "_cursor_pin_prev", None)
+        self._cursor_pin_prev = cur
+        ox, oy = sp.cursor_pin
+        if cur is None:
+            sp.cursor_pin = None
+            return False
+        vx = 0.0 if prev is None else cur[0] - prev[0]
+        vy = 0.0 if prev is None else cur[1] - prev[1]
+        if math.hypot(vx, vy) >= self.CURSOR_PIN_SLIP_V:
+            # 甩鼠标：钉不住，带着光标这一下的速度脱钉飞出去（再自由落体）
+            sp.cursor_pin = None
+            sp.last_x, sp.last_y = sp.x, sp.y
+            sp.vx, sp.vy = vx, vy
+            sp.angle_deg = sp.last_angle = math.degrees(math.atan2(vy, vx))
+            sp.spin = 0.0
+            sp.spinning = False
+            sp._thrown = False
+            sp.state = ItemState.FREE
+            return False
+        sp.last_x, sp.last_y = sp.x, sp.y
+        sp.x, sp.y = cur[0] + ox, cur[1] + oy
+        sp._seg_x, sp._seg_y = sp.x, sp.y
+        sp._seg_new = False
+        return True
+
+    def _cursor_pin_try(self, sp) -> bool:
+        """这一 tick 飞过的那一段有没有穿过光标：有就钉上去。"""
+        cur = getattr(self, "_cursor_world", None)
+        if cur is None:
+            return False
+        from ..behavior.fetch import _seg_point_dist
+        if _seg_point_dist(sp.last_x, sp.last_y, sp._seg_x, sp._seg_y,
+                           cur[0], cur[1]) > self.CURSOR_PIN_R:
+            return False
+        sp.cursor_pin = (sp.x - cur[0], sp.y - cur[1])
+        sp.aim_cursor = False
+        sp.stuck = False
+        sp.stuck_to = None
+        sp._thrown = False
+        sp.spin = 0.0
+        sp.spinning = False
+        sp.vx = sp.vy = 0.0
+        return True
 
     # ── 钉住的矛＝对应长度的杆（原版 Spear.cs:435 stuckInWall → horizontal/verticalBeam）──
     def _make_spear_pole(self, sp):

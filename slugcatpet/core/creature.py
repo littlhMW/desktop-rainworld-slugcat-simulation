@@ -612,6 +612,8 @@ class SlugcatBody:
             old.held_by = None
             old.stuck = False
             old.stuck_to = None
+        if self.carried_spear is spear:   # 从手里挪到背上：手要腾出来，
+            self.release_spear(to_free=False)   # 不然同一根矛会占两个槽
         self.back_spear = spear
         spear.state = ItemState.CARRIED
         spear.held_by = self
@@ -624,7 +626,9 @@ class SlugcatBody:
         if sp is None:
             return None
         self.back_spear = None
-        if self.grab_spear(sp, side):
+        # arm=False：这根矛就是自己背上的，不算「刚到手」，
+        # 不该重压手上冷却（否则猎手从背上抽出矛来反而丢不出去）。
+        if self.grab_spear(sp, side, arm=False):
             return sp
         self.back_spear = sp              # 手上腾不出位置：还背回去，别把矛弄丢
         return None
@@ -1211,6 +1215,11 @@ class SlugcatBody:
                 self.standing = c0.y < c1.y
                 self._flip_spin = 0
         move_x = 0
+        if self.walk_min is not None and self.walk_target_x is not None:
+            # 别的窗口挪动会改 walk_min/walk_max，旧目标可能已经落到墙外 →
+            # 每 tick 重新夹一次，夹回墙内后「到站」判定自然成立，不会顶着墙跑。
+            self.walk_target_x = min(max(self.walk_target_x, self.walk_min),
+                                     self.walk_max)
         if self.walk_target_x is not None:
             dx = self.walk_target_x - c1.x
             if abs(dx) > WALK_STOP_EPS:
@@ -1325,6 +1334,12 @@ class SlugcatBody:
                     c.x = self.walk_min
                 elif c.x > self.walk_max:
                     c.x = self.walk_max
+            if c1.on_floor:
+                # 站在地上还朝墙里使劲＝顶着墙空跑（原版撞墙不会原地跑）：收力
+                if c1.x <= self.walk_min and move_x < 0:
+                    self.move_dir = 0
+                elif c1.x >= self.walk_max and move_x > 0:
+                    self.move_dir = 0
 
     def support_y(self) -> float:
         """脚下那块地的 y（工作区地板 or 别人窗口顶边）。"""
@@ -1638,6 +1653,7 @@ class SlugcatBody:
         self.eat_raise = 0.0
         if fruit.stalk is not None and snap_stalk:   # 抓取瞬即脆断果柄
             fruit.stalk.release_counter = 2
+        self._pluck_if_rooted(fruit)
         self.arm_item_cd(bool(getattr(fruit, "is_edible", True)))
         return True
 
@@ -1649,6 +1665,24 @@ class SlugcatBody:
         if side is not None:
             self.arm_aim[side] = None
         return side
+
+    def _pluck_if_rooted(self, fruit) -> None:
+        """扎根的业力花被猫摘走：连根拔起并放出「弹性势能」。
+
+        原版 DetatchStalk 只把 growPos 置空（花是手抓起来的）；这里把那一下的
+        拽速（猫自身速度，站定摘就取「根→花」方向的一个小冲量）交给 pluck()，
+        于是茎逐节反冲、花瓣滞后回弹 —— 和鼠标拔花是同一套表现，两边一致。
+        """
+        if getattr(fruit, "grow_pos", None) is None or not hasattr(fruit, "pluck"):
+            return
+        c0 = self.chunk0
+        vx, vy = c0.x - c0.last_x, c0.y - c0.last_y
+        if math.hypot(vx, vy) < 1.0:
+            gx, gy = fruit.grow_pos
+            dx, dy = fruit.x - gx, fruit.y - gy
+            dd = math.hypot(dx, dy) or 1.0
+            vx, vy = dx / dd * 3.0, dy / dd * 3.0
+        fruit.pluck(vx, vy)
 
     def bite_carried(self):
         """Consume one bite; return True if finished (bites < min). Caller handles state+release."""

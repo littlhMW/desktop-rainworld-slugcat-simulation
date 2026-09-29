@@ -1,10 +1,11 @@
 """状态面板 HUD：每猫一行体征，可拖动可隐藏。"""
 from __future__ import annotations
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QFrame, QLayout,
-                               QScrollArea, QSizePolicy)
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel,
+                               QLayout, QScrollArea, QSizePolicy, QToolButton)
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 
+from ..i18n import t
 from .hudrow import PetRow
 
 REFRESH_MS = 200
@@ -14,7 +15,11 @@ _PANEL_QSS = (
     "QLabel{color:#e8f5d8;font-size:12px;}"
     "#hudName{color:#9fc080;font-size:12px;}"
     "#hudVal{color:#cfe8b8;font-size:11px;}"
-    "#hudRowName{color:#aef156;font-size:13px;font-weight:bold;}")
+    "#hudRowName{color:#aef156;font-size:13px;font-weight:bold;}"
+    "#hudTitle{color:#9fc080;font-size:11px;}"
+    "#hudClose{color:#cfe8b8;background:transparent;border:none;font-size:13px;"
+    "font-weight:bold;padding:0 4px;}"
+    "#hudClose:hover{color:#ffffff;background:rgba(190,90,80,180);border-radius:4px;}")
 
 
 class HudPanel(QWidget):
@@ -80,6 +85,22 @@ class HudPanel(QWidget):
             "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
             "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}")
         self._scroll.setMaximumHeight(self._max_view_h())
+        head = QWidget()
+        hbox = QHBoxLayout(head)
+        hbox.setContentsMargins(0, 0, 0, 3)
+        hbox.setSpacing(6)
+        title = QLabel(t("hud_title"))
+        title.setObjectName("hudTitle")
+        hbox.addWidget(title)
+        hbox.addStretch(1)
+        self._close_btn = QToolButton(head)
+        self._close_btn.setObjectName("hudClose")
+        self._close_btn.setText("\u2715")           # ✕
+        self._close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._close_btn.setToolTip(t("hud_close_tip"))
+        self._close_btn.clicked.connect(self.toggle_visible)
+        hbox.addWidget(self._close_btn)
+        pbox.addWidget(head)
         pbox.addWidget(self._scroll)
         self._rows = []
         self._build_rows()

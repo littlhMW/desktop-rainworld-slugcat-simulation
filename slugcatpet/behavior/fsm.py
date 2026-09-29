@@ -193,6 +193,16 @@ FLEE_COOLDOWN = 300       # 两次躲之间至少隔这么久（进场即计时�
 # 只从「没事干」的态里起跑：取果/送礼这类有目的的态不打断
 _FLEE_FROM = frozenset(("IdleStand", "PostThrowWander", "PostThrowStand", "MakeWay"))
 
+# 面敌逻辑（合并旧「威胁」+「害怕」）：恐慌区（FEAR_TOO_CLOSE_R 内）能打断的态。
+# 不含 Dead/Stunned/Dragged/Ascension/Swimming/TongueClimb/HPole 等不可打断的。
+_FACE_PANIC_FROM = frozenset((
+    "IdleStand", "PostThrowWander", "PostThrowStand", "MakeWay", "ChaseCursor",
+    "Socialize", "FetchFruit", "CatchFly", "ItemPlay", "HelpFeed", "PoleClimb",
+    "ScoldBlocker", "LieDown"))
+CRAWL_AWAY_STEP = 60.0     # 匍匐潜行每 tick 朝反方向重取的「一步」长度
+REVIVE_SAFE_PAD = 1.6      # 倒地同伴离威胁小于「我离威胁的距离×此值」＝在刀口上，不去
+
+
 
 def _energy_delta(state: str, drain_fac: float = 1.0) -> float:
     """本态本 tick 的体力变化：恢复不受体力影响，消耗按 drain_fac 缩放。"""
@@ -385,6 +395,7 @@ class BehaviorFSM:
         self._arm_cd = 0                 # 「为了威胁去捡家伙」的冷却
         self._cover_ally = None          # 躲到谁背后（有威胁、自己空手）
         self._cover_cd = 0
+        self._pincur_cd = 0             # 猎手把矛钉在鼠标上的冷却
         self._air_throw_cd = 0
         self._crawl_cd = 0
         self._protest_cd = 0
@@ -847,24 +858,19 @@ class BehaviorFSM:
         # 挡路互动扫描
         self._scan_blocking()
 
-        # 躲蜥蜴：就近出现蜥蜴 → 掉头跑开
+        # 面敌逻辑（合并旧「躲蜥蜴」+「恐惧」两套）：威胁的唯一入口。
+        # 恐慌区（FEAR_TOO_CLOSE_R 内）不管手头有没有正事一律接管；中距离只在
+        # 「没正事」的态里决定迎战 / 去拿家伙 / 救人 / 撤退（见 _face_threat_tick）。
         if self._flee_cd > 0:
             self._flee_cd -= 1
-        if (self._flee_cd <= 0 and self.state in _FLEE_FROM
-                and not self.grab.active and not self._exhausted and not self._zerog()
-                and not self._carrying_gift()
-                and not self.body.swimming and self.body.on_floor()):
-            lz = self._nearby_lizard()
-            if lz is not None:
-                self._flee_from = lz
-                self._transition("FleeLizard")
-
-        # 六类欲望：社交 / 帮取食 / 反击 / 匍匐躲避 / 被抢抗议
-        # 但在那之前：威胁圈（≈1/3 桌面宽）内有活威胁时恐惧优先级最高 —— 睡着也要立刻醒
         if (self.state in ("LieDown", "Sleep") and not self.grab.active
                 and self._threat_present()):
-            self._hibernating = False
+            self._hibernating = False          # 威胁在场：睡着也要立刻醒
             self._transition("WakeSequence")
+        if not self.grab.active and not self._exhausted and not self._zerog():
+            self._face_threat_tick(cursor)
+
+        # 五类欲望：社交 / 帮取食 / 反击 / 匍匐躲避 / 被抢抗议
         self._wants_tick(cursor)
 
         # 体力告急强制休息
@@ -1862,6 +1868,160 @@ class BehaviorFSM:
         f = self.body.carried_fruit
         return f is not None and getattr(f, "is_tame_food", False)
 
+    # ── 面敌逻辑（合并旧「威胁」+「害怕」两套）──
+    def _armed_in_hand(self) -> bool:
+        """手上/背上**已经**有家伙（区别于「附近有得捡」）。"""
+        b = self.body
+        return (b.carried_spear is not None or b.carried_stone is not None
+                or b.back_spear is not None)
+
+    def _revive_target_safe(self, th):
+        """附近倒地的同伴，且**不在威胁那一侧**（不为了一具尸体往刀口上跑）。
+
+        原版 Player 见威胁的第一反应是远离；「贴着敌人救人」既不符合原版，
+        也让人看着像送死 —— 所以尸体比我更靠近威胁时一律放弃。
+        已经在救的不抢（复用 _revive_claimed_by 的认领规则）。
+        """
+        b = self.body
+        my_gap = abs(th.x - b.chunk1.x)
+        c1 = b.chunk1
+        best, bd = None, tuning.HELPFEED_SEEK_R
+        for p in self._peers():
+            ob = p.body
+            if not ob.dead or self._revive_claimed_by(p) is not None:
+                continue
+            d = math.hypot(ob.chunk1.x - c1.x, ob.chunk1.y - c1.y)
+            if d >= bd:
+                continue
+            if abs(th.x - ob.chunk1.x) < min(my_gap, tuning.FEAR_TOO_CLOSE_R * REVIVE_SAFE_PAD):
+                continue                    # 尸体就贴在敌人嘴边：不去了
+            best, bd = p, d
+        return best
+
+    def _face_threat_tick(self, cursor) -> bool:
+        """面敌逻辑的唯一入口：迎战 / 去拿家伙 / 救人 / 撤退。
+
+        合并了旧版互相抢班的「威胁圈」与「恐惧」两段（旧版在同一 tick 里
+        重复调用 _flee_lizard_now，面对面也照躲，于是出现发呆、来回踱步）。
+
+        规则（对照原版 Player 的恐惧圈 + Lizards 的威胁判定）：
+          ① 威胁贴到 FEAR_TOO_CLOSE_R：手里有家伙、上手冷却也走完了 → 当场掷；
+             否则一律先脱离接触（被逼到角落就跳过它，近处有竖杆就爬上去）。
+          ② 中距离（威胁圈内）：手上/背上有家伙 → 迎战；空手但近处有矛/石头
+             → 去捡（原版捡起投掷物）；勇敢的够得到敌人身上的矛 → 拔下来重投。
+          ③ 空手又没家伙可拿：善良的只在「倒地的同伴不在威胁那一侧」时去救，
+             其余一律朝远离威胁的方向撤 —— 不空手贴身、不面对面发呆。
+          ④ 匍匐只在**真的在它背后**时才做（见 _flee_lizard_now）。
+
+        返回 True = 本 tick 已决定；False = 让给别的欲望。
+        """
+        b = self.body
+        if b.dead or self.grab.active or b.swimming or self._zerog():
+            return False
+        if self._carrying_gift():
+            return False                 # 端着要送出去的蝉乌贼：不躲（原版送礼）
+        th = self._threat_lizard()
+        if th is None:
+            return False
+        if not b.on_floor():
+            # 空中没有「匈匐」也没有「跳过它」这些选项：落地再决定。
+            # （旧版这段也在 on_floor 里；中途插嘴会让猫在半空
+            # 就定下「跑」，落地后反而不再评估，于是不会跳过蜥蜩。）
+            return False
+        c1 = b.chunk1
+        d = abs(th.x - c1.x)
+        # ① 恐慌区：先脱离接触（如果手里有家伙就回身一掷再走）
+        if d <= tuning.FEAR_TOO_CLOSE_R:
+            if self.state not in _FACE_PANIC_FROM:
+                return False
+            if (b.on_floor() and self._armed_in_hand() and b.item_ready()
+                    and (b.carried_stone is not None or b.carried_spear is not None)):
+                self._fight_target = th
+                self._fight_left = tuning.FIGHT_TICKS
+                self._break_active_controllers()
+                self._transition("FightThreat")
+                return True
+            self._flee_lizard_now(th)
+            return True
+        # ② 已经在救人的：同伴一旦变成「在刀口上」（或者自己被逼到威胁边上），
+        # 立刻放弃救人先撒 —— 用户口径：不为了尸体往敌人嘴上凑（旧版中距离不打断
+        # Socialize，于是出现「贴着敌人救人」。）
+        if (self.state == "Socialize" and self._social_kind == "revive"
+                and b.on_floor() and self._revive_target_safe(th) is not self._social_target):
+            self._flee_lizard_now(th)
+            return True
+        # ② 中距离：只在「没正事」的态里抢班
+        if self.state not in _WANTS_FROM or not b.on_floor():
+            return False
+        if self._armed_in_hand():
+            self._fight_target = th
+            self._fight_left = tuning.FIGHT_TICKS
+            self._break_active_controllers()
+            self._transition("FightThreat")
+            return True
+        gw = self._nearest_ground_weapon() if b.carried_fruit is None else None
+        if (gw is not None and self._arm_cd <= 0
+                and math.hypot(gw.x - c1.x, gw.y - c1.y) <= tuning.ARM_SEEK_R):
+            self._fight_target = th
+            self._fight_left = tuning.FIGHT_TICKS
+            self._arm_cd = tuning.ARM_COOLDOWN
+            self._break_active_controllers()
+            self._transition("FightThreat")
+            return True
+        brave = getattr(self.pers, "bravery", 0.5)
+        if brave >= tuning.RIP_SPEAR_BRAVE and self._nearest_rip_spear(th) is not None:
+            self._fight_target = th
+            self._fight_left = tuning.FIGHT_TICKS
+            self._break_active_controllers()
+            self._transition("FightThreat")
+            return True
+        kind = getattr(self.pers, "kindness", 0.5)
+        if (kind >= tuning.FEAR_KIND_RESCUE and self._cover_cd <= 0
+                and self._cover_ally_start(th)):
+            return True                  # 空手又有持械同伴：躲到它背后（落点先验距）
+        if kind >= tuning.FEAR_KIND_RESCUE and self._revive_cd <= 0:
+            dp = self._revive_target_safe(th)
+            if dp is not None:
+                self._social_kind = "revive"
+                self._social_target = dp
+                self._social_left = tuning.REVIVE_APPROACH_TICKS
+                self._break_active_controllers()
+                self._transition("Socialize")
+                return True
+        if self._flee_cd > 0 and self._crawl_cd > 0:
+            # 跑和趴都还在冷却：这一轮中距离先不折腾（不然每帧重新起跑）
+            return False
+        self._flee_lizard_now(th)        # ③④ 撤退（匍匐只在真的在它背后时）
+        return True
+
+    def _pin_throw_at_cursor(self, cursor) -> bool:
+        """猎手怪癖：朝光标横着掷一支矛，命中就把矛钉在光标上。
+
+        原版没有「矛钉鼠标」（鼠标不是游戏里的对象），这是桌宠扩展出来的小玩法，
+        但物理仍旧是原版那一套：矛走 Weapon.Thrown 水平掷出（setRotation =
+        throwDir、不翻滚），只是飞行途中穿过光标就挂上去；甩鼠标（光标一 tick
+        位移超过阈值）会把它甩下来，之后照常自由落体（见 items._step_cursor_pin）。
+        """
+        b = self.body
+        if b.carried_spear is None and b.back_spear is not None:
+            b.take_back_spear("r")           # 猎手：从背上抽矛（原版 CanRetrieveSpearFromBack）
+        if b.carried_spear is None or not b.item_ready():
+            return False
+        cx, cy = cursor
+        c0 = b.chunk0
+        if abs(cy - c0.y) > tuning.PIN_CURSOR_DY:
+            return False                     # 高度差超一跳：原版只能横着掷，够不到就算了
+        if abs(cx - c0.x) < 24.0:
+            return False                     # 贴脸掷会立刻插墙
+        b.facing = 1 if cx >= c0.x else -1
+        b.stop_walk()
+        self.gfx.look_at = (cx, cy)
+        b.carried_spear.aim_cursor = True
+        b.throw_spear(b.facing, weaponphys.frc(), recoil=0.4)
+        self._pincur_cd = tuning.PIN_CURSOR_CD
+        self.gfx.blink = 15
+        return True
+
     def _nearby_lizard(self):
         """水平距离最近且在威胁圈内的威胁（蜥蜴 / 愤怒的面条蝇成体）；没有则 None。"""
         x = self.body.chunk1.x
@@ -1890,7 +2050,10 @@ class BehaviorFSM:
             lo, hi = WALL_MARGIN, self.WL - WALL_MARGIN
         x = b.chunk1.x
         side = 1.0 if x >= lz.x else -1.0
-        return min(max(lz.x + side * FLEE_GAP, lo), hi)
+        # 目标点 = 「从我现在的位置再往外退 FLEE_GAP」再夹进可行走范围。
+        # 旧版写的是「离敌人 FLEE_GAP 的那个点」——猫本来就在 GAP 之外时，
+        # 那个点反而在它和敌人之间，猫会朝敌人走过去（用户看到的「贴着敌人」）。
+        return min(max(x + side * FLEE_GAP, lo), hi)
 
     def _flee_lizard_now(self, lz) -> None:
         """立刻躲开这只敌人：被逼到角落先跳过它，否则顺背匍匐潜走 / 掉头跑。
@@ -1920,11 +2083,14 @@ class BehaviorFSM:
                 self._break_active_controllers()
                 self._transition("PoleClimb")
                 return
+        # 匍匐潜行只在**真的在它背后**时才做：原版 Player 的匍匐是「没被看见」时的
+        # 潜行姿态，不是「离得远就趴下」。旧版把「距离 > CRAWL_FEAR_R*0.6」也当成
+        # 趴下的条件，于是场上一有蜥蜴猫就动不动突然趴下 —— 这就是那个「喜欢突然
+        # 匍匐」的来源。性格 crawl_like 只决定肯不肯趴。
         behind = self._behind_creature(lz)
-        # 性格：crawl_like 低的猫宁可拔腿就跑，不肯趴下
         can_crawl = (self.rng.random()
                      < 0.25 + 0.75 * getattr(self.pers, "crawl_like", 0.5))
-        if (behind or abs(lz.x - b.chunk1.x) > tuning.CRAWL_FEAR_R * 0.6) and can_crawl:
+        if behind and can_crawl:
             self._crawl_from = lz
             self._crawl_left = tuning.CRAWL_AWAY_TICKS
             self._break_active_controllers()
@@ -4371,7 +4537,7 @@ class BehaviorFSM:
         for k in ("_social_cd", "_help_cd", "_fight_cd", "_crawl_cd",
                   "_protest_cd", "_revive_cd", "_scold_cd",
                   "_pole_nudge_cd", "_act_cd", "_apology_t", "_thank_t",
-                  "_arm_cd", "_cover_cd"):
+                  "_arm_cd", "_cover_cd", "_pincur_cd"):
             v = getattr(self, k)
             if v > 0:
                 setattr(self, k, v - 1)
@@ -4383,41 +4549,8 @@ class BehaviorFSM:
         b = self.body
         brave = getattr(self.pers, "bravery", 0.5)
         kind = getattr(self.pers, "kindness", 0.5)
-        # 0) 恐惧：敌对靠上来时「逃离危险源」优先级永远最高 —— 高于复活/帮取食/
-        #    抗议/反击。唯二例外是勇敢的敢迎战、善良的敢先去救人；但蜥蜴贴到
-        #    FEAR_TOO_CLOSE_R 内一律逃跑（被逼到角落就跳过它跑）。
-        #    手里端着要送蜥蜴的蝉乌贼时不慌（原版送礼不躲）——但空手绝不会靠近。
-        if not b.swimming and b.on_floor() and not self._carrying_gift():
-            flz = self._threat_lizard()
-            if flz is not None:
-                fd = math.hypot(flz.x - b.chunk1.x, flz.y - b.chunk1.y)
-                close = fd <= tuning.FEAR_TOO_CLOSE_R
-                if close:
-                    self._flee_lizard_now(flz)
-                    return
-                # 自己空手又有个持械同伴在旁边：躲到它背后（往远离威胁的方向挪）
-                if self._cover_cd <= 0 and self._cover_ally_start(flz):
-                    return
-                if self._crawl_cd <= 0:
-                    if (kind >= tuning.FEAR_KIND_RESCUE and self._revive_cd <= 0):
-                        dp = self._dead_peer_near()
-                        if dp is not None:
-                            self._social_kind = "revive"
-                            self._social_target = dp
-                            self._social_left = tuning.REVIVE_APPROACH_TICKS
-                            self._break_active_controllers()
-                            self._transition("Socialize")
-                            return
-                    if (brave >= tuning.FEAR_BRAVE_FIGHT and self._fight_cd <= 0
-                            and (self._weapon_ready()
-                                 or self._nearest_rip_spear(flz) is not None)):
-                        self._fight_target = flz
-                        self._fight_left = tuning.FIGHT_TICKS
-                        self._break_active_controllers()
-                        self._transition("FightThreat")
-                        return
-                    self._flee_lizard_now(flz)
-                    return
+        # 0) 威胁已在 _face_threat_tick（主 tick 的唯一威胁入口）里处理完：
+        #    迎战 / 拿家伙 / 救人 / 撤退都在那儿一次性决定，这里不再重复抢班。
         # 0b) 送礼驯服：手里端着蝉乌贼 → 极低概率决定去喂未驯服的蜥蜴
         #     （原版 FriendTracker.GiftRecieved；概率调得极低，驯服是稀有事）
         if self._carrying_gift() and self.rng.random() < tuning.GIFT_START_P:
@@ -4531,13 +4664,14 @@ class BehaviorFSM:
                     self._break_active_controllers()
                     self._transition("FightThreat")
                     return
-        # 5) 恐惧：蜥蜴靠近 → 在它背后就趴下潜行挪开；打了照面直接跑
-        if (self._crawl_cd <= 0 and not b.swimming and b.on_floor()
-                and self._tongue_holding_creature() is None      # 正拽着东西：不趴下
-                and not self._carrying_gift()):
-            lz = self._threat_lizard()
-            if lz is not None:
-                self._flee_lizard_now(lz)
+        # 5) 恐惧/威胁：已合并到 _face_threat_tick（主 tick 入口），此处不再重复。
+        # 5b) 猎手怪癖：闲下来偶尔拿矛去钉鼠标（钉上的矛甩一下鼠标就能甩下来）
+        if (self._pincur_cd <= 0 and self.state in _IDLE_SOCIAL_FROM
+                and not b.swimming and b.on_floor() and cursor is not None
+                and getattr(self.pers, "spear_like", 1.0) >= tuning.PIN_CURSOR_SPEAR_LIKE
+                and self._armed_in_hand()
+                and self.rng.random() < tuning.PIN_CURSOR_P):
+            if self._pin_throw_at_cursor(cursor):
                 return
         # 6) 平时：附近有同伴 / 鼠标在附近停够久 → 随手做个小社交动作（不切态）
         if (self._act_cd <= 0 and self.state in _IDLE_SOCIAL_FROM
@@ -5867,19 +6001,27 @@ class BehaviorFSM:
             return
         d = math.hypot(tgt.x - b.chunk1.x, tgt.y - b.chunk1.y)
         self.gfx.look_at = (tgt.x, tgt.y)
+        # 手真正够得到的距离。旧版过去拿矛用的是 RIP_SPEAR_R(74)/60px
+        # 这两个止步阈值，都大于手长(18+24=42) —— 猫走到止步点就停下，
+        # 手又够不到，于是站在矛边发呆直到冷却结束（用户反馈的「站在矛边也发呆」）。
+        reach = tuning.GRAB_REACH + b.arm_full_reach
         if b.carried_spear is None and b.carried_stone is None:
             rip = None
             if getattr(self.pers, "bravery", 0.5) >= tuning.RIP_SPEAR_BRAVE:
                 rip = self._nearest_rip_spear(tgt) or self._nearest_rip_spear()
             if rip is not None:
                 rd = math.hypot(rip.x - b.chunk1.x, rip.y - b.chunk1.y)
-                if rd > tuning.RIP_SPEAR_R:
+                if rd > reach * 0.8:      # 走到真的够得到再停（不然停在手够不到的地方）
                     b.walk_to(rip.x)
                     return
                 b.stop_walk()
                 side = b.pick_hand("spear")
-                if side is None:
-                    return
+                if side is None:                 # 手里攥着果子之类：腾出手再拔
+                    b.drop_all()
+                    side = b.pick_hand("spear")
+                    if side is None:
+                        self._fight_end()
+                        return
                 b.reach_for(rip, side)
                 if (math.hypot(rip.x - b.chunk0.x, rip.y - b.chunk0.y)
                         <= tuning.GRAB_REACH + b.arm_full_reach):
@@ -5894,13 +6036,17 @@ class BehaviorFSM:
             o = self._nearest_ground_weapon()
             if o is not None:
                 od = math.hypot(o.x - b.chunk1.x, o.y - b.chunk1.y)
-                if od > 60.0:
+                if od > reach * 0.8:
                     b.walk_to(o.x)
                     return
                 b.stop_walk()
                 side = b.pick_hand("spear")
-                if side is None:
-                    return
+                if side is None:                 # 手里攥着果子之类：腾出手再捡
+                    b.drop_all()
+                    side = b.pick_hand("spear")
+                    if side is None:
+                        self._fight_end()
+                        return
                 b.reach_for(o, side)
                 if math.hypot(o.x - b.chunk0.x, o.y - b.chunk0.y) <= tuning.GRAB_REACH + b.arm_full_reach:
                     from ..world.spear import Spear
@@ -5910,23 +6056,9 @@ class BehaviorFSM:
                         b.grab_stone(o, side)
                     self._fight_throw_t = tuning.FIGHT_THROW_CD
                 return
-            # 空手：贴上去拍打指指点点（原版空手打不动蜥蜴）
-            # 只有「刚被打过（anger>0）」或「够勇敢主动上」才继续贴着打
-            if (self.anger <= 0
-                    and getattr(self.pers, "bravery", 0.5) < tuning.FIGHT_UNARMED_BRAVE):
-                self._fight_end()
-                return
-            if d > tuning.FIGHT_MELEE_R:
-                b.walk_to(tgt.x)
-                self._act_end()
-            else:
-                b.stop_walk()
-                if not self._act_active():
-                    self._act_begin("scold", tgt)
-                elif not self._act_tick():      # 空手：扒拉着指指点点
-                    self._act_begin("scold", tgt)
-                if self.timer % tuning.SOCIAL_POKE_INTERVAL == 0:
-                    tgt.vx += 0.35 if tgt.x >= b.chunk0.x else -0.35
+            # 空手又找不到家伙：原版空手根本打不动蜥蜴，贴上去只是送死 ——
+            # 结束迎战，交回面敌逻辑（撤退，或者去更远的地方找矛）。
+            self._fight_end()
             return
         # 持械：持续瞄着目标（指向），到点就按原版水平掷出
         # 目标高出一跳够不着的量（例如站在杆上/墙上的蜥蜴）→ 先爬竖杆到同一高度
@@ -6069,8 +6201,12 @@ class BehaviorFSM:
             self._crawl_cd = T_CRAWL_RETRY
             self._transition("FleeLizard")
             return
-        b.move_dir = -1 if lz.x >= b.chunk1.x else 1
-        b.facing = b.move_dir
+        # 用 walk_to 驱动而不是裸 move_dir：夹进可行走范围后到墙就自然「到站」，
+        # 不再出现「顶着屏幕两侧的墙一直跑」（旧版 move_dir 一旦设上就没人清，
+        # 离场后还会带着它一路撞墙）。
+        away = 1.0 if lz.x < b.chunk1.x else -1.0
+        b.walk_to(b.chunk1.x + away * CRAWL_AWAY_STEP)
+        b.facing = 1 if away > 0 else -1
         self.gfx.look_at = (lz.x, lz.y)
 
 

@@ -46,7 +46,8 @@ class Spear:
                  "_thrown", "_throw_dir", "_exit_spd", "_throw_x", "_throw_y",
                   "always_stick",
                  "collide_with_objects", "held_by", "embedded", "stuck_to", "_still",
-                 "thrower", "no_self_t", "pinned", "pole", "toss_t")
+                 "thrower", "no_self_t", "pinned", "pole", "toss_t",
+                 "aim_cursor", "cursor_pin")
 
     def __init__(self, x: float, y: float, seed: int = 0, angle_deg: float = 90.0):
         self.x = self.last_x = float(x)
@@ -89,6 +90,10 @@ class Spear:
         # 轻抛（原版 Player.TossObject，圣徒投矛走这条）刚出手的剩余帧数：原版轻抛是
         # Mode.Free，什么都打不动；本作用户点名要圣徒能敲开爆米花，只对豆荚开这个口子。
         self.toss_t = 0
+        # 猎手朝鼠标掷的矛：命中光标就钉在光标上（cursor_pin = 相对光标的偏移），
+        # 甩鼠标（光标一 tick 位移够大）会被甩下来，自由落体。
+        self.aim_cursor = False
+        self.cursor_pin = None
 
     @property
     def pos(self):

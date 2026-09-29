@@ -5,6 +5,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication, QColor, QPainter
 
 from ..behavior import tuning
+from ..behavior.status import status_text
 from ..i18n import t
 from .catmenu import pet_label
 from .tips import install as install_tip
@@ -144,7 +145,10 @@ class PetRow(QFrame):
     def refresh(self) -> bool:
         """刷新本行，返回寒冷条显隐是否变化。"""
         pets = list(getattr(self.pet.window, "pets", [self.pet]))
-        self.name.setText(pet_label(self.pet, pets))
+        beh = getattr(self.pet, "behavior", None)
+        label = pet_label(self.pet, pets)
+        status = status_text(beh) if beh is not None else ""
+        self.name.setText(f"{label}  ·  {status}" if status and status != "—" else label)
         body = self.pet.body
 
         k = int(body.karma)

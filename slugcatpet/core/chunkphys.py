@@ -21,6 +21,13 @@ MAX_STRETCH = 1.5    # pinned 端硬上限，rest×此值
 STOP_THRESH = (1.0 + 9.0 * (1.0 - BOUNCE)) * K_VEL
 TANGENTIAL = min(max(SURFACE_FRICTION * 2.0, 0.0), 1.0)
 
+# 单个 chunk 的速度上限（px/tick）：约束求解在极端重叠下会往速度里灌很大的冲量
+# （两个 chunk 被硬挤在一起 → 位置修正量大 → 下一 tick 又被别的约束挤回来，逐帧
+# 累加），表现就是「像炮弹一样被发射出去」。正常动作（杆跳 6、工匠爆跳 15、被矛
+# 击退 ~10、从屏幕顶自由落体到底 ~38）都远在阈值以内，只有失控才会被削。
+MAX_CHUNK_SPEED = 60.0
+MAX_CHUNK_SPEED_SQ = MAX_CHUNK_SPEED * MAX_CHUNK_SPEED
+
 IMPACT_THRESHOLD = 1.0 * K_VEL
 IMPACT_SHAKE_MOMENTUM = 7.0 * K_VEL
 IMPACT_STRENGTH_KNEE = 30.0 * K_VEL
@@ -84,6 +91,7 @@ class BodyChunk:
             self.vx = 0.0
         if self.vy != self.vy:
             self.vy = 0.0
+        self._cap_speed()
         if self.pinned:
             # kinematic，只维护快照
             self.last_last_x, self.last_last_y = self.last_x, self.last_y
@@ -101,6 +109,17 @@ class BodyChunk:
         self.cx = self.cy = 0
         # 碰撞：竖直优先 → 水平
         self._collide(W, H, impact)
+        # 重力/水黄、约束求解、碰撞都会往里灌速度，出去前再封一次，
+        # 保证 update() 返回时 hypot(vx,vy) 恒 ≤ MAX_CHUNK_SPEED。
+        self._cap_speed()
+
+    def _cap_speed(self) -> None:
+        """单 chunk 速度封顶（深度重叠时约束求解会逐帧灌速度，必须兜住）。"""
+        sp2 = self.vx * self.vx + self.vy * self.vy
+        if sp2 > MAX_CHUNK_SPEED_SQ:
+            k = MAX_CHUNK_SPEED / math.sqrt(sp2)
+            self.vx *= k
+            self.vy *= k
 
     def clamp_inside(self, W: float, H: float) -> None:
         """位置边界夹（安全网）。"""

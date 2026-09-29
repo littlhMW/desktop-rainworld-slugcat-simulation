@@ -350,6 +350,11 @@ class FruitFetcher:
         if f is None:
             self.phase = "select"
             return False
+        # 还扎着根的業力花不能直接啧（用户口径）：先连根拔起（有弹性势能）
+        # 再进嚼嚼。猫拿到手那下已经拔过一次（grab_fruit），这里是兜底。
+        if getattr(f, "grow_pos", None) is not None:
+            self.body._pluck_if_rooted(f)
+            return False
         self.win.gfx.look_at = (f.x, f.y)
         self.eat_counter += 1
 

@@ -393,6 +393,11 @@ GIFT_DELIVER_DELAY = 26       # 走到嘴边后迟疑这么久才真交出去
 GIFT_TRY_TICKS = 1400         # 一次送礼尝试最多磨这么久
 FEAR_JUMP_MIN_GAIN = 26.0     # 反方向也挪不动 → 判定被逼到角落
 FEAR_JUMP_PUSH = 1.15         # 跳过敌人时的额外水平初速
+PIN_CURSOR_P = 1.0 / 2400.0   # 猎手闲下来每 tick 起意「拿矛钉鼠标」的概率（稀有怪癖）
+PIN_CURSOR_CD = 2400          # 一次钉鼠标之后的冷却（约 60s）
+PIN_CURSOR_DY = 26.0          # 光标与胸口的高度差超过它 = 水平掷不到，算了
+PIN_CURSOR_SPEAR_LIKE = 1.0   # 用矛意愿低于它的猫不玩这手（只有猎手这类够高）
+
 RIP_SPEAR_R = 74.0            # 够得着蜥蜴身上的矛才敢拔
 RIP_SPEAR_BRAVE = 0.70        # 勇敢度超过它才敢去拔矛重投
 FIGHT_UNARMED_R = 150.0       # 空手也敢主动扑上去的距离（只有勇敢的猫用）
