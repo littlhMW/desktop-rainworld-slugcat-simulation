@@ -410,6 +410,7 @@ class BehaviorFSM:
         self._cover_ally = None          # 躲到谁背后（有威胁、自己空手）
         self._cover_cd = 0
         self._pincur_cd = 0             # 猎手把矛钉在鼠标上的冷却
+        self._pincur_urge = 0.0         # 猎手对光标的兴趣累积（满 1 才出手）
         self._air_throw_cd = 0
         self._crawl_cd = 0
         self._protest_cd = 0
@@ -495,6 +496,8 @@ class BehaviorFSM:
         # 觅食欲望：吃到东西归 0，慢慢涨回 1 才想再找吃的
         self._food_urge = 1.0
         self._food_prev = self.body.food
+        self._karma_cd = 0            # 业力花（独立行动）的冷却
+        self._fetch_karma = False     # 下一次 FetchFruit 是去拔业力花（独立目标链）
         self.anger = 0
         self.cursorlick = None
         self._cursor_prev = None
@@ -919,15 +922,13 @@ class BehaviorFSM:
         self._food_urge_tick()
         self._social_urge_tick()
         if (self._fetch_check == 0
-                and (self.body.food < self.body.food_max
-                     or (self.win.karmaflowers and not self.body.flower_karma))
+                and self.body.food < self.body.food_max
                 and self._food_seek_ready()
                 and not self.grab.active and not self._exhausted
                 and not self._cold_urgent() and not self._zerog()
                 and self._fetch_cooldown <= 0
                 and self.state not in _FETCH_NEVER):
-            fetch_cands = fetch_ready(self.planner,
-                                      self.win.fetchables(want_karma=not self.body.flower_karma),
+            fetch_cands = fetch_ready(self.planner, self.win.fetchables(),
                                       diet=self.pers.diet, unit=self.win)
             if fetch_cands:
                 take = True
@@ -944,6 +945,23 @@ class BehaviorFSM:
                     self._act_or_wake("FetchFruit")
             else:
                 self._hpole_food_trip()
+
+        # 业力花（KarmaAction）：独立于「吃」的目标链 —— 业力花不填饱食度、
+        # 只填隐藏花条，所以单独一条路（旧版混进食链：吃完花 food 不涨，
+        # 于是觅食欲望不归零、猫吃饱了还反复进觅食判断）。
+        if self._karma_cd > 0:
+            self._karma_cd -= 1
+        if (self._fetch_check == 0 and self._karma_cd <= 0
+                and self.win.karmaflowers and not self.body.flower_karma
+                and not self.grab.active and not self._exhausted
+                and not self._cold_urgent() and not self._zerog()
+                and not self._hibernating and not self.body.swimming
+                and self.state in _WANTS_FROM
+                and self.rng.random() < tuning.KARMA_SEEK_P):
+            if self._karma_flowers_reachable():
+                self._break_active_controllers()
+                self._fetch_karma = True
+                self._act_or_wake("FetchFruit")
 
         # 喜欢珍珠的猫（溪流）：闲着也会去把地上的珍珠叼起来拿着
         if self._pearl_cd > 0:
@@ -1045,7 +1063,7 @@ class BehaviorFSM:
                 and self._threat_lizard() is None
                 and self.state in ("IdleStand", "PostThrowStand", "PostThrowWander")):
             tgt = self._lick_creature()
-            if tgt is not None and self.rng.random() < LICK_PLAY_P:
+            if tgt is not None and self.rng.random() < self._lick_want():
                 self.win.fire_tongue_at_obj(tgt)
                 self._lick_cd = LICK_PLAY_CD
                 self.gfx.look_at = (tgt.x, tgt.y)
@@ -2051,6 +2069,19 @@ class BehaviorFSM:
         self._pincur_cd = tuning.PIN_CURSOR_CD
         self.gfx.blink = 15
         return True
+
+    def _tongue_curiosity(self) -> float:
+        """共享的「舌头动作偏好」轴（0..1）：圣徒舌钩荡跃 / 逗生物 / 吊顶都用它。
+
+        旧版每个舌头动作各自 if 一个常量概率，谁也不知道这猫到底「爱不爱用舌头」；
+        现在性格里有一个统一轴，各处都读它（见 cats/personality.py 的
+        tongue_curiosity），于是爱用舌头的个体在所有舌头动作上都更活跃。
+        """
+        return clampf(float(getattr(self.pers, "tongue_curiosity", 0.5)), 0.0, 1.0)
+
+    def _lick_want(self) -> float:
+        """逗弄生物的概率 = 基准 × 舌头好奇心（中性时就是原来的 LICK_PLAY_P）。"""
+        return clampf(LICK_PLAY_P * (0.35 + 1.30 * self._tongue_curiosity()), 0.0, 1.0)
 
     def _nearby_lizard(self):
         """水平距离最近且在威胁圈内的威胁（蜥蜴 / 愤怒的面条蝇成体）；没有则 None。"""
@@ -3110,28 +3141,28 @@ class BehaviorFSM:
         self.gfx.hand_aim["r"] = None
 
     def _climbable_pole_available(self) -> bool:
-        return any(p.kind == "vertical" for p in self.win.poles)
+        """此刻真有一根「我用得上的竖杆」——不是「世界上存在竖杆」。
+
+        旧版是 any(p.kind == "vertical")：猫在 x=100、杆在 x=900 也算可爬，
+        于是杆一多就出现「爬上去 → 发现地面更近 → 下来 → 再爬」。统一走
+        planner.reachable_transports（横距 + 纵向跨度双重判定），Mood / 取食 /
+        玩杆共用同一份结果（见 planning/planner.py）。
+        """
+        return bool(self.planner.reachable_transports(("vertical",)))
 
     def _pole_in_reach(self, p) -> bool:
-        """身体落在杆的竖直跨度内（含端外容差）＝够得着。
+        """够得着这根杆：横距在够取圈内，且身体高度落在杆的纵向跨度内。
 
         光标虚杆悬空、底部不接地：鼠标抬高时地面上的猫够不着它，
         既不该选它去爬，也不该为它白跑一趟。
         """
-        top, bot = min(p.ay, p.by), max(p.ay, p.by)
-        y = self.body.chunk1.y
-        return (top - tuning.POLE_AIRGRAB_PAD <= y
-                <= bot + tuning.POLE_AIRGRAB_PAD)
+        return self.planner.transport_in_reach(p)
 
     def _pick_climbable_pole(self):
         best = None
         hx = self.body.chunk1.x
-        for p in self.win.poles:
-            if p.kind != "vertical":
-                continue
-            if not self._pole_in_reach(p):
-                continue
-            if best is None or abs(p.x - hx) < abs(best.x - hx):
+        for p in self.planner.reachable_transports(("vertical",)):
+            if best is None or abs(p.bx - hx) < abs(best.bx - hx):
                 best = p
         return best
 
@@ -3472,8 +3503,7 @@ class BehaviorFSM:
             return False                 # 上杆本来就是为了够那个东西
         if not (b.food < b.food_max and self._food_seek_ready()):
             return False
-        if not fetch_ready(self.planner,
-                           self.win.fetchables(want_karma=not b.flower_karma),
+        if not fetch_ready(self.planner, self.win.fetchables(),
                            diet=self.pers.diet, unit=self.win):
             return False
         self._break_active_controllers()
@@ -3552,7 +3582,7 @@ class BehaviorFSM:
             if self._hp_step_cd > 0:
                 return False
             best = None
-            for cand in self.win.fetchables(want_karma=not b.flower_karma):
+            for cand in self.win.fetchables():
                 if getattr(cand, "state", None) not in ("free", "hanging"):
                     continue
                 if not getattr(cand, "fetch_ready", True):
@@ -4094,12 +4124,27 @@ class BehaviorFSM:
         self.gfx.hand_aim["l"] = None
         self.gfx.hand_aim["r"] = None
 
+    def _karma_flowers_reachable(self):
+        """场上够得着、还没被吃掉的业力花（独立链路，不混普通食物）。"""
+        out = []
+        for f in self.win.karma_targets():
+            if getattr(f, "state", None) not in ("free", "hanging"):
+                continue
+            if not getattr(f, "fetch_ready", True):
+                continue
+            if self.planner.any_touch(obj_goal(f)):
+                out.append(f)
+        return out
+
     def _fetch_enter(self):
         from .fetch import FruitFetcher
         self.gfx.hand_aim["l"] = None
         self.gfx.hand_aim["r"] = None
+        karma = self._fetch_karma
+        self._fetch_karma = False
         self.fetch = FruitFetcher(self.win, self.planner, diet=self.pers.diet,
-                                  pearl_like=getattr(self.pers, "pearl_like", 1.0))
+                                  pearl_like=getattr(self.pers, "pearl_like", 1.0),
+                                  karma_only=karma)
 
     def _st_fetchfruit(self, cursor, disturbed):
         if self.grab.active:
@@ -4113,6 +4158,8 @@ class BehaviorFSM:
         fh = self.fetch
         done = fh.update()
         if fh.giveup:
+            if fh.karma_only:       # 业力花：走独立链路的冷却，别和觅食抢班
+                self._karma_cd = tuning.KARMA_SEEK_CD
             self._break_tongue()
             self._fetch_release()
             self._fetch_cooldown = T_FETCH_COOLDOWN
@@ -4120,6 +4167,8 @@ class BehaviorFSM:
         elif done:
             if fh.pearl_done:       # 把玩完珍珠：放地上进冷却，别原地又叼起来
                 self._pearl_cd = tuning.PEARL_HOARD_CD
+            if fh.karma_only:
+                self._karma_cd = tuning.KARMA_SEEK_CD
             self._break_tongue()
             self._fetch_release()
             self._transition("IdleStand")
@@ -4536,6 +4585,12 @@ class BehaviorFSM:
             return True
         return False
 
+    def _spear_usable(self, sp) -> bool:
+        """地上这枝矛此刻取不取用：钉成杆的矛只有工匠拔得动（用户口径）。"""
+        if not getattr(sp, "pinned", False):
+            return True
+        return bool(getattr(self.body.stats, "is_artificer", False))
+
     def _nearest_ground_weapon(self):
         """地上能捡的石头/矛（原版捡起投掷物）；肯不肯捡矛看用矛意愿。"""
         sfac = clampf(float(getattr(self.pers, "spear_like", 1.0)), 0.05, 2.0)
@@ -4552,7 +4607,7 @@ class BehaviorFSM:
         for s in self.win.spears:
             if s.state != ItemState.FREE or getattr(s, "stuck_to", None) is not None:
                 continue
-            if getattr(s, "pinned", False):      # 钉成杆的矛：拔不动也捡不走
+            if not self._spear_usable(s):        # 钉成杆的矛：只有工匠拔得动
                 continue
             if not (getattr(s, "stuck", False) or (abs(s.vx) < 0.4 and abs(s.vy) < 0.4)):
                 continue
@@ -4694,14 +4749,27 @@ class BehaviorFSM:
                     self._transition("FightThreat")
                     return
         # 5) 恐惧/威胁：已合并到 _face_threat_tick（主 tick 入口），此处不再重复。
-        # 5b) 猎手怪癖：闲下来偶尔拿矛去钉鼠标（钉上的矛甩一下鼠标就能甩下来）
+        # 5b) 猎手怪癖：拿矛去钉鼠标（钉上的矛甩一下鼠标就能甩下来）。
+        #     门槛＝「对光标的兴趣攒满 + 按性格出手」，不是每 tick 掷一次渺茫的骰：
+        #     光标待在附近就开始攒（spear_like / hurry / activity 决定出手率），
+        #     手上有矛或背上有矛都算（背上会自动抽出来）。
         if (self._pincur_cd <= 0 and self.state in _IDLE_SOCIAL_FROM
                 and not b.swimming and b.on_floor() and cursor is not None
                 and getattr(self.pers, "spear_like", 1.0) >= tuning.PIN_CURSOR_SPEAR_LIKE
-                and self._armed_in_hand()
-                and self.rng.random() < tuning.PIN_CURSOR_P):
-            if self._pin_throw_at_cursor(cursor):
-                return
+                and self._armed_in_hand()):
+            self._pincur_urge = min(1.0, self._pincur_urge + tuning.PIN_CURSOR_URGE_RATE)
+            if self._pincur_urge >= 1.0:
+                sl = clampf(float(getattr(self.pers, "spear_like", 1.0)), 0.0, 2.0) * 0.5
+                hu = clampf(float(getattr(self.pers, "hurry", 0.5)), 0.0, 1.0)
+                ac = clampf(float(getattr(self.pers, "activity", 0.5)), 0.0, 1.0)
+                p = clampf(tuning.PIN_CURSOR_ARMED_P * sl * (0.5 + hu) * (0.6 + 0.8 * ac),
+                           0.0, 1.0)
+                if self.rng.random() < p:
+                    self._pincur_urge = 0.0
+                    if self._pin_throw_at_cursor(cursor):
+                        return
+        else:
+            self._pincur_urge = max(0.0, self._pincur_urge - tuning.PIN_CURSOR_URGE_RATE)
         # 6) 平时：附近有同伴 / 鼠标在附近停够久 → 随手做个小社交动作（不切态）
         if (self._act_cd <= 0 and self.state in _IDLE_SOCIAL_FROM
                 and not b.swimming and b.on_floor()):
@@ -6609,7 +6677,7 @@ class BehaviorFSM:
         for sp in self.win.spears:
             if sp.state != "free" or not _spear_takeable(sp):
                 continue
-            if getattr(sp, "pinned", False):      # 钉成杆的矛：拔不动也捡不走
+            if not self._spear_usable(sp):        # 钉成杆的矛：只有工匠拔得动
                 continue
             if not (sp.stuck or (abs(sp.vx) < 0.4 and abs(sp.vy) < 0.4)):
                 continue
@@ -6825,7 +6893,7 @@ class BehaviorFSM:
         for sp in self.win.spears:
             if sp.state != "free" or not _spear_takeable(sp):
                 continue
-            if getattr(sp, "pinned", False):      # 钉成杆的矛：拔不动也捡不走
+            if not self._spear_usable(sp):        # 钉成杆的矛：只有工匠拔得动
                 continue
             if not (sp.stuck or (abs(sp.vx) < 0.4 and abs(sp.vy) < 0.4)):
                 continue

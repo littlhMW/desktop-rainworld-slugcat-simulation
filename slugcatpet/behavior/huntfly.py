@@ -97,14 +97,18 @@ class FlyHunter:
                 if s.state == "free" and not getattr(s, "unfetchable", False)
                 and s.at_rest_on_ground(self.win._HL)]
 
+    def _can_unplug(self) -> bool:
+        """能不能拔出「钉进墙地成了杆的矛」（工匠专属）。"""
+        return bool(getattr(getattr(self.body, "stats", None), "is_artificer", False))
+
     def _ground_spears(self):
         """可取用的矛：插在地上的（原版可拔出）或刚停下的。"""
         out = []
         for s in self.win.spears:
             if s.state != "free" or s.stuck_to is not None:
                 continue
-            if getattr(s, "pinned", False):      # 钉成杆的矛：拔不动
-                continue
+            if getattr(s, "pinned", False) and not self._can_unplug():
+                continue                         # 钉成杆的矛：只有工匠拔得动
             if s.stuck or (abs(s.vx) < 0.4 and abs(s.vy) < 0.4):
                 out.append(s)
         return out

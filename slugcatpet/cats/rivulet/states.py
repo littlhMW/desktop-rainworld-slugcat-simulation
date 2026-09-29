@@ -31,13 +31,15 @@ def _walk_band(fsm):
 
 
 def _pole_reachable(fsm):
-    """gate 预检：横杆抬升在 apex+GRIP_DIST 内（不跑全量选点）。"""
+    """gate 预检：横杆抬升在 apex+GRIP_DIST 内（不跑全量选点）。
+
+    横杆统一从 planner.transports 取（不再自己遍历 win.poles），够不够得到交给
+    下面的弧线数学；出手时按「最近 + 抬升最低」择优，而不是第一根满足的。
+    """
     stats = fsm.win.cat.stats
     launch_y = fsm.HL - takeoff_c0_h(stats)
     apex = max(get_backflip_arc(stats, 1).apex, get_backflip_arc(stats, -1).apex)
-    for pole in fsm.win.poles:
-        if getattr(pole, "kind", None) != "horizontal":
-            continue
+    for pole in fsm.planner.transports(("horizontal",)):
         rise = launch_y - pole.ay
         if 0.0 < rise <= apex + GRIP_DIST:
             return True
@@ -50,9 +52,8 @@ def _pole_plan(fsm):
     launch_y = fsm.HL - takeoff_c0_h(stats)
     b = fsm.body
     xmin, xmax = _walk_band(fsm)
-    for pole in fsm.win.poles:
-        if getattr(pole, "kind", None) != "horizontal":
-            continue
+    best = None                 # ((横距+抬升), pole, d, lx)：取最合适的一根，而非第一根满足的
+    for pole in fsm.planner.transports(("horizontal",)):
         rise = launch_y - pole.ay
         if rise <= 0.0:
             continue
@@ -72,8 +73,11 @@ def _pole_plan(fsm):
                     if abs(launch_y + py - pole.ay) <= AIM_BAND:
                         lx = ax_t - px
                         if xmin <= lx <= xmax:
-                            return (pole, d, lx)
-    return None
+                            key = abs(pole.ay - launch_y) + abs(lx - b.chunk1.x)
+                            if best is None or key < best[0]:
+                                best = (key, pole, d, lx)
+                            break
+    return None if best is None else (best[1], best[2], best[3])
 
 
 def _near_pole(b, pole):

@@ -32,6 +32,7 @@ class CatPersonality:
     apologize: bool = True         # 误伤同伴会不会认错（False=理直气壮，永不道歉）
     spear_like: float = 1.0        # 用矛意愿乘子（0=不肯碰矛）
     pearl_like: float = 1.0        # 对珍珠的偏爱乘子（>1 会专门去拣来拿着）
+    tongue_curiosity: float = 0.5   # 0 不爱用舌头 ↔ 1 爱用（圣徒的舌钩/逗弄/吊顶共用这一轴）
     play_style: str = "sit"        # 玩耍姿态：sit 原地 / hop 边走边跳 / crawl 匍匐着玩
     diet: str = DIET_OMNIVORE
     toy_pref: dict = field(default_factory=dict)   # 空=全 1
@@ -46,7 +47,7 @@ INDIV_SIGMA = {
     "activity": 0.10, "sociability": 0.12, "temper": 0.10, "bravery": 0.12,
     "kindness": 0.12, "patience": 0.12, "risk_tolerance": 0.12,
     "crawl_like": 0.08, "point_like": 0.10, "hurry": 0.10, "wake_like": 0.10,
-    "swim_zeal": 0.10,
+    "swim_zeal": 0.10, "tongue_curiosity": 0.10,
 }
 
 

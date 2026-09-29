@@ -585,6 +585,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             out = [*self.karmaflowers, *out]
         return out
 
+    def karma_targets(self):
+        """业力花：独立于普通食物的目标链（业力花不是食物，不填饱食度）。"""
+        return list(self.karmaflowers)
+
     def edibles(self):
         """可食物体聚合（果+爆米花种子+黏菌+蝙蝠+蝉乌贼+面条蝇）。"""
         return [*self.fruits, *self.seeds, *self.slimemolds, *self.batflies,
@@ -934,6 +938,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._all_dead_t = 0
         for p in pets:
             p.behavior.begin_reincarnation()
+        # 全体转生＝换雨循环：场上所有东西（生物/物品/杆/花）一起清空
+        self.clear_world_for_reincarnation()
         self._reincarnate_fx_tick(pets)
 
     def _reincarnate_fx_tick(self, pets):

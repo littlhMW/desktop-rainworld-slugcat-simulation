@@ -394,8 +394,13 @@ GIFT_DELIVER_DELAY = 26       # 走到嘴边后迟疑这么久才真交出去
 GIFT_TRY_TICKS = 1400         # 一次送礼尝试最多磨这么久
 FEAR_JUMP_MIN_GAIN = 26.0     # 反方向也挪不动 → 判定被逼到角落
 FEAR_JUMP_PUSH = 1.15         # 跳过敌人时的额外水平初速
-PIN_CURSOR_P = 1.0 / 2400.0   # 猎手闲下来每 tick 起意「拿矛钉鼠标」的概率（稀有怪癖）
-PIN_CURSOR_CD = 2400          # 一次钉鼠标之后的冷却（约 60s）
+# 猎手「拿矛钉鼠标」：旧版是每 tick 掷 1/2400（平均 60s 才轮到一次，还要恰好
+# 站在地上、手上有矛、正在 IdleStand），实际几乎看不见 —— 改成原版那种
+# 「兴趣累积 → 过线再按性格出手」：光标待在附近就开始攒，攒满才掷一次骰子。
+PIN_CURSOR_P = 1.0 / 2400.0     # （保留：老的每 tick 掷骰，现由 urge 逻辑代替）
+PIN_CURSOR_URGE_RATE = 1.0 / 900.0   # 光标在附近时每 tick 攒（约 22s 攒满）
+PIN_CURSOR_ARMED_P = 0.45       # 攒满后每次检查真正出手的概率（再按性格缩放）
+PIN_CURSOR_CD = 2400            # 一次钉鼠标之后的冷却（约 60s）
 PIN_CURSOR_DY = 26.0          # 光标与胸口的高度差超过它 = 水平掷不到，算了
 PIN_CURSOR_SPEAR_LIKE = 1.0   # 用矛意愿低于它的猫不玩这手（只有猎手这类够高）
 
@@ -415,6 +420,12 @@ SLEEP_CHECK_TICKS = 20           # 每隔这么久掷一次骰
 FOOD_URGE_RATE      = 1.0 / 2400.0    # 没吃饱：约 60s 攒满
 FOOD_URGE_RATE_FULL = 1.0 / 14400.0   # 吃饱了：约 360s（频率更低）
 FOOD_SEEK_P         = 0.75            # 攒满也只是这个命中率 → 找食频率整体略降
+# 业力花（KarmaAction）：独立于「吃」的目标链 —— 业力花只填隐藏花条、不填饱食度
+KARMA_SEEK_P        = 0.30            # 每次检查起意去拔业力花的概率
+KARMA_SEEK_CD       = 600             # 一次之后多久不再惦记（15s）
+# 业力花（KarmaAction）：独立于「吃」的目标链 —— 业力花只填隐藏花条、不填饱食度
+KARMA_SEEK_P        = 0.30            # 每次检查起意去拔业力花的概率
+KARMA_SEEK_CD       = 600             # 一次之后多久不再惦记（15s）
 # 玩耍式狩猎：吃饱了也会去追飞虫玩（原版蛞蝓猫的捕猎本能，非进食目的）
 HUNT_PLAY_PROB      = 0.10     # 每次重算闸（每 8 tick）掷中的概率
 
@@ -489,7 +500,11 @@ POLE_LEAVE_MIN_TICKS = 90      # 杆上待够这么久才会为了吃东西下�
 POLE_TIP_LOITER_MAX = 300      # 杆顶最多赖这么久：到点主动跳杆/下杆（别都挤在杆头）
 POLE_AIRGRAB_R = 12.0          # 空中贴杆即抓（jump-pole-hopping）
 POLE_AIRGRAB_PAD = 10.0        # 杆端外这点范围仍算够得着
+POLE_TRANSPORT_NEAR = 170.0    # 「这根杆此刻用得上」的横距：再远不算可爬
+                               # （旧版只看「世界上有没有竖杆」，猫在 x=100、杆在
+                               #  x=900 也算可爬，于是杆一多就乱爬）
 HPOLE_AIRGRAB_Y = 16.0         # 空中贴横杆即抓的竖直容差
+HPOLE_TRANSPORT_NEAR = 190.0   # 横杆「用得上」的横距（横杆离得远先走过去，不当作可上）
 HP_HOP_PROB = 0.40            # 站横杆走腻了：跳向附近另一根杆的概率
 HP_HOP_MAX_DX = 70.0          # 横杆跳杆最大横距
 POLE_HOP_WANT_R = 190.0       # 带目标跳杆：落点离目标超过它就不算「跳对了方向」
@@ -555,6 +570,8 @@ PLAN_ARRIVE_EPS = 14.0
 PLAN_ARRIVE_HOLD = 30
 PLAN_JUMP_HOLD_GEARS = (0, 3, 6)
 PLAN_JUMP_TAKEOFF_EPS = 6.0
+JUMP_TRAVEL_LAND_PAD = 30.0    # TravelJump：落点离目标横距超过它 = 没跳到地方
+BACKFLIP_PLAY_P = 0.35         # 性格驱动后空翻：爱翻的猫「走得过去也翻」的概率上限
 
 # 舌锚吊挂驻留参数
 PLAN_HANG_WALL_IDEAL = 30.0

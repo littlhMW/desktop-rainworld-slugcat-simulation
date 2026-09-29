@@ -25,6 +25,7 @@ class Planner:
         self.pet = pet
         self._cooldown = CooldownRegistry(clock)
         self._ability_cache = None    # 能力实例无状态，懒建后复用
+        self._route = None            # 表面图寻路器（懒建）
 
     def _abilities(self):
         # 能力集按 caps 装配
@@ -101,6 +102,54 @@ class Planner:
 
     def can_stay(self, goal):
         return bool(self.stay_candidates(goal))
+
+    # ── 位移载体（杆）统一入口：Mood / 取食 / 玩杆共用同一份结果 ──
+    # 旧版 _climbable_pole_available() 只问「世界上有没有竖杆」：猫在 x=100、
+    # 杆在 x=900 也算可爬，于是杆一多就出现「爬上去→发现地面更近→下来→再爬」。
+    # 这里把「横距够得着 + 纵向跨度摸得到」合成唯一入口，其它地方不再各写一套 if。
+    def transports(self, kinds=("vertical", "horizontal")):
+        """世界里可用作位移的杆（不含光标虚杆）。"""
+        return [p for p in getattr(self.pet, "poles", ())
+                if p.kind in kinds and not getattr(p, "virtual", False)]
+
+    def transport_dx(self, p) -> float:
+        """猫到这根杆的横向距离（横杆＝到杆面的距离，杆面上为 0）。"""
+        x = self.pet.body.chunk1.x
+        if p.kind == "vertical":
+            return abs(p.bx - x)
+        lo, hi = min(p.ax, p.bx), max(p.ax, p.bx)
+        if x < lo:
+            return lo - x
+        if x > hi:
+            return x - hi
+        return 0.0
+
+    def transport_in_reach(self, p) -> bool:
+        """此刻「够得着」这根杆：横距在够取圈内，且身体高度落在杆的纵向跨度内。"""
+        b = self.pet.body
+        if p.kind == "vertical":
+            if self.transport_dx(p) > tuning.POLE_TRANSPORT_NEAR:
+                return False
+            top, bot = min(p.ay, p.by), max(p.ay, p.by)
+            y = b.chunk1.y
+            return top - tuning.POLE_AIRGRAB_PAD <= y <= bot + tuning.POLE_AIRGRAB_PAD
+        return (self.transport_dx(p) <= tuning.HPOLE_TRANSPORT_NEAR
+                and abs(p.ay - b.chunk1.y) <= tuning.HPOLE_AIRGRAB_Y)
+
+    def reachable_transports(self, kinds=("vertical", "horizontal")):
+        """真正能用作位移的杆（Mood / 取食 / 玩杆共用的唯一一份结果）。"""
+        return [p for p in self.transports(kinds) if self.transport_in_reach(p)]
+
+    def surface_route(self, goal):
+        """多段寻路：Goal → 表面图 → 最优两段路线。返回 SurfaceHop 或 None。
+
+        单能力候选（walk / jump / hop / polejump…）都是「从现在这里够不够得到」，
+        这里补上「先跳到窗口顶边、再从那里够」这一层（见 planning/surface.py）。
+        """
+        if self._route is None:
+            from .surface import SurfaceRoute
+            self._route = SurfaceRoute(self.pet)
+        return self._route.plan(goal)
 
     def world_version(self):
         return getattr(self.pet, "world_version", 0)

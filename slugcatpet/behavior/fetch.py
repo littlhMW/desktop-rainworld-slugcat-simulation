@@ -74,6 +74,15 @@ def fetch_candidates(planner, edibles, diet=None, pearl_like=1.0, unit=None):
                 and g.pose.side != 0.0:
             g = _edible_goal(f)                 # 站位点被挡住：退回直奔中心
             cands = planner.touch_candidates(g)
+        if not cands:
+            # 多段寻路：直连够不到，但「先跳上窗口顶边再从那里够」够得到
+            hop = planner.surface_route(g)
+            if hop is not None:
+                if meat and diet == DIET_CARNIVORE:
+                    out.append((f, hop.goal, hop.time * MEAT_PREF))
+                else:
+                    out.append((f, hop.goal, hop.time))
+            continue
         if cands:
             time_est = cands[0].time_est
             if meat and diet == DIET_CARNIVORE:
@@ -102,7 +111,7 @@ def fetch_ready(planner, edibles, diet=None, unit=None):
         g = _edible_goal(f, unit)
         if planner.in_cooldown(g):
             continue
-        if planner.any_touch(g):
+        if planner.any_touch(g) or planner.surface_route(g) is not None:
             out.append(f)
     return out
 
@@ -111,7 +120,7 @@ PEARL_HOLD_TICKS = tuning.PEARL_CARRY_TICKS   # 拿着珍珠多久才放下（�
 
 
 class FruitFetcher:
-    def __init__(self, win, planner, diet=None, pearl_like=1.0):
+    def __init__(self, win, planner, diet=None, pearl_like=1.0, karma_only=False):
         self.win = win
         self.body = win.body
         self.tongue = win.tongue
@@ -135,6 +144,7 @@ class FruitFetcher:
         self._trade_to = None         # 珍珠交易目标（Scavenger）
         self._snatch = TongueSnatch(win)
         self.pearl_done = False       # 本次取物以「把玩珍珠收尾」结束
+        self.karma_only = bool(karma_only)   # 专门来拔业力花的（不吃普通食物）
 
     def _chunk0(self):
         return self.body.chunk0
@@ -191,10 +201,14 @@ class FruitFetcher:
 
     def _phase_select(self):
         # 候选空 + 曾放弃 → giveup
-        cands = fetch_candidates(self.planner,
-                                 self.win.fetchables(
-                                     pearl_like=self.pearl_like,
-                                     want_karma=not getattr(self.body, "flower_karma", False)),
+        # 目标链分家：业力花不是食物（不填饱食度），走独立的 KarmaAction，
+        # 不再混进「吃」这条链里当普通候选（旧版混在一起，于是猫吃饱了还反复
+        # 进觅食、吃完花 food 不涨 → 觅食欲望不归零）。
+        if self.karma_only:
+            pool = list(self.win.karma_targets())
+        else:
+            pool = self.win.fetchables(pearl_like=self.pearl_like)
+        cands = fetch_candidates(self.planner, pool,
                                  diet=self.diet,
                                  pearl_like=self.pearl_like,
                                  unit=self.win)

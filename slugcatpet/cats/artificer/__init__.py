@@ -49,7 +49,13 @@ ARTIFICER_DEF = CatDef(
                         risk_tolerance=0.95, patience=0.10,   # 暴躁执拗：最敢冒险，最没耐心
                         toy_pref={"pyro_romp": 1.4}),
     tuning={"pyro_heat_cap": 5,    # = pyro.WARN_AT，AI 永不至眩晕/自爆
-            "temper_maul_gate": -0.50},   # ≤此值光标拂过可触发爆跳劫持
+            # PyroMaul 门槛拆成两个概念（旧版混用 personality.temper 与 runtime
+            # body.temper，导致招牌劫持几乎永不触发）：
+            #   temper_maul_pers_min = personality.temper（永久暴躁特质）下限
+            #   temper_maul_mood_max = body.temper（当下心情：负疏远/正亲密）上限
+            "temper_maul_pers_min": 0.60,
+            "temper_maul_mood_max": 0.30,
+            "can_unplug_spear": True},    # 工匠蛮力：能拔出钉成杆的矛
     fsm_mount=_fsm_mount,
     wip=False,
 )

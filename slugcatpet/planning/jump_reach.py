@@ -1,6 +1,8 @@
 """跳跃够取能力（全员）：走到起跳点→驻停→按档起跳，竖直或持向横弧；空中探身+持向漂移，落地报 done。"""
 from __future__ import annotations
 
+import math
+
 from ..behavior import tuning
 from ..core.units import clampf
 from .ability import Ability, Estimate, RUNNING, DONE, GIVEUP, reach_assist, walk_band
@@ -124,8 +126,33 @@ class JumpReachController:
             body.move_dir = self._move_dir
         elif self._airborne:
             body.stop_walk()
-            return DONE
+            self._airborne = False
+            return DONE if self._landed_ok(gx, gy) else GIVEUP
         return RUNNING
+
+    def _landed_ok(self, gx, gy) -> bool:
+        """落地判定：摸到目标（TouchJump）或落到目标所在面（TravelJump）才算成功。
+
+        旧版这里是「跳起来再碰到地面就算 DONE」——哪怕实际是「跳过去、摸到目标、
+        又落回原地」，执行器也认为这条路线走通了，下一轮重新规划又回到原处。
+        这正是「跳跃不聪明」的根。这里拆成两类语义：
+          TouchJump  —— 只需要摸到（抓飞虫 / 摘果 / 攻击 / 舌钩补救）：
+                        落地时仍在够取圈内即算成功，否则报失败让执行器换方案。
+          TravelJump —— 要以位移为目的（goal.contact == "travel"）：
+                        必须落在有效支撑面上，且落点离目标横距在 JUMP_TRAVEL_LAND_PAD 内。
+        """
+        b = self.pet.body
+        if math.hypot(gx - b.chunk1.x, gy - b.chunk1.y) <= tuning.GRAB_REACH:
+            return True
+        if getattr(self.goal, "contact", "body") != "travel":
+            return False
+        # 落地那一 tick 的接触 chunk 未必是 chunk1（例如头朝下落地）：
+        # 两段任一给出支撑面就算站在地上。on_floor() 为真 ⟹ 同 chunk 的
+        # support_y 同 tick 被写过，所以这里不会漏判真落地。
+        if (getattr(b.chunk1, "support_y", None) is None
+                and getattr(b.chunk0, "support_y", None) is None):
+            return False
+        return abs(b.chunk1.x - gx) <= tuning.JUMP_TRAVEL_LAND_PAD
 
     def _pick_at_launch(self, gx, gy):
         # 起跳时以实际位置重选：先竖直后横弧

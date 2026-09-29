@@ -658,6 +658,18 @@ class ItemInteractionMixin:
         self.clear_poles()
         self.clear_lamp()
 
+    def clear_world_for_reincarnation(self):
+        """全体转生：场上所有东西一起清空（原版换雨循环＝整房间重置）。
+
+        除了可交互实体，还要清掉「死后原地长业力花」的排期 —— 转生是新循环，
+        上一轮尸体的花不该再冒出来。
+        """
+        self.clear_all_items()
+        if getattr(self, "_karma_flower_spawns", None):
+            self._karma_flower_spawns = []
+        self._dragged_spear = None
+        self._spear_drag_last = None
+
     def enter_place_vpole_mode(self):
         return self._enter_place_pole_mode("vpole", "vertical")
 
@@ -2511,8 +2523,8 @@ class ItemInteractionMixin:
         for sp in self.spears:
             if sp.state != ItemState.FREE:
                 continue
-            if sp.pinned:                    # 钉进墙/地成了杆子：拔不动
-                continue
+            # 钉进墙/地成了杆子的矛：鼠标照样能拽住（_begin_spear_drag 里会
+            # unstuck，杆实体随之消失 → 恢复成普通矛）。用户口径。
             d = _dist_to_path([sp.butt(), sp.tip()], cx, cy) - SPEAR_HALF_W
             if d <= SPEAR_GRAB_PAD and d < bestd:
                 best, bestd = sp, d

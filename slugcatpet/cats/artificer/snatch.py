@@ -57,7 +57,8 @@ def _variant_for(dx, dy):
 def mount_maul(fsm):
     """PyroMaul 状态 + 经过追踪触发 ticker + 旁路兜底清扫。"""
     heat_cap = fsm.win.cat.tuning["pyro_heat_cap"]
-    temper_gate = fsm.win.cat.tuning["temper_maul_gate"]
+    pers_min = fsm.win.cat.tuning.get("temper_maul_pers_min", 0.60)
+    mood_max = fsm.win.cat.tuning.get("temper_maul_mood_max", 0.30)
     fsm._pm_cooldown = 0
     fsm._pm_over = False
     fsm._pm_pass = False
@@ -76,6 +77,19 @@ def mount_maul(fsm):
         return min(math.hypot(cursor[0] - c0.x, cursor[1] - c0.y),
                    math.hypot(cursor[0] - c1.x, cursor[1] - c1.y))
 
+    def temper_ok() -> bool:
+        """永久暴躁（personality.temper）+ 当下心情不亲密（body.temper）。
+
+        旧版只看 runtime body.temper <= -0.50：出生 0.0、心情又会自行衰减回 0，
+        于是这条「工匠招牌劫持」几乎永远不触发。temper 的两种语义不是一回事：
+        personality.temper 是「0 温顺↔1 暴躁」的永久特质，body.temper 是
+        「负=疏远/正=亲密」的临时心情。这里拆开：特质决定「会不会」，
+        心情决定「此刻想不想」（不亲密时就可能上手）。
+        """
+        pers = getattr(fsm, "pers", None)
+        p_temper = float(getattr(pers, "temper", 0.5))
+        return p_temper >= pers_min and fsm.body.temper <= mood_max
+
     def gates_ok():
         b = fsm.body
         return (fsm.state == "IdleStand" and b.on_floor()
@@ -83,7 +97,7 @@ def mount_maul(fsm):
                 and not fsm._zerog() and not b.swimming
                 and fsm.win.cursor_hijack is None
                 and b.carried_fruit is None and b.carried_stone is None
-                and b.temper <= temper_gate and fsm._pm_cooldown <= 0)
+                and temper_ok() and fsm._pm_cooldown <= 0)
 
     def release_hold():
         hj = fsm._pm_hj

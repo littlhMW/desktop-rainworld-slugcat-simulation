@@ -1806,11 +1806,14 @@ class SlugcatBody:
     def grab_spear(self, spear, side=None, arm=True):
         """Grab a spear with one hand; convert to carried (kinematic).
 
-        钉进墙/地变成杆子的矛（spear.pinned）拔不动，拾取直接失败。
+        钉进墙/地变成杆子的矛（spear.pinned）一般拔不动；工匠的蛮力例外——
+        拔出来即 unstuck，钉出来的那截杆随 _sync_spear_poles 一起消失。
         arm=False 用于「背上那把换到手上」——同一根矛不算重新上手，不重压冷却。
         """
         if getattr(spear, "pinned", False):
-            return False
+            if not getattr(self.stats, "is_artificer", False):
+                return False
+            spear.unstuck()
         side = self._take_hand("spear", side)
         if side is None:
             return False
