@@ -250,6 +250,16 @@ python run_slugcatpet.py
 - **gif 帧数对照**：`work/scratch/wiki52/` 存了两页的抓取结果与逐帧数据（`Ledge_Climb.gif` 171 帧 / 30ms / 186x115、`Eb1.gif` 238 帧 / 30ms / 189x121）。结论：这两页只有「爬上平台」和「杆上操作」的 gif，**没有**抓墙/下滑的 gif；`Ledge_Climb.gif` 描的是跳跃扒平台边，与「墙不可攀爬」一致。
 - Verification: `work/scratch/e2e_r52.py`（13 项全 PASS）；`run_all19.ps1` 现为 43 个脚本 `fails=0`。
 
+**业力花 / 睡眠 20~40s（第 53 轮）**：
+
+- **业力花可手动放置**：标签栏新增「放业力花」按钮（`enter_place_karmaflower_mode`，图标是四片金瓣），放置/拖拽/删除/清空与其它物件一致；拖起瞬间**断根**（原版被抓住即 `growPos = null`），松手变回自由物理体。
+- **部件严格照反编译 `KarmaFlower.cs`**：`bites = 4`、`FoodPoints = 0`、`rad = 2`、`gravity 0.6 / airFriction 0.93 / bounce 0.2 / surfaceFriction 0.7 / waterFriction 0.95 / buoyancy 0.9`；4 片花瓣用 `KarmaPetal`（6×20、`anchorY = 0`、`scaleX = 0.375`、`scaleY = Distance / 20`，花瓣锚在 `pos + rotation * 5.25`、绕轴 90° 排布、半径 9.75、单瓣最远 13.5）；6 节软茎照 `ConnectStalkSegment`（段长 5，第 2..5 节 ±dir·2.3 互相拉直）；花环用 `EndGameCircle`(32×32) 以 `QuadGridMesh` 等价方式（`QTransform.quadToQuad`）铺在 4 个瓣尖之间；`TryRoot` 只往下找 4 格（64px）——找到就钉在 `growPos` 并悬在 `hoverPos = growPos + (向上 18~36)`，弹簧 20、悬空时茎端下垂力 0.4、速度/位置两套弹簧分母 3..30 / 3..60。颜色取 `RainWorld.GoldRGB`，光斑外圈用 `AntiGold`（**静止时才亮**）+ 内圈金色。渲染自检图：`work/scratch/r53_karmaflower.png`。
+- **隐藏的业力花条（一格）**：`SlugcatBody.flower_karma`（对应原版 `Player.KarmaIsReinforced`）。啃满 4 口才满；满了就不再把它列进够取目标（`fetchables(want_karma=...)`）；花条**不填饱食度**（`food_value = 0`），所以吃饱了也会去补花——为此找食闸门从「`food < food_max`」放宽成「饿 **或**（场上有花且花条为空）」。
+- **死亡结算**：有花条 → 消耗花条、**业力不掉**；没花条 → 照旧掉一级。被杀死 / 冻死 / 溺死 / 工匠爆溺四条死亡链统一走 `_death_karma_settle()`。
+- **死后原地长花**（原版 `Player.PlaceKarmaFlower` 把 `karmaFlowerGrowPos` 记进存档）：黄猫（monk）**无条件**；猎手 **15~45s**（`FLOWER_HUNTER_*` = 600/1800 tick）；其他猫只在**死亡时带花条**才长、**150~210s**（`FLOWER_OTHER_*` = 6000/8400 tick）。同一具尸体只排一次（`_flower_planted`），复活后清标记，持久化恢复（`enter_dead`）不补长；到点在死亡坐标原地长出（悬在根上方）。
+- **睡眠时长改成 20~40s 随机**：`SLEEP_SECS_MIN/MAX = 20/40`，入睡时 `rng.randrange(800, 1601)` tick；旧的 `SLEEP_LEN_MULT_*`（3~4.5 × HIBERNATE）连同旧断言一起换掉（`e2e_r22.py` 已更新口径）。
+- Verification: `work/scratch/e2e_r53.py`（34 项全 PASS）；`run_all19.ps1` 现为 44 个脚本 `fails=0`。
+
 ## 素材与版权说明
 
 - 本仓库不包含任何 Rain World 游戏素材。全部游戏图像在你本机、从你自己的正版安装中提取。
@@ -454,6 +464,16 @@ The same vocabulary also drives **everyday** gestures (when the social urge has 
 - **Walls are not climbable, and no longer borrow the pole-climb animation**: per the decompile, `Player.cs:12204` only enters `WallClimb` when the contacted side faces the input, and the `WallClimb` branch at `:9599-9614` contains **only** `pos.y += gravity * LerpMap(wallSlideCounter, 0, 30, 0.8, 0)` - a **slide**, with **no upward thrust at all**; `:12682-12684` turns a jump during the slide into `WallJump` (acceleration at `:12772-12812`). The Controls/zh-hans page says the same thing ("hold forward to slide down a wall ... press jump during the slide to wall-jump") and never mentions climbing a wall. The whole wall-climb state (`_wall_enter` / `_wall_ledge` / `_st_wallclimb` / the `WallClimb` vocabulary entry / all wall tuning / the `SlugcatBody` fields such as `wall_top_y` and `at_wall_top`) is deleted; `grab_wall(side)` now only slides (`WALL_LEDGE_SLIDE` + gravity, with `animation="WallClimb"` kept purely for the look). The only way up is a **real vertical pole**. The Saint's tongue chain (`TongueClimber` / `CeilingHanger` / `RelocateToWall`) is untouched.
 - **GIF frame references**: `work/scratch/wiki52/` holds both fetched pages plus per-frame data (`Ledge_Climb.gif` 171 frames / 30ms / 186x115, `Eb1.gif` 238 frames / 30ms / 189x121). Neither page has a wall-grab or wall-slide GIF; `Ledge_Climb.gif` is a jump grabbing a ledge, consistent with "walls are not climbable".
 - Verification: `work/scratch/e2e_r52.py` (13 checks); `run_all19.ps1` now runs 43 scripts with `fails=0`.
+
+**Karma flowers / sleep 20-40s (round 53)**:
+
+- **Karma flowers are placeable**: the tab bar has a new "Place karma flower" button (`enter_place_karmaflower_mode`, a four-gold-petal icon); placing / dragging / erasing / clearing behave like every other object. Picking one up **detaches the root** (the original nulls `growPos` the moment it is grabbed) and releasing it hands it back to free physics.
+- **Parts follow the decompiled `KarmaFlower.cs` exactly**: `bites = 4`, `FoodPoints = 0`, `rad = 2`, `gravity 0.6 / airFriction 0.93 / bounce 0.2 / surfaceFriction 0.7 / waterFriction 0.95 / buoyancy 0.9`; four petals use `KarmaPetal` (6x20, `anchorY = 0`, `scaleX = 0.375`, `scaleY = Distance / 20`, anchored at `pos + rotation * 5.25`, laid out 90 degrees apart, radius 9.75, single petal reach 13.5); the six soft stalk segments follow `ConnectStalkSegment` (segment length 5, segments 2..5 straightened by +-dir*2.3); the ring uses `EndGameCircle` (32x32) laid between the four petal tips the `QuadGridMesh` way (`QTransform.quadToQuad`); `TryRoot` only searches 4 tiles (64px) down - when it finds ground it pins `growPos` and hovers at `hoverPos = growPos + (18..36 up)`, spring 20, drooping stalk force 0.4 when airborne, and the two spring denominators 3..30 (velocity) / 3..60 (position). Colours come from `RainWorld.GoldRGB`, the outer glow from `AntiGold` (**lit only while still**) plus a gold inner glow. Render check: `work/scratch/r53_karmaflower.png`.
+- **A hidden one-slot karma flower bar**: `SlugcatBody.flower_karma` (the original's `Player.KarmaIsReinforced`). It fills after all 4 bites; once full the cat stops listing flowers as fetch targets (`fetchables(want_karma=...)`). The bar **does not fill food** (`food_value = 0`), so a full cat still tops up its flower - which is why the feeding gate widens from "`food < food_max`" to "hungry **or** (a flower is on screen and the bar is empty)".
+- **Death settlement**: with the bar, the bar is consumed and **no karma is lost**; without it, karma drops one step as before. All four death paths (killed / frozen / drowned / Artificer pyro-drown) go through `_death_karma_settle()`.
+- **A flower grows where the cat died** (the original `Player.PlaceKarmaFlower` stores `karmaFlowerGrowPos`): Monk (yellow) **always**; Hunter after **15-45s** (`FLOWER_HUNTER_*` = 600/1800 ticks); other cats only when they **died holding the bar**, after **150-210s** (`FLOWER_OTHER_*` = 6000/8400 ticks). A corpse schedules only once (`_flower_planted`), reviving clears the flag, and persistence restore (`enter_dead`) never schedules; the flower appears at the death coordinates (hovering above its root).
+- **Sleep is now 20-40s, random**: `SLEEP_SECS_MIN/MAX = 20/40`, rolled as `rng.randrange(800, 1601)` ticks on falling asleep; the old `SLEEP_LEN_MULT_*` (3-4.5 x HIBERNATE) and its assertions are gone (`e2e_r22.py` was updated).
+- Verification: `work/scratch/e2e_r53.py` (34 checks); `run_all19.ps1` now runs 44 scripts with `fails=0`.
 
 ## Origin
 

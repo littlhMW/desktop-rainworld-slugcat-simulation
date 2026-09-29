@@ -50,6 +50,7 @@ _SQUID_SHELL = QColor(126, 190, 226)
 _PEARL_BALL = QColor(240, 243, 248)
 _PEARL_EDGE = QColor(138, 180, 214)
 _PEARL_SHINE = QColor(255, 255, 255)
+_ICON_GOLD = QColor(206, 158, 76)
 _SPEAR_SHAFT = QColor(126, 100, 74)
 _NWORM_BODY = QColor(224, 158, 196)
 _NWORM_HI = QColor(255, 214, 232)
@@ -239,6 +240,8 @@ def _paint_place_icon(p, kind, r, atlas=None):
         _paint_scavenger_icon(p, r)
     elif kind == "seedcob":
         _paint_seedcob_icon(p, r)
+    elif kind == "karmaflower":
+        _paint_karmaflower_icon(p, r)
     elif kind == "erase":
         # 橡皮：右下角一个小物件轮廓 + 压在上面的红叉
         d = min(w, h) * 0.52
@@ -364,6 +367,26 @@ def _paint_scavenger_icon(p, r):
     p.setBrush(_SCAV_EYE)
     p.drawEllipse(QPointF(cx - w * 0.06, cy - h * 0.26), w * 0.04, w * 0.04)
     p.drawEllipse(QPointF(cx + w * 0.06, cy - h * 0.26), w * 0.04, w * 0.04)
+
+def _paint_karmaflower_icon(p, r):
+    """业力花：四片金色花瓣 + 花心亮点（对应原版 KarmaPetal / EndGameCircle）。"""
+    cx, cy = r.center().x(), r.center().y()
+    w, h = r.width(), r.height()
+    p.setPen(Qt.PenStyle.NoPen)
+    for i in range(4):
+        a = -90.0 + i * 90.0
+        px = cx + math.sin(math.radians(a)) * w * 0.20
+        py = cy - math.cos(math.radians(a)) * h * 0.20
+        p.save()
+        p.translate(px, py)
+        p.rotate(a)
+        p.setBrush(_ICON_GOLD)
+        petal = QRectF(-w * 0.10, -h * 0.20, w * 0.20, h * 0.36)
+        p.drawEllipse(petal)
+        p.restore()
+    p.setBrush(_ICON_AMBER)
+    p.drawEllipse(QPointF(cx, cy), w * 0.11, h * 0.11)
+
 
 def _paint_seedcob_icon(p, r):
     """爆米花：从顶垂下的暗色细茎 + 黄色豆荚 + 顶端两片叶。"""
@@ -582,6 +605,7 @@ class TabBar(QWidget):
                        ("pearl", t("tip_pearl"), self._place_pearl),
                        ("spear", t("tip_spear"), self._place_spear),
                        ("seedcob", t("tip_seedcob"), self._place_seedcob),
+                       ("karmaflower", t("tip_karmaflower"), self._place_karmaflower),
                        ("erase", t("tip_erase"), self._erase_mode),
                        ("clear", t("tip_clear"), self._clear_all)]
         for i, (kind, tip, cb) in enumerate(place_items):
@@ -796,6 +820,10 @@ class TabBar(QWidget):
 
     def _place_seedcob(self):
         self.pet.enter_place_seedcob_mode()
+        self._collapse()
+
+    def _place_karmaflower(self):
+        self.pet.enter_place_karmaflower_mode()
         self._collapse()
 
     def _erase_mode(self):

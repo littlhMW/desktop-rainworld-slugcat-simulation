@@ -33,6 +33,7 @@ from . import weaponphys
 from .scavenger import PEARL_SEEK_R, PEARL_TAKE_PAD
 from .spear import Spear, LEN as SPEAR_DRAW_LEN, HALF_W as SPEAR_HALF_W
 from .seedcob import Seed, SeedCob, draw_seed, draw_seedcob
+from .karmaflower import KarmaFlower, draw_karmaflower
 from .scavenger import (Scavenger, BODY_RAD as SCAV_BODY_RAD,
                         STAND_H as SCAV_STAND_H)
 from .pole import POLE_RAD, MIN_LENGTH as POLE_MIN_LENGTH, TOP_MARGIN as POLE_TOP_MARGIN
@@ -312,6 +313,7 @@ class ItemInteractionMixin:
     _PEARL_FLING_CAP = 16.0
     _SPEAR_FLING_CAP = 18.0
     _SEEDCOB_GRAB_PAD = 14.0
+    _KARMAFLOWER_GRAB_PAD = 9.0
 
     def can_place_fruit(self) -> bool:
         return True
@@ -633,6 +635,7 @@ class ItemInteractionMixin:
         self.clear_scavengers()
         self.clear_seedcobs()
         self.clear_seeds()
+        self.clear_karmaflowers()
         self.clear_poles()
         self.clear_lamp()
 
@@ -1594,7 +1597,8 @@ class ItemInteractionMixin:
     # ── 删除模式：点哪个非蛞蝓猫对象就删哪个 ──
     ERASE_POOLS = ("fruits", "stones", "slimemolds", "batflies", "lizards",
                    "squidcadas", "needleworms", "pearls", "spears",
-                   "scavengers", "seedcobs", "seeds", "poles")
+                   "scavengers", "seedcobs", "seeds", "karmaflowers",
+                   "poles")
 
     def enter_erase_mode(self):
         """删除模式（复用放置模式的光标/ESC/鼠标捕获机制）。
@@ -1655,7 +1659,8 @@ class ItemInteractionMixin:
         for attr in ("_dragged_fruit", "_dragged_stone", "_dragged_slimemold",
                      "_dragged_batfly", "_dragged_lizard", "_dragged_squidcada",
                      "_dragged_needleworm", "_dragged_pearl", "_dragged_spear",
-                     "_dragged_scavenger", "_dragged_seedcob"):
+                     "_dragged_scavenger", "_dragged_seedcob",
+                      "_dragged_karmaflower"):
             if getattr(self, attr, None) is obj:
                 setattr(self, attr, None)
         for pet in self.pets:                  # 猫手里/嘴里的引用一并放开
@@ -1798,6 +1803,10 @@ class ItemInteractionMixin:
 
         if self._place_kind == "seedcob":
             self._draw_seedcob_hint(p)
+            return
+
+        if self._place_kind == "karmaflower":
+            self._draw_karmaflower_hint(p)
             return
 
         stone = (self._place_kind == "stone")
@@ -2898,6 +2907,168 @@ class ItemInteractionMixin:
         p.save()
         p.setOpacity(0.5)
         draw_seedcob(p, self.atlas, cb, 1.0)
+        p.restore()
+
+    # ── 业力花（Karma Flower）：金色小花；啃 4 口 → 业力花条（隐藏，一格）──
+    def can_place_karmaflower(self) -> bool:
+        return True
+
+    def place_karmaflower(self, lx, ly):
+        if not self.can_place_karmaflower():
+            return None
+        kf = KarmaFlower(lx, ly, seed=self._karmaflower_seed, ground_y=self._HL)
+        self._karmaflower_seed += 1
+        self.karmaflowers.append(kf)
+        self.world_version += 1
+        self._exit_place_mode()
+        self.update()
+        return kf
+
+    def enter_place_karmaflower_mode(self):
+        if not self.can_place_karmaflower():
+            return False
+        self._place_mode = True
+        self._place_kind = "karmaflower"
+        self._begin_place_capture()
+        return True
+
+    def spawn_karma_flower(self, x, y):
+        """直接长出一朵业力花（死亡排期到点后调用）。"""
+        kf = KarmaFlower(x, y, seed=self._karmaflower_seed, ground_y=self._HL)
+        self._karmaflower_seed += 1
+        self.karmaflowers.append(kf)
+        self.world_version += 1
+        return kf
+
+    def schedule_karma_flower(self, x, y, delay_ticks: int):
+        """排期：delay_ticks 之后在 (x, y) 原地长出一朵业力花。
+
+        原版 Player.PlaceKarmaFlower 只把 karmaFlowerGrowPos 记进存档，等下一个
+        雨循环才在房间里长出来；桌宠没有循环，所以按用户口径给一个可见延迟。
+        """
+        self._karma_flower_spawns.append([float(x), float(y), int(delay_ticks)])
+
+    def clear_karmaflowers(self):
+        for kf in self.karmaflowers:
+            if kf.state == ItemState.CARRIED:
+                for pet in self.pets:
+                    if kf is pet.body.carried_fruit:
+                        pet.body.release_fruit()
+            kf.state = ItemState.GONE
+        if self.karmaflowers:
+            self.karmaflowers = []
+            self.world_version += 1
+        self._dragged_karmaflower = None
+        self._karmaflower_drag_last = None
+
+    def pending_karma_flowers(self) -> int:
+        """还没长出来的业力花（排期数量）。"""
+        return len(self._karma_flower_spawns)
+
+    def _karmaflower_at(self, pos):
+        if pos is None:
+            return None
+        cx, cy = pos
+        best, bestd = None, 1e9
+        for kf in self.karmaflowers:
+            if kf.state != ItemState.FREE:
+                continue
+            d = math.hypot(cx - kf.x, cy - kf.y)
+            if d <= kf.rad + self._KARMAFLOWER_GRAB_PAD and d < bestd:
+                best, bestd = kf, d
+        return best
+
+    def _begin_karmaflower_drag(self, pos) -> bool:
+        kf = self._karmaflower_at(pos)
+        if kf is None:
+            return False
+        kf.detach_root()                  # 原版：被抓住的瞬间断根
+        kf.held_by_hand = None
+        kf.state = ItemState.MOUSE
+        kf.detach_to(pos[0], pos[1])
+        self._dragged_karmaflower = kf
+        self._karmaflower_drag_last = tuple(pos)
+        return True
+
+    def _step_karmaflower_drag(self):
+        kf = self._dragged_karmaflower
+        if kf is None:
+            return
+        if kf.state != ItemState.MOUSE:
+            self._dragged_karmaflower = None
+            self._karmaflower_drag_last = None
+            return
+        cur = self.cursor_logical()
+        if cur is None:
+            return
+        kf.last_x, kf.last_y = kf.x, kf.y
+        if self._karmaflower_drag_last is not None:
+            kf.vx = cur[0] - self._karmaflower_drag_last[0]
+            kf.vy = cur[1] - self._karmaflower_drag_last[1]
+        kf.x, kf.y = cur
+        self._karmaflower_drag_last = tuple(cur)
+
+    def _end_karmaflower_drag(self) -> bool:
+        kf = self._dragged_karmaflower
+        if kf is None:
+            return False
+        sp = math.hypot(kf.vx, kf.vy)
+        if sp > self._FRUIT_FLING_CAP:
+            k = self._FRUIT_FLING_CAP / sp
+            kf.vx *= k
+            kf.vy *= k
+        if kf.state == ItemState.MOUSE:
+            kf.state = ItemState.FREE
+        self._dragged_karmaflower = None
+        self._karmaflower_drag_last = None
+        return True
+
+    def _tick_karmaflowers(self):
+        self._step_karmaflower_drag()
+        if self._karma_flower_spawns:          # 死亡排期到点 → 长花
+            left = []
+            for sp in self._karma_flower_spawns:
+                sp[2] -= 1
+                if sp[2] <= 0:
+                    self.spawn_karma_flower(sp[0], sp[1])
+                else:
+                    left.append(sp)
+            self._karma_flower_spawns = left
+        if self.karmaflowers:
+            for kf in self.karmaflowers:
+                kf._impact_cb = self._shake_impact
+                kf.step(self._WL, self._HL)
+            self.karmaflowers = [kf for kf in self.karmaflowers
+                                 if kf.state != ItemState.GONE]
+
+    def _draw_karmaflowers(self, p):
+        for kf in self.karmaflowers:
+            if kf.state == ItemState.GONE:
+                continue
+            draw_karmaflower(p, self.atlas, kf, self._ts)
+
+    def _karmaflower_hint_object(self):
+        seed = self._karmaflower_seed
+        got = getattr(self, "_karmaflower_preview", None)
+        if got is None or got[0] != seed:
+            got = (seed, KarmaFlower(0.0, 0.0, seed=seed, ground_y=self._HL))
+            self._karmaflower_preview = got
+        return got[1]
+
+    def _draw_karmaflower_hint(self, p):
+        cur = self.cursor_logical()
+        if cur is None:
+            return
+        cx, cy = cur
+        if not (0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL):
+            return
+        kf = self._karmaflower_hint_object()
+        kf.grow_pos = None
+        kf.detach_to(cx, cy)
+        kf.try_root(self._HL, random.Random(int(cx) * 131 + int(cy)))
+        p.save()
+        p.setOpacity(0.5)
+        draw_karmaflower(p, self.atlas, kf, 1.0)
         p.restore()
 
     def _step_scavenger_throws(self):

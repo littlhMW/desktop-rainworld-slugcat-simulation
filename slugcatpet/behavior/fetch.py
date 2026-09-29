@@ -174,7 +174,9 @@ class FruitFetcher:
     def _phase_select(self):
         # 候选空 + 曾放弃 → giveup
         cands = fetch_candidates(self.planner,
-                                 self.win.fetchables(pearl_like=self.pearl_like),
+                                 self.win.fetchables(
+                                     pearl_like=self.pearl_like,
+                                     want_karma=not getattr(self.body, "flower_karma", False)),
                                  diet=self.diet,
                                  pearl_like=self.pearl_like)
         if not cands:
@@ -361,6 +363,10 @@ class FruitFetcher:
                 f.state = "eaten"
                 self.eaten += 1
                 self.body.temper_shift(tuning.TEMPER_FEED)
+                if getattr(f, "is_karma", False):
+                    # 业力花（原版 KarmaFlower.BitByPlayer）：4 口吃完 → reinforcedKarma，
+                    # FoodPoints = 0（food_value 已是 0，不吃饱）
+                    self.body.flower_karma = True
                 self.body.food_eat(getattr(f, "food_value", 1))
                 self.body.energy_change(tuning.EN_EAT_RESTORE)
                 self.body.release_fruit()

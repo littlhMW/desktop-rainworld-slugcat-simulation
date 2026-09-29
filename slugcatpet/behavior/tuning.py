@@ -71,6 +71,14 @@ FOOD_KILL_PENALTY = 4
 EN_EAT_RESTORE = 0.10
 
 # 业力与冬眠
+# 死亡后原地长业力花的延迟（tick = 1/40s）。
+# 原版 Player.PlaceKarmaFlower：黄猫无条件 / 其他猫要有 reinforcedKarma；
+# 桌宠没有雨循环，改成「死后等一段时间原地长出来」。
+FLOWER_HUNTER_MIN    = 600      # 猎手 15s
+FLOWER_HUNTER_MAX    = 1800     # 猎手 45s
+FLOWER_OTHER_MIN     = 6000     # 其他猫 150s
+FLOWER_OTHER_MAX     = 8400     # 其他猫 210s
+
 KARMA_INIT = 8
 KARMA_MAX = 9
 HIBERNATE_TICKS = 3600
@@ -108,9 +116,9 @@ COLD_DEATH_STUN      = 50
 COLD_WARMTH_INNER    = 70.0
 COLD_NATURAL_DECAY   = 0.001
 REINCARNATE_TICKS    = 600
-# 睡到自然醒的时长：原版 HIBERNATE_TICKS 的随机倍数（睡得更久更随机）
-SLEEP_LEN_MULT_MIN   = 3.0
-SLEEP_LEN_MULT_MAX   = 4.5
+# 睡到自然醒的时长：20~40s 随机（用户口径；tick = 1/40s）
+SLEEP_SECS_MIN       = 20.0
+SLEEP_SECS_MAX       = 40.0
 ALL_DEAD_GRACE_TICKS = 300     # 全员死亡后守灵等待（窗口内同伴仍可扒拉救回）
 
 # 自主趋暖与冻醒

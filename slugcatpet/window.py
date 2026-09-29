@@ -228,6 +228,14 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._dragged_seedcob = None
         self._seedcob_preview = None
 
+        # 放业力花（Karma Flower）
+        self.karmaflowers = []
+        self._karmaflower_seed = 0
+        self._dragged_karmaflower = None
+        self._karmaflower_drag_last = None
+        self._karmaflower_preview = None
+        self._karma_flower_spawns = []     # 死亡后待长出的业力花 [[x, y, 剩余 tick], ...]
+
         # 放杆子
         self.poles = []
         self._pole_seed = 0
@@ -373,12 +381,15 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         over_scav = self._scavenger_at(cur) is not None
         dragging_cob = self._dragged_seedcob is not None
         over_cob = self._seedcob_at(cur) is not None
+        dragging_flower = self._dragged_karmaflower is not None
+        over_flower = self._karmaflower_at(cur) is not None
         want = not (active or dragging_fruit or over_fruit or dragging_stone or over_stone
                     or dragging_slime or over_slime or dragging_batfly or over_batfly
                     or dragging_lizard or over_lizard or dragging_squid or over_squid
                     or dragging_nworm or over_nworm
                     or dragging_pearl or over_pearl or dragging_spear or over_spear
-                    or dragging_scav or over_scav or dragging_cob or over_cob or over_body)
+                    or dragging_scav or over_scav or dragging_cob or over_cob
+                    or dragging_flower or over_flower or over_body)
         if want != self._passthrough:
             self._passthrough = want
             if not self._hwnd:
@@ -447,6 +458,9 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         for sd in self.seeds:
             if abs(sd.vx) + abs(sd.vy) > self._MOTION_STILL:
                 return True
+        for kf in self.karmaflowers:                 # 花瓣/花茎一直在晃
+            if abs(kf.vx) + abs(kf.vy) > self._MOTION_STILL:
+                return True
         return False
 
     def pole_contest_winner(self, pole, cats):
@@ -466,16 +480,21 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._pole_contests[key] = (self._pole_tick, win)
         return win
 
-    def fetchables(self, pearl_like: float = 1.0):
-        """够取目标：可食物 + 珍珠。
+    def fetchables(self, pearl_like: float = 1.0, want_karma: bool = False):
+        """够取目标：可食物 + 珍珠（+ 需要时加业力花）。
 
         珍珠不可食，平常只用来跟拾荒者交易（原版货币），故不并入 edibles()。
         场上有拾荒者时一律列出（可以拿去换东西）；此外 pearl_like > 1 的猫
         （溪流）没有拾荒者也会专门去把珍珠叼起来拿着，所以要一起列出来。
+        业力花同理：只有还没吃出花条的猫（want_karma）才会把它列进目标。
         """
         if self.pearls and (self.scavengers or pearl_like > 1.0):
-            return [*self.edibles(), *self.pearls]
-        return list(self.edibles())
+            out = [*self.edibles(), *self.pearls]
+        else:
+            out = list(self.edibles())
+        if want_karma and self.karmaflowers:
+            out = [*self.karmaflowers, *out]
+        return out
 
     def edibles(self):
         """可食物体聚合（果+爆米花种子+黏菌+蝙蝠+蝉乌贼+面条蝇）。"""
@@ -661,6 +680,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._tick_spears()
         self._tick_scavengers()
         self._tick_seedcobs()
+        self._tick_karmaflowers()
         self._water_splash_detect()   # 须在物体积分后
 
         self._collide_objects()
@@ -1352,6 +1372,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             self._draw_spears(p)
         if self.seeds:
             self._draw_seeds(p)
+        if self.karmaflowers:
+            self._draw_karmaflowers(p)
         if self.squidcadas:
             self._draw_squidcadas(p)
         if self.needleworms:
@@ -1403,6 +1425,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                     self.place_scavenger(lx, ly)
                 elif self._place_kind == "seedcob":
                     self.place_seedcob(lx, ly)
+                elif self._place_kind == "karmaflower":
+                    self.place_karmaflower(lx, ly)
                 else:
                     self.place_fruit(lx, ly)
             elif e.button() == Qt.MouseButton.RightButton:
@@ -1443,7 +1467,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                                             if not self._begin_spear_drag(pos):
                                                 if not self._begin_fruit_drag(pos):
                                                     if not self._begin_stone_drag(pos):
-                                                        self._begin_slimemold_drag(pos)
+                                                        if not self._begin_karmaflower_drag(pos):
+                                                            self._begin_slimemold_drag(pos)
 
     def keyPressEvent(self, e):
         if self._place_mode and e.key() == Qt.Key.Key_Escape:
@@ -1469,3 +1494,4 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             self._end_spear_drag()
             self._end_scavenger_drag()
             self._end_seedcob_drag()
+            self._end_karmaflower_drag()

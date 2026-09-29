@@ -47,6 +47,7 @@ _STR = {
     "tip_pearl":   {"zh": "放珍珠", "en": "Place pearl"},
     "tip_spear":   {"zh": "放矛", "en": "Place spear"},
     "tip_seedcob": {"zh": "放爆米花", "en": "Place popcorn plant"},
+    "tip_karmaflower": {"zh": "放业力花", "en": "Place karma flower"},
     "tip_clear":   {"zh": "清除可交互实体", "en": "Clear placed items"},
     "tip_erase":   {"zh": "删除模式（点谁删谁）", "en": "Erase mode (click to delete)"},
 

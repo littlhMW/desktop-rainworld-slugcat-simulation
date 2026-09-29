@@ -167,6 +167,9 @@ class SlugcatBody:
         self.karma_max = tuning.KARMA_MAX if stats.karma_cap is None else stats.karma_cap
         self.karma = max(0, min(self.karma_max,
                                 int(tuning.KARMA_INIT if karma is None else karma)))
+        # 业力花条（原版 reinforcedKarma）：隐藏的「一格」，吃了业力花就满；
+        # 满的时候死亡不掉业力、并消耗掉这一格
+        self.flower_karma = False
 
         # cold ∈[0,2]，0.8起抽搐 ≥1可冻死
         self.cold = 0.0
@@ -1595,7 +1598,10 @@ class SlugcatBody:
             f = self.carried_fruit
             f.state = "eaten"
             self.temper_shift(tuning.TEMPER_FEED)
-            self.food_eat(1)
+            if getattr(f, "is_karma", False):
+                self.flower_karma = True      # 业力花：只填隐藏花条
+            else:
+                self.food_eat(1)
             self.energy_change(tuning.EN_EAT_RESTORE)
             self.release_fruit()
             return True

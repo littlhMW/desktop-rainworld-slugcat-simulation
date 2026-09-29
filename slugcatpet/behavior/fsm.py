@@ -292,6 +292,7 @@ class BehaviorFSM:
         self._exhausted = False
         self._revive_timer = 0
         self._reincarnate = False
+        self._flower_planted = False     # 这具身体是否已排过「死后原地长业力花」
         self._warm_exec = None
         self._warm_goal_obj = None
 
@@ -599,9 +600,10 @@ class BehaviorFSM:
             self._wants_break(self.state)
         self._hibernating = False
         self.body.food_eat(-tuning.FOOD_KILL_PENALTY)
-        if self.body.karma > 0 or self.body.karma_bottomed():
-            self.body.karma_drop()    # 工匠锁底也照常计入
-            self.body.temper_shift(tuning.TEMPER_KILL_REVIVED)
+        had_flower = self.body.flower_karma
+        if self.body.karma > 0 or self.body.karma_bottomed() or had_flower:
+            if self._death_karma_settle():
+                self.body.temper_shift(tuning.TEMPER_KILL_REVIVED)
             self.body.die()
             self.gfx.dead = True
             self._transition("Dead")
@@ -610,12 +612,14 @@ class BehaviorFSM:
             self.body.die()
             self._transition("Dead")
             self._revive_timer = 0
+        self._schedule_karma_flower(had_flower)
 
     def kill_cold(self):
         """冻死：环境致死，转世复活，不计好感。"""
         if self.state == "Dead":
             return
-        self.body.karma_drop()
+        had_flower = self.body.flower_karma
+        self._death_karma_settle()
         self._dismiss_kill_dialog()
         self._break_active_controllers()
         self.grab.force_release()
@@ -626,12 +630,14 @@ class BehaviorFSM:
         self._transition("Dead")
         self._reincarnate = True
         self._revive_timer = tuning.REINCARNATE_TICKS
+        self._schedule_karma_flower(had_flower)
 
     def kill_drown(self):
         """溺死：环境致死，转世复活，不计好感。"""
         if self.state == "Dead":
             return
-        self.body.karma_drop()
+        had_flower = self.body.flower_karma
+        self._death_karma_settle()
         self._dismiss_kill_dialog()
         self._break_active_controllers()
         self.grab.force_release()
@@ -643,6 +649,7 @@ class BehaviorFSM:
         self._transition("Dead")
         self._reincarnate = True
         self._revive_timer = tuning.REINCARNATE_TICKS
+        self._schedule_karma_flower(had_flower)
 
     def kill_pyro_drown(self):
         """工匠溺水引爆而死，转世复活。"""
@@ -650,7 +657,8 @@ class BehaviorFSM:
             return
         from ..cats.artificer.pyro import pyro_explosion
         pyro_explosion(self.win, self.body)
-        self.body.karma_drop()
+        had_flower = self.body.flower_karma
+        self._death_karma_settle()
         self._dismiss_kill_dialog()
         self._break_active_controllers()
         self.grab.force_release()
@@ -663,10 +671,44 @@ class BehaviorFSM:
         self._transition("Dead")
         self._reincarnate = True
         self._revive_timer = tuning.REINCARNATE_TICKS
+        self._schedule_karma_flower(had_flower)
 
     def kill_threat_canceled(self, by_saint: bool):
         self.body.temper_shift(self.win.cat.tuning["temper_kill_cancel_saint"] if by_saint
                                else tuning.TEMPER_KILL_CANCEL_HUMAN)
+
+    def _death_karma_settle(self) -> bool:
+        """死亡业力结算：有业力花条（原版 reinforcedKarma）→ 消耗花条、业力不掉；
+        否则照原规则掉一级。返回是否真的掉了业力。"""
+        if self.body.flower_karma:
+            self.body.flower_karma = False
+            return False
+        self.body.karma_drop()
+        return True
+
+    def _schedule_karma_flower(self, had_flower: bool):
+        """排「死后原地长业力花」（原版 Player.PlaceKarmaFlower / karmaFlowerGrowPos）。
+
+        黄猫（monk）无条件；猎手 15~45s；其他猫死亡时带着业力花条才长（150~210s）。
+        同一具尸体只排一次。
+        """
+        if self._flower_planted:
+            return
+        variant = getattr(self.win, "variant", "")
+        if variant == "monk":
+            delay = self.rng.randrange(tuning.FLOWER_OTHER_MIN,
+                                       tuning.FLOWER_OTHER_MAX + 1)
+        elif variant == "hunter":
+            delay = self.rng.randrange(tuning.FLOWER_HUNTER_MIN,
+                                       tuning.FLOWER_HUNTER_MAX + 1)
+        elif had_flower:
+            delay = self.rng.randrange(tuning.FLOWER_OTHER_MIN,
+                                       tuning.FLOWER_OTHER_MAX + 1)
+        else:
+            return
+        self._flower_planted = True
+        c0 = self.body.chunk0
+        self.win.schedule_karma_flower(c0.x, c0.y, delay)
 
     def is_dead(self) -> bool:
         return self.state == "Dead"
@@ -695,6 +737,7 @@ class BehaviorFSM:
         self.gfx.dead = True
         self._transition("Dead")
         self._revive_timer = 0
+        self._flower_planted = True      # 持久化恢复：不补长花
 
     def _break_active_controllers(self):
         st = self.state
@@ -836,13 +879,15 @@ class BehaviorFSM:
         self._food_urge_tick()
         self._social_urge_tick()
         if (self._fetch_check == 0
-                and self.body.food < self.body.food_max
+                and (self.body.food < self.body.food_max
+                     or (self.win.karmaflowers and not self.body.flower_karma))
                 and self._food_seek_ready()
                 and not self.grab.active and not self._exhausted
                 and not self._cold_urgent() and not self._zerog()
                 and self._fetch_cooldown <= 0
                 and self.state not in _FETCH_NEVER):
-            fetch_cands = fetch_ready(self.planner, self.win.fetchables(),
+            fetch_cands = fetch_ready(self.planner,
+                                      self.win.fetchables(want_karma=not self.body.flower_karma),
                                       diet=self.pers.diet)
             if fetch_cands:
                 take = True
@@ -1067,8 +1112,9 @@ class BehaviorFSM:
             b.set_posture(False)
             b.stop_walk()
             self._settle_to_rest()
-            self._sleep_left = int(tuning.HIBERNATE_TICKS * self.rng.uniform(
-                tuning.SLEEP_LEN_MULT_MIN, tuning.SLEEP_LEN_MULT_MAX))
+            _lo = int(tuning.SLEEP_SECS_MIN * 40.0)      # 20s（40 tick/s）
+            _hi = int(tuning.SLEEP_SECS_MAX * 40.0)      # 40s
+            self._sleep_left = self.rng.randrange(_lo, _hi + 1)
             # 入睡瞬间结算：按格数扣掉睡眠饱食度、业力 +1（用户口径）
             b.karma_gain()
             b.food_eat(-b.food_hibernate)
@@ -2649,6 +2695,7 @@ class BehaviorFSM:
                     self.win._reincarnate_pending = True
                     return
                 self.body.revive()
+                self._flower_planted = False     # 复活了：以后再死可以再长一朵
                 self.gfx.dead = False
                 self.gfx.sleeping = False
                 self.body.sleeping = False
@@ -3111,7 +3158,9 @@ class BehaviorFSM:
             return False                 # 上杆本来就是为了够那个东西
         if not (b.food < b.food_max and self._food_seek_ready()):
             return False
-        if not fetch_ready(self.planner, self.win.fetchables(), diet=self.pers.diet):
+        if not fetch_ready(self.planner,
+                           self.win.fetchables(want_karma=not b.flower_karma),
+                           diet=self.pers.diet):
             return False
         self._break_active_controllers()
         self._act_or_wake("FetchFruit")
@@ -3909,6 +3958,8 @@ class BehaviorFSM:
             if getattr(f, "state", None) != ItemState.FREE:
                 continue
             if getattr(f, "bites", 0) <= 0:      # 珍珠这类不是食物
+                continue
+            if getattr(f, "is_karma", False):     # 业力花不填饱食度，不算帮喂目标
                 continue
             d = math.hypot(f.x - c1.x, f.y - c1.y)
             if d < bd:
