@@ -1911,6 +1911,11 @@ class SlugcatBody:
         sp = self.carried_spear
         if sp is None:
             return None
+        rng = getattr(self.stats, "spear_dmg_range", None)
+        if rng is not None:
+            # 原版 spearDamageBonus：throwingSkill 0 的猫是 0.6 + 0.3*rand^4
+            lo, hi = float(rng[0]), float(rng[1])
+            sp.damage = lo + (hi - lo) * (sp._rng.random() ** 4)
         c0, c1 = self.chunk0, self.chunk1
         sx = c0.x + float(dir_x) * THROW_ORIGIN_DX
         sy = c0.y - float(dir_y) * THROW_ORIGIN_DX - THROW_ORIGIN_DY

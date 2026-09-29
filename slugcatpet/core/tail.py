@@ -31,9 +31,13 @@ class Tail:
     SFRIC = 0.85
     AFFECT = (1.0, 0.5, 0.5, 0.5)
 
-    def __init__(self, root_x: float, root_y: float):
-        self.segs = [TailSeg(root_x, root_y + sum(Tail.CONN[:i + 1]),
-                             Tail.RAD[i], Tail.CONN[i], Tail.SFRIC, Tail.AFFECT[i])
+    def __init__(self, root_x: float, root_y: float,
+                 rad=None, conn=None):
+        """rad/conn 可按种族覆盖：矛大师 PlayerGraphics.cs:1741-1744 是 8/6/4/2。"""
+        self.rad = tuple(Tail.RAD if rad is None else rad)
+        self.conn = tuple(Tail.CONN if conn is None else conn)
+        self.segs = [TailSeg(root_x, root_y + sum(self.conn[:i + 1]),
+                             self.rad[i], self.conn[i], Tail.SFRIC, Tail.AFFECT[i])
                      for i in range(4)]
         self.floor_y = None
         # 可调旋钮：存每 tick 原始量，施加时按需 ×K_IMP
@@ -46,7 +50,7 @@ class Tail:
         """整尾吸附到根部初始直线（重置）。"""
         for i, s in enumerate(self.segs):
             s.x = s.lx = root_x
-            s.y = s.ly = root_y + sum(Tail.CONN[:i + 1])
+            s.y = s.ly = root_y + sum(self.conn[:i + 1])
             s.vx = s.vy = 0.0
             s.stretched = 1.0
 

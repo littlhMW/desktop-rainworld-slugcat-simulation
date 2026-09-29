@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QRadialGradient
 
 from ..core.units import clampf
 from ..core.gfxmath import (_hsl2rgb, _ang_from_up, _rot, _lerp, _catmull,
@@ -17,6 +17,10 @@ class GraphicsDrawMixin:
     def draw_sprites(self, p, atlas, timeStacker=1.0):
         """按 z 序绘制全部 sprite。"""
         ts = timeStacker
+        camo = float(getattr(self, "camo", 0.0))
+        if camo > 0.01:
+            p.save()
+            p.setOpacity(max(0.12, 1.0 - 0.85 * camo))
         self._draw_body_hips(p, atlas, ts)
         self._draw_tail(p, ts)
         self._draw_tail_speckles(p, atlas, ts)   # 矛大师尾上斑点 + 尾针（尾之上、头之下）
@@ -34,9 +38,26 @@ class GraphicsDrawMixin:
         self._draw_face(p, atlas, ts)
         self._draw_tongue(p)
         self._draw_glow(p)
+        if camo > 0.01:
+            p.restore()
 
     def _draw_glow(self, p):
-        return
+        """守望者自身发光（wiki：首遇陀螺后开始发光）。"""
+        col = self.vis.get("glow")
+        if not col:
+            return
+        x, y = self.draw0
+        r = 30.0
+        p.save()
+        aa_hint(p)
+        g = QRadialGradient(QPointF(x, y), r)
+        g.setColorAt(0.0, QColor(col[0], col[1], col[2], 96))
+        g.setColorAt(0.55, QColor(col[0], col[1], col[2], 28))
+        g.setColorAt(1.0, QColor(col[0], col[1], col[2], 0))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(g)
+        p.drawEllipse(QPointF(x, y), r, r)
+        p.restore()
 
     def _draw_tail(self, p, ts=1.0):
         """尾三角网格绘制。"""
@@ -83,14 +104,14 @@ class GraphicsDrawMixin:
             verts[i * 4 + 1] = (prev_x + rootw_x + nx * joint_off, prev_y + rootw_y + ny * joint_off)
 
             if i < 3:
-                stretched_rad = TAIL_RAD[i] * seg.stretched
+                stretched_rad = self.tail_rad[i] * seg.stretched
                 tipw_x, tipw_y = px * (stretched_rad * width_scale), py * (stretched_rad * width_scale)
                 verts[i * 4 + 2] = (cur_x - tipw_x - nx * joint_off, cur_y - tipw_y - ny * joint_off)
                 verts[i * 4 + 3] = (cur_x + tipw_x - nx * joint_off, cur_y + tipw_y - ny * joint_off)
             else:
                 verts[i * 4 + 2] = (cur_x, cur_y)  # 末段单点尖
 
-            root_halfw = TAIL_RAD[i] * seg.stretched
+            root_halfw = self.tail_rad[i] * seg.stretched
             prev_x, prev_y = cur_x, cur_y
 
         # 手编三角表
@@ -116,8 +137,8 @@ class GraphicsDrawMixin:
             nodes.append((_lerp(seg.lx, seg.x, ts), _lerp(seg.ly, seg.y, ts)))
         widths = [6.0 * width_scale]
         for i in range(4):
-            widths.append(TAIL_RAD[i] * segs[i].stretched * width_scale)
-        widths[4] = 0.0
+            widths.append(self.tail_rad[i] * segs[i].stretched * width_scale)
+        widths[4] = self.tail_tip * width_scale
 
         N = max(1, int(self.tail_smooth_subdiv))
         cx = [nodes[0][0]]
@@ -154,6 +175,21 @@ class GraphicsDrawMixin:
         path.moveTo(left[0])
         for q in left[1:]:
             path.lineTo(q)
+        tip = cw[-1]
+        if tip > 0.02 and len(cx) >= 2:
+            # 尾梢圆头：末段按半径 tip 收成一个半圆，而不是收成尖角
+            ex, ey = cx[-1] - cx[-2], cy[-1] - cy[-2]
+            el = math.hypot(ex, ey) or 1.0
+            a0 = math.atan2(left[-1].y() - cy[-1], left[-1].x() - cx[-1])
+            a1 = math.atan2(right[-1].y() - cy[-1], right[-1].x() - cx[-1])
+            a_n = math.atan2(ey / el, ex / el)
+            d0 = (a1 - a0) % (2.0 * math.pi)
+            d_n = (a_n - a0) % (2.0 * math.pi)
+            sweep = d0 if d_n <= d0 else d0 - 2.0 * math.pi
+            steps = 10
+            for k in range(1, steps):
+                aa = a0 + sweep * (k / float(steps))
+                path.lineTo(cx[-1] + math.cos(aa) * tip, cy[-1] + math.sin(aa) * tip)
         for q in reversed(right):
             path.lineTo(q)
         path.closeSubpath()
@@ -248,13 +284,18 @@ class GraphicsDrawMixin:
                     self._draw_tail_needle(p, atlas, pos, perp, off, dirv, prog)
 
     def _draw_tail_needle(self, p, atlas, pos, perp, off, dirv, prog):
-        """尾针精灵：从斑点处沿尾巴方向长出来（PlayerGraphics.cs:1069-1073）。
+        """尾针精灵：从斑点处沿尾外法线长出来（PlayerGraphics.cs:1069-1073）。
 
-        锚点在针根，长度随 spearProg 长到一半（原版 scaleY = -prog*0.5）。
+        原版：rotation = VecToDeg(v)，v = PerpendicularVector(spine.dir)，
+        v.y > 0.35 取反；anchorY = 0（锚点=针根，即 blit 的 ay=1）；
+        scaleY = -prog*0.5（负号 = 针尖朝外，且只画到半长）。
         """
+        vx, vy = dirv[1], dirv[0]
+        if dirv[0] > 0.35:
+            vx, vy = -vx, -vy
         blit(p, atlas, "BioSpear%d" % (self.tail_needle_type % 3 + 1),
              pos[0] + perp[0] * off, pos[1] + perp[1] * off,
-             math.degrees(math.atan2(dirv[0], -dirv[1])), 1.0, prog * 0.5,
+             math.degrees(math.atan2(vx, vy)), 1.0, -prog * 0.5,
              (255, 255, 255), ax=0.5, ay=1.0)
 
     def _draw_arms(self, p, atlas, ts=1.0):

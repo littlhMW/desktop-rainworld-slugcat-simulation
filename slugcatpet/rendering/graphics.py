@@ -229,6 +229,7 @@ class SlugcatGraphics(GraphicsDrawMixin):
         self.look_dir = (0.0, 0.0)
         self.sleeping = False
         self.sleep_curl = 0.0
+        self.camo = 0.0                # 1=完全隐身（守望者伪装，见 cats/watcher.py）
         self.gills_flat = 0.0          # 1=鳃锚退回世界水平（趴/睡）
         self.dead = False
         self.stunned = False           # 晕脸 + 头帧0耷拉
@@ -286,6 +287,11 @@ class SlugcatGraphics(GraphicsDrawMixin):
         self._hips_sx_fac = float(vis.get("hips_sx", 1.0))
         self._head_sx_fac = float(vis.get("head_sx", 1.0))
         self._arm_off_fac = float(vis.get("arm_offset_fac", 1.0))
+        # 尾巴形状（原版 PlayerGraphics.cs:1720-1764 按种族给 TailSegment rad）：
+        # tail_rad 覆盖四段半径；tail_tip>0 表示尾梢画成圆头而不是尖角。
+        self.tail_rad = tuple(float(v) for v in vis.get("tail_rad", TAIL_RAD))
+        self.tail_conn = tuple(float(v) for v in vis.get("tail_conn", (4.0, 7.0, 7.0, 7.0)))
+        self.tail_tip = float(vis.get("tail_tip", 0.0))
         if vis.get("pup_wide"):
             # 幼崽：0.9 + 0.2*Lerp(Wideness, 0.5, 0.5)，体/臀/头三处同式
             wide = 0.95 + 0.10 * float(getattr(body, "wideness", 0.5))

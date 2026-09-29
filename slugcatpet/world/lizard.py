@@ -73,6 +73,7 @@ GUARD_PREY_TICKS = 1200       # 把猎物送回巢穴后守一会儿（原版回
 WARN_TICKS = 26               # 竞争者靠近时举头警告的时长
 CONTEST_W = 1.4               # 争夺别人嘴里的猎物时，目标权重的加成
 CROUCH_TARGET_MULT = 1.9      # 匍匐潜行的猫：权重除以这个（越大越不优先被盯上）
+CAMO_TARGET_MULT = 4.0        # 隐身中的猫（守望者伪装）：权重再除以这个
 TARGET_HOLD_OBJ = 90          # 对象目标失联后的宽限帧数（原版 forgetDelay）
 TARGET_HOLD_POINT = 10 ** 9   # 纯坐标目标（光标）仍按距离判定
 LUNGE_ACCEL = 0.20            # 扑咬时朝目标的加速度比例
@@ -1203,6 +1204,8 @@ class Lizard:
             w = FAINT_BITE_BONUS if fainted and not dead else 1.0
             if crawl:
                 w /= CROUCH_TARGET_MULT
+            if _cat_camo(obj):
+                w /= CAMO_TARGET_MULT
             cats.append(self._observe(obj, ox, oy, "cat", w, dead, fainted,
                                       "crawl" if crawl else "stand"))
         for obj, w in prey:
@@ -1578,6 +1581,8 @@ class Lizard:
             w = FAINT_BITE_BONUS if fainted and not dead else 1.0
             if crawl:
                 w /= CROUCH_TARGET_MULT
+            if _cat_camo(obj):
+                w /= CAMO_TARGET_MULT
             out.append(self._observe(obj, ox, oy, kind, w, dead, fainted,
                                      "crawl" if crawl else "stand"))
         return out
@@ -2576,6 +2581,11 @@ def _cat_row(row):
 def _cat_crouching(obj) -> bool:
     """猫是否在匍匐潜行（原版 Crawl 姿态比站立难被蜥蜴注意到）。"""
     return getattr(getattr(obj, "body", None), "bodyMode", None) == "Crawl"
+
+
+def _cat_camo(obj) -> bool:
+    """猫是否隐身中（守望者伪装：半透明 → 蜥蜴很难盯上）。"""
+    return getattr(getattr(obj, "gfx", None), "camo", 0.0) > 0.5
 
 
 def _cat_offering_food(obj) -> bool:

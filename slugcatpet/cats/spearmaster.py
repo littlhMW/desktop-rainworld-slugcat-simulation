@@ -19,7 +19,7 @@ from .stats import DEFAULT_STATS
 SPEARMASTER_DEF = CatDef(
     key="spearmaster",
     body_color=(79, 46, 105),     # DefaultSlugcatColor（PlayerGraphics.cs:3860）
-    eye_color=(22, 30, 16),
+    eye_color=(255, 255, 255),    # DefaultBodyPartColorHex：Spear → FFFFFF（白＝不染色）
     frames={
         "head": ("base", "HeadA"),
         "face": ("base", "FaceA"),
@@ -45,7 +45,10 @@ SPEARMASTER_DEF = CatDef(
     # 外观反编译：PlayerGraphics.cs:2876/2896 体臀 scaleX 0.76、3037 头 scaleX 0.85、
     # 3143 手横向偏移 ×0.6、947-1113 TailSpeckles 尾上 5×3 斑点 + 尾针精灵
     visual={"body_sx": 0.76, "hips_sx": 0.76, "head_sx": 0.85,
-            "arm_offset_fac": 0.6, "tail_speckles": True},
+            "arm_offset_fac": 0.6, "tail_speckles": True,
+            # 尾巴比别的猫肥一档：PlayerGraphics.cs:1741-1744 Spear 分支
+            # TailSegment rad 8/6/4/2（默认猫 6/4/2.5/1），尾梢收圆头
+            "tail_rad": (8.0, 6.0, 4.0, 2.0), "tail_tip": 2.4},
     fsm_mount=None,
     wip=False,
 )

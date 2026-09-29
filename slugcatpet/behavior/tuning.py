@@ -717,6 +717,13 @@ SLAM_DROP_VY = 26.0             # 下落压在目标头上的额外速度
 SLAM_DAMAGE = 1.1               # 砸中的伤害（按体重折算与矛同量级）
 SLAM_STUN_BONUS = 40.0          # 砸中的眩晕附加
 SLAM_ARRIVE_R = 46.0            # 判定「压到目标」的水平距离
+# 原版 Player.cs:3370-3425 的 SlugSlamConditions 与 6374-6455 的结算：
+#   震击要有高度 —— 离地不足 SLAM_MIN_HEIGHT 只算落地，不震
+#   num3 = lastGroundY - pos.y（落高）分档 ×0.5 / ×1 / ×2 / ×3 / ×5
+SLAM_MIN_HEIGHT = 30.0          # 落高门槛（一次满跳约 53px）
+SLAM_HEIGHT_BANDS = ((100.0, 0.5), (200.0, 1.0), (320.0, 2.0), (600.0, 3.0))
+SLAM_AOE_R = 96.0               # 震击波及半径：这个圈里的其他蛞蝓猫一起被震晕
+SLAM_AOE_STUN = 55              # 波及眩晕 tick（随落高倍率放大）
 
 # ── 兴趣目标抖动（同屏多只猫：别都盯上同一个最近目标）──
 INTEREST_JITTER   = 0.40        # 每只猫对每件目标的个体偏好系数 1±这个值（稳定，不逐 tick 乱跳）

@@ -75,6 +75,9 @@ class SlugStats:
 
     # 原版 throwingSkill：滑铲抛物增距要 > 0 才生效（Player.cs:11278）
     throwing_skill: int = 1
+    # 掷矛伤害倍率区间（太弱才写）：原版 Spear.HitSomething 的 spearDamageBonus
+    # throwingSkill == 0 时是 0.6 + 0.3*rand^4（Player.cs:11526-11575），下限 0.6 上限 0.9
+    spear_dmg_range: tuple[float, float] | None = None
 
     # 0-based，HUD 显示 +1；None=用全局 KARMA_MAX
     karma_cap: int | None = None

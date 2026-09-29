@@ -15,6 +15,7 @@ from .fruit import PLACE_HANGING_FRAC, make_fruit
 from ..rendering.graphics import _ang_from_up
 from ..rendering.primitives import (blit, draw_fruit, draw_rope, draw_stone,
                                     draw_stone_trail, draw_pearl, draw_spear,
+                                    draw_needle,
                                     draw_scavenger, draw_scavenger_spear,
                                     PEARL_ART_RAD)
 from .enums import ItemState
@@ -34,7 +35,8 @@ from .needleworm_gfx import draw_needleworm, draw_needle_egg
 from .pearl import Pearl
 from . import weaponphys
 from .scavenger import PEARL_SEEK_R, PEARL_TAKE_PAD
-from .spear import Spear, LEN as SPEAR_DRAW_LEN, HALF_W as SPEAR_HALF_W
+from .spear import (Spear, LEN as SPEAR_DRAW_LEN, HALF_W as SPEAR_HALF_W,
+                    NEEDLE_FADE_MAX)
 from .seedcob import Seed, SeedCob, draw_seed, draw_seedcob
 from .karmaflower import (KarmaFlower, DRAG_POP_DIST as KARMA_DRAG_POP,
                          draw_karmaflower)
@@ -2828,7 +2830,8 @@ class ItemInteractionMixin:
                 dvec = (sp.vx / spd, sp.vy / spd)
                 head = (hit_chunk is lz)                     # 头是第 0 节
                 shielded = head and lz.hit_head_shield(dvec)
-                killed = lz.hurt(SPEAR_DMG, dvec=dvec, speed=spd,
+                killed = lz.hurt(float(getattr(sp, "damage", SPEAR_DMG)),
+                                 dvec=dvec, speed=spd,
                                  stun_bonus=SPEAR_STUN_BONUS, hit_head=head,
                                  knock_k=KNOCK_K_PER_MASS * sp.mass)
                 if shielded and not lz.dead:
@@ -2864,10 +2867,10 @@ class ItemInteractionMixin:
                     continue
                 spd = math.hypot(sp.vx, sp.vy) or 1.0
                 dvec = (sp.vx / spd, sp.vy / spd)
-                _sc_died = sc.hurt(SPEAR_DMG)
+                _sc_died = sc.hurt(float(getattr(sp, "damage", SPEAR_DMG)))
                 self._spear_needle_feed(sp, sc)          # 骨矛吸食活物
                 if _weapon_owner(sp) is not None:
-                    sc.on_attacked(SPEAR_DMG)
+                    sc.on_attacked(float(getattr(sp, "damage", SPEAR_DMG)))
                 EV.emit_for(self,
                             EV.CREATURE_KILLED if _sc_died else EV.CREATURE_HURT,
                             subject=_weapon_owner(sp), obj=sc,
@@ -2902,7 +2905,8 @@ class ItemInteractionMixin:
                     continue
                 kx = sp.vx * 0.10
                 ky = min(sp.vy * 0.10 - 1.2, -1.0)
-                small.hurt(SPEAR_DMG, kx=kx, ky=ky, by=_weapon_owner(sp), lethal=True)
+                small.hurt(float(getattr(sp, "damage", SPEAR_DMG)),
+                           kx=kx, ky=ky, by=_weapon_owner(sp), lethal=True)
                 self._spear_needle_feed(sp, small)       # 骨矛吸食活物
                 sp.vx *= 0.55
                 self._shake[0] += 0.5 * (1.0 if kx >= 0.0 else -1.0)
@@ -2914,6 +2918,7 @@ class ItemInteractionMixin:
         self._step_spear_drag()
         if self.spears:
             for sp in self.spears:
+                sp.needle_tick()                 # 骨针断线后每 tick 褪一点
                 if sp.cursor_pin is not None:    # 钉在光标上：跟着光标走，甩鼠标脱钉
                     if self._step_cursor_pin(sp):
                         continue
@@ -3063,7 +3068,16 @@ class ItemInteractionMixin:
                 draw_stone_trail(p, x, y, sp.vx / spd, sp.vy / spd,
                                  min(spd * SPEAR_TRAIL_LEN_K, SPEAR_TRAIL_LEN_MAX),
                                  SPEAR_TRAIL_HALFW, SPEAR_TRAIL_COLOR, SPEAR_TRAIL_ALPHA)
-        draw_spear(p, self.atlas, x, y, ang, length=SPEAR_DRAW_LEN)
+        if getattr(sp, "needle", False):
+            # 矛大师的骨针：BioSpear 贴图 + 断线褪色（Spear.cs:1333-1356）
+            draw_needle(p, self.atlas, x, y, ang,
+                        kind=getattr(sp, "needle_type", 0),
+                        fade=float(getattr(sp, "needle_fade", 0)) / NEEDLE_FADE_MAX,
+                        live=bool(getattr(sp, "needle_live", False)),
+                        pivot_at_tip=bool(sp._thrown or sp.stuck_to is not None),
+                        length=SPEAR_DRAW_LEN)
+        else:
+            draw_spear(p, self.atlas, x, y, ang, length=SPEAR_DRAW_LEN)
 
     def _draw_back_spears(self, p):
         """背上的矛：画在猫之前（原版 spearOnBack 归 body 层，不该压在猫身上）。"""

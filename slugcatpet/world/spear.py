@@ -15,6 +15,7 @@ from ..core.chunkphys import aabb_wall_collide, apply_water
 from . import weaponphys as wp
 from .enums import ItemState
 
+NEEDLE_FADE_MAX = 400    # Spear.spearmasterNeedle_fadecounter_max
 LEN = 53.0               # 杆长（原版 SmallSpear 贴图可视长度）
 HALF_W = 1.6             # 杆的半宽（贴图实测 3px）
 RAD = 5.0                # Spear.cs:287 bodyChunks[0].rad
@@ -54,7 +55,8 @@ class Spear:
                   "always_stick",
                  "collide_with_objects", "held_by", "embedded", "stuck_to", "stuck_local", "_still",
                  "thrower", "no_self_t", "pinned", "pole", "toss_t",
-                 "aim_cursor", "cursor_pin", "needle", "needle_live")
+                 "aim_cursor", "cursor_pin", "needle", "needle_live",
+                 "needle_type", "needle_fade", "damage")
 
     def __init__(self, x: float, y: float, seed: int = 0, angle_deg: float = 90.0):
         self.x = self.last_x = float(x)
@@ -107,6 +109,9 @@ class Spear:
         # 只有还活着的针扎中活物才回饱食度；落地/插墙/扎中东西就断开。
         self.needle = False
         self.needle_live = False
+        self.damage = 1.0                     # spearDamageBonus（原版默认 1f）
+        self.needle_type = 0                  # BioSpear1..3（Spear_makeNeedle 的 type）
+        self.needle_fade = NEEDLE_FADE_MAX    # fadecounter：断线后每 tick -1
 
     @property
     def pos(self):
@@ -134,8 +139,13 @@ class Spear:
         return (self.x - math.sin(a) * LEN * 0.5, self.y + math.cos(a) * LEN * 0.5)
 
     def needle_disconnect(self) -> None:
-        """Spear_NeedleDisconnect：活性没了（针褪成黑色，不能再吸食）。"""
+        """Spear_NeedleDisconnect：活性没了（针从白褪成黑色，不能再吸食）。"""
         self.needle_live = False
+
+    def needle_tick(self) -> None:
+        """Spear.Update：断线后 fadecounter 每 tick -1（Spear.cs:382-385）。"""
+        if self.needle and not self.needle_live and self.needle_fade > 0:
+            self.needle_fade -= 1
 
     def stick(self, WL: float, wall: int) -> None:
         """掷进左右墙（wall=±1）：杆横着插住、杆尖埋进墙里，成为一截同长的横杆。

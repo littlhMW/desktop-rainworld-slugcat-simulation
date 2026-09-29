@@ -7215,6 +7215,7 @@ class BehaviorFSM:
         sp = Spear(tx, ty, seed=win._spear_seed, angle_deg=180.0)
         sp.needle = True                 # 尾巴长的针（Spear.spearmasterNeedle）
         sp.needle_live = True            # 还连着尾巴：扎中活物能吸食
+        sp.needle_type = int(self.gfx.tail_needle_type) % 3   # BioSpear1..3
         win._spear_seed += 1
         win.spears.append(sp)
         win.world_version += 1

@@ -228,6 +228,25 @@ def draw_spear(painter, atlas, x, y, ang_deg, length=46.0,
     blit(painter, atlas, SPEAR_SPRITE, x, y, ang_deg, k, k, tint, ax=0.5, ay=0.5)
 
 
+NEEDLE_ART_LEN = 53.0       # BioSpear1..3 图集实测长度（与 SmallSpear 同长）
+NEEDLE_FADE_MAX = 400       # Spear.spearmasterNeedle_fadecounter_max
+
+
+def draw_needle(painter, atlas, x, y, ang_deg, kind=0, fade=1.0, live=False,
+                pivot_at_tip=False, length=46.0) -> None:
+    """矛大师的骨针（Spear.cs:1333-1356）。
+
+    贴图 BioSpear{spearmasterNeedleType%3+1}；还连着尾巴时纯白，断线后按
+    fadecounter/400 从白渐隐到矛的黑色（palette.blackColor）。锚点：
+    掷出中／插在生物身上 anchorY 0.85，否则 0.5（Spear.cs:1283）。
+    """
+    t = 1.0 if live else clampf(fade, 0.01, 1.0)
+    col = _mix_rgb((255, 255, 255), SPEAR_RGB, 1.0 - t)
+    k = length / NEEDLE_ART_LEN
+    blit(painter, atlas, "BioSpear%d" % (int(kind) % 3 + 1), x, y, ang_deg,
+         k, k, col, ax=0.5, ay=(0.15 if pivot_at_tip else 0.5))
+
+
 def _scale_rgb(rgb, k):
     return (min(255, int(rgb[0] * k)), min(255, int(rgb[1] * k)), min(255, int(rgb[2] * k)))
 

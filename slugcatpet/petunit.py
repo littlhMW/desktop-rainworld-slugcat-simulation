@@ -134,7 +134,7 @@ class PetUnit:
             self.gfx.update()
         # 尾巴/舌头（caps.tongue 关则不建）
         ax, ay = self.gfx.tail_root_world()
-        self.tail = Tail(ax, ay)
+        self.tail = Tail(ax, ay, rad=self.gfx.tail_rad, conn=self.gfx.tail_conn)
         self.tail.floor_y = floor_y
         self._prev_root = (ax, ay)
         if self.cat.caps.tongue:

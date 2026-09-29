@@ -87,11 +87,11 @@ _STR = {
                      "en": "Right-click the slugcat or click this row to operate"},
 
     # —— 皮名（variant 显示名） ——
-    # 中文名统一采用官方译名表（僧侣/求生者/溪流/观察者/美食家/怪猫/猎手/工匠/矛大师/圣徒）
+    # 中文名统一采用官方译名表（僧侣/求生者/溪流/守望者/饕餮/怪猫/猎手/工匠/矛大师/圣徒）
     "variant_monk":       {"zh": "僧侣", "en": "Monk"},
     "variant_survivor":   {"zh": "求生者", "en": "Survivor"},
     "variant_rivulet":    {"zh": "溪流", "en": "Rivulet"},
-    "variant_watcher":    {"zh": "观察者", "en": "Watcher"},
+    "variant_watcher":    {"zh": "守望者", "en": "Watcher"},
     "variant_gourmand":   {"zh": "饕餮", "en": "Gourmand"},
     "variant_inv":        {"zh": "怪猫", "en": "Inv"},
     "variant_hunter":     {"zh": "猎手", "en": "Hunter"},
