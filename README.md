@@ -160,26 +160,25 @@ python run_slugcatpet.py
 | 指向 | 伸出手指对象，举着不放 | 指向 / 想要 / 注意 |
 | 指指点点 | 伸出收回手快速循环 1~5 次 | 指责 / 强调 |
 | 抚摸 | 伸出手，在对象上画折返 2~5 次的横线 | 喜欢 / 安抚 |
-| 拍拍 | 伸出手，在对象上画折返 2~5 次的竖线 | 喜欢 / 安抚 |
+| 拍拍 | 伸出手，在对象上画折返 2~5 次的竖线 | 喜欢 / 安抚 / 道歉（误伤同伴后） |
 | 复活 | 伸出手用力按压目标（身体也一起用力向下）4~8 次 | 复活中，按完对象复活 |
-| 匍匐 | 趴下 | 让路 / 抱歉 / 害怕 |
-| 匍匐指指点点 | 匍匐着指指点点 | 仇恨 / 预备攻击 / 狩猎目标 / 帮我打这个 |
-| 匍匐指向 | 匍匐着指向 | 恐惧这个对象 / 小心这个对象 |
-| 匍匐行走 | 匍匐着潜行挪动 | 害怕强敌，正在潜行 |
+| 匍匐行走 | 匍匐着潜行挪动 | 害怕强敌，正在潜行（**只有附近有蜥蜴时才抽得到**） |
 
-性格决定抽得到哪些：`crawl_like` 低的猫（不肯趴）抽不到匍匐族，`point_like` 低（性格好）少指指点点，`sociability` 高更喜欢抚摸/拍拍；记恨的对象会加权匍匐指指点点。
+性格决定抽得到哪些：`crawl_like` 低的猫（不肯趴）抽不到匍匐行走，`point_like` 低（性格好）少指指点点，`sociability` 高更喜欢抚摸/拍拍。
+
+**匍匐只留给蜥蜴（第 50 轮）**：匍匐族原本有 4 个动作，遇到同伴、鼠标这些非蜥蜴对象时也会乱趴，「匍匐指指点点 / 匍匐指向」还在对同伴指手画脚时趴着做，很出戏。现在这三条（`crouch` / `crouch_scold` / `crouch_point`）已从词表删除，只剩「匍匐行走」，而它必须 `_nearest_lizard(CRAWL_FEAR_R * 1.6)` 附近真有蜥蜴才会被抽中（害怕强敌潜行、躲蜥蜴、匍匐降被咬概率这些照旧）。误伤同伴的「抱歉」改用**拍拍**（安抚），被同伴指指点点也不再转身趴下。
 
 同一套词表也管**平时**（没攒满社交欲望时）的随手小动作——所有伸手比划的地方都走同一个「起手 / 推进 / 收势」接口，不再各写各的：
 
 | 情景 | 抽到的动作 |
 | --- | --- |
-| 家闲态附近有同伴 / 鼠标在附近停够久 | 按性格随手抽一个（指向/指指点点/抚摸/拍拍/匍匐族），一小段后自己收势 |
-| 被别的猫挡路（跳不过去） | 指指点点；暴躁又爱趴的猫改用匍匐指指点点 |
+| 家闲态附近有同伴 / 鼠标在附近停够久 | 按性格随手抽一个（指向/指指点点/抚摸/拍拍；有蜥蜴时才可能抽到匍匐行走），一小段后自己收势 |
+| 被别的猫挡路（跳不过去） | 指指点点（一律站立版；遇到同伴不做匍匐动作） |
 | 杆上被同伴挡住 | 按性格分流：好性格松手让路、中性停住等待（交叉处有横杆就先挪过去）、坏性格死磕到底；挤位赛随机只留一只，坏性格被挤掉落地后回头指指点点 |
 | 被抢了果子 | 过去扒拉指指点点那个小偷（`protest` 是 `scold` 的旧键别名） |
 | 追鼠标 / 睡醒 | 指向鼠标；性格不好的猫改成指指点点鼠标 |
 | 空手反击蜥蜴 | 贴上去扒拉着指指点点 |
-| 被同伴指指点点 | 性格不好就回头指回去，其余有概率转身匍匐 |
+| 被同伴指指点点 | 性格不好就回头指回去，其余不反应 |
 | 被顶后让完路 | 小概率回头对顶人者做个动作 |
 | 被鼠标抓着挣扎 | 伸手扒鼠标 |
 | 复活同伴 | 按压 4~8 下（`PressGesture`），按完对方复活 |
@@ -383,26 +382,25 @@ Nothing has a count limit any more - place as many as you like.
 | Point | reach out and hold a hand at the target | pointing / wanting / look here |
 | Point-point | extend and retract the hand 1-5 times quickly | scolding / emphasis |
 | Pet | draw a back-and-forth horizontal line on the target 2-5 times | liking / soothing |
-| Pat | draw a back-and-forth vertical line on the target 2-5 times | liking / soothing |
+| Pat | draw a back-and-forth vertical line on the target 2-5 times | liking / soothing / sorry (after hitting a friend) |
 | Revive | press down hard on the target 4-8 times, body pushing down too | reviving; the target comes back when the presses end |
-| Crouch | lie flat | making way / sorry / afraid |
-| Crouched point-point | point and scold while crouched | hatred / about to attack / hunt this / help me hit this |
-| Crouched point | point while crouched | afraid of this / be careful of this |
-| Crouch-walk | sneak away while crouched | afraid of a strong foe, sneaking |
+| Crouch-walk | sneak away while crouched | afraid of a strong foe, sneaking (**only rolled when a lizard is nearby**) |
 
-Personality decides which ones come up: a low `crawl_like` (won't lie down) rules out the crouch family, a low `point_like` (good-natured) means less scolding, a high `sociability` favours petting and patting, and a cat you have a grudge against gets weighted crouched scolding.
+Personality decides which ones come up: a low `crawl_like` (won't lie down) rules out crouch-walk, a low `point_like` (good-natured) means less scolding, and a high `sociability` favours petting and patting.
+
+**Crouching is for lizards only (round 50)**: the crouch family had four actions and would happily lie down in front of a companion or the cursor, with "crouched point-point / crouched point" scolding packmates from the floor. Those three (`crouch` / `crouch_scold` / `crouch_point`) are gone from the vocabulary; only crouch-walk is left, and it is only rolled when `_nearest_lizard(CRAWL_FEAR_R * 1.6)` finds a real lizard nearby (sneaking past a threat, fleeing a lizard and the reduced bite chance while crouched all still work). The "sorry" after hitting a friend is now a **pat** (soothing), and being point-pointed at no longer makes a cat lie down.
 
 The same vocabulary also drives **everyday** gestures (when the social urge has not filled up). Every place that reaches out now goes through one begin / tick / end interface instead of its own ad-hoc code:
 
 | Situation | Action picked |
 | --- | --- |
-| Idling with a companion nearby, or the cursor hovering nearby long enough | a personality-weighted pick (point / point-point / pet / pat / crouch family), ends by itself |
-| Blocked on the ground by another cat (can't jump over) | point-point; a hot-tempered crouchy cat uses crouched point-point instead |
+| Idling with a companion nearby, or the cursor hovering nearby long enough | a personality-weighted pick (point / point-point / pet / pat; crouch-walk only when a lizard is around), ends by itself |
+| Blocked on the ground by another cat (can't jump over) | point-point (always the standing version; no crouch for a companion) |
 | Blocked by a companion on a pole | nudge a few times mid-pole, then maybe point-point in the tail |
 | Fruit stolen | walk over and point-point at the thief (`protest` is a legacy alias of `scold`) |
 | Chasing the cursor / waking up | point at the cursor; a bad-tempered cat point-points it instead |
 | Fighting a lizard bare-handed | get close and point-point while nudging |
-| Being point-pointed at | a bad-tempered cat points back, others may turn and crouch |
+| Being point-pointed at | a bad-tempered cat points back, everyone else does nothing |
 | After making way for a shover | small chance to do a gesture back at them |
 | Struggling while held by the mouse | reach out and paw at the cursor |
 | Reviving a companion | 4-8 presses (`PressGesture`); the target comes back when done |

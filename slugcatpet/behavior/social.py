@@ -8,12 +8,12 @@
     指指点点      伸手-收回快速 1~5 下        指责 / 强调
     摇醒          抓着对方左右晃 2~4 下         别睡了 / 起来玩（对方随即醒）
     抚摸          手在对象上画折返横线 2~5    喜欢 / 安抚
-    拍拍          手在对象上画折返竖线 2~5    喜欢 / 安抚
+    拍拍          手在对象上画折返竖线 2~5    喜欢 / 安抚 / 道歉
     复活          用力下按 4~8 下（身体同压） 复活中；按完对象复活
-    匍匐          趴下                       让路 / 抱歉 / 害怕
-    匍匐指指点点  趴着指指点点               仇恨 / 预备攻击 / 狩猎目标 / 帮我打这个
-    匍匐指向      趴着指向                   恐惧这个对象 / 小心这个对象
-    匍匐行走      趴着挪动                   害怕强敌，正在潜行
+    匍匐行走      趴着挪动                   害怕强敌，正在潜行（只在附近有蜥蜴时）
+
+匍匐族只剩「匍匐行走」一条，而且附近得有蜥蜴才抽得到：遇到同伴 / 鼠标这些
+非蜥蜴对象不再有任何匍匐动作（匍匐指指点点、匍匐指向已删除）。
 
 同一套手势引擎同时服务两条路径：
   * 社交欲望态（fsm._st_socialize）：攒满社交欲望 → 走到同伴身边做动作；
@@ -62,14 +62,7 @@ _add("pat", "拍拍", "Pat",
 # 复活
 _add("revive", "复活", "Revive",
      "正在复活", "reviving", False, "press")
-# 匍匐族
-_add("crouch", "匍匐", "Crouch",
-     "让路 / 抱歉 / 害怕", "making way / sorry / afraid", True, "none")
-_add("crouch_scold", "匍匐指指点点", "Crouched point-point",
-     "仇恨 / 预备攻击 / 狩猎目标 / 帮我打这个",
-     "hatred / about to attack / hunt this / help me hit this", True, "scold")
-_add("crouch_point", "匍匐指向", "Crouched point",
-     "恐惧这个对象 / 小心这个对象", "afraid of this / be careful of this", True, "hold")
+# 匍匐族：只剩「匍匐行走」，只在附近有蜥蜴（强敌）时抽得到
 _add("crouch_walk", "匍匐行走", "Crouch-walk",
      "害怕强敌，正在潜行", "afraid of a strong foe, sneaking", True, "walk")
 

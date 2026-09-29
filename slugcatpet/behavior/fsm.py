@@ -448,8 +448,6 @@ class BehaviorFSM:
         self._shake_dir = 0
         self._shake_hold = 0
         self._shake_cd = 0
-        # 被指指点点后面对发起者匍匐
-        self._crawl_point_to = None
         # 统一社交动作 API（词表 behavior/social.py）：起手 / 推进 / 收势
         self._act_key = None
         self._act_tgt = None
@@ -1301,7 +1299,6 @@ class BehaviorFSM:
             if self._social_kind == "crouch_walk":
                 # 匍匐行走：交给现有的 CrawlAway（害怕强敌潜行）
                 self._crawl_from = None
-                self._crawl_point_to = None
                 self._crawl_left = tuning.CRAWL_AWAY_TICKS
                 self._crawl_cd = T_CRAWL_RETRY
                 self._break_active_controllers()
@@ -1554,15 +1551,7 @@ class BehaviorFSM:
         tb = getattr(self._blocker_target, "body", None)
         if tb is not None:
             b.facing = 1 if tb.chunk0.x >= b.chunk0.x else -1
-        self._act_begin(self._scold_kind(), self._blocker_target)
-
-    def _scold_kind(self) -> str:
-        """被挡路的动作词：暴躁又爱趴的猫会「匍匐指指点点」（仇恨/帮我打这个）。"""
-        t = clampf(float(getattr(self.pers, "temper", 0.5)), 0.0, 1.0)
-        cl = clampf(float(getattr(self.pers, "crawl_like", 0.5)), 0.0, 1.0)
-        if self.rng.random() < tuning.SCOLD_CROUCH_PROB * 2.0 * t * cl:
-            return "crouch_scold"
-        return "scold"
+        self._act_begin("scold", self._blocker_target)
 
     def _scold_cleanup(self):
         self._blocker_target = None
@@ -1585,9 +1574,9 @@ class BehaviorFSM:
         b.facing = 1 if tb.chunk0.x >= b.chunk0.x else -1     # 回头
         self.gfx.look_at = (tb.chunk0.x, tb.chunk0.y)
         if not self._act_active():      # 被中断过：重新起手
-            self._act_begin(self._scold_kind(), self._blocker_target)
+            self._act_begin("scold", self._blocker_target)
         elif not self._act_tick():      # 一轮 1~5 下指完 → 再来一轮
-            self._act_begin(self._scold_kind(), self._blocker_target)
+            self._act_begin("scold", self._blocker_target)
         if self.timer % tuning.SOCIAL_POKE_INTERVAL == 0:
             self._poke(tb)              # 顺手扒拉
 
@@ -1885,7 +1874,6 @@ class BehaviorFSM:
                      < 0.25 + 0.75 * getattr(self.pers, "crawl_like", 0.5))
         if (behind or abs(lz.x - b.chunk1.x) > tuning.CRAWL_FEAR_R * 0.6) and can_crawl:
             self._crawl_from = lz
-            self._crawl_point_to = None
             self._crawl_left = tuning.CRAWL_AWAY_TICKS
             self._break_active_controllers()
             self._transition("CrawlAway")
@@ -4087,7 +4075,7 @@ class BehaviorFSM:
                 self._break_active_controllers()
                 self._transition("Socialize")
                 return
-        # 1) 误伤同伴 → 抱歉：走过去面对它匍匐
+        # 1) 误伤同伴 → 抱歉：走过去拍拍它（安抚；非蜥蜴对象不再匍匐）
         if self._apology_t > 0:
             ap = self._apology_target
             if ap is None or ap.body.dead:
@@ -4099,7 +4087,7 @@ class BehaviorFSM:
                 if d > tuning.SOCIAL_R:
                     self._apology_t = 0        # 跑太远了：算了
                 else:
-                    self._social_kind = "crouch"      # 匍匐 = 抱歉
+                    self._social_kind = "pat"         # 拍拍 = 抱歉 / 安抚
                     self._social_target = ap
                     self._social_left = tuning.APOLOGY_TICKS
                     self._break_active_controllers()
@@ -4222,16 +4210,10 @@ class BehaviorFSM:
             ("scold", tuning.SOCIAL_SCOLD_BASE * (0.3 + 1.4 * pl)),   # 指指点点
         ]
         if cl > 0.25:
-            # 匍匐族：不肯趴的猫（crawl_like 低）不抽
-            opts.append(("crouch", tuning.CROUCH_SOC_BASE * (0.3 + 1.4 * cl)))
-            opts.append(("crouch_point", tuning.CROUCH_POINT_BASE * (0.3 + 1.4 * cl)))
-            opts.append(("crouch_scold",
-                         tuning.CROUCH_SCOLD_BASE * (0.3 + 1.4 * cl) * (0.4 + 1.2 * pl)))
+            # 匍匐族只剩「匍匐行走（害怕强敌潜行）」，而且必须是附近真有蜥蜴才抽得到：
+            # 遇到同伴 / 鼠标这些非蜥蜴对象不再做任何匍匐动作（匍匐指指点点、匍匐指向已删）。
             if self._nearest_lizard(tuning.CRAWL_FEAR_R * 1.6) is not None:
                 opts.append(("crouch_walk", tuning.CROUCH_WALK_BASE * (0.3 + 1.4 * cl)))
-        if self.anger > 0 or self._protest_target is tgt:
-            # 记恨的对象：匍匐指指点点（仇恨/预备攻击）加权
-            opts.append(("crouch_scold", tuning.CROUCH_SCOLD_BASE * 1.5))
         total = sum(w for _, w in opts)
         if total <= 0.0:
             return "pet"
@@ -4367,10 +4349,10 @@ class BehaviorFSM:
         self._social_gesture = None
         self._social_press_seen = 0
         self._social_urge = 0.0             # 社交欲望：做完归 0，重新慢慢攒
-        if self._social_kind == "crouch" and self._apology_target is not None:
+        if self._social_target is self._apology_target and self._apology_target is not None:
             self._apology_target = None     # 抱歉做完了
             self._apology_t = 0
-        elif self._social_kind == "pat" and self._thank_target is not None:
+        elif self._social_target is self._thank_target and self._thank_target is not None:
             self._thank_target = None       # 谢过了
             self._thank_t = 0
         elif self._social_kind == "gift":
@@ -4398,7 +4380,6 @@ class BehaviorFSM:
             b.release_ceiling()
         elif st == "CrawlAway":
             b.set_crawl(False)
-            self._crawl_point_to = None
         elif st == "ScoldBlocker":
             self._scold_cleanup()
         elif st == "Socialize":
@@ -4725,7 +4706,7 @@ class BehaviorFSM:
             b.drop_all()             # 丢掉手上的东西，腾出手来扒拉
         elif kind == "gift":
             self._social_left = tuning.GIFT_TRY_TICKS   # 送礼：磨到交出去或放弃
-        elif kind in ("crouch", "pat"):
+        elif kind == "pat":
             if self._social_left <= 0:               # 抱歉/道谢：沿用调用方给的时长
                 self._social_left = self.rng.randint(tuning.SOCIAL_TICKS_MIN,
                                                      tuning.SOCIAL_TICKS_MAX)
@@ -4818,17 +4799,13 @@ class BehaviorFSM:
             self._social_stroke(tgt, ob, True)      # 抚摸：横线
         elif kind == "pat":
             self._social_stroke(tgt, ob, False)     # 拍拍：竖线
-        elif kind in ("point", "crouch_point"):
+        elif kind == "point":
             # 指向：手举着不放（不上表情），就是「看这个 / 我想要这个」
             self.gfx.face_special = False
             if not self._aim_target(tgt):
                 self._end_social()
-        elif kind == "crouch":
-            # 匍匐：就趴着什么也不做（让路 / 抱歉 / 害怕）
-            self.gfx.face_special = False
-            self._clear_hands()
         else:
-            # 指指点点 / 匍匐指指点点：伸-收快速 1~5 下，指完一轮再来一轮
+            # 指指点点：伸-收快速 1~5 下，指完一轮再来一轮
             if self.timer % tuning.SOCIAL_POKE_INTERVAL == 0:
                 self._poke(ob)
             if self._point_step():
@@ -5031,7 +5008,7 @@ class BehaviorFSM:
                 return False
             self._social_revive(tgt, ob)       # 按完自己收势
             return self._act_active()
-        else:                                  # crouch / walk：趴着不动
+        else:                                  # walk：趴着不动
             self.gfx.face_special = False
             self._clear_hands()
         if self._act_left > 0:
@@ -5765,10 +5742,10 @@ class BehaviorFSM:
         return (self.body.chunk1.x - c.x) * facing < 0.0
 
     def be_pointed_at(self, pointer):
-        """被指指点点：性格不好就回头指回去（scold），其余有概率转身匍匐（crouch）。"""
+        """被指指点点：性格不好就回头指回去（scold）；不再有匍匐反应。"""
         b = self.body
         if (getattr(b, "dead", False) or self.grab.active or self._zerog()
-                or b.swimming or not b.on_floor() or self._crawl_cd > 0
+                or b.swimming or not b.on_floor()
                 or self._act_active() or self.state not in _WANTS_FROM):
             return
         pb = getattr(pointer, "body", None)
@@ -5777,19 +5754,10 @@ class BehaviorFSM:
         if (self.rng.random() < self._point_prob(tuning.POINTED_SCOLD_PROB)
                 and self._idle_social_start(pointer, 1.0, kind="scold")):
             return
-        prob = tuning.POINTED_CROUCH_PROB * (0.4 + 1.2 * getattr(self.pers, "crawl_like", 0.5))
-        if self.rng.random() >= prob:
-            return
-        self._crawl_point_to = pointer
-        self._crawl_from = None
-        self._crawl_left = tuning.POINTED_CROUCH_TICKS
-        self._crawl_cd = T_CRAWL_RETRY
-        self._break_active_controllers()
-        self._transition("CrawlAway")
 
     def _crawl_enter(self):
         b = self.body
-        if self._crawl_point_to is None or self._crawl_left <= 0:
+        if self._crawl_left <= 0:
             self._crawl_left = tuning.CRAWL_AWAY_TICKS
         b.set_posture(False)
         b.set_crawl(True)
@@ -5798,25 +5766,7 @@ class BehaviorFSM:
         b = self.body
         if self.grab.active:
             b.set_crawl(False)
-            self._crawl_point_to = None
             self._transition("Dragged")
-            return
-        # 被指指点点：原地面对发起者蹲着（不挪窝）
-        pt = self._crawl_point_to
-        if pt is not None:
-            pb = getattr(pt, "body", None)
-            self._crawl_left -= 1
-            if pb is None or getattr(pb, "dead", False) or self._crawl_left <= 0:
-                self._crawl_point_to = None
-                b.set_crawl(False)
-                self._crawl_cd = T_CRAWL_RETRY
-                self._transition("IdleStand")
-                return
-            b.set_crawl(True)
-            b.stop_walk()
-            b.facing = 1 if pb.chunk0.x >= b.chunk0.x else -1
-            self.gfx.look_at = (pb.chunk0.x, pb.chunk0.y)
-            self.gfx.face_special = True
             return
         lz = self._nearest_lizard(tuning.CRAWL_FEAR_R * 1.6)
         self._crawl_left -= 1

@@ -329,10 +329,7 @@ PET_BASE = 1.00                   # 抚摸
 PAT_BASE = 0.85                   # 拍拍
 POINTHOLD_BASE = 0.70             # 指向（举着不放）
 SOCIAL_SCOLD_BASE = 0.60          # 指指点点
-CROUCH_SOC_BASE = 0.45            # 匍匐
-CROUCH_POINT_BASE = 0.35          # 匍匐指向
-CROUCH_SCOLD_BASE = 0.30          # 匍匐指指点点
-CROUCH_WALK_BASE = 0.25           # 匍匐行走（有强敌时）
+CROUCH_WALK_BASE = 0.25           # 匍匐行走（匍匐族唯一动作；只在附近有蜥蜴时抽得到）
 PET_REPS_MIN = 2                  # 抚摸/拍拍：折返次数
 PET_REPS_MAX = 5
 PET_ON_TICKS = 10                 # 单程 tick（一个来回 = 2×）
@@ -351,7 +348,6 @@ IDLE_SOCIAL_HOLD = 30             # 做完歇一拍再重抽
 MAKEWAY_SOCIAL_P = 0.35           # 让完路回头对顶人者做个小动作的概率
 CURSOR_SCOLD_PROB = 0.30          # 追鼠标时改成「指指点点」的概率（暴躁猫）
 POINTED_SCOLD_PROB = 0.30         # 被指后回头指回去的概率（暴躁猫）
-SCOLD_CROUCH_PROB = 0.25          # 被挡路时用「匍匐指指点点」的概率（暴躁 + 爱趴）
 
 # 帮别的猫取食（自己饱了别人没饱）
 HELPFEED_SEEK_R = 900.0
@@ -619,10 +615,6 @@ DRAG_POLE_R   = 46.0            # 贴到这么近算抱上杆了
 # 空中投矛（wiki Throwing midair：在空中也能把矛/石头掷出去）
 AIR_THROW_R  = 190.0            # 空中锁定目标半径
 AIR_THROW_CD = 55               # 两次空中投掷的最小间隔 tick
-
-# 被指指点点：有概率面对发起者匍匐
-POINTED_CROUCH_PROB  = 0.5
-POINTED_CROUCH_TICKS = 150
 
 # ── 社交：摇醒睡着的同伴（社交欲望满、对方在睡才会做）──
 WAKE_P              = 0.55      # 基础概率，再 × (0.2 + 1.6 × 性格 wake_like)
