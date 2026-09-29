@@ -26,11 +26,18 @@ SURFACE_FRICTION = 0.4
 BUOYANCY = 0.4
 WATER_FRICTION = 0.98
 SPEAR_MOVE_MIN = 1.0     # 单 tick 位移小于此值＝这矛没在动，不判定命中
+SPEAR_FLIGHT_TURN = 0.25  # 飞行中矛身朝向追随速度的速率（平飞段之后才生效）
 STUCK_SINK = 7.0         # 插进墙地的深度（原版 stuckInWall 取格心）
 FLOOR_EMBED_STEEP = 2.0  # 落地时竖向位移/横向位移超过此值 = 近乎垂直扎进地面（原版 ContactPoint == throwDir）
 
 SPEAR_SHAFT = (94, 78, 60)
 SPEAR_TIP = (206, 206, 198)
+
+
+def _ang_lerp(a: float, b: float, k: float) -> float:
+    """角度插值（走最短弧）。"""
+    d = (b - a + 180.0) % 360.0 - 180.0
+    return a + d * k
 
 
 class Spear:
@@ -45,7 +52,7 @@ class Spear:
                  "_id", "_rng", "_contact_floor", "_contact_ceil", "_contact_x", "_impact_cb",
                  "_thrown", "_throw_dir", "_exit_spd", "_throw_x", "_throw_y",
                   "always_stick",
-                 "collide_with_objects", "held_by", "embedded", "stuck_to", "_still",
+                 "collide_with_objects", "held_by", "embedded", "stuck_to", "stuck_local", "_still",
                  "thrower", "no_self_t", "pinned", "pole", "toss_t",
                  "aim_cursor", "cursor_pin")
 
@@ -85,6 +92,7 @@ class Spear:
         self.no_self_t = 0
         self.held_by = None            # 拾荒者手上
         self.stuck_to = None           # 插在生物身上的 (obj, dx, dy)；由 items 层维护
+        self.stuck_local = None        # (obj, 节号, 基准角, lx, ly, 相对角)；跟着身体节转
         self.pinned = False            # 钉成杆子（原版 stuckInWall → beam），不能再被拾取
         self.pole = None               # 由 items 层注册的杆实体（钉住时非 None）
         # 轻抛（原版 Player.TossObject，圣徒投矛走这条）刚出手的剩余帧数：原版轻抛是
@@ -233,6 +241,12 @@ class Spear:
         elif self._flight_far():
             self.vy += g - wp.SPEAR_FLIGHT_LIFT
         self.angle_deg = (self.angle_deg + self.spin) % 360.0
+        # 掷出的矛过了平飞段开始自然下落：矛身朝向改为跟随速度方向（矛头在前），
+        # 而不是出手后把角度永久锁死 —— 否则下坠的矛看起来还是一条水平线。
+        if self._thrown and self._flight_far() and not self.stuck:
+            want = wp.vel_angle(self.vx, self.vy)
+            if abs(want - self.angle_deg) > 1e-6:
+                self.angle_deg = _ang_lerp(self.angle_deg, want, SPEAR_FLIGHT_TURN) % 360.0
         apply_water(self, self.water_y, self.buoyancy, self.water_friction,
                     self.room_gravity, self.air_friction)
         self.x += self.vx

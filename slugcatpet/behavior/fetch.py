@@ -15,6 +15,50 @@ EAT_APPROACH = 12
 EAT_HOLD_POSE = 0.25
 EAT_CHOMP_POSE = 1.0
 BITE_HEAD_NUDGE = 2.0
+
+
+class ChewCycle:
+    """咀嚼周期：把「抓取 / 咀嚼 / 咬合点 / 食物消失」四段彻底分开。
+
+    普通重力（FruitFetcher._phase_eat）与零重力叼嘴（BehaviorFSM._carry_chew）
+    共用这一份，避免两套计数器各算各的，出现「动画没咬到、东西却少了」。
+    两条硬规则：
+      只有 tick() 返回 bit=True 的那一帧（咬合点）才允许减 bites；
+      bites 真的降到 0 才把食物标记 eaten。
+    中断只会 reset() 动画（不打回 bites —— 那会破坏「食物被吃过」的持续性），
+    所以重新拿起已经吃过的食物一定重走完整的前摇。
+    """
+
+    __slots__ = ("counter", "approaching", "bit")
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.counter = 0
+        self.approaching = True
+        self.bit = False
+
+    def tick(self):
+        """推进一帧，返回 (抬举姿势, 这一帧是不是咬合点)。"""
+        self.counter += 1
+        if self.approaching:
+            pose = EAT_HOLD_POSE * min(1.0, self.counter / EAT_APPROACH)
+            if self.counter >= EAT_APPROACH:
+                self.approaching = False
+                self.counter = 0
+                self.bit = False
+            return pose, False
+        phase = min(1.0, self.counter / EAT_INTERVAL)
+        pose = EAT_HOLD_POSE + (EAT_CHOMP_POSE - EAT_HOLD_POSE) * math.sin(phase * math.pi)
+        bit = False
+        if self.counter >= EAT_INTERVAL // 2 and not self.bit:
+            self.bit = True
+            bit = True
+        if self.counter >= EAT_INTERVAL:
+            self.counter = 0
+            self.bit = False
+        return pose, bit
 CARRY_FALL_TIMEOUT = 200
 DELIVER_REACH = 30.0          # 送蝉乌贼给蜥蜴的交接距离
 DELIVER_TIMEOUT = 900         # 送不出去就放弃（防呆）
@@ -134,9 +178,7 @@ class FruitFetcher:
         self.giveup = False
         self.timer = 0
         self.grab_side = "r"
-        self.eat_counter = 0
-        self._eat_approaching = False
-        self._bit_this_cycle = False
+        self.chew = ChewCycle()          # 咀嚼周期（与零重力叼嘴共用）
         self._executor = None
         self._giveup_pending = False
         self._goal = None
@@ -187,9 +229,13 @@ class FruitFetcher:
             self._executor = None
 
     def release(self):
-        """外部中断：终止执行器 + 收回补救舌头。"""
+        """外部中断：终止执行器 + 收回补救舌头。
+
+        只重置咀嚼动画 —— 绝不打回 bites（半吃的食物保持「被吃过」的状态，
+        下一次拿起重走完整前摇）。"""
         self._snatch.abort()
         self._drop_executor()
+        self.chew.reset()
 
     def update(self) -> bool:
         """推进一 tick，完成返回 True。"""
@@ -299,9 +345,7 @@ class FruitFetcher:
         if ready and (self.body.on_floor() or self.body.on_pole):
             self.phase = "eat"
             self.timer = 0
-            self.eat_counter = 0
-            self._eat_approaching = True
-            self._bit_this_cycle = False
+            self.chew.reset()            # 每次拿起都重走完整前摇
         return False
 
     def _phase_deliver(self):
@@ -384,43 +428,27 @@ class FruitFetcher:
             self.body._pluck_if_rooted(f)
             return False
         self.win.gfx.look_at = (f.x, f.y)
-        self.eat_counter += 1
-
-        # 预咬摆动
-        if self._eat_approaching:
-            self.body.eat_raise = EAT_HOLD_POSE * min(1.0, self.eat_counter / EAT_APPROACH)
-            if self.eat_counter >= EAT_APPROACH:
-                self._eat_approaching = False
-                self.eat_counter = 0
-                self._bit_this_cycle = False
+        pose, bit = self.chew.tick()
+        self.body.eat_raise = pose
+        if not bit:                      # 非咬合点：只播动画，绝不减 bites
             return False
-
-        # 咀嚼周期，峰值咬一口
-        phase = min(1.0, self.eat_counter / EAT_INTERVAL)
-        pulse = math.sin(phase * math.pi)
-        self.body.eat_raise = EAT_HOLD_POSE + (EAT_CHOMP_POSE - EAT_HOLD_POSE) * pulse
-        if self.eat_counter >= EAT_INTERVAL // 2 and not self._bit_this_cycle:
-            self._bit_this_cycle = True
-            self._bite_head_nudge(f)
-            if self.body.bite_carried():
-                f.state = "eaten"
-                self.eaten += 1
-                self.body.temper_shift(tuning.TEMPER_FEED)
-                if getattr(f, "is_karma", False):
-                    # 业力花（原版 KarmaFlower.BitByPlayer）：4 口吃完 → reinforcedKarma，
-                    # FoodPoints = 0（food_value 已是 0，不吃饱）
-                    self.body.flower_karma = True
-                self.body.food_eat(getattr(f, "food_value", 1))
-                self.body.energy_change(tuning.EN_EAT_RESTORE)
-                self.body.release_fruit()
-                if self.body.food >= self.body.food_max:
-                    return True
-                self.phase = "select"
-                self.timer = 0
-                return False
-        if self.eat_counter >= EAT_INTERVAL:
-            self.eat_counter = 0
-            self._bit_this_cycle = False
+        # 咬合点这一帧：推头 → 真咬一口
+        self._bite_head_nudge(f)
+        if self.body.bite_carried():     # 只有 bites 真降到 0 才算吃完
+            f.state = "eaten"
+            self.eaten += 1
+            self.body.temper_shift(tuning.TEMPER_FEED)
+            if getattr(f, "is_karma", False):
+                # 业力花（原版 KarmaFlower.BitByPlayer）：4 口吃完 → reinforcedKarma，
+                # FoodPoints = 0（food_value 已是 0，不吃饱）
+                self.body.flower_karma = True
+            self.body.food_eat(getattr(f, "food_value", 1))
+            self.body.energy_change(tuning.EN_EAT_RESTORE)
+            self.body.release_fruit()
+            if self.body.food >= self.body.food_max:
+                return True
+            self.phase = "select"
+            self.timer = 0
         return False
 
     def _bite_head_nudge(self, f):

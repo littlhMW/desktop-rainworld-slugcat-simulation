@@ -214,19 +214,92 @@ def _seg_end(ball):
     return (getattr(ball, "_seg_x", ball.x), getattr(ball, "_seg_y", ball.y))
 
 
-def _ball_hit(creature, ball, pad: float = 0.0):
-    """球体命中生物判定：头 + 各链节；返回命中点或 None。
+def _sweep_circle(ax, ay, bx, by, cx, cy, r):
+    """线段 AB 首次穿进圆 (c, r) 的接触点；返回 (t, x, y)，没穿进返回 None。
 
-    用上一帧→本帧的扫掠线段，投掷物 40px/帧时逐帧点判定会直接穿过去。
+    t 是这一帧位移上的参数（0=起点、1=终点），取最早的一个才是「真实接触点」。
+    """
+    dx, dy = bx - ax, by - ay
+    fx, fy = ax - cx, ay - cy
+    a = dx * dx + dy * dy
+    if a <= 1e-9:
+        return (0.0, ax, ay) if fx * fx + fy * fy <= r * r else None
+    b = 2.0 * (fx * dx + fy * dy)
+    c = fx * fx + fy * fy - r * r
+    disc = b * b - 4.0 * a * c
+    if disc < 0.0:
+        return None
+    sq = math.sqrt(disc)
+    t = (-b - sq) / (2.0 * a)
+    if t < 0.0:
+        if c > 0.0:
+            return None                      # 圆整段都在前方：这一帧没碰到
+        t = 0.0                              # 起点已经在圆里
+    elif t > 1.0:
+        return None
+    return (t, ax + dx * t, ay + dy * t)
+
+
+def _ball_hit(creature, ball, pad: float = 0.0):
+    """扫掠命中生物：返回 (命中的链节, 真实接触点 (x, y), t)；未命中 None。
+
+    旧实现返回的是**这一帧的终点**（bx, by），然后把矛中心塞到那个点上 ——
+    判定说命中，视觉却像插在空气里。现在逐 chunk（头 + 各链节）求
+    「矛轴线第一次穿进该圆」的真实交点，取最早的一个；攻击方把矛**尖**
+    对齐到这个点，碰撞/附着/绘制才共用同一套几何。
     """
     ax, ay = getattr(ball, "last_x", ball.x), getattr(ball, "last_y", ball.y)
     bx, by = _seg_end(ball)
-    if _seg_dist(ax, ay, bx, by, creature.x, creature.y) < ball.rad + creature.head_rad + pad:
-        return (bx, by)
-    for s in creature.seg:
-        if _seg_dist(ax, ay, bx, by, s.x, s.y) < ball.rad + s.rad + pad:
-            return (bx, by)
-    return None
+    chunks = [(creature, creature.x, creature.y,
+               getattr(creature, "head_rad", getattr(creature, "rad", 0.0)))]
+    for seg in (getattr(creature, "seg", None) or ()):
+        chunks.append((seg, seg.x, seg.y, seg.rad))
+    best = None
+    for chunk, cx, cy, cr in chunks:
+        got = _sweep_circle(ax, ay, bx, by, cx, cy, ball.rad + cr + pad)
+        if got is None:
+            continue
+        if best is None or got[0] < best[0]:
+            best = (got[0], chunk, got[1], got[2])
+    if best is None:
+        return None
+    return (best[1], (best[2], best[3]), best[0])
+
+
+def _local_frame(host, px, py, ang_deg):
+    """把命中点记成「哪个身体节 + 局部坐标 + 相对角度」。
+
+    只存世界坐标偏移的话，生物弯腰/扭身/甩尾时矛只会跟着平移（像贴上去的）。
+    """
+    frames = host.stuck_frames()
+    best_i, best_d = 0, 1e18
+    for i, (fx, fy, _fa) in enumerate(frames):
+        d = (fx - px) ** 2 + (fy - py) ** 2
+        if d < best_d:
+            best_i, best_d = i, d
+    fx, fy, fa = frames[best_i]
+    th = math.radians(-fa)
+    cs, sn = math.cos(th), math.sin(th)
+    lx, ly = px - fx, py - fy
+    # 转动约定与 tip() 一致：angle=0 向上、顺时针为正、y 向下
+    return (host, best_i, fa, lx * cs - ly * sn, lx * sn + ly * cs, (ang_deg - fa) % 360.0)
+
+
+def _step_stuck_local(sp, sl) -> bool:
+    """按「身体节局部坐标」更新插在生物身上的矛；宿主没有这一节时返回 False。"""
+    host, idx, fa0, lx, ly, rel = sl
+    frames = host.stuck_frames()
+    if not (0 <= idx < len(frames)):
+        return False
+    fx, fy, fa = frames[idx]
+    th = math.radians(fa - fa0)
+    cs, sn = math.cos(th), math.sin(th)
+    sp.last_x, sp.last_y = sp.x, sp.y
+    sp.x, sp.y = fx + lx * cs - ly * sn, fy + lx * sn + ly * cs
+    sp.last_angle = sp.stuck_angle
+    sp.stuck_angle = (rel + fa) % 360.0
+    sp.angle_deg = sp.stuck_angle
+    return True
 
 
 def _hit_is_head(creature, x, y, pad: float = 0.0) -> bool:
@@ -246,10 +319,16 @@ def _cob_hit(cb, sp, pad: float = 0.0):
     r = sp.rad + cb.rad + pad
     ax, ay = getattr(sp, "last_x", sp.x), getattr(sp, "last_y", sp.y)
     ex, ey = _seg_end(sp)
+    best = None
     for px, py in (cb.p0, cb.p1):
-        if _seg_dist(ax, ay, ex, ey, px, py) < r:
-            return (ex, ey)
-    return None
+        got = _sweep_circle(ax, ay, ex, ey, px, py, r)
+        if got is None:
+            continue
+        if best is None or got[0] < best[0]:
+            best = got
+    if best is None:
+        return None
+    return (best[1], best[2])
 
 
 def _small_hit(small, sp, pad: float = 0.0):
@@ -531,11 +610,12 @@ class ItemInteractionMixin:
                 hit = _ball_hit(lz, s, 2.0)
                 if hit is None:
                     continue
+                hit_chunk, (hit_x, hit_y), _hit_t = hit
                 spd = math.hypot(s.vx, s.vy) or 1.0
                 dvec = (s.vx / spd, s.vy / spd)
                 killed = lz.hurt(STONE_DMG, dvec=dvec, speed=spd,
                                  stun_bonus=STONE_STUN_BONUS,
-                                 hit_head=_hit_is_head(lz, hit[0], hit[1], 2.0),
+                                 hit_head=(hit_chunk is lz),      # 头是第 0 节
                                  knock_k=KNOCK_K_PER_MASS * s.mass)
                 if not killed and lz.breed.flips_from_rock:
                     # 原版 Lizard.Violence：source is Rock 且非红蜥 → turnedByRockCounter = 20
@@ -549,7 +629,7 @@ class ItemInteractionMixin:
                 EV.emit_for(self, EV.CREATURE_KILLED if killed else EV.CREATURE_HURT,
                             subject=_weapon_owner(s), obj=lz,
                             intensity=1.0 if killed else 0.55,
-                            x=hit[0], y=hit[1])
+                            x=hit_x, y=hit_y)
                 break
             for sc in self.scavengers:
                 if sc.dead or not s.fling or s.state != ItemState.FREE:
@@ -2536,6 +2616,7 @@ class ItemInteractionMixin:
             return False
         sp.unstuck()
         sp.stuck_to = None               # 插在生物身上的也能拔下来
+        sp.stuck_local = None
         sp.toss_t = 0
         sp.state = ItemState.MOUSE
         sp.last_x, sp.last_y = pos
@@ -2656,10 +2737,10 @@ class ItemInteractionMixin:
                 hit = _ball_hit(lz, sp, SPEAR_HIT_PAD)
                 if hit is None:
                     continue
-                hit_x, hit_y = hit
+                hit_chunk, (hit_x, hit_y), _hit_t = hit
                 spd = math.hypot(sp.vx, sp.vy) or 1.0
                 dvec = (sp.vx / spd, sp.vy / spd)
-                head = _hit_is_head(lz, hit_x, hit_y, SPEAR_HIT_PAD)
+                head = (hit_chunk is lz)                     # 头是第 0 节
                 shielded = head and lz.hit_head_shield(dvec)
                 killed = lz.hurt(SPEAR_DMG, dvec=dvec, speed=spd,
                                  stun_bonus=SPEAR_STUN_BONUS, hit_head=head,
@@ -2672,8 +2753,13 @@ class ItemInteractionMixin:
                     break
                 sp.vx = sp.vy = 0.0
                 sp.stuck = True
+                # 矛尖对齐到真实接触点：矛中心沿杆回退 LEN/2（tip() 的同一套几何）
+                ang = math.radians(sp.angle_deg)
+                sp.x = hit_x - math.sin(ang) * SPEAR_DRAW_LEN * 0.5
+                sp.y = hit_y + math.cos(ang) * SPEAR_DRAW_LEN * 0.5
                 sp.stuck_angle = sp.angle_deg
-                sp.stuck_to = (lz, hit_x - lz.x, hit_y - lz.y)
+                sp.stuck_to = (lz, sp.x - lz.x, sp.y - lz.y)
+                sp.stuck_local = _local_frame(lz, sp.x, sp.y, sp.angle_deg)
                 self._shake[0] += 1.0 * (1.0 if dvec[0] >= 0.0 else -1.0)
                 self._shake[1] += 0.6
                 if killed:
@@ -2746,6 +2832,9 @@ class ItemInteractionMixin:
                     if host.state == ItemState.GONE:
                         sp.unstuck()
                         sp.stuck_to = None
+                        sp.stuck_local = None
+                    elif sp.stuck_local is not None and _step_stuck_local(sp, sp.stuck_local):
+                        continue                 # 按身体节局部坐标：身体转，矛跟着转
                     else:
                         sp.last_x, sp.last_y = sp.x, sp.y
                         sp.x, sp.y = host.x + ox, host.y + oy
@@ -2802,6 +2891,7 @@ class ItemInteractionMixin:
         sp.aim_cursor = False
         sp.stuck = False
         sp.stuck_to = None
+        sp.stuck_local = None
         sp._thrown = False
         sp.spin = 0.0
         sp.spinning = False

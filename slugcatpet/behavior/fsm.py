@@ -25,8 +25,8 @@ from .action import (ActionArbiter, ActionContext, ActionSpec,
                      TAG_EMERGENCY, TAG_FOOD, TAG_INTERACT, TAG_SOCIAL,
                      TAG_PERSONALITY, TAG_NAV, TAG_CHARACTER)
 from .interest import goal_key as _interest_key
-from .fetch import (fetch_ready, BITE_HEAD_NUDGE, EAT_APPROACH, EAT_CHOMP_POSE,
-                    EAT_HOLD_POSE, EAT_INTERVAL)
+from .fetch import (fetch_ready, ChewCycle, BITE_HEAD_NUDGE, EAT_APPROACH,
+                    EAT_CHOMP_POSE, EAT_HOLD_POSE, EAT_INTERVAL)
 from ..cats.personality import DIET_CARNIVORE, DIET_VEGETARIAN, DIET_SPECIAL
 from .objectlooker import ObjectLooker
 from ..control.mouse import GrabController
@@ -327,9 +327,7 @@ class BehaviorFSM:
         self._idle_hold = 0
         self._zerog_target = None
         self._swim_goal = None
-        self._chew_counter = 0
-        self._chew_bit = False
-        self._chew_approach = True
+        self._chew = ChewCycle()          # 与普通重力路径共用同一咀嚼周期
         self._water_escape_cd = 0
         # 水性 zeal → 漂游潜深/冲刺距离插值
         _z = max(0.0, min(1.0, (self.pers.swim_zeal - 0.5) * 2.0))
@@ -2560,35 +2558,23 @@ class BehaviorFSM:
         self._carry_chew(b)
 
     def _chew_reset(self):
-        self._chew_counter = 0
-        self._chew_bit = False
-        self._chew_approach = True
+        self._chew.reset()
 
     def _carry_chew(self, b):
-        """叼果咀嚼动画：起手渐抬后按周期塞嘴，峰值咬一口并头部前探。"""
+        """叼果咀嚼：与普通重力路径共用同一份 ChewCycle（只有咬合点才真的咬）。"""
         f = b.carried_fruit
         self.gfx.look_at = (f.x, f.y)
-        self._chew_counter += 1
-        if self._chew_approach:
-            b.eat_raise = EAT_HOLD_POSE * min(1.0, self._chew_counter / EAT_APPROACH)
-            if self._chew_counter >= EAT_APPROACH:
-                self._chew_approach = False
-                self._chew_counter = 0
+        pose, bit = self._chew.tick()
+        b.eat_raise = pose
+        if not bit:                      # 非咬合点：只播动画，不减 bites
             return
-        phase = min(1.0, self._chew_counter / EAT_INTERVAL)
-        b.eat_raise = EAT_HOLD_POSE + (EAT_CHOMP_POSE - EAT_HOLD_POSE) * math.sin(phase * math.pi)
-        if self._chew_counter >= EAT_INTERVAL // 2 and not self._chew_bit:
-            self._chew_bit = True
-            dx, dy = f.x - self.gfx.head.x, f.y - self.gfx.head.y
-            d = math.hypot(dx, dy)
-            if d > 1e-6:
-                self.gfx.head.vx += dx / d * BITE_HEAD_NUDGE
-                self.gfx.head.vy += dy / d * BITE_HEAD_NUDGE
-            if b.consume_carried():      # 咽下去：素食猫吃荤当场晕
-                self.meat_sick(f)
-        if self._chew_counter >= EAT_INTERVAL:
-            self._chew_counter = 0
-            self._chew_bit = False
+        dx, dy = f.x - self.gfx.head.x, f.y - self.gfx.head.y
+        d = math.hypot(dx, dy)
+        if d > 1e-6:
+            self.gfx.head.vx += dx / d * BITE_HEAD_NUDGE
+            self.gfx.head.vy += dy / d * BITE_HEAD_NUDGE
+        if b.consume_carried():          # 咽下去：素食猫吃荤当场晕
+            self.meat_sick(f)
 
     def _zerog_on_pole(self, b):
         """已抓杆：滑向目标，或赖杆来回滑玩够松开。"""

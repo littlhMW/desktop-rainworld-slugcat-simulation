@@ -7,6 +7,7 @@
 from __future__ import annotations
 import math
 import random as _random
+from dataclasses import dataclass
 
 from ..core.units import clampf, lerp, inv_lerp
 from ..behavior.relationship import Relations
@@ -31,6 +32,10 @@ SEG_AIR_FRIC = 0.90           # 链节空气阻力（原版 BodyChunk airFrictio
 SEG_CONN_ELASTICITY = 0.95    # 原版 BodyChunkConnection(Normal, elasticity 0.95)
 SEG_ALIGN = 0.45              # 链节「接在父节延长线上」的软约束（替代原版 chunk 间的撑直）
 SEG_ALIGN_HELD = 0.20         # 被拎起/拖动时放软：身体拖在后面，看得出被拽的体长变化
+SEG_BEND_K = 0.30             # 转向惯性：速度突变把身体往转向侧甩的强度
+SEG_BEND_MAX = 2.4            # 单节最大弯曲位移（防甩飞）
+SEG_BEND_MIN_VX = 0.30        # 触发弯曲的最小速度变化
+GAIT_WAVE = 0.50              # 步态波浪幅度（躯干随步频起伏）
 SEG_CONN_HELD = 0.35          # 同上的杆长约束强度（原版 BodyChunkConnection 0.95 太硬，拖动时像根棍）
 DEPTH_LERP = 0.1              # 原版 depthRotation 的插值系数（LizardGraphics.Update）
 HEAD_DEPTH_LERP = 0.5         # 原版 headDepthRotation 的插值系数
@@ -73,8 +78,14 @@ TARGET_HOLD_POINT = 10 ** 9   # 纯坐标目标（光标）仍按距离判定
 LUNGE_ACCEL = 0.20            # 扑咬时朝目标的加速度比例
 CLIMB_HOP = -6.4              # 目标在上方时的蹬地（y↓ 取负）
 HOP_CD = 46
-JAW_OPEN_RATE = 0.22
+JAW_OPEN_RATE = 0.30          # 下颚张开速率（开得比闭快：扑咬要利落）
 JAW_CLOSE_RATE = 0.26
+HEAD_LOOK_FAST = 0.28          # 注视角跟随速率：攻击/扑咬
+HEAD_LOOK_ALERT = 0.20         # 注视角跟随速率：追猎/逃跑/警告
+HEAD_LOOK_SLOW = 0.12          # 注视角跟随速率：闲逛
+LOOK_LIFT = 3.0                # 目标在上时颈部抬起的像素（视觉注意方向的竖向分量）
+BODY_RAISE_LIFT = 2.0          # 威吓/警觉时支起上半身
+BODY_COMPRESS_DIP = 1.2        # 恐惧/伏击时压低身体
 BITE_HOLD = 18                # 咬合保持 tick
 COOLDOWN_TICKS = 150
 IDLE_TICKS = (60, 200)        # 原地停留时长
@@ -192,6 +203,26 @@ HUE_DEV_K = 0.6                # 原版体色色相偏差的 SCurve 参数（所
 WHITE_PALE_SAT = 0.45          # 白蜥随机色版本：低饱和 + 高亮度 = 淡彩色
 WHITE_PALE_LIGHT = 0.86
 WHITE_PALE_LIGHT_DEV = 0.10
+
+
+@dataclass
+class LizardAnimIntent:
+    """一只蜥蜴这一帧的「动画意图」：AI 只写意图，动画层只读意图。
+
+    链路：AI（stage/目标/威胁）→ AnimIntent → 脊柱/头/下颚/步态 → 渲染。
+    品种差异不进动画层（不再 if green… / if red…），动画只认
+    「平静 / 警觉 / 威吓 / 追猎 / 冲锋 / 受伤 / 逃跑」这几档。
+    """
+    look_at: object = None      # 注视角用
+    look_lift: float = 0.0      # 注视角竖向分量：+1 目标在上 / -1 在下
+    alert: float = 0.0          # 警觉：头转得快
+    aggression: float = 0.0     # 攻击性：张嘴前倾
+    fear: float = 0.0           # 恐惧：压低身体
+    jaw_open: float = 0.0       # 下颚目标开度
+    body_compress: float = 0.0  # 压低身体
+    body_raise: float = 0.0     # 支起上半身
+    locomotion: str = "idle"    # idle / walk / run / lurk / carry
+    turn: float = 0.0
 
 
 def _hsl2rgb(h: float, s: float, l: float) -> tuple[int, int, int]:
@@ -557,6 +588,7 @@ class Lizard:
                  "alert", "warning_t", "stage", "stage_obj", "peers",
                  "_blockers", "_tick",
                  "depth", "last_depth", "head_depth", "last_head_depth", "turn_lift",
+                 "head_driven", "anim", "_last_vx",
                  "depth_in", "rel")
 
     def __init__(self, x: float, y: float, breed: LizardBreed | None = None,
@@ -693,6 +725,9 @@ class Lizard:
         self.head_depth = self.last_head_depth = -1.0
         self.depth_in = -1.0                         # 原版 num8（腿推导的 depth 输入）
         self.turn_lift = 0.0
+        self.head_driven = False      # AI 是否已经驱动过 head_angle（首帧渲染兜底用）
+        self.anim = LizardAnimIntent()
+        self._last_vx = 0.0
         self.look_at = None
         self.head_angle = 0.0
         self.last_head_angle = 0.0
@@ -962,6 +997,7 @@ class Lizard:
         else:
             self._integrate(WL, HL)
 
+        self.anim = self._intent()          # AI → 动画意图（这一帧的映射只发生一次）
         self._step_chain(HL)
         self._step_legs(HL)
         self._step_head()
@@ -986,8 +1022,6 @@ class Lizard:
         self.x, self.y = px, py
         self.vx = clampf(dx, -MAX_SEG_SPEED, MAX_SEG_SPEED)
         self.vy = clampf(dy, -MAX_SEG_SPEED, MAX_SEG_SPEED)
-        if not self.dead:                       # 尸体不会张合下巴
-            self.jaw = clampf(self.jaw + JAW_OPEN_RATE * 0.6, 0.0, 0.5)
 
     def _integrate(self, WL, HL) -> None:
         """自由态：重力积分 + 地面 / 侧墙。"""
@@ -1116,7 +1150,6 @@ class Lizard:
         if self.stun > 0:
             self.stun -= 1
             self._release_carry()                 # 被砸晕/击晕 → 松口（原版猎物掉出来）
-            self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE)
             self.vx *= 0.90
             return self._stage("Stunned")
         if self.tamed:                            # 认主的蜥蜴不再咬人，只跟着走
@@ -1216,11 +1249,10 @@ class Lizard:
         if st in ("Attack", "HuntPrey", "ApproachPrey", "InvestigatePos", "Lurk"):
             if self.bite_hold > 0:                       # 咬合保持
                 self.vx *= 0.84
-                self.jaw = clampf(self.jaw + JAW_OPEN_RATE * 0.4, 0.0, 0.34)
                 self._track_head()
                 return
             if self.bite_cd > 0:
-                self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE * 0.4)
+                pass                              # 咬合冷却期：下巴由 _jaw_target 收回
             if st == "Lurk" and o is None:
                 self._lurk_idle(WL, HL)
                 return
@@ -1258,7 +1290,6 @@ class Lizard:
         if o is None:
             return
         self.look_at = (o.x, o.y)
-        self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE)
         want = clampf((o.x - self.x) * 0.06, -2.2, 2.2)
         self.vx += (want - self.vx) * WALK_TURN
 
@@ -1284,7 +1315,6 @@ class Lizard:
         if plan is None:
             self._lunge_toward(o, WL, HL)
             return
-        self.jaw = clampf(self.jaw + JAW_OPEN_RATE * 0.5, 0.0, 0.6)
         self.look_at = (o.x, o.y)
         lx = plan.launch[0] if plan.launch else self.x
         if abs(self.x - lx) <= 10.0 and self._contact_floor and self.hop_cd <= 0:
@@ -1298,7 +1328,6 @@ class Lizard:
 
     def _warn_tick(self, o, WL, HL) -> None:
         """警告同族竞争者：站定、举头、张嘴（原版同族对峙的 warning）。"""
-        self.jaw = clampf(self.jaw + JAW_OPEN_RATE * 0.5, 0.0, 0.55)
         self.vx -= self.vx * 0.25
         if o is not None and o.visible:
             self.look_at = (o.x, o.y)
@@ -1313,7 +1342,6 @@ class Lizard:
 
     def _guard_tick(self, WL, HL) -> None:
         """守在巢穴边看住刚拖回来的猎物（原版把猎物带回巢穴后进食 / 看守）。"""
-        self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE)
         self.vx -= self.vx * 0.30
         if self.carry_den is not None:
             self.look_at = (self.carry_den.x, HL - 12.0)
@@ -1336,7 +1364,6 @@ class Lizard:
     def _lurk_idle(self, WL, HL) -> None:
         """伏击待机（原版 LurkTracker）：原地压低身体等猎物进圈。"""
         self.lurk = True
-        self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE)
         self.vx -= self.vx * 0.25
 
     def _noise_wants(self) -> bool:
@@ -1478,7 +1505,6 @@ class Lizard:
 
     def _follow(self, WL, HL) -> None:
         """跟上朋友（被驯服后）：近了就停下，远了就追。"""
-        self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE)
         self.target = None
         self.target_obj = None
         tx = None
@@ -1575,7 +1601,6 @@ class Lizard:
         d = math.hypot(dx, dy) or 1.0
         sp = self.breed.base_speed * FLEE_SPEED
         self.vx += (dx / d * sp - self.vx) * FLEE_ACCEL
-        self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE)
         self.target = self.target_obj = None
         self.look_at = (tx, ty)
         if self._contact_floor and self.rng.random() < FLEE_HOP:
@@ -1657,7 +1682,6 @@ class Lizard:
             d = min((math.hypot(cx - px, cy - py) for px, py in danger), default=0.0)
             if d > bestd:
                 best, bestd = (cx, cy), d
-        self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE)
         self.target = self.target_obj = None
         self.look_at = best
         want = clampf((best[0] - self.x) * 0.05, -2.0, 2.0) * INJURY_SPEED
@@ -1673,7 +1697,6 @@ class Lizard:
         if math.hypot(dx, dy) < 24.0:
             self.noise_t = 0
             return False
-        self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE)
         self.look_at = (self.noise_x, self.noise_y)
         want = clampf(dx * 0.06, -2.0, 2.0)
         self.vx += (want - self.vx) * WALK_TURN
@@ -1750,7 +1773,6 @@ class Lizard:
         """
         sp = self.breed.base_speed * 0.8 * self.sprint
         self.vx += (kx * sp - self.vx) * LUNGE_ACCEL
-        self.jaw = clampf(self.jaw + JAW_OPEN_RATE, 0.0, 0.9)
         reach = self.head_rad + (16.0 * self.breed.body_size_fac
                                  * (self.breed.attempt_bite_radius / 80.0))
         if d <= reach and self.bite_cd <= 0 and self.target_obj is not None:
@@ -1842,7 +1864,6 @@ class Lizard:
                                     HL if HL is not None else self.y, stand, ox)
         self.carry_corner = self.carry_den.side
         self.prey.claim(obj, self._tick, fainted=True)   # 我叼住的猎物归我
-        self.jaw = 0.85
         self.bite_event = None
         self.bite_hold = 0
         self._hold_cat()
@@ -1904,7 +1925,6 @@ class Lizard:
                     self.guard_obj, self.guard_t = o.obj, GUARD_PREY_TICKS
                 return True                        # 这一 tick 用来放下
             hurry = self._carry_hurry(obs["rivals"])
-            self.jaw = clampf(self.jaw + JAW_OPEN_RATE * 0.5, 0.0, 0.45)
             want = clampf((den.x - self.x) * 0.05, -1.8, 1.8) * CARRY_SPEED_FAC * hurry
             self.vx += (want - self.vx) * WALK_TURN
             self._hold_cat()
@@ -1972,7 +1992,6 @@ class Lizard:
         白蜥/蝾螈走原版 LurkTracker（LizardAI.cs:85-216，utility 权重 0.3-0.4）：
         伏击型，原地待机时间是别人的 LURK_IDLE_MULT 倍。
         """
-        self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE)
         self.lurk = self.breed.key in ("white", "salamander")
         self.idle_timer -= (1.0 / LURK_IDLE_MULT) if self.lurk else 1.0
         if self.idle_timer <= 0:
@@ -1987,30 +2006,139 @@ class Lizard:
         want = clampf(dx * 0.06, -2.4, 2.4)
         self.vx += (want - self.vx) * WALK_TURN
 
+    def stuck_frames(self):
+        """给「扎在身上的矛」用的局部坐标系：头 + 每节 (x, y, 朝向角)。
+
+        朝向角 = 该节相对前一节的方向（头取 seg[0]→头）。身体弯曲 / 转身时，
+        插在身上的矛跟着该节一起转，而不是只跟着整体平移。
+        """
+        out = [(self.x, self.y,
+                _ang_from_up(self.x - self.seg[0].x, self.y - self.seg[0].y))]
+        px, py = self.x, self.y
+        for sg in self.seg:
+            out.append((sg.x, sg.y, _ang_from_up(sg.x - px, sg.y - py)))
+            px, py = sg.x, sg.y
+        return out
+
     def _track_head(self) -> None:
         """咬合期把头锁在目标方向。"""
         if self.target is not None:
             self.look_at = self.target
 
+    def _look_rate(self) -> float:
+        """头转向速率：扑咬/对峙最快、追猎次之、闲逛最慢（原版头绳索刚度随行为变）。"""
+        if self.bite_hold > 0 or self.stage in ("Attack", "FightRival"):
+            return HEAD_LOOK_FAST
+        if self.stage in ("HuntPrey", "ApproachPrey", "Flee", "Injured", "Warn",
+                          "CarryPrey", "ReturnPrey"):
+            return HEAD_LOOK_ALERT
+        return HEAD_LOOK_SLOW
+
+    def _jaw_target(self) -> float:
+        """下颚目标开度（0 闭 / 1 全张）。
+
+        原版下颚是**独立动画通道**：叫声、咬合、叼猎物各驱动一段，而不是
+        「一进追猎就一路张着嘴」（旧实现就是这么干的：HuntPrey 全程 +0.22/tick）。
+        语义：
+          死 / 眩晕 / 游走 / 观望            → 0.0
+          追猎锁定 HuntPrey / ApproachPrey  → 0.0（盯着，不张嘴）
+          咬合保持 bite_hold > 0             → 1.0
+          叼猎物 / 守巢                     → 0.75
+          威吓同类 Warn                      → 0.55
+          扑咬出手 Attack                    → 0.35
+          被拎着挣扎                        → 0.5
+        """
+        if self.dead or self.stun > 0:
+            return 0.0
+        if self.bite_hold > 0:
+            return 1.0
+        if self.state == ItemState.MOUSE:
+            return 0.5
+        st = self.stage
+        if st in ("CarryPrey", "ReturnPrey", "GuardPrey"):
+            return 0.75
+        if st == "Warn":
+            return 0.55
+        if st == "Attack":
+            return 0.35
+        if st == "CasualBite":
+            return 0.45
+        return 0.0
+
+    def _look_lift(self) -> float:
+        """注视角的竖向分量：目标在上 → +1（抬头），在下 → -1（低头）。"""
+        if self.dead or self.look_at is None:
+            return 0.0
+        dx, dy = self.look_at[0] - self.x, self.look_at[1] - self.y
+        d = math.hypot(dx, dy) or 1.0
+        return clampf(-dy / d, -1.0, 1.0)
+
     def _step_head(self) -> None:
-        if self.dead:
-            self.head_angle = _ang_lerp(self.head_angle, 90.0 * self.facing, 0.04)
-            self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE * 0.25)
-        else:
-            """头朝向：优先看向目标／光标，否则顺着颈轴。"""
+        if not self.dead:
             nx, ny = self.seg[0].x, self.seg[0].y
             want = None
             if self.look_at is not None:
-                want = _ang_from_up(self.look_at[0] - nx, self.look_at[1] - ny)
-            elif self.state != ItemState.MOUSE:
-                want = _ang_from_up(self.x - nx, self.y - ny)
+                vx, vy = self.look_at[0] - nx, self.look_at[1] - ny
+                if math.hypot(vx, vy) > 0.5:          # 目标贴在颈上时不改朝向
+                    want = _ang_from_up(vx, vy)
+            elif self.state == ItemState.MOUSE:
+                if abs(self.vx) + abs(self.vy) > 0.4:  # 被拎着：头随拖拽方向
+                    want = _ang_from_up(self.vx, self.vy)
+            else:
+                vx, vy = self.x - nx, self.y - ny
+                if math.hypot(vx, vy) > 0.5:
+                    want = _ang_from_up(vx, vy)
             if want is not None:
-                self.head_angle = _ang_lerp(self.head_angle, want, 0.25)
+                self.head_angle = _ang_lerp(self.head_angle, want, self._look_rate())
+            self.head_driven = True
+        else:
+            self.head_angle = _ang_lerp(self.head_angle, 90.0 * self.facing, 0.04)
         # 原版没有独立 facing：朝向 = 头相对躯干 0 的侧别（头旋转角 num12 用的是同一向量）。
         # 用头角推 facing 会在绳约束把躯干甩到头前面时给出相反值（看起来「朝反方向走」）。
         dxf = self.x - self.seg[0].x
         if abs(dxf) > 2.0:
             self.facing = 1 if dxf > 0.0 else -1
+        # 下颚：单一目标 + 开/闭双速率（原版 jaw 是独立通道，不是「追猎就一路张着」）
+        target = self.anim.jaw_open if self.anim is not None else self._jaw_target()
+        rate = JAW_OPEN_RATE if target > self.jaw else JAW_CLOSE_RATE
+        self.jaw = clampf(self.jaw + clampf(target - self.jaw, -rate, rate), 0.0, 1.0)
+
+    def _intent(self) -> LizardAnimIntent:
+        """按当前 stage 生成动画意图 —— AI 与动画之间唯一的映射点（品种不进这层）。"""
+        it = self.anim
+        it.look_at = self.look_at
+        it.jaw_open = self._jaw_target()
+        it.look_lift = self._look_lift()
+        it.alert = it.aggression = it.fear = 0.0
+        it.body_compress = it.body_raise = 0.0
+        it.locomotion = "idle"
+        if self.dead or self.stun > 0:
+            it.jaw_open = 0.0
+            it.look_lift = 0.0
+            return it
+        st = self.stage
+        if st in ("CarryPrey", "ReturnPrey", "GuardPrey"):
+            it.locomotion, it.alert = "carry", 0.5
+        elif st == "Warn":
+            it.aggression, it.body_raise, it.alert = 0.7, 1.0, 0.6
+        elif st in ("Attack", "FightRival"):
+            it.aggression, it.body_compress, it.alert = 0.9, 0.3, 0.8
+            it.locomotion = "run"
+        elif st in ("HuntPrey", "ApproachPrey", "InvestigatePos"):
+            it.alert, it.aggression = 0.5, 0.4
+            it.locomotion = "run" if self.sprint else "walk"
+        elif st == "Flee":
+            it.fear, it.body_compress, it.alert = 1.0, 0.5, 0.9
+            it.locomotion = "run"
+        elif st == "Injured":
+            it.fear, it.body_compress, it.alert = 0.7, 0.6, 0.7
+            it.locomotion = "walk"
+        elif st == "Lurk":
+            it.locomotion, it.body_compress, it.alert = "lurk", 0.5, 0.4
+        elif st in ("Wander", "FollowFriend", "PackCoordination", "CasualBite"):
+            it.locomotion = "walk"
+        it.turn = clampf(self.vx - self._last_vx, -2.0, 2.0)
+        return it
 
     # ── 链体 ──
     def _step_depth(self) -> None:
@@ -2041,8 +2169,15 @@ class Lizard:
         f2 = inv_lerp(0.0, 0.6, abs((hx / hl) * (vx / vl) + (hy / hl) * (vy / vl)))
         self.head_depth = lerp(self.head_depth, self.depth * f2, HEAD_DEPTH_LERP)
         # 转身中支起上半身（|depth| 越小 = 越正对镜头 = 转得越狠）
-        self.turn_lift = (0.0 if self.dead
-                          else TURN_LIFT * (1.0 - min(1.0, abs(self.depth))))
+        # 再叠上「视觉注意方向」（目标在上→颈抬高）与动画意图的支起/压低。
+        if self.dead:
+            self.turn_lift = 0.0
+            return
+        lift = TURN_LIFT * (1.0 - min(1.0, abs(self.depth)))
+        lift += max(0.0, self.anim.look_lift) * LOOK_LIFT
+        lift += self.anim.body_raise * BODY_RAISE_LIFT
+        lift -= self.anim.body_compress * BODY_COMPRESS_DIP
+        self.turn_lift = max(0.0, lift)
 
     def _step_chain(self, HL) -> None:
         """躯干+尾：逐行移植 BodyChunk.Update + BodyChunkConnection.Update。
@@ -2077,14 +2212,18 @@ class Lizard:
         # 锚点上 —— 拓扑等价，效果就是头永远在最前面、身体永远拖在后面（不会倒着走）。
         anc_x = self.x - self.chain_dir * self.head_conn
         anc_y = self.y
-        # ② BodyChunkConnection + 方向软约束：
+        # ② BodyChunkConnection + 顺直软约束：
         #    杆长约束只消掉径向误差，光靠它链子会自己折回来（两节各自满足距离但
-        #    朝向反了）。原版 3 个 chunk 有质量互相顶、尾节还有 tailStiffness 撑直，
-        #    这里用「接在父节延长线上」的软约束补上这一条：转身时整条身体会依次
-        #    甩过去，静止时自然排成一条直线，而不是折成 Z 形。
+        #    朝向反了）。原版 3 个 chunk 有质量互相顶、尾节还有 tailStiffness 撑直。
+        #    旧实现在这里把「父节方向」的种子写死成水平（-chain_dir, 0），等于每帧
+        #    强行把整条身体摊平到水平线 —— 身体因此呆滞、不会自然弯曲。现在种子取
+        #    「锚点→第 0 节」的当前朝向（连续性），顺直只负责撑住，不负责摆正。
+        seed_x, seed_y = _dirvec(self.seg[0].x - anc_x, self.seg[0].y - anc_y)
+        if abs(seed_x) < 1e-6 and abs(seed_y) < 1e-6:
+            seed_x, seed_y = -self.chain_dir, 0.0
         for _ in range(2):
             prev_x, prev_y = anc_x, anc_y
-            dir_x, dir_y = -self.chain_dir, 0.0
+            dir_x, dir_y = seed_x, seed_y
             for s in self.seg:
                 s.x += (prev_x + dir_x * s.dist - s.x) * align
                 s.y += (prev_y + dir_y * s.dist - s.y) * align
@@ -2101,15 +2240,34 @@ class Lizard:
                 if s.y > lim:
                     s.y = lim
                 prev_x, prev_y = s.x, s.y
+        # ③ 转向惯性：速度突变（转身/扑出）时身体往转向侧甩 ——
+        #    头一节弯得最多、后面依次减少、尾巴最后才跟过来（原版靠 chunk 质量惯性）。
+        turn = self.vx - self._last_vx
+        self._last_vx = self.vx
+        if not held and abs(turn) > SEG_BEND_MIN_VX:
+            bend = clampf(turn * SEG_BEND_K, -SEG_BEND_MAX, SEG_BEND_MAX)
+            n_seg = len(self.seg)
+            for k, s in enumerate(self.seg):
+                t = k / max(1, n_seg - 1)
+                s.y -= bend * (1.0 - t) ** 2
+                lim = HL - s.rad * (TAIL_SINK_FAC if s.tail else BODY_STAND_FAC)
+                if s.y > lim:
+                    s.y = lim
         # ④ 速度 = 本 tick 的实际位移：约束消掉的只是径向分量，切向动量得以保留
         for k, s in enumerate(self.seg):
             s.vx = s.x - ax0[k]
             s.vy = s.y - ay0[k]
-        # 步态摇摆：尾梢额外横向摆动
+        # ⑤ 步态波浪：躯干随步频起伏、尾梢额外摆动（原版由左右腿交替驱动 drawPositions）
         if self.state != ItemState.MOUSE:
+            self.walk_phase = (self.walk_phase + 0.015 + abs(self.vx) * 0.010) % 1.0
+            amp = clampf(abs(self.vx) / max(0.5, self.breed.base_speed), 0.0, 1.0)
+            n_seg = len(self.seg)
             for i, s in enumerate(self.seg):
+                t = i / max(1, n_seg - 1)
+                ph = self.walk_phase * math.tau + i * 0.7
+                s.y -= math.sin(ph) * GAIT_WAVE * amp * (1.0 - 0.5 * t)
                 if s.tail:
-                    s.y -= math.sin(self.walk_phase * math.tau + i * 0.7) * (0.16 * s.rad * 0.5)
+                    s.y -= math.sin(ph) * (0.16 * s.rad * 0.5) * (0.4 + 0.6 * amp)
 
     # ── 腿 ──
     def _step_legs(self, HL) -> None:

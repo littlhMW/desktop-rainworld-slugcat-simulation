@@ -21,7 +21,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath
 
 from ..core.units import clampf, lerp, inv_lerp
-from .lizard import BODY_SCALE, BLACK_RGB, _ang_from_up
+from .lizard import BODY_SCALE, BLACK_RGB, _ang_from_up, _ang_lerp
 from ..rendering.pixelmode import aa_hint
 
 HEAD_KEY = "base"
@@ -176,7 +176,14 @@ def draw_lizard(p, atlas, lz, ts: float) -> None:
         rads.append(r)
 
     jaw = lerp(lz.last_jaw, lz.jaw, ts)
-    rot = _ang_from_up(hpx - s0x, hpy - s0y)
+    # 头片朝向 = AI 算出的注视角（原版 num12 = aim(颈→头)，头部由 head 绳索 + look 混合驱动）。
+    # 旧实现直接拿「颈→头」的几何向量：头贴着躯干永远水平 ⇒ AI 明明在看上方/下方也画不出来。
+    if getattr(lz, "head_driven", False):
+        rot = _ang_lerp(lz.last_head_angle, lz.head_angle, ts)
+        # 低频动画噪声：个体差异（A 头微抬、B 头微低、C 尾慢摆），不是每帧随机抖
+        rot += math.sin(lz._tick * 0.07 + lz.seed * 1.73) * 1.5
+    else:
+        rot = _ang_from_up(hpx - s0x, hpy - s0y)
     color = lz.color
 
     p.save()
