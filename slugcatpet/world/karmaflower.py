@@ -50,9 +50,10 @@ HOVER_SPRING = 20.0           # 原版 vel += (hoverPos - pos) / 20f
 HOVER_DY = 27.0              # 花头悬在根上方的高度（用户口径：固定，不用原版 18~36 随机）
 HOVER_DX = 7.0
 ROOT_DX = 9.0
-DRAG_SLIDE_MAX = 10.0         # 扎着根被鼠标拖拽时，根部每 tick 沿地面最多滑这么多
+DRAG_LEAN_MAX = 14.0          # 扎着根被鼠标软拖：花头最多朝光标歪这么多（根不动、茎被抻长＝受力）
+DRAG_POP_DIST = 30.0          # 光标把花头从静止位拉开这么远 ⇒「啵」一下连根拔起
+RESET_JITTER = 2.5            # 放置时的随机初态（原版 ResetParts 把部件全堆在花心）
 DAMP_AIR = 0.95               # Part.Update：vel *= 0.95
-TELEPORT_JUMP = 24.0          # 单 tick 位移超过它按「瞬移」处理：部件整块跟着走
 DAMP_WATER = 0.7
 DROOP = 0.4                   # 悬空时茎端下垂力
 STIFF = 2.3                   # n=2..5 的 ±dir*2.3 拉直
@@ -101,21 +102,30 @@ def _lerp_map(v: float, a: float, b: float, A: float, B: float) -> float:
     return A + (B - A) * t
 
 
-def _flatten(vx: float, vy: float, axis_deg: float, fac: float) -> tuple[float, float]:
-    """原版 Custom.FlattenVectorAlongAxis(vec, axis, fac)。
+def _rot(x: float, y: float, deg: float) -> tuple[float, float]:
+    """把向量转 deg 度（本文件 y↓、顺时针为正）。保长度。"""
+    a = math.radians(deg)
+    c, s = math.cos(a), math.sin(a)
+    return (x * c - y * s, x * s + y * c)
 
-    原版实现：RotateAroundOrigo(vec, axis) -> vec.y *= fac -> RotateAroundOrigo(vec, -axis)。
+
+def _flatten(vx: float, vy: float, axis_deg: float, fac: float) -> tuple[float, float]:
+    """原版 Custom.FlattenVectorAlongAxis(vec, axis, fac)：把**沿 axis 的分量**乘以 fac。
+
+    原版走 RotateAroundOrigo(vec, axis) -> vec.y *= fac -> RotateAroundOrigo(vec, -axis)，
+    是真旋转（保长度）。之前这里用「角度往返」写（_deg_to_vec(_vec_deg(...))），那等于把
+    向量重新归一化 —— fac 完全失效，花瓣永远摆在正圆上（用户看到的「花环不是扁的」）。
     """
-    px, py = _deg_to_vec(_vec_deg(vx, vy) + axis_deg)
-    py *= fac
-    return _deg_to_vec(_vec_deg(px, py) - axis_deg)
+    rx, ry = _rot(vx, vy, axis_deg)
+    ry *= fac
+    return _rot(rx, ry, -axis_deg)
 
 
 class KarmaFlower(Fruit):
     """一朵业力花：扎根时悬在根上方晃，抓起瞬间断根；啃 4 口加固业力。"""
 
     __slots__ = ("grow_pos", "hover_pos", "hover_dir_add", "petals",
-                 "stalk_pts", "face_camera", "movement", "drag_x")
+                 "stalk_pts", "face_camera", "movement", "drag_pt")
     is_meat = False
     is_karma = True                 # 吃了只加业力花条，不填饱食度
     food_value = 0                  # 原版 FoodPoints = 0
@@ -132,7 +142,7 @@ class KarmaFlower(Fruit):
         self.buoyancy = BUOYANCY
         self.bites = BITES
         self.grow_pos: tuple[float, float] | None = None
-        self.drag_x: float | None = None        # 鼠标拖拽目标根位（扎根时整株沿地面滑）
+        self.drag_pt: tuple[float, float] | None = None   # 鼠标软拖目标（扎着根时花头朝它歪）
         self.hover_pos = (float(x), float(y))
         self.hover_dir_add = 0.0
         self.movement = 0.0
@@ -159,6 +169,7 @@ class KarmaFlower(Fruit):
                           gp[1] - HOVER_DY)
         self.hover_dir_add = r.uniform(-25.0, 25.0)
         self.detach_to(self.hover_pos[0], self.hover_pos[1])
+        self.jitter_parts(r)             # 随机初态：每朵花刚放下的样子都不同
         return True
 
     def detach_to(self, x: float, y: float) -> None:
@@ -203,52 +214,56 @@ class KarmaFlower(Fruit):
             sp[2], sp[3] = sx, sy
             sp[4] = sp[5] = 0.0
 
-    # ── 鼠标拖拽（扎根时整株沿地面滑；爆米花同款软拖，不拉丝）──
-    def begin_drag(self, x: float) -> None:
-        self.drag_x = float(x)
+    # ── 鼠标拖拽（桌宠扩展）──
+    #   扎着根：软拖 —— 花头朝光标歪、根不动（茎被抻长＝受力），拉开够远就「啵」一下拔根；
+    #   拔根后：像拖物品一样跟着光标走，松手按速度甩出去（可以丢）。
+    def begin_drag(self, px: float, py: float) -> None:
+        self.drag_pt = (float(px), float(py))
 
     def end_drag(self) -> None:
-        self.drag_x = None
+        self.drag_pt = None
 
-    def move_root_to(self, x: float) -> None:
-        """整朵花（茎+花瓣+花体）刚性平移到新根位 x；高度不变。"""
-        if self.grow_pos is None:
-            return
-        dx = float(x) - self.grow_pos[0]
-        if dx == 0.0:
-            return
-        self.grow_pos = (self.grow_pos[0] + dx, self.grow_pos[1])
-        self.hover_pos = (self.hover_pos[0] + dx, self.hover_pos[1])
-        self.x += dx
-        self.last_x += dx
-        for pt in self.petals:
-            pt[0] += dx
-            pt[2] += dx
-        for sp in self.stalk_pts:
-            sp[0] += dx
-            sp[2] += dx
-
-    def _drag_step(self) -> None:
-        if self.drag_x is None or self.grow_pos is None:
-            return
-        d = self.drag_x - self.grow_pos[0]
-        if abs(d) < 0.5:
-            return
-        step = max(-DRAG_SLIDE_MAX, min(DRAG_SLIDE_MAX, d))
-        self.move_root_to(self.grow_pos[0] + step)
+    def drag_pull(self) -> float:
+        """光标把花头从静止位拉开的距离（拔根判据）。"""
+        if self.drag_pt is None:
+            return 0.0
+        return math.hypot(self.drag_pt[0] - self.hover_pos[0],
+                          self.drag_pt[1] - self.hover_pos[1])
 
     def detach_root(self) -> None:
         """断根（原版被抓住 / 被武器命中时 growPos = null）。"""
         self.grow_pos = None
 
-    def _carry_shift(self) -> None:
-        """被手/鼠标瞬移搬动（一 tick 跨几十像素）时，把花瓣和茎整块平移。
+    def shift(self, dx: float, dy: float) -> None:
+        """整株刚性平移（花体 + 花瓣 + 茎 + 根点）。"""
+        if dx == 0.0 and dy == 0.0:
+            return
+        self.x += dx
+        self.y += dy
+        self.last_x += dx
+        self.last_y += dy
+        if self.grow_pos is not None:
+            self.grow_pos = (self.grow_pos[0] + dx, self.grow_pos[1] + dy)
+        self.hover_pos = (self.hover_pos[0] + dx, self.hover_pos[1] + dy)
+        for pt in self.petals:
+            pt[0] += dx
+            pt[1] += dy
+            pt[2] += dx
+            pt[3] += dy
+        for sp in self.stalk_pts:
+            sp[0] += dx
+            sp[1] += dy
+            sp[2] += dx
+            sp[3] += dy
 
-        否则弹簧项吃到的「体速度」= 一整帧的位移，部件会被甩到几屏外，
-        渲染出来就是拉丝/爆炸。
+    def carry_parts(self) -> None:
+        """被手/鼠标整块搬动：花瓣与茎跟花体一起平移（相对位置不变 ⇒ 不拉丝不爆炸）。
+
+        注意只搬部件、不再动花体 —— 花体位置是搬动方（手/鼠标/物理）定的，这里若
+        也 += dx 会把这帧的位移加两次，直接发散。
         """
         dx, dy = self.x - self.last_x, self.y - self.last_y
-        if dx * dx + dy * dy <= TELEPORT_JUMP * TELEPORT_JUMP:
+        if dx == 0.0 and dy == 0.0:
             return
         for pt in self.petals:
             pt[0] += dx
@@ -260,18 +275,38 @@ class KarmaFlower(Fruit):
             sp[1] += dy
             sp[2] += dx
             sp[3] += dy
+        if self.grow_pos is not None:
+            self.grow_pos = (self.grow_pos[0] + dx, self.grow_pos[1] + dy)
+        self.hover_pos = (self.hover_pos[0] + dx, self.hover_pos[1] + dy)
         self.last_x, self.last_y = self.x, self.y
+
+    def jitter_parts(self, rng) -> None:
+        """放置时的随机初态：部件再各给一点随机偏移/速度，随后由弹簧自己张开归位。"""
+        for pt in self.petals:
+            pt[0] += rng.uniform(-RESET_JITTER, RESET_JITTER)
+            pt[1] += rng.uniform(-RESET_JITTER, RESET_JITTER)
+            pt[2], pt[3] = pt[0], pt[1]
+            pt[4] = rng.uniform(-0.8, 0.8)
+            pt[5] = rng.uniform(-0.8, 0.8)
+        for sp in self.stalk_pts:
+            sp[0] += rng.uniform(-RESET_JITTER, RESET_JITTER)
+            sp[1] += rng.uniform(-RESET_JITTER, RESET_JITTER)
+            sp[2], sp[3] = sp[0], sp[1]
+            sp[4] = rng.uniform(-0.8, 0.8)
+            sp[5] = rng.uniform(-0.8, 0.8)
 
     # ── 物理 ──
     def step(self, WL: float, HL: float) -> None:
-        if self.drag_x is not None and self.grow_pos is not None:
-            self._drag_step()           # 鼠标拖拽扎着根的花：整株沿地面滑
-        if self.state in (ItemState.CARRIED, ItemState.MOUSE):
+        # 鼠标拖「扎着根」的花走的是下面那条正常物理（弹簧把花头拉向光标），
+        # 只有拔根之后才像物品一样整块搬。
+        carried = (self.state == ItemState.CARRIED
+                   or (self.state == ItemState.MOUSE and self.grow_pos is None))
+        if carried:
             if self.state == ItemState.CARRIED and self.grow_pos is not None:
                 # 被手拿起的瞬间连根拔起（原版 DetatchStalk）：整株连茎一起走，
                 # 地上不留残茎；之后茎靠自己的弹簧/重力继续甩
                 self.detach_root()
-            self._carry_shift()
+            self.carry_parts()
             self._contact_floor = False
             self._parts_step()          # 花体被手/鼠标搬，只有花瓣与茎在跟
             return
@@ -296,8 +331,19 @@ class KarmaFlower(Fruit):
             self.vy -= self.gravity * self.room_gravity
             self.vx *= 0.7
             self.vy *= 0.7
-            self.vx += (self.hover_pos[0] - self.x) / HOVER_SPRING
-            self.vy += (self.hover_pos[1] - self.y) / HOVER_SPRING
+            tx, ty = self.hover_pos
+            if self.drag_pt is not None:       # 鼠标软拖：花头朝光标歪，根不动
+                dx = self.drag_pt[0] - tx
+                dy = self.drag_pt[1] - ty
+                d = math.hypot(dx, dy)
+                if d > DRAG_LEAN_MAX:          # 拉得太远：只让花头歪到上限（茎被抻长＝受力）
+                    k = DRAG_LEAN_MAX / d
+                    dx *= k
+                    dy *= k
+                tx += dx
+                ty += dy
+            self.vx += (tx - self.x) / HOVER_SPRING
+            self.vy += (ty - self.y) / HOVER_SPRING
             a = _aim(self.grow_pos[0], self.grow_pos[1], self.x, self.y) + self.hover_dir_add
             self.rotation = _deg_to_vec(a)
         else:

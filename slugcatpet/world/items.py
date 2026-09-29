@@ -33,7 +33,8 @@ from . import weaponphys
 from .scavenger import PEARL_SEEK_R, PEARL_TAKE_PAD
 from .spear import Spear, LEN as SPEAR_DRAW_LEN, HALF_W as SPEAR_HALF_W
 from .seedcob import Seed, SeedCob, draw_seed, draw_seedcob
-from .karmaflower import KarmaFlower, draw_karmaflower
+from .karmaflower import (KarmaFlower, DRAG_POP_DIST as KARMA_DRAG_POP,
+                         draw_karmaflower)
 from .scavenger import (Scavenger, BODY_RAD as SCAV_BODY_RAD,
                         STAND_H as SCAV_STAND_H)
 from .pole import POLE_RAD, MIN_LENGTH as POLE_MIN_LENGTH, TOP_MARGIN as POLE_TOP_MARGIN
@@ -2988,9 +2989,9 @@ class ItemInteractionMixin:
         kf.held_by_hand = None
         kf.state = ItemState.MOUSE
         if kf.grow_pos is None:
-            kf.detach_to(pos[0], pos[1])  # 已经断根（被猫拔起丢下）：普通自由拖拽
+            kf.detach_to(pos[0], pos[1])  # 已经断根：像拖物品一样自由拖
         else:
-            kf.begin_drag(pos[0])         # 还扎在地上：拖拽＝整株沿地面滑（爆米花同款）
+            kf.begin_drag(pos[0], pos[1])  # 还扎在地上：软拖（根不动，花头朝光标歪）
         self._dragged_karmaflower = kf
         self._karmaflower_drag_last = tuple(pos)
         return True
@@ -3006,14 +3007,18 @@ class ItemInteractionMixin:
         cur = self.cursor_logical()
         if cur is None:
             return
-        if kf.grow_pos is not None:        # 扎根：只给一个地面滑移目标，根部限速跟（不拉丝）
-            kf.begin_drag(clampf(cur[0], 6.0, self._WL - 6.0))
+        if kf.grow_pos is not None:        # 扎根：软拖 —— 花头朝光标歪、根不动（茎被抻长＝受力）
+            kf.begin_drag(cur[0], cur[1])
+            if kf.drag_pull() > KARMA_DRAG_POP:
+                kf.detach_root()           # 「啵」一下拔出来；下一 tick 起就像拖物品一样
+                self._karmaflower_drag_last = tuple(cur)
             return
         kf.last_x, kf.last_y = kf.x, kf.y
         if self._karmaflower_drag_last is not None:
             kf.vx = cur[0] - self._karmaflower_drag_last[0]
             kf.vy = cur[1] - self._karmaflower_drag_last[1]
         kf.x, kf.y = cur
+        kf.carry_parts()                   # 花瓣/茎整块跟着，不拉丝
         self._karmaflower_drag_last = tuple(cur)
 
     def _end_karmaflower_drag(self) -> bool:
@@ -3062,7 +3067,10 @@ class ItemInteractionMixin:
         seed = self._karmaflower_seed
         got = getattr(self, "_karmaflower_preview", None)
         if got is None or got[0] != seed:
-            got = (seed, KarmaFlower(0.0, 0.0, seed=seed, ground_y=self._HL))
+            kf = KarmaFlower(0.0, 0.0, seed=seed, ground_y=self._HL)
+            for _ in range(45):            # 预览不 tick：先就地解算到静止（随机初态张开后的样子）
+                kf.step(self._WL, self._HL)
+            got = (seed, kf)
             self._karmaflower_preview = got
         return got[1]
 
@@ -3074,15 +3082,14 @@ class ItemInteractionMixin:
         if not (0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL):
             return
         kf = self._karmaflower_hint_object()
-        seed = self._karmaflower_preview[0]
-        kf.drag_x = None
-        kf.grow_pos = None
-        kf.detach_to(cx, cy)
-        kf.try_root(self._HL, random.Random(seed))   # 与放置时同 seed ⇒ 预览即所见
+        dx = clampf(cx, 6.0, self._WL - 6.0) - kf.grow_pos[0]
+        dy = self._HL - kf.grow_pos[1]
+        kf.shift(dx, dy)                   # 预览图整个挪到光标处（与放置同 seed ⇒ 所见即所得）
         p.save()
         p.setOpacity(0.5)
         draw_karmaflower(p, self.atlas, kf, 1.0)
         p.restore()
+        kf.shift(-dx, -dy)
 
     def _step_scavenger_throws(self):
         """拾荒者的投矛意图 → 生成一枝飞矛（原版 Scavenger.ThrowObject → Weapon.Thrown）。"""

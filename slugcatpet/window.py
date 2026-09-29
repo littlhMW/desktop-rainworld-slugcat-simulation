@@ -1279,6 +1279,16 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             r = sd.rad + 6.0
             put(sd.x - r, sd.y - r, sd.last_x - r, sd.last_y - r)
             put(sd.x + r, sd.y + r, sd.last_x + r, sd.last_y + r)
+        for kf in self.karmaflowers:
+            # 花体 + 花瓣 + 茎（茎尾钉在根上，可能比花体低 27px）。漏了它会出现
+            # 「花不显示直到猫经过 / 吃完残影还在」——那片区域压根没进重绘。
+            pr_ = 34.0                     # 花瓣贴图长 20 + 花环 13.5 + 光斑 18.75
+            put(kf.x - pr_, kf.y - pr_, kf.last_x - pr_, kf.last_y - pr_)
+            put(kf.x + pr_, kf.y + pr_, kf.last_x + pr_, kf.last_y + pr_)
+            for pt_ in kf.petals:
+                put(pt_[0], pt_[1], pt_[2], pt_[3])
+            for sp_ in kf.stalk_pts:
+                put(sp_[0], sp_[1], sp_[2], sp_[3])
         for pl in self.poles:
             if getattr(pl, "virtual", False):
                 continue        # 光标杆每帧乱跑，不该撑大脏矩形
