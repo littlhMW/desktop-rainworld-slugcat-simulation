@@ -168,6 +168,14 @@ python run_slugcatpet.py
 
 **匍匐只留给蜥蜴（第 50 轮）**：匍匐族原本有 4 个动作，遇到同伴、鼠标这些非蜥蜴对象时也会乱趴，「匍匐指指点点 / 匍匐指向」还在对同伴指手画脚时趴着做，很出戏。现在这三条（`crouch` / `crouch_scold` / `crouch_point`）已从词表删除，只剩「匍匐行走」，而它必须 `_nearest_lizard(CRAWL_FEAR_R * 1.6)` 附近真有蜥蜴才会被抽中（害怕强敌潜行、躲蜥蜴、匍匐降被咬概率这些照旧）。误伤同伴的「抱歉」改用**拍拍**（安抚），被同伴指指点点也不再转身趴下。
 
+**隐形窗口 / 匍匐手脚贴地 / 植株不是杆子 / 指向追鼠标（第 51 轮）**：
+
+- **隐形窗口**：UWP 应用（比如「设置」）被挂起时，DWM 会给窗口打上 `DWMWA_CLOAKED` 标记，但 `IsWindowVisible` 仍返回真、`GetWindowRect` 给的还是**上次可见时的陈旧矩形**（本机实测：挂起的「设置」停在 `(328,92)-(1543,1032)`），于是屏幕上方凭空多出一块隐形地板。现在 `winplat._visit` 加了一道 `DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED)` 检查，`cloaked != 0` 一律不算平台（老系统取不到 `dwmapi` 就静默跳过这一条）。
+- **匍匐的手脚要趴在当前地面上**：手的地面引用原来写的是 `visual_floor_y`（恒等于工作区地板），猫趴在别人窗口顶边上时双手会一直朝工作区地板伸、垂到窗口顶边以下；腿的裁剪线也用同一个值，腿同样会画到窗口外面去。现在两处都改成 `body.support_y()`（本 tick 脚下那块地：工作区地板 or 别人窗口顶边）。实测：趴在 y=168 的窗口顶边上，双手从 171.7 / 180.6（垂在外面）回到 163~164（正好搭在 `support_y()-4` 上），顶边以下的手部像素 157 → 127。
+- **爆米花不再是竖杆**：第 28 轮为了够到高处的豆荚，给植株接了一根**虚拟竖杆**让猫爬上去，这违背「植株不是杆子」，整条已删除（`_StalkPole` / `_cob_stalk_pole` / `_cob_climber*` / `_cob_climb_tick`）。既然不许爬，豆荚就得一直长在水平矛打得到的高度里：新增 `COB_MAX_REACH = 132`（离地最高高度），放置与重定位都夹在 `[根 - 132, 根 - 70]`；起跳抬线量 `COB_JUMP_APEX` 按实测（49.5）提到 46。12 个豆荚种子在夹回来的最高位仍然一矛开荚，且矛插在豆荚上。
+- **指向 / 指指点点持续跟随**：指着鼠标时手臂瞄的是**起手那一帧**存下来的坐标元组（`_point_tgt` / `_act_tgt`），鼠标一动就再也追不上。现在光标模式统一走 `_cursor_live()`：**每 tick** 重取当帧光标（对象模式本来就读 `chunk0`，是活的），头也跟着走；伸-收-伸的手势节奏不变。
+- 复核：`work/scratch/e2e_r51.py`（8 项：cloaked 窗口不算平台、匍匐双手贴着当前地面且不垂到顶边以下、指向与指指点点每一帧都瞄着当帧光标）；`e2e_r28.py` 第 2 节也改成「爬植株路径已删 + 高处放置被夹回可及高度」。
+
 同一套词表也管**平时**（没攒满社交欲望时）的随手小动作——所有伸手比划的地方都走同一个「起手 / 推进 / 收势」接口，不再各写各的：
 
 | 情景 | 抽到的动作 |
@@ -389,6 +397,14 @@ Nothing has a count limit any more - place as many as you like.
 Personality decides which ones come up: a low `crawl_like` (won't lie down) rules out crouch-walk, a low `point_like` (good-natured) means less scolding, and a high `sociability` favours petting and patting.
 
 **Crouching is for lizards only (round 50)**: the crouch family had four actions and would happily lie down in front of a companion or the cursor, with "crouched point-point / crouched point" scolding packmates from the floor. Those three (`crouch` / `crouch_scold` / `crouch_point`) are gone from the vocabulary; only crouch-walk is left, and it is only rolled when `_nearest_lizard(CRAWL_FEAR_R * 1.6)` finds a real lizard nearby (sneaking past a threat, fleeing a lizard and the reduced bite chance while crouched all still work). The "sorry" after hitting a friend is now a **pat** (soothing), and being point-pointed at no longer makes a cat lie down.
+
+**Phantom windows / crawl limbs on the real ground / the plant is not a pole / pointing tracks the cursor (round 51)**:
+
+- **Cloaked windows**: when a UWP app (say Settings) is suspended, DWM flags its window `DWMWA_CLOAKED`, yet `IsWindowVisible` still returns true and `GetWindowRect` still hands back the **stale rectangle from when it was last visible** (measured here: a suspended Settings window parked at `(328,92)-(1543,1032)`) - which reads as a phantom floor above the screen. `winplat._visit` now calls `DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED)` and skips any window where `cloaked != 0` (no `dwmapi` means the check is simply skipped).
+- **Crawl limbs rest on the current ground**: the crawl hand target used `visual_floor_y`, which is always the workspace floor, so a cat lying on another window's top edge reached all the way down to the bottom of the screen and its paws showed below the ledge; the leg clipping line used the same value and let legs draw past the ledge too. Both now use `body.support_y()` (the ground under the hip this tick: workspace floor or another window's top edge). Measured: lying on a ledge at y=168 the hands move from 171.7 / 180.6 (dangling) to 163-164 (exactly `support_y() - 4`), and pixels below the ledge drop from 157 to 127.
+- **The popcorn plant is no longer a pole**: round 28 let the cat climb a **virtual stalk pole** to reach a cob hanging out of throwing range. That contradicts "the plant is not a pole" and is gone (`_StalkPole` / `_cob_stalk_pole` / `_cob_climber*` / `_cob_climb_tick`). Since climbing is out the cob has to stay within horizontal spear range: new `COB_MAX_REACH = 132` (max height above the ground), with placement and re-target clamped to `[root - 132, root - 70]`, and `COB_JUMP_APEX` raised to 46 (measured 49.5). All 12 cob seeds still open with a single spear (which sticks into the cob) at the clamped top.
+- **Pointing keeps tracking**: pointing at the cursor aimed at the **coordinate tuple captured on the first frame** (`_point_tgt` / `_act_tgt`), so it could never follow a moving cursor. Cursor mode now goes through `_cursor_live()`, which re-reads the **current** cursor every tick (object mode already re-read `chunk0`, which was live), and the head follows too. The extend-retract scolding rhythm is unchanged.
+- Verification: `work/scratch/e2e_r51.py` (8 checks); section 2 of `e2e_r28.py` now asserts the climb path is gone and that a too-high placement is clamped back into reach.
 
 The same vocabulary also drives **everyday** gestures (when the social urge has not filled up). Every place that reaches out now goes through one begin / tick / end interface instead of its own ad-hoc code:
 

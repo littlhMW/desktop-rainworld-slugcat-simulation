@@ -19,6 +19,7 @@ _GWL_EXSTYLE = -20
 _WS_EX_TOOLWINDOW = 0x00000080
 _WS_EX_NOACTIVATE = 0x08000000
 _WS_EX_TRANSPARENT = 0x00000020
+_DWMWA_CLOAKED = 14    # DWM 给窗口打的「隐身」标记（UWP 挂起 / 别的虚拟桌面）
 _MIN_W = 60.0          # 太窄的窗口不算平台
 _MIN_H = 24.0
 _TOP_EPS = 4.0         # 顶边贴到/超出屏幕顶的窗口（最大化）不算平台
@@ -43,6 +44,24 @@ def _cut_segments(segs, l: float, r: float):
         if r < b:
             out.append((r, b))
     return out
+
+
+def _cloaked(hwnd) -> bool:
+    """DWM 认为这窗口「隐身」了吗（UWP 挂起、被切走的虚拟桌面、被壳藏起来的）。
+
+    这类窗口 IsWindowVisible 仍返回 True，GetWindowRect 给的还是**上次可见时
+    的陈旧矩形**（本机实测：挂起的「设置」停在 (328,92)-(1543,1032)）——
+    会被当成一块隐形地板，猫一落上去就悬在半空。取不到 dwmapi（老系统）
+    就当作没隐身，行为与以前一致。
+    """
+    try:
+        v = wintypes.DWORD(0)
+        if ctypes.windll.dwmapi.DwmGetWindowAttribute(
+                hwnd, _DWMWA_CLOAKED, ctypes.byref(v), 4) != 0:
+            return False
+        return v.value != 0
+    except Exception:
+        return False
 
 
 def enumerate_tops(own_hwnds, screen_x: float, screen_y: float, scale: float):
@@ -78,6 +97,8 @@ def enumerate_tops(own_hwnds, screen_x: float, screen_y: float, scale: float):
             wpid = wintypes.DWORD()
             user32.GetWindowThreadProcessId(hwnd, ctypes.byref(wpid))
             if int(wpid.value) == my_pid:
+                return True
+            if _cloaked(hwnd):      # 挂起的 UWP / 别的虚拟桌面：矩形是陈旧的
                 return True
             ex = user32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
             if ex & (_WS_EX_TOOLWINDOW | _WS_EX_NOACTIVATE | _WS_EX_TRANSPARENT):

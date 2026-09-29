@@ -38,31 +38,6 @@ class _ShotProbe:
         self.rad = float(rad)
 
 
-class _StalkPole:
-    """爆米花植株的虚拟竖杆。
-
-    只借给 PoleClimber 用，不进 win.poles —— 所以不会被画出来、不挡路、
-    也不参与别的猫的选杆。豆荚挂得太高时，蛞蝓猫顺着它爬上去再插一矛。
-    """
-    __slots__ = ("kind", "ax", "ay", "bx", "by", "has_been_climbed", "for_cob")
-
-    def __init__(self, x: float, bottom_y: float, top_y: float):
-        self.kind = VERTICAL
-        self.ax = self.bx = float(x)
-        self.ay = float(bottom_y)
-        self.by = float(top_y)
-        self.has_been_climbed = False
-        self.for_cob = None
-
-    @property
-    def x(self) -> float:
-        return self.bx
-
-    @property
-    def top_y(self) -> float:
-        return self.by
-
-
 # 计时常量（tick）
 T_POINT_WAKE = 160
 T_POSTTHROW_WANDER = 200
@@ -85,7 +60,7 @@ COB_STAND_DX = 60.0       # 打爆米花时站到离豆荚多远的水平距离�
 COB_HIT_TOL = 15.0        # 这一掷能不能命中豆荚的竖直容差（矛 rad5+豆荚 rad8+玩家 pad5−3）
 COB_THROW_CD = 24         # 两矛之间的最短间隔（等矛飞出去、看豆荚开没开）
 COB_TRY_MAX = 5           # 一次啃食预算里最多掷几次矛
-COB_JUMP_APEX = 40.0      # 站立起跳能把掷矛线抬高的量（实测 43.7，留点余量）
+COB_JUMP_APEX = 46.0      # 站立起跳能把掷矛线抬高的量（实测 49.5，留点余量）
 COB_STAND_EPS = 4.0       # 站位的收尾公差（WALK_STOP_EPS=2，留点姿态余量）
 T_CRAWL_RETRY = 300       # 匍匐躲避冷却
 T_PROTEST_RETRY = 900     # 抗议被抢东西的冷却
@@ -362,9 +337,6 @@ class BehaviorFSM:
         self._cob_seek_cd = 0
         self._cob_try = 0             # 这一轮打豆荚已经掷了几次矛
         self._cob_throw_cd = 0
-        self._cob_climber = None      # 够不着豆荚时爬植株用的 PoleClimber
-        self._cob_climber_cob = None
-        self._cob_stalk = None        # 缓存的虚拟竖杆
         self._play_left = 0
         self._social_left = 0
         self._social_kind = "pet"
@@ -4395,7 +4367,6 @@ class BehaviorFSM:
         elif st == "ChaseCursor":
             self._act_end()
         elif st == "EatCob":
-            self._cob_climber_release()
             self.gfx.hand_aim["l"] = None
             self.gfx.hand_aim["r"] = None
             self.body.eat_raise = 0.0
@@ -4971,13 +4942,19 @@ class BehaviorFSM:
     def _aim_act(self, tgt, mode="obj", enforce_side=False, cover=True) -> bool:
         """把一个「指向」瞄到对象/鼠标上；返回 False=目标没了。"""
         if mode == "cursor":
-            cur = tgt if isinstance(tgt, tuple) else self.cursor
+            # 指鼠标：**每 tick 重取当帧光标**。起手那一帧的坐标是个死元组，
+            # 鼠标一动手臂/头就再也追不上（用户：指向要持续跟随而不是只瞄一次）。
+            cur = self._cursor_live(tgt if isinstance(tgt, tuple) else None)
             if cur is None:
                 self._clear_hands()
                 return False
             self._point_at_cursor(cur, enforce_side=enforce_side, cover=cover)
             return not self._point_stopped
         return self._aim_target(tgt)
+
+    def _cursor_live(self, fallback=None):
+        """指向鼠标时的当前目标＝当帧光标（光标没了才退回 fallback）。"""
+        return self.cursor if self.cursor is not None else fallback
 
     def _act_tick(self) -> bool:
         """推进一 tick 当前社交动作；返回 True=还要接着做。"""
@@ -5036,7 +5013,7 @@ class BehaviorFSM:
             b.facing = 1 if ob.chunk0.x >= b.chunk0.x else -1
             self.gfx.look_at = (ob.chunk0.x, ob.chunk0.y)
         elif isinstance(tgt, tuple):
-            self.gfx.look_at = tgt
+            self.gfx.look_at = self._cursor_live(tgt)   # 头也跟着鼠标走
         alive = self._act_tick()
         if not alive or self._act_left <= 0 or (ob is not None and getattr(ob, "dead", False)):
             self._act_end()
@@ -5121,8 +5098,8 @@ class BehaviorFSM:
             return True
         if pg.extended:
             if self._point_mode == "cursor":
-                self._point_at_cursor(self._point_tgt, enforce_side=self._point_enforce,
-                                      cover=True)
+                self._point_at_cursor(self._cursor_live(self._point_tgt),
+                                      enforce_side=self._point_enforce, cover=True)
                 if self._point_stopped:
                     self._point_end()
                     return True
@@ -5245,7 +5222,6 @@ class BehaviorFSM:
         self.body.stop_walk()
 
     def _cob_end(self):
-        self._cob_climber_release()
         self.gfx.hand_aim["l"] = None
         self.gfx.hand_aim["r"] = None
         self.body.eat_raise = 0.0
@@ -5362,47 +5338,6 @@ class BehaviorFSM:
             return False
         return line - hi <= COB_JUMP_APEX
 
-    def _cob_stalk_pole(self, cb):
-        """爆米花植株的虚拟竖杆（缓存一只，避免每 tick 新建）。"""
-        if self._cob_stalk is not None and self._cob_stalk.for_cob is cb:
-            return self._cob_stalk
-        self._cob_stalk = pole = _StalkPole(cb.placed[0], self.win._HL,
-                                            min(cb.p0[1], cb.p1[1]))
-        pole.for_cob = cb
-        return pole
-
-    def _cob_climber_release(self):
-        self._cob_climber_cob = None
-        self._cob_stalk = None
-        if self._cob_climber is not None:
-            self._cob_climber.release()
-            self._cob_climber = None
-
-    def _cob_climb_tick(self, cb) -> bool:
-        """顺着植株爬到跟豆荚同高，就地插一矛（原版只能横着发射，所以得先同高）。
-
-        返回 False ＝ 爬到头/够不着，由调用方放弃。
-        """
-        from .pole_climb import PoleClimber
-        b = self.body
-        if self._cob_climber_cob is not cb:
-            self._cob_climber_release()
-            self._cob_climber = PoleClimber(self.win, self._cob_stalk_pole(cb), self.rng,
-                                            no_handoff=True)
-            self._cob_climber_cob = cb
-        tx = self._cob_stand_x(cb)
-        dir_x = 1 if (cb.p0[0] + cb.p1[0]) * 0.5 >= b.chunk0.x else -1
-        if self._cob_would_hit(cb, dir_x):   # 爬到高度对上了：就地插一矛
-            if b.carried_spear is not None:
-                self._launch_weapon(dir_x)
-                self._cob_try += 1
-                self._cob_throw_cd = COB_THROW_CD
-            return True
-        if self._cob_climber.update(False):
-            self._cob_climber_release()
-            return False
-        return True
-
     def _st_eatcob(self, cursor, disturbed):
         b = self.body
         if self.grab.active:
@@ -5420,18 +5355,6 @@ class BehaviorFSM:
         d = math.hypot(px - b.chunk0.x, py - b.chunk0.y)
         self.gfx.look_at = (px, py)
         self._cob_left -= 1
-        # 只有「挂着没开、手里有矛、站在地上跳也够不着」才爬植株
-        climbing = (self._cob_climber is not None
-                    or (not cb.can_feed() and b.carried_spear is not None
-                        and self._cob_high(cb) and not self._cob_ground_reach(cb)
-                        and b.on_floor()))
-        if not climbing:
-            self._cob_climber_release()
-        if self._cob_climber is not None:    # 正在爬植株：这一段别再走/别再改朝向
-            if self._cob_climb_tick(cb):
-                return
-            self._cob_end()
-            return
         if cb.can_feed():
             if d > tuning.COB_FEED_R:
                 if abs(px - b.chunk0.x) > tuning.COB_FEED_R * 0.5:
@@ -5494,9 +5417,7 @@ class BehaviorFSM:
                     b.request_jump("stand")
                     self._cob_try += 1
                 return                       # 空中就等预演能中
-            if self._cob_climb_tick(cb):     # 跳也够不着：顺着植株爬上去插
-                return
-            self._cob_end()
+            self._cob_end()                  # 跳也够不着：放弃（植株不是杆子，不许爬）
             return
         self._cob_end()                      # 豆荚在掷矛线下方：站着够不着
 

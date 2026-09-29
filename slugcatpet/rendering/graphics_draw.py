@@ -20,7 +20,8 @@ class GraphicsDrawMixin:
         self._draw_body_hips(p, atlas, ts)
         self._draw_tail(p, ts)
         self._draw_head(p, atlas, ts)
-        floor = getattr(self.body, "visual_floor_y", self.body.H)
+        # 腿裁到**当前**脚下那块地为止：趴在窗口顶边上时腿不该垂到下面被看见
+        floor = self.body.support_y()
         p.save()
         p.setClipRect(-1e4, -1e4, 2e4, floor + 1e4)
         self._draw_legs(p, atlas, ts)

@@ -668,7 +668,10 @@ class SlugcatGraphics(GraphicsDrawMixin):
         """双手 IK：确定每手 target 后交给 Hand.update()。"""
         b = self.body
         spine_ang = self.body_axis()
-        crawl_ground_y = getattr(b, "visual_floor_y", b.H) - 4.0
+        # 脚底下那块地＝工作区地板 or 别人窗口顶边（匍匐/睡觉时手要搭在**当前**
+        # 地面上）。原先用 visual_floor_y（恒等于工作区地板），猫趴在窗口顶边上
+        # 时双手会一直伸到工作区地板，看起来就是「手脚垂下来」。
+        crawl_ground_y = b.support_y() - 4.0
         for idx, (side, sh_local_sign) in enumerate((("l", -1.0), ("r", +1.0))):
             sx, sy = self._shoulder(sh_local_sign, spine_ang)
             hand = self.hands[0] if side == "l" else self.hands[1]
