@@ -92,6 +92,8 @@ class PetUnit:
                                 food=init_state.get("food"),
                                 karma=init_state.get("karma"),
                                 stats=self.cat.stats)
+        # 食性（原版 SlugCatClass → NourishmentOfObjectEaten / CanEatMeat）
+        self.body.diet = self.personality.diet
         self.body.cold = float(init_state.get("cold", 0.0))
         self.body.visual_floor_y = floor_y
         # 趴姿悬空几何补偿

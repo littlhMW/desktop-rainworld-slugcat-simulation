@@ -65,6 +65,8 @@ _TENT_SPREAD = ((-2.5, 1.5), (2.5, 1.5), (-4.5, 4.0), (4.5, 4.0))
 
 
 class Squidcada:
+    # 食性：尸体（Player.CanEatMeat，Player.cs:11824）；杂食猫不放行
+    food_class = "corpse"
     """蝉乌贼：悬停游走 → 遇猫扑翅逃 → 力竭落地（此时可被猫抓住）。"""
     collision_layer = 0
 

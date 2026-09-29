@@ -1,4 +1,4 @@
-"""Survivor（白猫）种族定义：纯白体色、HeadA 脸型、无舌无超度，走跳/竖杆/捡落地果。"""
+"""求生者（Survivor）种族定义：纯白体色、HeadA 脸型、无舌无超度，走跳/竖杆/捡落地果。"""
 from __future__ import annotations
 
 from dataclasses import replace

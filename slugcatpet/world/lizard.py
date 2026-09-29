@@ -77,6 +77,11 @@ TARGET_HOLD_OBJ = 90          # 对象目标失联后的宽限帧数（原版 fo
 TARGET_HOLD_POINT = 10 ** 9   # 纯坐标目标（光标）仍按距离判定
 LUNGE_ACCEL = 0.20            # 扑咬时朝目标的加速度比例
 CLIMB_HOP = -6.4              # 目标在上方时的蹬地（y↓ 取负）
+# 青蜥蓄力弹射（wiki：爬墙 + 蓄力弹射）：扑击整段的顶速与加速都上调一档
+CHARGE_LEAP_SPD = 1.9
+CHARGE_LEAP_ACC = 0.55
+# 白蜥环境伪装：蛞蝓猫注意它的距离打这个折扣（RIV 里玩家也更难看见它）
+CAMO_NOTICE_FAC = 1.65
 HOP_CD = 46
 JAW_OPEN_RATE = 0.30          # 下颚张开速率（开得比闭快：扑咬要利落）
 JAW_CLOSE_RATE = 0.26
@@ -294,7 +299,9 @@ class LizardBreed:
                  # 步态（LizardBreedParams 同名参数，原版腿 IK 的行为参数）
                  "step_length", "lift_feet", "feet_down", "limb_speed",
                  "limb_quickness", "smooth_legs", "leg_pair_disp", "walk_bob",
-                 "lounge_tendency")
+                 "lounge_tendency",
+                 # 品种差异（见文件末 BREED_TRAITS）
+                 "spawn_weight", "can_climb", "camo", "charge_leap")
 
     def __init__(self, key, name_zh, name_en, hue, light, head_graphics, *,
                  size=1.0, body_rad_fac=1.0, body_length_fac=1.0, head_size=1.0,
@@ -374,6 +381,11 @@ class LizardBreed:
         self.leg_pair_disp = leg_pair_disp
         self.walk_bob = walk_bob
         self.lounge_tendency = lounge_tendency
+        # 品种差异：默认值在这里，具体每个品种在 BREED_TRAITS 里覆写
+        self.spawn_weight = 1.0
+        self.can_climb = True
+        self.camo = False
+        self.charge_leap = False
         # 体/头配色：白蜥全身纯白、头按原版压黑；蝾螈灰白；黑蜥整体近黑；其余体黑头染品种色
         if plain_color == WHITE_RGB:
             # 白蜥：躯干纯白，头走「黑↔白呼吸闪烁」（原版 HeadColor1=白 / HeadColor2=黑），
@@ -385,6 +397,11 @@ class LizardBreed:
                                             else BLACK_RGB)
         else:
             self.body_rgb, self.head_rgb = BLACK_RGB, None
+
+    @property
+    def camo_fac(self) -> float:
+        """蛞蝓猫注意它的距离倍数：有环境伪装（白蜥）的猫更难被发现。"""
+        return CAMO_NOTICE_FAC if self.camo else 1.0
 
     @property
     def damage_resistance(self) -> float:
@@ -523,6 +540,52 @@ BREEDS = (
 )
 BREED_BY_KEY = {b.key: b for b in BREEDS}
 
+# ── 品种差异（反编译 LizardBreeds.cs + wiki）──────────────────────────────
+# spawn_weight = 自然生成权重。原版由各区域的 spawn 表决定（绿/粉/蓝最常见，
+#                红/青/白/黄/蝾螈稀有）；桌宠没有区域表，折算成这张固定权重表。
+# can_climb    = 能不能爬墙/杆。原版绿蜥的 Climb/Wall tile 不在 Allowed 名单里
+#                （LizardBreeds.cs GreenLizard 段只登记 Floor/Corridor）→ 不能爬。
+# camo         = 环境伪装。白蜥（wiki：环境伪装 + 长舌伏击）：蛞蝓猫更晚注意到它。
+# charge_leap  = 蓄力弹射。青蜥（wiki：爬墙 + 蓄力弹射跳跃）：扑击瞬间更快更猛。
+BREED_TRAITS = {
+    "pink":       dict(spawn_weight=1.00),
+    "green":      dict(spawn_weight=0.90, can_climb=False),
+    "blue":       dict(spawn_weight=0.90),
+    "yellow":     dict(spawn_weight=0.35),
+    "white":      dict(spawn_weight=0.30, camo=True),
+    "red":        dict(spawn_weight=0.02),
+    "black":      dict(spawn_weight=0.30),
+    "salamander": dict(spawn_weight=0.25),
+    "cyan":       dict(spawn_weight=0.25, charge_leap=True),
+}
+for _b in BREEDS:
+    _t = BREED_TRAITS.get(_b.key, {})
+    _b.spawn_weight = float(_t.get("spawn_weight", 1.0))
+    _b.can_climb = bool(_t.get("can_climb", True))
+    _b.camo = bool(_t.get("camo", False))
+    _b.charge_leap = bool(_t.get("charge_leap", False))
+
+_WEIGHT_TOTAL = sum(b.spawn_weight for b in BREEDS)
+
+
+def pick_breed(index: int):
+    """按 spawn_weight 加权抽一个品种（真随机顺序，不再按次序轮换）。
+
+    index 用 splitmix64 风格的整数散列打散：连续序号之间没有相关性（直接拿
+    序号喂 random.Random 的话，梅森旋转的头几个输出会明显聚簇），但同一个
+    index 永远抽出同一个品种 —— 渲染黄金帧与测试仍可复现。
+    """
+    x = (int(index) * 0x9E3779B97F4A7C15 + 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
+    x = ((x ^ (x >> 30)) * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
+    x = ((x ^ (x >> 27)) * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
+    x ^= x >> 31
+    r = (x >> 11) / float(1 << 53) * _WEIGHT_TOTAL
+    for b in BREEDS:
+        r -= b.spawn_weight
+        if r <= 0.0:
+            return b
+    return BREEDS[-1]
+
 
 class _Seg:
     """链体节（原版 BodyChunk）：位置 + 速度 + 半径 + 到前一节的固定距离。"""
@@ -562,6 +625,7 @@ class _Leg:
 
 
 class Lizard:
+    food_class = "none"      # 不是食物：尸体算无用尸体（会被猫拖出屏幕清场）
     """一只蜥蜴：头为驱动质点，躯干/尾逐节跟随；巡走 → 警觉 → 扑咬。"""
 
     collision_layer = 0                 # 不参与 chunk 互推，交互全部走 AI
@@ -1295,12 +1359,18 @@ class Lizard:
         want = clampf((o.x - self.x) * 0.06, -2.2, 2.2)
         self.vx += (want - self.vx) * WALK_TURN
 
+    def _hop_vy(self) -> float:
+        """蹬地起跳初速：不会爬的品种（绿蜥）压根不往上蹿。"""
+        if not self.breed.can_climb:
+            return 0.0
+        return CLIMB_HOP * math.sqrt(max(0.4, self.breed.body_size_fac))
+
     def _plan_for(self, o, WL, HL):
         """接近规划：同一套 utility，按品种调「绕路 / 落点 / 贴墙 / 起跳倾向」。"""
         if o is None:
             return None
         floor = HL - self.body_rad * HEAD_STAND_FAC
-        hop = CLIMB_HOP * math.sqrt(max(0.4, self.breed.body_size_fac))
+        hop = self._hop_vy()
         return plan_approach(o.x, o.y, self.x, self.y, floor, WL, self._bite_reach(),
                              prefs_for(self.breed.key), GRAVITY, hop, AIR_FRICTION,
                              sprint=self.sprint, base_speed=self.breed.base_speed,
@@ -1320,7 +1390,7 @@ class Lizard:
         self.look_at = (o.x, o.y)
         lx = plan.launch[0] if plan.launch else self.x
         if abs(self.x - lx) <= 10.0 and self._contact_floor and self.hop_cd <= 0:
-            self.vy = CLIMB_HOP * math.sqrt(max(0.4, self.breed.body_size_fac))
+            self.vy = self._hop_vy()
             self.hop_cd = HOP_CD
             want = clampf((o.x - self.x) * 0.05, -2.6, 2.6)
             self.vx += (want - self.vx) * LUNGE_ACCEL
@@ -1606,7 +1676,7 @@ class Lizard:
         self.target = self.target_obj = None
         self.look_at = (tx, ty)
         if self._contact_floor and self.rng.random() < FLEE_HOP:
-            self.vy = CLIMB_HOP * 0.7
+            self.vy = self._hop_vy() * 0.7
         return True
 
     def _anger_tick(self, others):
@@ -1774,7 +1844,12 @@ class Lizard:
         蓝蜥 0.01 基本是慢慢蹭过去（原版 LizardAI 用同一参数掷骰）。
         """
         sp = self.breed.base_speed * 0.8 * self.sprint
-        self.vx += (kx * sp - self.vx) * LUNGE_ACCEL
+        acc = LUNGE_ACCEL
+        if self.breed.charge_leap:
+            # 青蜥蓄力弹射：扑击整段更快更猛（wiki：爬墙 + 蓄力弹射跳跃）
+            sp *= CHARGE_LEAP_SPD
+            acc = min(1.0, LUNGE_ACCEL * CHARGE_LEAP_ACC)
+        self.vx += (kx * sp - self.vx) * acc
         reach = self.head_rad + (16.0 * self.breed.body_size_fac
                                  * (self.breed.attempt_bite_radius / 80.0))
         if d <= reach and self.bite_cd <= 0 and self.target_obj is not None:
@@ -1782,7 +1857,7 @@ class Lizard:
             if not _cat_offering_food(self.target_obj):
                 self._start_bite()
         elif self._contact_floor and self.hop_cd <= 0 and (self.y - self.target[1]) > 34.0:
-            self.vy = CLIMB_HOP * math.sqrt(max(0.4, self.breed.body_size_fac))
+            self.vy = self._hop_vy()
             self.hop_cd = HOP_CD
 
     # ── 叼走死猫 / 昏迷猫到屏幕角落 ──

@@ -7,6 +7,7 @@ from .interest import goal_key
 from .pose import interaction_goal
 from ..planning import GIVEUP, PlanExecutor, TongueSnatch, obj_goal
 from ..cats.personality import DIET_VEGETARIAN, DIET_SPECIAL, DIET_CARNIVORE
+from ..cats import diet as _diet
 
 # 取食/啃咬参数
 MEAT_PREF = 0.6
@@ -108,8 +109,8 @@ def fetch_candidates(planner, edibles, diet=None, pearl_like=1.0, unit=None):
         if not getattr(f, "fetch_ready", True):
             continue    # 飞行中蝙蝠够不到
         meat = getattr(f, "is_meat", False)
-        if meat and diet in (DIET_VEGETARIAN, DIET_SPECIAL):
-            continue    # 素食/圣徒不自主吃肉
+        if not _diet.fetchable(diet, f):
+            continue    # 食性闸：食谱外的东西（杂食猫的蝉乌贼尸体等）直接跳过
         g = _edible_goal(f, unit)
         if planner.in_cooldown(g):
             continue
@@ -150,7 +151,7 @@ def fetch_ready(planner, edibles, diet=None, unit=None):
             continue
         if not getattr(f, "fetch_ready", True):
             continue
-        if getattr(f, "is_meat", False) and diet in (DIET_VEGETARIAN, DIET_SPECIAL):
+        if not _diet.fetchable(diet, f):
             continue
         g = _edible_goal(f, unit)
         if planner.in_cooldown(g):
@@ -342,6 +343,15 @@ class FruitFetcher:
                 f.held_by_hand = None
                 self.phase = "select"
             return False
+        # 食性闸（原版 Player.CanEatMeat / NourishmentOfObjectEaten）：
+        # 这本猫不吃的东西（杂食猫捡到的蝉乌贼尸体）就别张嘴，松手退回挑选。
+        if ready and not _diet.edible(self.diet, f):
+            self.body.release_fruit()
+            f.state = "free"
+            f.held_by_hand = None
+            self.phase = "select"
+            self.timer = 0
+            return False
         # 悬空卡死兜底超时
         if self.timer > CARRY_FALL_TIMEOUT and f.stalk is not None:
             f.stalk = None
@@ -453,7 +463,7 @@ class FruitFetcher:
                 # 业力花（原版 KarmaFlower.BitByPlayer）：4 口吃完 → reinforcedKarma，
                 # FoodPoints = 0（food_value 已是 0，不吃饱）
                 self.body.flower_karma = True
-            self.body.food_eat(getattr(f, "food_value", 1))
+            self.body.food_eat_object(f)     # 食性结算（原版 Player.ObjectEaten）
             self.body.energy_change(tuning.EN_EAT_RESTORE)
             self.body.release_fruit()
             if self.body.food >= self.body.food_max:

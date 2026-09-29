@@ -10,6 +10,7 @@ DIET_OMNIVORE = "omnivore"
 DIET_CARNIVORE = "carnivore"
 DIET_VEGETARIAN = "vegetarian"
 DIET_SPECIAL = "special"
+DIET_GOURMAND = "gourmand"     # 美食家/怪猫：杂食广谱，尸体半格
 
 
 @dataclass(frozen=True)

@@ -24,7 +24,7 @@ from .slimemold import (SlimeMold, _dirvec as _slime_dir, _lerp_map as _slime_le
                         TENDRIL_JAG_K)
 from .stone import Stone
 from .batfly import BatFly
-from .lizard import BREEDS, Lizard, _ang_lerp, lizard_rel, lizard_rel_kind
+from .lizard import BREEDS, Lizard, pick_breed, _ang_lerp, lizard_rel, lizard_rel_kind
 from .scavenger import separate as separate_scavengers
 from .lizard_gfx import draw_lizard
 from .squidcada import Squidcada
@@ -74,7 +74,7 @@ LIZARD_STUN_TICKS = 60            # 被蜥蜴咬到的眩晕 tick（兜底）
 #   num  = 1.5 / baseDamageResistance(1) = 1.5 ≥ instantDeathDamageLimit(1) ⇒ 必死
 #   num2 = (1.5*30 + 0) / baseStunResistance(1) = 45 ⇒ 未致死时 Stun(45)
 BITE_VIOLENCE_DAMAGE = 1.5
-# 原版 Player.DeathByBiteMultiplier：黄猫 0、圣徒 100、其余 0.75
+# 原版 Player.DeathByBiteMultiplier：僧侣 0、圣徒 100、其余 0.75
 PET_BITE_DEATH_MULT = {"monk": 0.0, "saint": 100.0}
 PET_BITE_DEATH_MULT_DEFAULT = 0.75
 STONE_KNOCKBACK = 0.5
@@ -1279,7 +1279,9 @@ class ItemInteractionMixin:
                 mx, my = pet.gfx.mouth_world()
                 if math.hypot(b.x - mx, b.y - my) < SHOVE_REACH:
                     if b.bite():
-                        pet.body.food_eat(1)
+                        bq = pet.body.food_eat_object(b)   # 食性结算
+                        if bq == -1:                      # 圣徒吃荤 → 眩晕
+                            pet.body.stun = max(pet.body.stun, tuning.MEAT_SICK_STUN)
                         pet.body.temper_shift(tuning.TEMPER_FEED)
                         pet.body.energy_change(tuning.EN_EAT_RESTORE)
                     cd[key] = SHOVE_COOLDOWN
@@ -1368,12 +1370,18 @@ class ItemInteractionMixin:
     def can_place_lizard(self) -> bool:
         return True
 
-    def place_lizard(self, lx, ly):
-        """放下一只蜥蜴；品种按放置次序轮换，保证九种都见得到。"""
+    def place_lizard(self, lx, ly, breed=None):
+        """放下一只蜥蜴；品种按 spawn_weight 加权随机（不再按次序轮换）。
+
+        用放置序号作种子的 PRNG：同一次会话里连续放两只不会再固定成粉/绿/蓝，
+        但同一个序号永远抽出同一个品种 —— 渲染黄金帧与测试仍可复现。
+        """
         if not self.can_place_lizard():
             return None
         seed = self._lizard_seed
-        lz = Lizard(lx, ly, BREEDS[seed % len(BREEDS)], seed=seed, id=seed)
+        if breed is None:
+            breed = pick_breed(seed)
+        lz = Lizard(lx, ly, breed, seed=seed, id=seed)
         self._lizard_seed += 1
         self.lizards.append(lz)
         self.world_version += 1

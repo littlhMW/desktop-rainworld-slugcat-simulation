@@ -28,7 +28,9 @@ from .action import (ActionArbiter, ActionContext, ActionSpec,
 from .interest import goal_key as _interest_key
 from .fetch import (fetch_ready, ChewCycle, BITE_HEAD_NUDGE, EAT_APPROACH,
                     EAT_CHOMP_POSE, EAT_HOLD_POSE, EAT_INTERVAL)
-from ..cats.personality import DIET_CARNIVORE, DIET_VEGETARIAN, DIET_SPECIAL
+from ..cats.personality import (DIET_CARNIVORE, DIET_VEGETARIAN, DIET_SPECIAL,
+                                DIET_GOURMAND)
+from ..cats import diet as _diet
 from .objectlooker import ObjectLooker
 from ..control.mouse import GrabController
 from ..cats.saint.cursorlick import (BAND_LO as LICK_BAND_LO, BAND_HI as LICK_BAND_HI,
@@ -101,7 +103,7 @@ SPEAR_AI_SPEED = 34.0     # 投矛初速（同 huntfly.SPEED_SPEAR）
 STONE_AI_SPEED = 26.0     # 投石初速（同 huntfly.SPEED_STONE）
 # 被咬/被矛的致死判定：原版 Player.DeathByBiteMultiplier（故事模式 0.7 + 难度/5）
 DEATH_BY_BITE_MULT = 0.75
-MONK_DEATH_BY_BITE_MULT = 0.0     # 黄猫（僧侣）永不被咬死
+MONK_DEATH_BY_BITE_MULT = 0.0     # 僧侣永不被咬死
 SAINT_DEATH_BY_BITE_MULT = 100.0  # 圣徒一咬必死
 # 原版 Slugcat CreatureTemplate：baseDamageResistance=1 / baseStunResistance=1
 # / instantDeathDamageLimit=1（矛 1.0 伤害 ⇒ 1.0 ≥ 1 即致死）
@@ -780,7 +782,7 @@ class BehaviorFSM:
     def _schedule_karma_flower(self, had_flower: bool):
         """排「死后原地长业力花」（原版 Player.PlaceKarmaFlower / karmaFlowerGrowPos）。
 
-        黄猫（monk）无条件；猎手 15~45s；其他猫死亡时带着业力花条才长（150~210s）。
+        僧侣（monk）无条件；猎手 15~45s；其他猫死亡时带着业力花条才长（150~210s）。
         同一具尸体只排一次。
         """
         if self._flower_planted:
@@ -1787,13 +1789,19 @@ class BehaviorFSM:
         return clampf(float(getattr(self.pers, "hurry", 0.5)), 0.0, 1.0)
 
     def _meat_zeal(self) -> float:
-        """食性 → 打猎热情（荤 1.0 / 杂 0.5 / 素与特殊 0.0）。"""
+        """食性 → 打猎热情（荤 1.0 / 美食家 0.7 / 杂 0.5 / 素与特殊 0.0）。"""
         d = getattr(self.pers, "diet", None)
         if d == DIET_CARNIVORE:
             return 1.0
+        if d == DIET_GOURMAND:
+            return 0.7
         if d in (DIET_VEGETARIAN, DIET_SPECIAL):
             return 0.0
         return 0.5
+
+    def _can_eat(self, f) -> bool:
+        """食性闸：这本猫吃不吃 f（原版 NourishmentOfObjectEaten >= 0）。"""
+        return _diet.edible(getattr(self.pers, "diet", None), f)
 
     def _spear_willing(self) -> bool:
         """肯不肯使矛（圣徒几乎不肯碰矛，够不着就用别的办法）。"""
@@ -1805,7 +1813,7 @@ class BehaviorFSM:
         原版 SeedCob.HitByWeapon（SeedCob.cs:398）确实把圣徒排除在外（圣徒的矛
         打不开荚），这里是用户点名要求的例外：圣徒愿意拿矛敲爆米花，也敲得开。
         """
-        return self._spear_willing() or self.pers.diet in (DIET_VEGETARIAN, DIET_SPECIAL)
+        return self._spear_willing() or not _diet.hunts_meat(self.pers.diet)
 
     def meat_sick(self, f) -> bool:
         """素食猫（圣徒）把荤食咽下去 → 眩晕。
@@ -1814,9 +1822,7 @@ class BehaviorFSM:
         抽搐）：Centipede 680、JellyFish 520、Cicada 220、Snail 800。wiki 也写明圣徒
         是严格素食者。这里取电蝉那档 220 → MEAT_SICK_STUN tick。
         """
-        if self.pers.diet not in (DIET_VEGETARIAN, DIET_SPECIAL):
-            return False
-        if not getattr(f, "is_meat", False):
+        if not _diet.stuns(getattr(self.pers, "diet", None), f):
             return False
         return self.apply_stun(tuning.MEAT_SICK_STUN)
 
@@ -2344,7 +2350,8 @@ class BehaviorFSM:
         for lz in getattr(self.win, "lizards", ()):
             if getattr(lz, "state", None) != ItemState.FREE:
                 continue
-            d = abs(lz.x - x)
+            # 环境伪装（白蜥）：折算成「更远」，蛞蝓猫更晚才发现它
+            d = abs(lz.x - x) * getattr(getattr(lz, "breed", None), "camo_fac", 1.0)
             if d < bd:
                 best, bd = lz, d
         for f in getattr(self.win, "needleworms", ()):
@@ -2611,7 +2618,7 @@ class BehaviorFSM:
                 continue
             if not getattr(f, "fetch_ready", True):
                 continue
-            if getattr(f, "is_meat", False) and self.pers.diet in (DIET_VEGETARIAN, DIET_SPECIAL):
+            if not self._can_eat(f):
                 continue
             d = math.hypot(f.x - b.chunk0.x, f.y - b.chunk0.y)
             if bd is None or d < bd:
@@ -2830,7 +2837,7 @@ class BehaviorFSM:
         for f in self.win.edibles():
             if f.state not in ("free", "hanging"):
                 continue
-            if getattr(f, "is_meat", False) and self.pers.diet in (DIET_VEGETARIAN, DIET_SPECIAL):
+            if not self._can_eat(f):
                 continue    # 素食/圣徒不自主吃肉
             d = math.hypot(f.x - b.chunk0.x, f.y - b.chunk0.y)
             if d < bd:
@@ -3203,7 +3210,7 @@ class BehaviorFSM:
 
     def _air_catch_fly(self) -> bool:
         """空中徒手抓住飞虫（蝙蝠/蝉乌贼/幼面条蝇）：贴到手边就抓（原版上手抓）。"""
-        if self.pers.diet in (DIET_VEGETARIAN, DIET_SPECIAL):
+        if not _diet.hunts_meat(self.pers.diet):
             return False
         b = self.body
         if b.carried_fruit is not None:
@@ -3248,7 +3255,7 @@ class BehaviorFSM:
         for f in items:
             if getattr(f, "state", None) not in ("free", "hanging"):
                 continue
-            if getattr(f, "is_meat", False) and self.pers.diet in (DIET_VEGETARIAN, DIET_SPECIAL):
+            if not self._can_eat(f):
                 continue
             if math.hypot(f.x - hx, f.y - hy) > tuning.GRAB_REACH:
                 continue
@@ -3715,7 +3722,7 @@ class BehaviorFSM:
                 continue
             if not getattr(f, "fetch_ready", True):
                 continue
-            if getattr(f, "is_meat", False) and self.pers.diet in (DIET_VEGETARIAN, DIET_SPECIAL):
+            if not self._can_eat(f):
                 continue
             g = None
             for p in self.win.poles:
@@ -3780,7 +3787,7 @@ class BehaviorFSM:
                 continue
             if not getattr(f, "fetch_ready", True):
                 continue
-            if getattr(f, "is_meat", False) and self.pers.diet in (DIET_VEGETARIAN, DIET_SPECIAL):
+            if not self._can_eat(f):
                 continue
             d = self._hand_reach_dist(f)
             if best is None or d < bd:
@@ -3898,7 +3905,7 @@ class BehaviorFSM:
                     continue
                 if not getattr(cand, "fetch_ready", True):
                     continue
-                if getattr(cand, "is_meat", False) and self.pers.diet in (DIET_VEGETARIAN, DIET_SPECIAL):
+                if not self._can_eat(cand):
                     continue
                 if (self._hpole_spans(p, x=cand.x)
                         and cand.y <= p.ay + tuning.HPOLE_HAND_DOWN):
@@ -6990,7 +6997,7 @@ class BehaviorFSM:
     # ── 徒手抓飞虫（蝙蝠/蝉乌贼）──
     def _nearest_catchable(self):
         """半径内可徒手抓的飞虫（蝙蝠/蝉乌贼/面条蝇，含飞行中）。"""
-        if self.pers.diet in (DIET_VEGETARIAN, DIET_SPECIAL):
+        if not _diet.hunts_meat(self.pers.diet):
             return None
         c0 = self.body.chunk0
         b = self.body

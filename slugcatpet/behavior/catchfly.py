@@ -12,6 +12,7 @@ from ..behavior import tuning
 from .fetch import (EAT_INTERVAL, EAT_HOLD_POSE, EAT_CHOMP_POSE, BITE_HEAD_NUDGE,
                     DELIVER_REACH, DELIVER_GAP, DELIVER_TIMEOUT)
 from ..cats.personality import DIET_VEGETARIAN, DIET_SPECIAL
+from ..cats import diet as _diet
 from ..planning.fly_reach import in_reach
 from .interest import goal_key as _goal_key
 from ..world.needleworm import AGE_SMALL
@@ -143,8 +144,9 @@ class FlyCatcher:
         side = self.grab_side
         self.gfx.hand_aim[side] = (f.x, f.y)
         self.gfx.hand_aim["l" if side == "r" else "r"] = None
-        if not want:
-            # 吃饱了：拎着玩，不杀
+        if not want or not _diet.edible(self._diet(), f):
+            # 吃饱了、或者这东西不在本猫食谱里（原版杂食猫吃不了蝉乌贼尸体）：
+            # 拎着玩一会儿再放生，别白啃
             self.phase = "play"
             self.play_left = tuning.FLY_PLAY_TICKS
             self.poke_t = 0
@@ -159,7 +161,9 @@ class FlyCatcher:
             if self.body.bite_carried():
                 f.state = "eaten"
                 self.body.temper_shift(tuning.TEMPER_FEED)
-                self.body.food_eat(getattr(f, "food_value", 1))
+                self.body.food_eat_object(f)      # 食性结算（原版 ObjectEaten）
+                if self.fsm is not None:
+                    self.fsm.meat_sick(f)         # 圣徒吃荤：当场眩晕
                 self.body.energy_change(tuning.EN_EAT_RESTORE)
                 self.body.release_fruit()
                 return "eaten"

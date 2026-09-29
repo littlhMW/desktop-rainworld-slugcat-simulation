@@ -244,7 +244,8 @@ class NeedleWorm:
                  "rad", "mass", "head_rad", "gravity", "air_friction", "bounce",
                  "surface_friction", "buoyancy", "water_friction", "water_y",
                  "room_gravity", "state", "held_by_hand", "stalk", "bites",
-                 "dead", "eaten", "is_meat", "is_tame_food", "food_value",
+                 "dead", "eaten", "is_meat", "is_tame_food", "food_value", "food_class",
+                 "diet_red_bonus",
                  "health", "edible", "collide_with_objects", "_id", "_impact_cb",
                  "seg", "snout_n", "body_n", "facing", "rotation", "last_rotation",
                  # 飞行 / 渲染
@@ -296,6 +297,11 @@ class NeedleWorm:
         self.food_value = SMALL_FOOD
         self.health = 1.0
         self.edible = self.age == AGE_SMALL  # 原版只有幼体 IPlayerEdible
+        # 食性：幼体 = SmallNeedleWorm（IPlayerEdible，FoodPoints=2，红猫 4×）；
+        # 成体/卵不是食物（原版成体不吃）
+        self.food_class = "prey" if self.age == AGE_SMALL else "none"
+        # SmallNeedleWorm 在红猫/工匠的 4 倍名单里（SlugcatStats.cs:344）
+        self.diet_red_bonus = self.age == AGE_SMALL
         self.bites = SMALL_BITES if self.age == AGE_SMALL else 0
         self.collide_with_objects = True
         self._id = int(seed) * 100 + (0 if self.age == AGE_EGG else 1)

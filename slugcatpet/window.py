@@ -49,8 +49,9 @@ SPAWN_Y_BAND_DEFAULT = (0.55, 1.00)
 def spawnable_kinds() -> tuple:
     """所有 place_<key>(lx, ly) 的类型名 —— 以后新增生物会自动出现在设置列表里。
 
-    只认「两个位置参数」的放置接口：像 place_pole(lx, ly, kind) 这种要额外参数的
-    结构类放置不算「生物」，自动排除。
+    只认「前两个参数＝位置」的放置接口：第三位以后必须带默认值（例如
+    place_lizard(lx, ly, breed=None) 仍算生物），像 place_pole(lx, ly, kind)
+    这种强制要求额外参数的结构类放置不算「生物」，自动排除。
     """
     out = []
     for name, fn in inspect.getmembers(ItemInteractionMixin, inspect.isfunction):
@@ -60,13 +61,17 @@ def spawnable_kinds() -> tuple:
             params = list(inspect.signature(fn).parameters.values())[1:]   # 去掉 self
         except (TypeError, ValueError):
             continue
-        if len(params) != 2:
+        if len(params) < 2:
             continue
-        if all(p.default is inspect.Parameter.empty
-               and p.kind in (inspect.Parameter.POSITIONAL_ONLY,
-                              inspect.Parameter.POSITIONAL_OR_KEYWORD)
-               for p in params):
-            out.append(name[len("place_"):])
+        pos = (inspect.Parameter.POSITIONAL_ONLY,
+               inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        if not all(p.kind in pos and p.default is inspect.Parameter.empty
+                   for p in params[:2]):
+            continue
+        if not all(p.kind in pos and p.default is not inspect.Parameter.empty
+                   for p in params[2:]):
+            continue
+        out.append(name[len("place_"):])
     return tuple(sorted(out))
 
 STONE_FAST_REDRAW = 3.0    # 速度超此整窗重绘

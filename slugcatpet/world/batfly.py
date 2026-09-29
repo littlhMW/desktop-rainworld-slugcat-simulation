@@ -55,6 +55,10 @@ def _deg_to_vec(deg):
 
 
 class BatFly:
+    # 食性：原版 Fly 实现 IPlayerEdible，FoodPoints = 1（Fly.cs:76）；
+    # 红猫/工匠只拿 1 份、圣徒吃下去 -1 会眩晕（SlugcatStats.cs:331）
+    food_class = "prey"
+    diet_red_bonus = False      # Fly 不在红猫/工匠的 4 倍名单里（只给 1/4 格）
     """单 chunk 小飞虫：游走扑翅+力竭挂+手动塞食；接口对齐 Fruit。"""
     collision_layer = 0               # 层0 不参与 collide_objects
 

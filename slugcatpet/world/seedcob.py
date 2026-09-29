@@ -123,6 +123,7 @@ class Seed(Fruit):
     """爆米花种子：一口的小食物，物理同果子但更轻更弹。"""
     __slots__ = ()
     is_meat = False                 # 植物性食物（同果子）
+    food_class = "plant"            # 食性：植物（SlimeMold.cs，Seed 实现为 bites=1 的黏菌）
 
     def __init__(self, x: float, y: float, seed: int = 0):
         super().__init__(x, y, seed=seed)
@@ -145,6 +146,7 @@ def _clamp_placed(y: float, root_y: float) -> float:
 
 
 class SeedCob:
+    food_class = "plant"            # 食性：植物（原版走 handOnExternalFoodSource 直接啃）
     """爆米花植株：无重力、双质点 + 弹簧固定在挂点，靠 open 动画弹开豆荚。"""
     collision_layer = 0
     is_meat = False

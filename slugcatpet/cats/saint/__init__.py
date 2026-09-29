@@ -26,7 +26,10 @@ SAINT_DEF = CatDef(
         "face": ("base", "FaceB"),        # 闭眼
         "face_blink": ("base", "FaceB"),
         "face_open": ("base", "FaceB"),   # 原版 SaintFaceCondition() 恒 true：圣徒永远闭眼
-        "face_stunned": ("base", "FaceB"),  # 晕过去也是圣徒的闭眼脸，不借白猫晕脸
+        # 晕眩脸：原版 PlayerGraphics.cs:2964/3006 对**所有**蛞蝓猫（含圣徒）都用
+        # 同一张 FaceStunned，不做种族分支；圣徒的"永远闭眼"只作用在常态表情上
+        # （DefaultFaceSprite：SaintFaceCondition() 恒 true → FaceB 族）。
+        "face_stunned": ("base", "FaceStunned"),
         "face_dead": ("base", "FaceDead"),  # 死亡脸是标记不是表情，沿用原版
         "legs_walk": ("base", "LegsA"),
         "legs_crawl": ("base", "LegsACrawling"),

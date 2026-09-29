@@ -166,6 +166,11 @@ class SlugcatBody:
         self.food_max = stats.max_food
         self.food_hibernate = stats.food_hibernate
         self.food = int(tuning.FOOD_INIT if food is None else food)
+        # 原版 PlayerState.quarterFoodPoints：食物条内部按 1/4 格记账
+        self.food_quarter = 0
+        # 食性（cats/personality.py 的 DIET_*）：PetUnit 建好 body 后写入，
+        # 供 food_eat_object() 按原版 NourishmentOfObjectEaten 结算
+        self.diet = None
 
         # karma_max 随种族，老存档超值在此夹回
         self.karma_max = tuning.KARMA_MAX if stats.karma_cap is None else stats.karma_cap
@@ -1473,7 +1478,32 @@ class SlugcatBody:
             self.temper = min(0.0, self.temper + tuning.TEMPER_DECAY)
 
     def food_eat(self, n):
-        self.food = max(0, min(self.food_max, self.food + int(n)))
+        """加/扣食物。n 单位＝整格，可为 0.25 的倍数（原版 quarterFoodPoints）。
+
+        Player.cs:6812 AddQuarterFood：4 份 = 1 格；上限按 food_max 折成份数。
+        """
+        q = int(round(float(n) * 4.0))
+        if q == 0:
+            return
+        total = self.food * 4 + self.food_quarter + q
+        total = max(0, min(self.food_max * 4, total))
+        self.food = total // 4
+        self.food_quarter = total % 4
+
+    def food_eat_object(self, obj) -> int:
+        """按食性结算一只完整对象（原版 Player.ObjectEaten）。
+
+        返回吃到的「四分之一格」数；-1 = 不可食（调用方负责眩晕），-2 = 不吃。
+        """
+        from ..cats import diet as _diet
+        q = _diet.nourishment(getattr(self, "diet", None), obj)
+        if q > 0:
+            self.food_eat(q / 4.0)
+        return q
+
+    def food_satisfied(self) -> bool:
+        """吃饱（含零头），到冬眠阈以上。"""
+        return (self.food * 4 + self.food_quarter) >= self.food_hibernate * 4
 
     def karma_gain(self):
         self.karma = min(self.karma_max, self.karma + 1)
@@ -1703,7 +1733,9 @@ class SlugcatBody:
             if getattr(f, "is_karma", False):
                 self.flower_karma = True      # 业力花：只填隐藏花条
             else:
-                self.food_eat(1)
+                q = self.food_eat_object(f)   # 食性结算（原版 ObjectEaten）
+                if q == -1:                   # 不可食（圣徒吃荤）→ 当场眩晕
+                    self.stun = max(self.stun, tuning.MEAT_SICK_STUN)
             self.energy_change(tuning.EN_EAT_RESTORE)
             self.release_fruit()
             return True

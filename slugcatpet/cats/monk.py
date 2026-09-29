@@ -1,4 +1,4 @@
-"""Monk（黄猫）种族定义：白猫的黄色版，HeadA 脸型、无舌无超度、无独占可视机制。"""
+"""僧侣（Monk）种族定义：求生者的黄色版，HeadA 脸型、无舌无超度、无独占可视机制。"""
 from __future__ import annotations
 
 from dataclasses import replace

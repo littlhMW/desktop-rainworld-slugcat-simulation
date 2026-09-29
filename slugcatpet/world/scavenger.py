@@ -359,6 +359,7 @@ def body_colors(rng, iv, elite=False):
 class Scavenger:
     """拾荒者：巡走/警觉/投矛/逃跑 四态。"""
     collision_layer = 0
+    food_class = "none"      # 不是食物：尸体算无用尸体（会被猫拖出屏幕清场）
 
     __slots__ = ("x", "y", "vx", "vy", "last_x", "last_y", "rad", "mass", "gravity",
                  "air_friction", "surface_friction", "bounce", "water_y", "room_gravity",

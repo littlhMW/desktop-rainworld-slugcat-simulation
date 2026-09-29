@@ -48,6 +48,8 @@ def _perp(nx, ny):
 class Fruit:
     """果子本体：单点物理+状态机；hanging 受 Stalk 约束。"""
     collision_layer = 1              # 与 Saint/黏菌同层互推
+    # 食性（cats/diet.py）：植物性食物，原版 IPlayerEdible.FoodPoints = 1
+    food_class = "plant"
 
     __slots__ = ("x", "y", "vx", "vy", "last_x", "last_y",
                  "rad", "mass", "gravity", "air_friction", "bounce", "surface_friction",

@@ -55,6 +55,7 @@ def _lerp_map(v, in_a, in_b, out_a, out_b):
 class SlimeMold:
     """一坨挂黏菌：单点本体+触须丛；粘边态复用 HANGING。"""
     collision_layer = 1              # 与 Saint/果同层互推
+    food_class = "plant"             # 食性：植物（SlimeMold.cs:189 FoodPoints）
 
     __slots__ = ("x", "y", "vx", "vy", "last_x", "last_y",
                  "rad", "mass", "gravity", "air_friction", "bounce", "surface_friction",
