@@ -187,3 +187,69 @@ wiki 的说法是「掷出白色的矛针后可以看到一条长的有机线连
 - 绘制：`window._paint_world` 在 `_draw_back_spears` / `_draw_low_spears` 之后、`pet.gfx.draw_sprites` 之前调用，所以细线永远压在猫与生物之下；`QPen` 圆头逐段连。
 
 验收：`work/scratch/e2e_r91.py` 断言点数落在 10~19、首末点分别钉在尾根与针尾、`needle_live` 变假时线消失、没掷针时不冒线、绘制顺序在源码里的位置。
+
+
+## 13. 庇护所房间几何 / 入口 / 门（`ShelterDoor.cs` + 房间 tile）
+
+庇护所不是一张图，是「房间地形 + 一个 `ShelterDoor` 房间对象」。只提 sprite 永远提不到
+「入口为什么这里没有墙」，必须两边一起提。
+
+### 13.1 房间 tile（入口缺口的真相）
+
+| 事实 | 出处 |
+| --- | --- |
+| 房间文件：`RainWorld_Data/StreamingAssets/world/*-rooms/*_sNN.txt`（还有 `world/gate shelters/*.txt` 是同一批的旧格式副本，按房间名去重） | 安装目录 |
+| 第 2 行 `W*H\|water\|waterInFront`；第 12 行是 `\|` 分隔的 tile 串 | `Room.cs::LoadFromDataString` |
+| 扫描顺序：`intVector2 = (0, H-1)`，每次 `y--`，`y<0` 时 `x++`、`y = H-1` → `index = x*H + (H-1-y)` | `Room.cs:5427` 起 |
+| `TerrainType`：0 Air / 1 Solid / 2 Slope / 3 Floor / 4 ShortcutEntrance / 5 ShortcutWall / 6 GarbageHole / 7 Hive | `Room.cs::TerrainType` |
+| 入口 tile 就是 `Terrain == ShortcutEntrance(4)` 且 `ShortcutMapper` 判为 `RoomExit` 的那一格 | `ShelterDoor.cs:1165` |
+
+实测（去重后 77 间，全部 48×35）：腔室 3×3 共 34 间、6×5 共 31 间；走廊净高 1 tile、
+从入口到腔室共 **6** 格（入口 tile + 5 格走廊）；腔室包围盒到外侧 Solid 的墙厚 8 tile。
+
+### 13.2 入口方位（不能猜）
+
+```
+pZero   = room.MiddleOfTile(入口tile)
+dir     = (0,-1)
+for n in 0..3:                       # Custom.fourDirections
+    if 邻居(l+fd.x, m+fd.y).Terrain == Solid: continue
+    dir = fd;                        # ← 第一个非 Solid 邻居 = 走廊那一侧
+    closeTiles[num] = 入口 + fd*(num+2)   # 门板铺在走廊上
+    break
+pZero  += dir * 60f
+perp    = Custom.PerpendicularVector(dir)
+```
+
+关键：**`dir` 指向屋内**（入口 tile → 走廊/腔室方向），所以入口所在边是 `-dir`。
+77 间里横向入口 46 间（左 26 / 右 20）、竖向 31 间；桌宠庇护所贴地，只用横向，并且
+两套模板各自取自己那批房间的多数值（3×3 → 左 11 / 右 4 = `left`；6×5 → 左 15 / 右 16 = `right`）。
+旧实现 `door_side = "right" if center_x < WL*0.5 else "left"` 纯属按屏幕中线猜，已删除。
+
+### 13.3 门机构（`ShelterDoor.cs`）
+
+| 事实 | 出处 |
+| --- | --- |
+| `new FSprite[42]`，全部 `ColoredSprite3`，容器 `Items`（`isAncient` 时不同） | `ShelterDoor.cs:1796-1810` / `:1945` |
+| 下标：Cog 0-3 / Piston 4-5 / Plug 6-13 / Segment 14-23 / Cylinder 24-27 / Cover 28-31 / Pump 32-39 / Flap 40-41 | `ShelterDoor.cs:1048-1072` |
+| 贴图帧名是单数：`ShelterGate_cog` / `piston1` / `plug1` / `segment1` / `cylinder1` / `cover1` / `pump1` / `Hatch` | 图集 `shelterGate`（38 帧，需单独从安装导出） |
+| `Close()` → `closeSpeed = 0.003125f`（= 1/320）；`openUpTicks = 350f` | `ShelterDoor.cs:1300` 附近 / `:1155` |
+| 相位曲线：`DoorGraphic` 的 `flapsOpen / pistonsClosed / segments / pistons / covers / cylinders / pumpsEnter(0.59,0.7) / pumpsExit(0.75,1) / segmentAlpha` | `ShelterDoor.cs:972-1006` |
+| 齿轮 `rotation = Closed * (j>=2 ? 400 : -150) * (j%2==0 ? -1 : 1)`（绝对赋值，不叠加基准角） | `ShelterDoor.cs:1875` |
+
+桌宠近似：pZero 落在走廊里（原版），但那套机构是给原版至少 3 tile 高的走廊做的，
+桌宠走廊只有 2 tile，照搬会把整扇门压在屋里、把站在门口的猫整个盖住。所以桌宠把机构
+装到外墙外侧（`p_zero.x = 入口中点 + 朝外 * 60`），y 取入口带中线再夹到「机构刚好贴地」，
+两处都在 `shelter.py::_layout` 标了 `[APPROXIMATION]`。
+
+### 13.4 提取与验收
+
+- 提取：`python -m slugcatpet.rwdump.shelter`（也可由 `rwdump.extract --extract-shelters` 串联），
+  落盘到 `~/.slugcatpet/rainworld_dump/shelters/`：`shelter_geometry.json`（逐间 tile 统计 +
+  `entrance_sides` 分布）、`shelter_small.json` / `shelter_large.json`（模板与字段来源）、
+  `shelter_door.json`（42 个 sprite 的帧名 / 锚点 / alpha / draw 语句与行号 / 下标 / 相位）、
+  `shelter_layers.json`（容器 / shader / 整体 rotation + 桌宠六层绘制序）。每条字段都带
+  `source` 与 `[EXACT SOURCE]` / `[APPROXIMATION]` / `UNRESOLVED`，缺数据一律写 `UNRESOLVED` 不猜。
+- 验收：`work/scratch/e2e_r93.py` 断言四壁真碰撞（左墙 / 屋顶对猫实心、入口缺口为空、关门后补上）、
+  `safe_regions` 逐间挖洞而不是并集、`cycle_id` 变化复位 `first_drop_done`、模板 `door_side`
+  与 `shelter_large.json` 的多数值一致、HUD 三个阶段文案、Starvation 不调用 `food_eat`。

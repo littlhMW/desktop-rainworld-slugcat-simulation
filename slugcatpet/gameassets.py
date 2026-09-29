@@ -10,7 +10,11 @@ from .i18n import t
 # 图集名：base + MSC 各含贴图与 UI
 ATLASES = ("rainWorld", "rainworldmsc",
            "uiSprites", "uispritesmsc")
+# 可选图集：不是每台机器 / 每个版本都取得到。缺了渲染回落程序化绘制，不阻塞启动。
+ATLASES_OPTIONAL = ("shelterGate",)
 _ATLAS_REL = Path("RainWorld_Data") / "resources.assets"
+_ATLAS_ERR = {"rainWorld": "err_base_fail", "rainworldmsc": "err_msc_missing",
+              "uiSprites": "err_ui_fail", "uispritesmsc": "err_uimsc_missing"}
 
 
 class SetupError(RuntimeError):
@@ -18,9 +22,16 @@ class SetupError(RuntimeError):
 
 
 def atlases_present(d: Path) -> bool:
+    """核心 4 张图集是否在位（shelterGate 是可选的，缺了不算缺失）。"""
     return all((d / f).exists() for f in
                ("rainWorld", "rainWorld.png", "rainworldmsc", "rainworldmsc.png",
                 "uiSprites", "uiSprites.png", "uispritesmsc", "uispritesmsc.png"))
+
+
+def atlases_complete(d: Path) -> bool:
+    """核心 4 张 + 可选图集全在位。"""
+    return atlases_present(d) and all((d / f).exists() for f in
+                                      ("shelterGate", "shelterGate.png"))
 
 
 # 定位 Steam 安装
@@ -93,8 +104,14 @@ def detect_install() -> Path | None:
 
 # 提取
 
-def extract_atlases(install: Path, dest: Path | None = None) -> Path:
-    """从游戏 resources.assets 提取 4 个图集文件到 dest（默认 ~/.slugcatpet/assets）。"""
+def extract_atlases(install: Path, dest: Path | None = None,
+                    names=None) -> Path:
+    """从游戏 resources.assets 提取图集到 dest（默认 ~/.slugcatpet/assets）。
+
+    ``names=None`` 提取全部（核心 4 张 + 可选）；给名字就只提那几张
+    （用来给旧素材包单独补 shelterGate，不必重导整包）。
+    核心图集缺失一律报错；可选图集取不到只是跳过。
+    """
     install = Path(install)
     res = install / _ATLAS_REL
     if not res.exists():
@@ -106,7 +123,7 @@ def extract_atlases(install: Path, dest: Path | None = None) -> Path:
 
     dest = Path(dest or assets_dir())
     dest.mkdir(parents=True, exist_ok=True)
-    want = set(ATLASES)
+    want = set(names or (ATLASES + ATLASES_OPTIONAL))
     got: dict[str, set[str]] = {}
     env = UnityPy.load(str(res))
     for obj in env.objects:
@@ -126,21 +143,29 @@ def extract_atlases(install: Path, dest: Path | None = None) -> Path:
             (dest / name).write_bytes(raw)
             got.setdefault(name, set()).add("map")
 
-    if got.get("rainWorld") != {"png", "map"}:
-        raise SetupError(t("err_base_fail"))
-    if got.get("rainworldmsc") != {"png", "map"}:
-        raise SetupError(t("err_msc_missing"))
-    if got.get("uiSprites") != {"png", "map"}:
-        raise SetupError(t("err_ui_fail"))
-    if got.get("uispritesmsc") != {"png", "map"}:
-        raise SetupError(t("err_uimsc_missing"))
+    for name, key in _ATLAS_ERR.items():
+        if name in want and got.get(name) != {"png", "map"}:
+            raise SetupError(t(key))
     return dest
 
 
 def ensure_atlases() -> Path:
-    """已导入则直接返回，否则自动定位安装并提取。"""
+    """已导入则直接返回，否则自动定位安装并提取。
+
+    旧素材包（只有核心 4 张）会就地把可选的 shelterGate 补上；补不到也不阻塞
+    启动 —— 门渲染回落到程序化门板。
+    """
+    for d in (assets_dir(), bundled_assets_dir()):
+        if atlases_complete(d):
+            return d
     for d in (assets_dir(), bundled_assets_dir()):
         if atlases_present(d):
+            install = detect_install()
+            if install:
+                try:
+                    extract_atlases(install, d, names=ATLASES_OPTIONAL)
+                except Exception:
+                    pass
             return d
     install = detect_install()
     if not install:

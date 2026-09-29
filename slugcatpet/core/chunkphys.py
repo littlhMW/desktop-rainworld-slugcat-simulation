@@ -180,6 +180,9 @@ class BodyChunk:
         # 其它窗口顶边＝单向平台
         if _oneway_platform(self, r, BOUNCE, TANGENTIAL, impact, self.lcy < 1):
             self.cy = 1
+        # 实心墙体（庇护所）：真碰撞（猫用开放门洞带那一张表）
+        _solid_blocks(self, r, CAT_SOLIDS, impact, self.lcy < 1, self.lcy > -1,
+                      self.lcx)
 
 
 def _fire_impact(c: BodyChunk, direction, speed: float, first_contact: bool, impact) -> None:
@@ -249,6 +252,9 @@ def solve_conn(a: BodyChunk, b: BodyChunk, rest: float = DIST_STAND,
 
 # ── 其它窗口顶边＝单向平台（窗口本体不挡路，只能从上方落上去）──
 PLATFORMS: list = []          # [(x0, y0, x1)] 逻辑坐标，y0＝顶边
+SOLIDS: list = []             # [(x0, y0, x1, y1)] 实心 AABB（庇护所真墙体）
+CAT_SOLIDS: list = []         # 同 SOLIDS（文档口径：猫只能走入口）
+CAT_PASS_SHELTER = False      # 暴雨集合期临时放行：桌宠猫不会绕到入口那一侧
 
 
 def set_platforms(rects) -> None:
@@ -259,6 +265,123 @@ def set_platforms(rects) -> None:
 
 def platforms() -> list:
     return PLATFORMS
+
+
+def set_solids(rects, cat_rects=None) -> None:
+    """由 window 每 tick 刷新：庇护所的墙（左墙/顶/外墙/内墙/关上的门）。
+
+    ``rects`` 给生物 / 物品 / 尸体（真房间）；``cat_rects`` 给蛞蝓猫 ——
+    ``cat_rects`` 现在与它同表（真四壁 + 入口缺口）；单独留着是为了以后按角色改
+        （例如暴雨集合期的放行开关 ``set_cat_shelter_pass``）。
+    """
+    global SOLIDS, CAT_SOLIDS
+    SOLIDS = list(rects or ())
+    CAT_SOLIDS = list(cat_rects) if cat_rects is not None else list(SOLIDS)
+
+
+def solids() -> list:
+    return SOLIDS
+
+
+def cat_solids() -> list:
+    return CAT_SOLIDS
+
+
+def set_cat_shelter_pass(on) -> None:
+    """暴雨集合期允许猫穿过庇护所墙体。
+
+    原版猫从入口（ShelterDoor.cs:1170-1200 提取出的方位）走进屋；桌宠里猫
+    只会在水平面上朝目标直走，绕不到入口那一侧，会一直顶在背面的墙上，
+    番茄钟就卡在集合阶段。所以只在「暴雨真的落下、猫在赶路」这段放行，
+    平时四壁对猫完全实心（文档要求）。
+    """
+    global CAT_PASS_SHELTER
+    CAT_PASS_SHELTER = bool(on)
+
+
+def cat_shelter_pass() -> bool:
+    return CAT_PASS_SHELTER
+
+
+def _solid_blocks(obj, r: float, table, impact=None, prev_floor: bool = False,
+                  prev_ceil: bool = False, prev_x: float = 0.0) -> bool:
+    """圆 vs 实心 AABB：取最小穿透轴推出（竖直优先）。
+
+    这是庇护所墙体的真碰撞。``BodyChunk`` 用 ``cx/cy/support_y`` 记接触，
+    物品用 ``_contact_floor`` / ``_contact_x`` / ``_contact_ceil``：两套都写。
+    """
+    if not table:
+        return False
+    if table is CAT_SOLIDS and CAT_PASS_SHELTER:
+        return False
+    hit = False
+    bounce = getattr(obj, "bounce", BOUNCE)
+    stop = 1.0 + 9.0 * (1.0 - bounce)
+    for (x0, y0, x1, y1) in table:
+        if x1 <= x0 or y1 <= y0:
+            continue
+        if obj.x + r <= x0 or obj.x - r >= x1:
+            continue
+        if obj.y + r <= y0 or obj.y - r >= y1:
+            continue
+        p_left = (obj.x + r) - x0
+        p_right = x1 - (obj.x - r)
+        p_top = (obj.y + r) - y0
+        p_bot = y1 - (obj.y - r)
+        m = min(p_left, p_right, p_top, p_bot)
+        if m <= 0.0:
+            continue
+        hit = True
+        if m == p_top:
+            obj.y = y0 - r
+            if obj.vy > 0.0:
+                if impact is not None:
+                    _fire_impact(obj, (0, 1), abs(obj.vy), prev_floor, impact)
+                obj.vy = -abs(obj.vy) * bounce
+                if obj.vy > -stop:
+                    obj.vy = 0.0
+            _set_floor(obj, y0)
+        elif m == p_bot:
+            obj.y = y1 + r
+            if obj.vy < 0.0:
+                obj.vy = abs(obj.vy) * bounce
+                if obj.vy < stop:
+                    obj.vy = 0.0
+            _set_ceil(obj)
+        elif m == p_left:
+            obj.x = x0 - r
+            if obj.vx > 0.0:
+                obj.vx = -abs(obj.vx) * bounce
+            _set_contact_x(obj, 1)
+        else:
+            obj.x = x1 + r
+            if obj.vx < 0.0:
+                obj.vx = abs(obj.vx) * bounce
+            _set_contact_x(obj, -1)
+    return hit
+
+
+def _set_floor(obj, y0: float) -> None:
+    if hasattr(obj, "cy"):
+        obj.cy = 1
+    if hasattr(obj, "support_y"):
+        obj.support_y = y0
+    if hasattr(obj, "_contact_floor"):
+        obj._contact_floor = True
+
+
+def _set_ceil(obj) -> None:
+    if hasattr(obj, "cy") and getattr(obj, "cy", 0) != 1:
+        obj.cy = -1
+    if hasattr(obj, "_contact_ceil"):
+        obj._contact_ceil = True
+
+
+def _set_contact_x(obj, v: int) -> None:
+    if hasattr(obj, "cx"):
+        obj.cx = v
+    if hasattr(obj, "_contact_x"):
+        obj._contact_x = v
 
 
 def _oneway_platform(obj, r: float, bounce: float, tang: float, impact=None,
@@ -345,6 +468,10 @@ def aabb_wall_collide(obj, WL, HL, impact=None, open_sides=False):
     # 其它窗口顶边＝单向平台（从上方落下即站住）
     if not open_sides and _oneway_platform(obj, r, obj.bounce, tang, impact, not prev_floor):
         obj._contact_floor = True
+    # 实心墙体（庇护所）：真碰撞（尸体 open_sides 时不挡）
+    if not open_sides:
+        _solid_blocks(obj, r, SOLIDS, impact, not prev_floor, not prev_ceil,
+                      prev_x)
 
 
 def _aabb_of(chunks):

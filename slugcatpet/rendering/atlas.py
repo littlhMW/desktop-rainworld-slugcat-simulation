@@ -113,11 +113,19 @@ class AtlasSet:
     """统一管理多张图集，按 key 取图，并能反查帧在哪张图里。"""
 
     KEYS = {"base": "rainWorld", "msc": "rainworldmsc",
-            "ui": "uiSprites", "uimsc": "uispritesmsc"}
+            "ui": "uiSprites", "uimsc": "uispritesmsc",
+            # 庇护所大门（ShelterDoor.InitiateSprites 的 42 张 ShelterGate_*）。
+            # 旧素材包没有这一张 —— 缺了直接跳过，渲染回落到程序化门板。
+            "gate": "shelterGate"}
 
     def __init__(self, base: Path | None = None):
         base = base or resolve_assets_dir()
-        self.atlases = {k: Atlas(name, base) for k, name in self.KEYS.items()}
+        self.atlases = {}
+        for k, name in self.KEYS.items():
+            try:
+                self.atlases[k] = Atlas(name, base)
+            except (FileNotFoundError, OSError, ValueError, KeyError):
+                continue      # 可选图集缺失：不阻塞启动
         # 帧表只读，查询缓存永不失效
         self._where: dict[str, str | None] = {}
         self._ssize: dict[tuple[str, str], tuple[int, int]] = {}

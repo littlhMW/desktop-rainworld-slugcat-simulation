@@ -115,6 +115,18 @@ class RainSystem:
         self.impact = False
         self.impact_xy = None
 
+    def reset_cycle(self):
+        """新一个雨周期开始：「第一滴重雨」要重新算一次。
+
+        旧实现里 ``first_drop_done`` 只在 ``reset()``（关掉暴雨）里清，于是第二个
+        周期开始后永远等不到那记重音/冲击 —— 因为它一直是 True。
+        """
+        self.first_drop = False
+        self.first_drop_done = False
+        self.flash = 0
+        self.impact = False
+        self.impact_xy = None
+
     def rain_force(self, exposure=1.0):
         """雨压：按强度与暴露度算一个向下的加速度（只影响猫 / 生物 / 水）。"""
         if self.intensity <= RAIN_FORCE_DEADZONE:

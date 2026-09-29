@@ -47,26 +47,23 @@ def make_rain_patterns(seed=0x5A17):
     return tuple(out)
 
 
-def safe_hole(shelters):
-    """所有庇护所安全区的并集矩形；没有就 None。"""
-    boxes = [sh.safe_rect() for sh in (shelters or ())]
-    if not boxes:
-        return None
-    x0 = min(b[0] for b in boxes)
-    y0 = min(b[1] for b in boxes)
-    x1 = max(b[2] for b in boxes)
-    y1 = max(b[3] for b in boxes)
-    return (x0, y0, x1, y1)
+def safe_regions(shelters):
+    """每间庇护所各自的矩形（**不是**并集）。
+
+    旧实现 ``safe_hole`` 名字叫并集、实际却对全部矩形做 min/max 合并：场上放两间
+    相距很远的庇护所时，中间整片露天区域会被一起从雨幕里挖掉。这里改成逐个矩形
+    返回，各自挖各自的洞。
+    """
+    return [sh.safe_rect() for sh in (shelters or ())]
 
 
-def _punch(p, hole, WL, HL):
-    """把庇护所区域从当前剪辑里挖掉（不改画笔，只改 clip）。
+def _punch(p, holes, WL, HL):
+    """把每间庇护所的区域从当前剪辑里挖掉（不改画笔，只改 clip）。
 
     用 QRegion 做差集：PySide6 的 Qt.ClipOperation 没有 DifferenceClip。
     """
     reg = QRegion(QRect(0, -4, int(WL) + 1, int(HL) + 48))
-    if hole is not None:
-        x0, y0, x1, y1 = hole
+    for (x0, y0, x1, y1) in (holes or ()):
         reg = reg.subtracted(QRegion(QRect(int(x0), int(y0),
                                            int(x1 - x0) + 1, int(y1 - y0) + 1)))
     p.setClipRegion(reg, Qt.ClipOperation.IntersectClip)
@@ -84,7 +81,7 @@ def draw_rain_under(p, rain, shelters, WL, HL):
         return
     p.save()
     p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
-    _punch(p, safe_hole(shelters), WL, HL)
+    _punch(p, safe_regions(shelters), WL, HL)
     p.setOpacity(min(0.70, 0.14 + 0.62 * d))
     off = rain.tile_off
     for k, img in enumerate(pats):
@@ -111,7 +108,7 @@ def draw_rain_over(p, rain, shelters, WL, HL):
         return
     p.save()
     p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
-    _punch(p, safe_hole(shelters), WL, HL)
+    _punch(p, safe_regions(shelters), WL, HL)
     n = min(rain.visible_drops, len(rain.drops))
     scale = min(1.0, 0.35 + 0.75 * i)
     if n > 0:
@@ -155,8 +152,7 @@ def draw_rain_darkness(p, rain, shelters, WL, HL):
     path = QPainterPath()
     path.setFillRule(Qt.FillRule.OddEvenFill)
     path.addRect(QRectF(0.0, -4.0, WL, HL + 44.0))
-    hole = safe_hole(shelters)
-    if hole is not None:
-        path.addRect(QRectF(hole[0], hole[1], hole[2] - hole[0], hole[3] - hole[1]))
+    for (hx0, hy0, hx1, hy1) in safe_regions(shelters):
+        path.addRect(QRectF(hx0, hy0, hx1 - hx0, hy1 - hy0))
     p.fillPath(path, QColor(r, g, b, int(255 * dk)))
     p.restore()

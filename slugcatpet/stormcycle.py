@@ -26,8 +26,21 @@ def _minutes_to_ticks(minutes):
     return max(1, int(round(float(minutes) * 60.0 * TICK_HZ)))
 
 
-def _all_inside(pets, sh):
-    """所有活着的猫都进了安全区（真死的算「不用管」）。"""
+def _inside_any(body, shelters):
+    for sh in shelters:
+        if sh.contains(body.chunk1.x, body.chunk1.y):
+            return True
+    return False
+
+
+def _all_inside(pets, shelters):
+    """所有活着的猫都进了**任意一间**安全区（真死的算「不用管」）。
+
+    旧实现只认 shelters[0]：场上放两间庇护所时，进了第二间的猫会被判成「还在外面」，
+    于是门永远关不上。
+    """
+    if not shelters:
+        return False
     for p in pets:
         beh = getattr(p, "behavior", None)
         body = getattr(p, "body", None)
@@ -35,7 +48,7 @@ def _all_inside(pets, sh):
             continue
         if beh.is_truly_dead():
             continue
-        if not sh.contains(body.chunk1.x, body.chunk1.y):
+        if not _inside_any(body, shelters):
             return False
     return True
 
@@ -58,6 +71,9 @@ class StormCycle:
         self.rain_drive = 0.0
         self.pressure = 0.0
         self.settle_ticks = int(tuning.STORM_SETTLE_TICKS)
+        # 每进入一次 GATHER 就 +1：window 靠它探测「新一轮雨」并把 RainSystem 的
+        # first_drop_done 复位（旧实现跨周期不复位，第二场雨永远没有第一滴重雨）。
+        self.cycle_id = 0
         self.fade_ticks = max(1, int(tuning.STORM_RAIN_FADE_TICKS))
         self.rise_ticks = max(1, int(tuning.STORM_RAIN_RISE_TICKS))
         self.gather_timeout = _minutes_to_ticks(tuning.STORM_GATHER_TIMEOUT_MINUTES)
@@ -102,22 +118,23 @@ class StormCycle:
 
     # ── 推进 ──
     def step(self, pets, shelters):
-        sh = shelters[0] if shelters else None
-        if not self.enabled or sh is None:
+        shelters = [sh for sh in (shelters or ()) if sh is not None]
+        if not self.enabled or not shelters:
             # 关掉 / 还没放庇护所：雨收回、门打开，但相位不前进
             self.pressure = 0.0
             self.rain_drive = max(0.0, self.rain_drive - 1.0 / self.fade_ticks)
-            if sh is not None and sh.door_state in (CLOSED, CLOSING):
-                sh.start_opening()
+            for sh in shelters:
+                if sh.door_state in (CLOSED, CLOSING):
+                    sh.start_opening()
             return
         if self.phase == FOCUS:
-            self._step_focus(sh)
+            self._step_focus(shelters)
         elif self.phase == GATHER:
-            self._step_gather(pets, sh)
+            self._step_gather(pets, shelters)
         else:
-            self._step_sleep(sh)
+            self._step_sleep(shelters)
 
-    def _step_focus(self, sh):
+    def _step_focus(self, shelters):
         self.phase_t += 1
         self.settle_t = 0
         warn = self.warning_ticks
@@ -134,32 +151,35 @@ class StormCycle:
             self.phase_t = 0
             self.settle_t = 0
             self.pressure = 1.0
+            self.cycle_id += 1          # 新一轮雨：first_drop_done 该复位了
 
-    def _step_gather(self, pets, sh):
+    def _step_gather(self, pets, shelters):
         self.phase_t += 1
         self.pressure = 1.0
         self.rain_drive = min(1.0, self.rain_drive + 1.0 / self.rise_ticks)
-        if sh.door_closed:
+        if all(sh.door_closed for sh in shelters):
             self.settle_t += 1
             if self.settle_t >= self.settle_ticks:
                 self.phase = SLEEP
                 self.phase_t = 0
                 self.settle_t = 0
             return
-        if sh.door_state == CLOSING:
+        if any(sh.door_state == CLOSING for sh in shelters):
             return
-        if self.phase_t >= self.gather_timeout or _all_inside(pets, sh):
-            sh.start_closing()
+        if self.phase_t >= self.gather_timeout or _all_inside(pets, shelters):
+            for sh in shelters:
+                sh.start_closing()
 
-    def _step_sleep(self, sh):
+    def _step_sleep(self, shelters):
         self.phase_t += 1
         self.pressure = 1.0
         remain = self.sleep_ticks - self.phase_t
         if remain <= self.fade_ticks:
             # 收尾：雨势淡出的同时把门打开，猫随后自己醒
             self.rain_drive = max(0.0, self.rain_drive - 1.0 / self.fade_ticks)
-            if sh.door_state in (CLOSED, CLOSING):
-                sh.start_opening()
+            for sh in shelters:
+                if sh.door_state in (CLOSED, CLOSING):
+                    sh.start_opening()
         else:
             self.rain_drive = min(1.0, self.rain_drive + 1.0 / self.rise_ticks)
         if self.phase_t >= self.sleep_ticks:
@@ -167,6 +187,41 @@ class StormCycle:
             self.phase_t = 0
             self.settle_t = 0
             self.pressure = 0.0
+
+    # ── 左下角 HUD 的原料（只给数据，绘制在 rendering/storm_hud.py） ──
+    def hud_info(self, pets=None):
+        """返回 {mode, seconds, starvation, hungry}；关掉暴雨时 None。
+
+        mode: ``cycle``（Rain Cycle M:SS）/ ``rain``（预警 Rain M:SS）/
+        ``hibernation``（暴雨期 Hibernation + 睡眠剩余）。
+        """
+        if not self.enabled:
+            return None
+        if self.phase == FOCUS:
+            remain = max(0, self.focus_ticks - self.phase_t)
+            mode = "rain" if remain <= self.warning_ticks else "cycle"
+        elif self.phase == GATHER:
+            remain = max(0, self.sleep_ticks)
+            mode = "hibernation"
+        else:
+            remain = max(0, self.sleep_ticks - self.phase_t)
+            mode = "hibernation"
+        need = 0
+        for p in (pets or ()):
+            beh = getattr(p, "behavior", None)
+            body = getattr(p, "body", None)
+            if body is None or (beh is not None and beh.is_truly_dead()):
+                continue
+            miss = int(getattr(body, "food_hibernate", 0)) * 4 - (
+                int(getattr(body, "food", 0)) * 4
+                + int(getattr(body, "food_quarter", 0)))
+            if miss > need:
+                need = miss
+        return {"mode": mode, "seconds": remain / TICK_HZ,
+                "phase": self.phase,
+                "starvation": (need + 3) // 4,
+                "hungry": need > 0,
+                "storm": self.phase in (GATHER, SLEEP)}
 
     # ── 存档 ──
     def to_dict(self):

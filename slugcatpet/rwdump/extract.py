@@ -26,6 +26,7 @@ from . import assets as A
 from . import code as C
 from . import report as RP
 from . import rig as R
+from . import shelter as SH
 
 TOOL = "RainWorldExtractor"
 VERSION = "2.0"
@@ -55,7 +56,7 @@ def _atlas_src(out: Path, install, warnings: list, log):
         return out / "atlas_src"
 
 
-ALL_STAGES = ("assets", "sprites", "code", "rigs")
+ALL_STAGES = ("assets", "sprites", "code", "rigs", "shelters")
 
 
 def extract(install=None, out=None, decomp=None, graphics_only: bool = False,
@@ -151,6 +152,16 @@ def extract(install=None, out=None, decomp=None, graphics_only: bool = False,
                tail_branches=len(rig.get("tail_branches", [])),
                sprite_index=len(rig.get("sprite_index", {})))
 
+    # ── 4b：庇护所几何 / 门机构 / 层序 ─────────────────────────────
+    if "shelters" in want:
+        log("抽庇护所几何 …")
+        try:
+            summ = SH.build(install, decomp, out, warnings, log)
+            _stage(manifest, "shelters", **summ)
+        except Exception as e:
+            warnings.append("庇护所提取失败：%r" % (e,))
+            log("  庇护所提取失败：%r" % (e,))
+
     families: list = []
     if atlas_db:
         families = R.frame_families(atlas_db)
@@ -207,6 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--extract-sprites", action="store_true", help="只做图集/精灵层")
     ap.add_argument("--extract-rigs", action="store_true", help="只做骨架/层序/帧族")
     ap.add_argument("--extract-code", action="store_true", help="只做逻辑/生物层")
+    ap.add_argument("--extract-shelters", action="store_true", help="只做庇护所几何/门机构")
     ap.add_argument("--no-images", action="store_true", help="不生成 PNG 预览")
     ap.add_argument("--show", action="store_true", help="只打印已生成资料库的摘要")
     args = ap.parse_args(list(argv) if argv is not None else None)
@@ -230,7 +242,8 @@ def main(argv: list[str] | None = None) -> int:
     picked = {name for name, on in (("assets", args.extract_assets),
                                     ("sprites", args.extract_sprites),
                                     ("rigs", args.extract_rigs),
-                                    ("code", args.extract_code)) if on}
+                                    ("code", args.extract_code),
+                                    ("shelters", args.extract_shelters)) if on}
     extract(install=install, out=out, decomp=args.decomp,
             graphics_only=args.graphics_only, images=not args.no_images,
             stages=picked or None)

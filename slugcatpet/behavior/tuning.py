@@ -737,7 +737,9 @@ STORM_GATHER_TIMEOUT_MINUTES = 3.0  # 集合阶段兜底：这么久还没全进
 STORM_SETTLE_TICKS = 40           # 全员进庇护 → 关门后再稳定 1s 才入睡
 STORM_RAIN_RISE_TICKS = 1200      # 暴雨起势：雨强 0→1 的连续爬升耗时（30s）
 STORM_RAIN_FADE_TICKS = 80        # 暴雨收尾：雨强归零耗时（2s）
-STORM_DOOR_TICKS = 40             # 庇护所门 0→1 开合耗时（1s）
+STORM_DOOR_TICKS = 320            # 庇护所门 0→1 开合耗时。反编译 ShelterDoor.Close()
+                                  # closeSpeed = 0.003125f → 1/0.003125 = 320 tick；
+                                  # 开门用 openUpTicks = 350f（见 world/shelter.py）
 SHELTER_ENTRY_RADIUS = 26.0       # entry_goal 到位容差
 STORM_FLOOD_MAX_HEIGHT_FRAC = 1.0    # 峰值积水高度占 HL 的比例：1.0＝淹到整个屏幕
 

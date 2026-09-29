@@ -58,6 +58,12 @@ _STR = {
                                "en": "Checked kinds show up on their own (no limit)"},
     "tip_erase":   {"zh": "删除模式（点谁删谁）", "en": "Erase mode (click to delete)"},
 
+    # —— 左下角暴雨 HUD ——
+    "hud_rain_cycle":  {"zh": "雨循环", "en": "Rain Cycle"},
+    "hud_rain":        {"zh": "降雨", "en": "Rain"},
+    "hud_hibernation": {"zh": "冬眠", "en": "Hibernation"},
+    "hud_starvation":  {"zh": "饥饿", "en": "Starvation"},
+
 
     # —— tabbar：toast ——
     "toast_max_fruit":  {"zh": "场上最多 3 个果子", "en": "At most 3 fruits on the field"},
