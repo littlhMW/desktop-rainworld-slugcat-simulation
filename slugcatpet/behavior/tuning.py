@@ -352,6 +352,7 @@ PROTEST_R = 240.0
 FIGHT_R = 320.0
 FIGHT_TICKS = 900
 FIGHT_THROW_CD = 26
+FIGHT_RETRY_CD = 6            # 一次没掷成（起跳 / 线被挡 / 上手冷却）后的短重试间隔
 FIGHT_ARM_R = 170.0           # 手里/脚边有家伙时主动迎战的距离
 FIGHT_MELEE_R = 40.0          # 够近就用身子撞/抓咬
 FIGHT_ARM_KEEP = 72.0         # 持械时与威胁保持的距离（拉开了才好扔）

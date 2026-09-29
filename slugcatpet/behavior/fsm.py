@@ -166,7 +166,11 @@ _WATER_BLOCKED = frozenset(("RelocateToWall", "TongueClimb", "CeilingHang", "Swi
 _FETCH_NEVER = frozenset(("FetchFruit", "Ascension", "Dragged", "Dead", "WakeSequence",
                           "Stunned", "SeekWarmth", "Swimming",
                           "LieDown", "Sleep",          # 趴/睡时别把猫叫起来去取果
-                          "PyroMaul", "RivSnatch", "CatchFly", "ItemPlay"))
+                          "PyroMaul", "RivSnatch", "CatchFly", "ItemPlay",
+                          # 面敌做出的决定是锁：迎战 / 掩护同伴 / 逃跑这三个态里
+                          # 不许取食欲望把人拆走去吃果子（旧版漏了这三项，于是
+                          # 「刚决定迎战 → 下一拍又被叫去取果」，战斗态形同虚设）
+                          "FightThreat", "CoverAlly", "FleeLizard"))
 # play 态接管取果需果在舌头射程内
 _FETCH_PLAY = frozenset(("PoleClimb", "HPole", "CeilingHang"))
 
@@ -402,6 +406,7 @@ class BehaviorFSM:
         self._revive_cd = 0
         self._saved_walk = None
         self._fight_throw_t = 0
+        self._throw_jumped = False           # 上一次 _throw_weapon_at 只是起跳没出手
         self._blocked_ticks = 0
         self._block_grace = 0
         self._jump_over_cd = 0
@@ -4630,17 +4635,17 @@ class BehaviorFSM:
         # 4) 反击：被咬/被砸后（anger>0）仇人还在附近
         #    手里/脚边有家伙时也会主动迎战（原版持械的猫）
         if self._fight_cd <= 0:
-            ranged = self.anger > 0
+            ranged = self.anger > 0          # 被咬/被砸过：记仇，去报复（会先找家伙）
             armed = self._weapon_ready()
-            brave_melee = brave >= tuning.FIGHT_UNARMED_BRAVE
-            # 越勇敢迎战越远；够勇敢的猫空手也会在近身范围内扑上去
-            r = tuning.FIGHT_R if ranged else max(
-                tuning.FIGHT_ARM_R if armed else 0.0,
-                tuning.FIGHT_UNARMED_R if brave_melee else 0.0) * (0.55 + 0.90 * brave)
+            # 越勇敢迎战越远。**空手不再主动扑上去**：原版空手根本打不动蜥蜴，
+            # 旧版让高勇敢的猫空手也能进 FightThreat，进去发现没家伙立刻
+            # _fight_end，于是反复「冲上去 → 结束」——就是「飞快上去挤着送死」。
+            r = tuning.FIGHT_R if ranged else (
+                tuning.FIGHT_ARM_R * (0.55 + 0.90 * brave) if armed else 0.0)
             lz = self._nearest_throw_target(r) if r > 0.0 else None
             can_rip = (brave >= tuning.RIP_SPEAR_BRAVE and lz is not None
                        and self._nearest_rip_spear(lz) is not None)
-            if lz is not None and (ranged or armed or can_rip or brave_melee):
+            if lz is not None and (ranged or armed or can_rip):
                 self._fight_target = lz
                 self._fight_left = tuning.FIGHT_TICKS
                 self._break_active_controllers()
@@ -5915,6 +5920,7 @@ class BehaviorFSM:
     def _fight_enter(self):
         self._fight_left = tuning.FIGHT_TICKS
         self._fight_throw_t = 0
+        self._throw_jumped = False
         self.body.set_posture(True)
         self.body.stop_walk()
 
@@ -6077,8 +6083,16 @@ class BehaviorFSM:
         self._act_end()
         self._aim_target(tgt)
         if self._fight_throw_t >= tuning.FIGHT_THROW_CD:
-            self._fight_throw_t = 0
-            self._throw_weapon_at(tgt)
+            # 只有**真的掷出去了**才重新计满冷却。旧版无条件把 _fight_throw_t 清零，
+            # 而目标偏高时 _throw_weapon_at 只是 request_jump 就返回 False：跳跃
+            # 时长短于 FIGHT_THROW_CD 时下一轮又从头计时、再跳一次，形成「面对敌人
+            # 一直跳却从不投矛」的相位死锁。现在分三种结果（出手 / 起跳 / 条件不满足）
+            # 处理：没出手只等一个短重试窗口，跳起来以后下一轮就在空中把矛掷出去。
+            self._throw_jumped = False
+            if self._throw_weapon_at(tgt):
+                self._fight_throw_t = 0
+            else:
+                self._fight_throw_t = tuning.FIGHT_THROW_CD - tuning.FIGHT_RETRY_CD
 
     def _throw_line_blocked(self, dir_x, tgt=None) -> bool:
         """自己→目标之间站着别的蛞蝓猫 → 这一掷取消。
@@ -6149,6 +6163,7 @@ class BehaviorFSM:
         dy = tgt.y - c0.y                       # y↓：<0 目标在上方
         if abs(dy) > THROW_JUMP_DY and b.on_floor():
             b.request_jump("stand")             # 站在地上：跳到那一层再水平掷出
+            self._throw_jumped = True           # 告诉调用方「这是起跳，不是出手」
             return False                        # 已经在空中就直接掷（原版空中投矛）
         return self._launch_weapon(1 if dx >= 0.0 else -1, tgt)
 
