@@ -535,7 +535,7 @@ class Lizard:
                  "dead", "spacing", "spikes", "like", "tamed", "friend_id",
                  "max_health", "health", "stun", "hurt_flash", "dead_t",
                  "rock_push", "rock_push_dir",
-                 "hauled", "is_meat", "wall_dir",
+                 "hauled", "haul_thrown", "is_meat", "wall_dir",
                  "anger", "anger_obj", "submitted_to",
                  "threat", "threat_obj", "threat_t",
                  "noise_x", "noise_y", "noise_t", "lurk",
@@ -584,6 +584,7 @@ class Lizard:
         self.dead_t = 0          # 尸体已躺 tick
         self.is_meat = False     # 蜥蜴不是食物：尸体算无用尸体（会被猫拖出屏幕清场）
         self.hauled = False      # 正被蛞蝓猫拖着走：位置每 tick 由猫写死
+        self.haul_thrown = False  # 被猫拖到屏幕边丢出去：过边即真删（window._cull_flung_corpses）
         self.wall_dir = 0        # 贴在左右墙时记墙侧（窗口边缘＝墙）
         # 原版 AgressionTracker：对 AggressiveRival 对象的怒气（0..1，涨落各 0.001/tick）
         self.anger = 0.0
@@ -690,6 +691,16 @@ class Lizard:
     def mass(self):
         """通用工具（水花溅射强度）读的质量。"""
         return 1.0 + 0.5 * self.breed.body_size_fac
+
+    @property
+    def haul_chunk_mass(self):
+        """被拖拽时「被抓那一节」的质量：Lizard.cs bodyChunks[0] = bodyMass / 3。"""
+        return self.breed.body_mass / 3.0
+
+    @property
+    def haul_mass(self):
+        """拖拽质量判据用的总质量：原版 grabbed.TotalMass（蜥蜴三节合计 = bodyMass）。"""
+        return self.breed.body_mass
 
     def body_path(self):
         """头到尾的折线，供渲染与包围盒。"""
@@ -833,14 +844,22 @@ class Lizard:
         位置钉死 + step 里跳过 _integrate，尸体就不会自己往下掉 / 乱弹。
         """
         self.hauled = True
+        self.haul_thrown = False      # 又被拖起来了：丢掉上一次的丢出标记
         self.vx = self.vy = 0.0
         self.x, self.y = x, y
         if abs(dirv) > TURN_VX:
             self.chain_dir = 1.0 if dirv > 0.0 else -1.0
 
-    def release_haul(self, vx=0.0, vy=0.0) -> None:
-        """松爪（拖到屏幕边甩出去 / 被打断）。"""
+    def release_haul(self, vx=0.0, vy=0.0, thrown_out=False) -> None:
+        """松爪（拖到屏幕边甩出去 / 被打断）。
+
+        thrown_out=True ＝ 这一下是「丢出屏幕」（被猫拖到边丢掉的）：
+        打上标记后一过窗口边就真删（window._cull_flung_corpses 只对标记过的
+        尸体做这种「过边即删」）。被打断/超时放弃也走这条 —— 那时同样朝最近
+        的屏幕边甩，否则尸体会原地躺在边上既不消失也没人再管。
+        """
         self.hauled = False
+        self.haul_thrown = bool(thrown_out)
         self.vx, self.vy = vx, vy
 
     # ── 主循环 ──
@@ -936,7 +955,8 @@ class Lizard:
             if self.vy > 0.0:
                 self.vy = 0.0
             self._contact_floor = True
-            self.vx *= GROUND_FRICTION
+            if not self.haul_thrown:      # 被丢出屏幕的尸体不吃地面摩擦：一路滑出去
+                self.vx *= GROUND_FRICTION
         elif not self.dead and self.y < r:
             # 尸体不挡顶边：被甩出去就飞走（活动物照旧撞顶）
             self.y = r

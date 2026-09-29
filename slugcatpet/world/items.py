@@ -1348,7 +1348,12 @@ class ItemInteractionMixin:
         return (e.x < -r - m or e.x > self._WL + r + m or e.y < -r - m)
 
     def _cull_flung_corpses(self):
-        """被甩出窗口的尸体直接清除（非蛞蝓猫的才算，猫死了另有守灵/转生逻辑）。"""
+        """被甩出窗口的尸体直接清除（非蛞蝓猫的才算，猫死了另有守灵/转生逻辑）。
+
+        蛞蝓猫拖到屏幕边丢出去的那具（release_haul(thrown_out=True) 标记过）单独一条
+        规则：越过窗口边就删 —— 不看半径/边距，也不靠摩擦减速停在边上（拖着走的尸体
+        贴着地面，旧规则下常减速停住 = 「尸体只是在屏幕边缘没删除」）。
+        """
         for e in (*self.lizards, *self.squidcadas, *self.batflies,
                   *self.needleworms, *self.scavengers):
             if (not getattr(e, "dead", False) or e.state != ItemState.FREE
@@ -1356,6 +1361,10 @@ class ItemInteractionMixin:
                     or e is self._dragged_batfly
                     or e is self._dragged_needleworm
                     or e is self._dragged_scavenger):
+                continue
+            if getattr(e, "haul_thrown", False):
+                if e.x <= 0.0 or e.x >= self._WL or e.y <= 0.0:
+                    e.state = ItemState.GONE
                 continue
             rad = getattr(e, "rad", None) or getattr(e, "body_rad", 0.0)
             if self._out_of_window(e, rad):
@@ -1381,6 +1390,7 @@ class ItemInteractionMixin:
                     prey=prey, cats=targets, threats=threats, others=others, pack=pack)
             self._lizard_bite(lz)
         self._cull_flung_corpses()
+        self.lizards = [lz for lz in self.lizards if lz.state != ItemState.GONE]
 
     def _lizard_relations(self, lz):
         """按原版关系表（StaticWorld.cs:3668-3726 + LizardAI.ModuleToTrackRelationship）

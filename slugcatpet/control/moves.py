@@ -5,6 +5,7 @@ from ..core import creature as cr
 from . import moves_posture as mp
 from . import moves_slide as ms
 from . import moves_jump as mj
+from . import moves_throw as mt
 
 
 def ctrl_movement_update(body):
@@ -174,6 +175,9 @@ def ctrl_movement_update(body):
                 c.x = body.walk_min
             elif c.x > body.walk_max:
                 c.x = body.walk_max
+
+    # 拾取/投掷（原版 PickUpAndThrow 在 MovementUpdate 之后同一帧跑）
+    mt.ctl_throw_update(body)
 
     # 工匠专属钩子，非工匠恒 None
     pyro = getattr(body, "_ctrl_pyro", None)

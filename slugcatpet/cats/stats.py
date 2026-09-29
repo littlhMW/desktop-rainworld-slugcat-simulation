@@ -45,6 +45,9 @@ class SlugStats:
     # 滑铲前冲正弦峰值；belly_no_kick=省略起始后蹬（仅溪流）
     belly_slide_spd: float = 18.1
     belly_no_kick: bool = False
+    # 长滑铲（滑行中反向掷物触发）：正弦峰值 num8、计时上限 39、取消窗口 num13
+    belly_slide_spd_long: float = 14.0
+    belly_jump_cancel_long: int = 34
 
     # 计时<此值按跳键=取消滑铲
     belly_jump_cancel_window: int = 12
@@ -69,6 +72,9 @@ class SlugStats:
     bubble_fac: float = 1.0           # 吐泡概率倍率（桌宠原创）
     is_rivulet: bool = False          # 溪流游泳特判（潜泳冲力/鳃免溺等）
     is_artificer: bool = False        # 工匠水下耗尽气溺爆而死
+
+    # 原版 throwingSkill：滑铲抛物增距要 > 0 才生效（Player.cs:11278）
+    throwing_skill: int = 1
 
     # 0-based，HUD 显示 +1；None=用全局 KARMA_MAX
     karma_cap: int | None = None

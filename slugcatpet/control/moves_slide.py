@@ -23,9 +23,11 @@ _SLIDE_DEFAULTS = {
     "_ctrl_consistent_dd": 0,       # 连续同向 downDiagonal 帧数
     "_ctrl_fall_speed": 0.0,        # 上一离地帧下坠速度
     "_ctrl_prev_floor": True,       # 上一 tick 是否接地
+    "_ctrl_long_belly": False,      # 长滑铲（BellySlide 反向掷物后）标志
 }
 
 BELLY_PERIOD = 15.0     # 正弦周期
+BELLY_PERIOD_LONG = 39.0  # 长滑铲正弦周期（Player.cs:8395 的 39f）
 DEFAULT_DYN = 3.6       # Default bodyMode 跑速上限
 
 
@@ -44,6 +46,8 @@ def clear_flags(body) -> None:
         body._ctrl_flip_from_slide = False
     if body._ctrl_whiplash and a != "BellySlide":
         body._ctrl_whiplash = False
+    if body._ctrl_long_belly and a != "BellySlide":   # 原版 Player.cs:7502
+        body._ctrl_long_belly = False
 
 
 def movement_increments(body) -> None:
@@ -156,17 +160,25 @@ def anim_forces(body, move_x, inp0, inp1) -> None:
 
 
 def _belly_slide(body, inp0, inp1) -> None:
-    """滑铲每帧力（平地简化：略穿平台下坠/斜面）。"""
+    """滑铲每帧力（平地简化：略穿平台下坠/斜面）。
+
+    长滑铲（longBellySlide，滑行中反向掷物触发）：正弦峰值换 num8、周期 39、
+    退出上限 39/反向计数 16/取消窗口 num13，收尾直接站起来并给一下上跳
+    （Player.cs:8395-8477）。
+    """
     c0, c1 = body.chunk0, body.chunk1
     body.bodyMode = "Default"
     rd = body._ctrl_roll_direction
     rc = body._ctrl_roll_counter
+    lng = body._ctrl_long_belly
     if rc < 6 and not body.stats.belly_no_kick:  # 起始后蹬；溪流无后蹬
         c1.vy -= 2.7
         c1.vx -= 9.1 * rd
     else:                                        # 贴地 +0.5
         c1.vy += 0.5
-    c0.vx += body.stats.belly_slide_spd * rd * _sin(rc / BELLY_PERIOD)  # 正弦主推进，峰值按种族
+    spd = body.stats.belly_slide_spd_long if lng else body.stats.belly_slide_spd
+    period = BELLY_PERIOD_LONG if lng else BELLY_PERIOD
+    c0.vx += spd * rd * _sin(rc / period)        # 正弦主推进，峰值按种族
     c0.vy += 2.3                                 # 头下压
     for c in (c0, c1):                           # 悬空摩擦
         if c.cy == 0:
@@ -176,21 +188,31 @@ def _belly_slide(body, inp0, inp1) -> None:
         body._ctrl_exit_belly += 1
     else:
         body._ctrl_exit_belly = 0
-    if rc > 5 and inp0.x == -rd:                  # 甩尾反跳标志
+    if lng:                                      # 长滑铲期不再判甩尾反跳
+        body._ctrl_whiplash = False
+    elif rc > 5 and inp0.x == -rd:                # 甩尾反跳标志
         body._ctrl_whiplash = True
     jmp_edge = inp0.jmp and not inp1.jmp          # 退出判据
-    if ((rc > 8 and body._ctrl_exit_belly > 6)
-            or rc > 15
-            or (jmp_edge and 0 < rc < body.stats.belly_jump_cancel_window)):
+    j_win = (body.stats.belly_jump_cancel_long if lng
+             else body.stats.belly_jump_cancel_window)
+    if ((rc > 8 and body._ctrl_exit_belly > (16 if lng else 6))
+            or rc > (39 if lng else 15)
+            or (jmp_edge and 0 < rc < j_win)):
         c0.vy = 0.0
         c1.vy = 0.0
         body._ctrl_roll_direction = 0
         body.animation = None
-        body.standing = (inp0.y == 1)            # pet 无天花板，恒真
-        for c in (c0, c1):                        # |vel.x|>8 减速
-            if abs(c.vx) > 8.0:
-                c.vx *= 0.5
-                c.vy *= 0.5
+        body._ctrl_long_belly = False
+        if lng:                                   # 长滑铲收尾：站起 + 上跳
+            body.standing = True
+            c0.vy = -6.0
+            c1.vy = -4.0
+        else:
+            body.standing = (inp0.y == 1)         # pet 无天花板，恒真
+            for c in (c0, c1):                    # |vel.x|>8 减速
+                if abs(c.vx) > 8.0:
+                    c.vx *= 0.5
+                    c.vy *= 0.5
     else:
         body.standing = False
 

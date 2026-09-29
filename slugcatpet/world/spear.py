@@ -44,6 +44,7 @@ class Spear:
                  "state", "angle_deg", "last_angle", "spin", "spinning", "stuck", "stuck_angle",
                  "_id", "_rng", "_contact_floor", "_contact_ceil", "_contact_x", "_impact_cb",
                  "_thrown", "_throw_dir", "_exit_spd", "_throw_x", "_throw_y",
+                  "always_stick",
                  "collide_with_objects", "held_by", "embedded", "stuck_to", "_still",
                  "thrower", "no_self_t", "pinned", "pole", "toss_t")
 
@@ -74,6 +75,7 @@ class Spear:
         self._contact_x = 0
         self._impact_cb = None
         self._thrown = False
+        self.always_stick = False    # Weapon.alwaysStickInWalls（滑铲掷出的矛必定插墙）
         self._throw_dir = 0
         self._exit_spd = 0.0
         self._throw_x = self._throw_y = 0.0

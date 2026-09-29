@@ -253,6 +253,11 @@ class NeedleWorm:
                  "hatch_spawn", "_wobble", "_goal", "_goal_timer",
                  "_contact_floor", "_contact_x", "_rng")
 
+    @property
+    def haul_chunk_mass(self):
+        """被拖拽时「被抓那节」的质量：NeedleWorm.cs:85（每节 Lerp(0.05, 0.15, t)）。"""
+        return 0.1
+
     def __init__(self, x: float, y: float, seed: int = 0, age: str | None = None):
         rng = self._rng = _random.Random(seed * 4897 + 11)
         self.age = age if age in (AGE_EGG, AGE_SMALL, AGE_BIG) else _roll_age(rng)

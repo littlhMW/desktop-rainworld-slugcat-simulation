@@ -89,6 +89,16 @@ class Squidcada:
                  "look_at", "look_dir", "look_rot", "charging_vis",
                  "threat_mode", "threat_pos", "_contact_ceil")
 
+    @property
+    def haul_chunk_mass(self):
+        """被拖拽时「被抓那节」的质量：Cicada.cs:130-133（每节 = num/2，num 公 0.65 / 母 0.55）。"""
+        return (0.65 if self.male else 0.55) / 2.0
+
+    @property
+    def haul_mass(self):
+        """被拖拽对象总质量：Cicada.cs:130-133 两节合计 = num（公 0.65 / 母 0.55）。"""
+        return 0.65 if self.male else 0.55
+
     def __init__(self, x: float, y: float, seed: int = 0):
         self.x = self.last_x = float(x)
         self.y = self.last_y = float(y)

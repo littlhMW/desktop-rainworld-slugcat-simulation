@@ -1715,10 +1715,11 @@ class SlugcatBody:
         return side
 
     def throw_stone(self, dir_x, frc=1.0, up=3.0, recoil=1.0,
-                    vel=None, fling=False, by_saint=True):
+                    vel=None, fling=False, by_saint=True, dir_y=0.0):
         """Throw carried stone; return stone (free + velocity) or None.
 
         初速走原版 Weapon.Thrown：vx = c0.vx*0.2 + dir*40*frc；vy = c0.vy*0.5 - 3（石头）。
+        dir_y != 0 且 dir_x == 0 时走垂直分支（Weapon.cs:481-489）。
         vel 给定 (vx, vy) 时直接采用（狩猎/拾荒预判用）；fling=True 才进入
         「投掷物可伤生物」通道（同原版投掷石头）。
         """
@@ -1727,13 +1728,17 @@ class SlugcatBody:
             return None
         c0, c1 = self.chunk0, self.chunk1
         sx = c0.x + float(dir_x) * THROW_ORIGIN_DX
-        sy = c0.y - THROW_ORIGIN_DY
+        sy = c0.y - float(dir_y) * THROW_ORIGIN_DX - THROW_ORIGIN_DY
         s.last_x, s.last_y = s.x, s.y
         s.last_rotation = s.rotation_deg
         s.x = sx
         s.y = sy
         if vel is None:
-            s.vx, s.vy = weaponphys.throw_velocity(c0, dir_x, False, float(frc))
+            if float(dir_x) == 0.0 and float(dir_y) != 0.0:
+                s.vx, s.vy = weaponphys.throw_velocity_vertical(c0, dir_y, float(frc))
+                s.rotation_deg = 180.0 if float(dir_y) < 0.0 else 0.0
+            else:
+                s.vx, s.vy = weaponphys.throw_velocity(c0, dir_x, False, float(frc))
         else:
             s.vx = c0.vx * 0.2 + float(vel[0])
             s.vy = c0.vy * 0.2 + float(vel[1])
@@ -1743,10 +1748,12 @@ class SlugcatBody:
         s.fling = bool(fling)
         s.thrown_by_saint = bool(by_saint)
         s.state = "free"
-        weaponphys.begin_thrown(s, dir_x, float(frc))
+        weaponphys.begin_thrown(s, dir_x, float(frc), float(dir_y))
         self.release_stone(to_free=False)
         c0.vx += float(dir_x) * 8.0 * recoil
+        c0.vy -= float(dir_y) * 8.0 * recoil
         c1.vx -= float(dir_x) * 4.0 * recoil
+        c1.vy += float(dir_y) * 4.0 * recoil
         return s
 
     def _apply_carry_stone(self):
@@ -1822,10 +1829,12 @@ class SlugcatBody:
             wob = math.cos(self.stride_phase * 2.0 * math.pi * self.walk_bob_freq) * 4.0
         return _ang_from_up(fdir, -up_frac) + fdir * wob
 
-    def throw_spear(self, dir_x, frc=1.0, up=1.5, recoil=1.0, vel=None, toss=False):
+    def throw_spear(self, dir_x, frc=1.0, up=1.5, recoil=1.0, vel=None, toss=False,
+                    dir_y=0.0):
         """Throw carried spear; return spear (free + velocity) or None.
 
         初速走原版 Weapon.Thrown：vx = c0.vx*0.2 + dir*40*frc；vy = c0.vy*0.5 - 1.5（矛上抬少）。
+        dir_y != 0 且 dir_x == 0 时走垂直分支（Weapon.cs:481-489）：矛尖顺着掷出方向。
         toss=True 改走 Player.TossObject 轻抛（圣徒投矛）：不进 Thrown、不插墙。
         """
         sp = self.carried_spear
@@ -1833,7 +1842,7 @@ class SlugcatBody:
             return None
         c0, c1 = self.chunk0, self.chunk1
         sx = c0.x + float(dir_x) * THROW_ORIGIN_DX
-        sy = c0.y - THROW_ORIGIN_DY
+        sy = c0.y - float(dir_y) * THROW_ORIGIN_DX - THROW_ORIGIN_DY
         sp.last_x = c0.x - float(dir_x) * THROW_ORIGIN_DX   # 原版 firstFrameTraceFromPos
         sp.last_y = c0.y
         sp.x = sx
@@ -1854,8 +1863,12 @@ class SlugcatBody:
             c0.vx += float(dir_x) * 4.0 * recoil
             c1.vx -= float(dir_x) * 2.0 * recoil
             return sp
+        vertical = float(dir_x) == 0.0 and float(dir_y) != 0.0
         if vel is None:
-            sp.vx, sp.vy = weaponphys.throw_velocity(c0, dir_x, True, float(frc))
+            if vertical:
+                sp.vx, sp.vy = weaponphys.throw_velocity_vertical(c0, dir_y, float(frc))
+            else:
+                sp.vx, sp.vy = weaponphys.throw_velocity(c0, dir_x, True, float(frc))
         else:
             sp.vx = c0.vx * 0.2 + float(vel[0])
             sp.vy = c0.vy * 0.2 + float(vel[1])
@@ -1864,18 +1877,23 @@ class SlugcatBody:
         sp.no_self_t = 6
         # 原版 Weapon.Thrown：setRotation = throwDir.ToVector2()，且 Weapon.Update 里
         # 消费完 setRotation 后 rotationSpeed = 0 → 整个飞行过程朝向锁死在 throwDir。
-        sp.angle_deg = sp.last_angle = (90.0 if float(dir_x) >= 0.0 else 270.0)
+        if vertical:                          # 竖直掷：矛尖顺着掷出方向（下 180° / 上 0°）
+            sp.angle_deg = sp.last_angle = (180.0 if float(dir_y) < 0.0 else 0.0)
+        else:
+            sp.angle_deg = sp.last_angle = (90.0 if float(dir_x) >= 0.0 else 270.0)
         sp.stuck = False
         sp.stuck_to = None
         sp.state = ItemState.FREE
-        weaponphys.begin_thrown(sp, dir_x, float(frc))
+        weaponphys.begin_thrown(sp, dir_x, float(frc), float(dir_y))
         self.release_spear(to_free=False)
         if self.back_spear is not None:      # 原版掷出后背上的矛立刻补到手上
             bs = self.back_spear
             self.back_spear = None
             self.grab_spear(bs, arm=False)
         c0.vx += float(dir_x) * 8.0 * recoil
+        c0.vy -= float(dir_y) * 8.0 * recoil
         c1.vx -= float(dir_x) * 4.0 * recoil
+        c1.vy += float(dir_y) * 4.0 * recoil
         return sp
 
     def _back_spear_pose(self):

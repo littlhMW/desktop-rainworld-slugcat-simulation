@@ -5,8 +5,8 @@ import os
 import random
 
 from ..behavior import tuning
-from ..core.creature import (ZEROG_GRAB_DIST, THROW_ORIGIN_DX, THROW_ORIGIN_DY, WALK_STOP_EPS,
-                             _closest_on_segment)
+from ..core.creature import (RUN_UPPER, ZEROG_GRAB_DIST, THROW_ORIGIN_DX, THROW_ORIGIN_DY,
+                             WALK_STOP_EPS, _closest_on_segment)
 from ..planning import (GIVEUP, HOLDING, MODE_STAY, PlanExecutor, Planner, obj_goal)
 from ..planning.fly_reach import in_reach
 from .blocking import (blocks_path, yield_target_x, on_same_pole,
@@ -51,7 +51,7 @@ CORPSE_HAUL_REACH = 30.0     # 离尸体这么近＝上手抓住
 CORPSE_HAUL_MAX_DY = 70.0    # 尸体高出自己这么多（躺在别的窗口顶边上）＝够不到
 CORPSE_HAUL_ARRIVE = 26.0    # 猫离屏幕边这么近＝把尸体甩出去
 CORPSE_HAUL_FLING = 14.0     # 甩出去的初速（够飞出窗口被清掉）
-CORPSE_HAUL_TICKS = 1000     # 单趟最长 tick（约 25s，超时松爪）
+CORPSE_HAUL_TICKS = 3600     # 单趟最长 tick（约 90s；绿蜥等重尸按原版质量比拖得很慢，超时松爪）
 T_CORPSE_HAUL_RETRY = 600    # 一趟之后多久不再惦记（约 15s）
 CORPSE_HAUL_P = 0.5          # 闲下来时每次检查起意的概率
 LICK_PLAY_P = 0.55           # 圣徒：射程内有生物时起意伸舌逗它
@@ -4003,19 +4003,37 @@ class BehaviorFSM:
         """离自己最近的屏幕边（窗口左右边＝墙，尸体从这里甩出去）。"""
         return 0.0 if self.body.chunk1.x < self.WL * 0.5 else float(self.WL)
 
-    def _haul_release(self, vx: float = 0.0) -> None:
-        """松爪：被打断 / 放弃时把那具尸体放回自由态。
+    def _haul_speed_fac(self, tgt) -> float:
+        """拖尸限速因子（原版 Player.GraphicsModuleUpdated 的 HeavyCarry 绳约束）。
 
-        没有指定速度（被打断、超时放弃）时也朝最近的屏幕边甩出去 —— 否则尸体
-        会原地停在屏幕上（常常正好是它被拖到的那条边），既不消失也没人再管。
+        原版每帧把「超过绳长 num5」的部分按质量比分配：猫被往回拉 num6、尸体被拉近
+        1-num6（Player.cs:5958-5974），于是「猫 + 尸体」整体每帧只前进
+        walk * (1 - num6) —— num6 越大（尸体越重）拖得越慢。
+        num6 = 被抓那一节的 mass / (猫胸节 mass + 该节 mass)；被抓物总质量比猫轻时
+        num6 再 /2。蜥蜴「被抓那一节」= bodyMass/3（Lizard.cs 三节均分）。
         """
+        m_p = float(self.body.chunk0.mass)
+        m_c = float(getattr(tgt, "haul_chunk_mass", 0.3))
+        # Player.cs:5963 比的是双方 TotalMass（猫 = 两节合计 0.7，不是胸节 0.35）
+        if float(getattr(tgt, "haul_mass", m_c * 3.0)) < float(self.body.total_mass):
+            m_c *= 0.5
+        return max(0.08, 1.0 - m_c / (m_p + m_c))
+
+    def _haul_release(self, vx: float = 0.0) -> None:
+        """松爪：被打断 / 放弃时把那具尸体放回自由态并真删。
+
+        没有指定速度（被打断、超时放弃）时也朝最近的屏幕边甩出去（并打上
+        thrown_out 标记）—— 否则尸体会原地停在屏幕上（常常正好是它被拖到的那条
+        边），既不消失也没人再管。
+        """
+        self.body.walk_speed_target = None       # 松爪＝解除拖拽限速
         tgt = self._clear_target
         if tgt is not None and getattr(tgt, "hauled", False):
             if vx == 0.0:
                 cx = getattr(tgt, "x", self.body.chunk1.x)
                 vx = (-CORPSE_HAUL_FLING if cx < self.WL * 0.5
                       else CORPSE_HAUL_FLING)
-            tgt.release_haul(vx, -1.0)
+            tgt.release_haul(vx, -1.0, thrown_out=True)
         self._clear_target = None
 
     def _st_clearcorpse(self, cursor, disturbed):
@@ -4050,15 +4068,25 @@ class BehaviorFSM:
             b.stop_walk()
             tgt.haul(b.chunk1.x, b.chunk1.y, 0.0)  # 先贴身边，下一 tick 开始拖
             return
-        # 已经拖着：往最近的屏幕边挪，够近就甩出去
-        if abs(b.chunk1.x - edge) <= CORPSE_HAUL_ARRIVE or self._haul_left <= 0:
+        # 已经拖着：往最近的屏幕边挪，够近就甩出去。
+        # walk_to(edge) 会被 walk_min/walk_max 夹到窗口内边（猫自身半宽），重尸按
+        # 原版质量比拖得很慢时刚好停在到达圈外一点点 → 再补一条「贴到自己能走到
+        # 的极限」也算到边，免得拖着拖着永远到不了边（尸体停在边上不消失）。
+        stop_x = b.walk_min if dirv < 0.0 else b.walk_max
+        if stop_x is None:
+            stop_x = edge
+        arrived = (abs(b.chunk1.x - edge) <= CORPSE_HAUL_ARRIVE
+                   or abs(b.chunk1.x - stop_x) <= WALK_STOP_EPS + 0.5)
+        if arrived or self._haul_left <= 0:
             b.stop_walk()
-            tgt.release_haul(dirv * CORPSE_HAUL_FLING, -1.0)
+            tgt.release_haul(dirv * CORPSE_HAUL_FLING, -1.0, thrown_out=True)
             self._clear_target = None
             self._haul_cd = T_CORPSE_HAUL_RETRY
             self._transition("IdleStand")
             return
         b.walk_to(edge)
+        # 拖得越重走得越慢：原版绳约束的质量比（绿蜥 7.5 ≈ 蛞蝓猫的 12%，粉/白蜥 ≈ 33%）
+        b.walk_speed_target = RUN_UPPER * b.stats.runspeed_fac * self._haul_speed_fac(tgt)
         side = "l" if dirv < 0.0 else "r"
         hx, hy = b._carry_pos(side)
         tgt.haul(hx, hy, -dirv)        # 身体朝行进前方摊开，不压在猫身上

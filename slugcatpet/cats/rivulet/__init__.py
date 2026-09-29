@@ -25,6 +25,7 @@ RIVULET_STATS = replace(
     belly_rocket_vx=18.0, belly_rocket_vy=10.0,
     pounce_super=12.0,
     belly_slide_spd=25.0, belly_no_kick=True,
+    belly_slide_spd_long=20.0, belly_jump_cancel_long=20,
     belly_jump_cancel_window=6, skid_init_thresh=5,
     pole_jump_head_vx=9.0, pole_jump_head_vy=-9.0,
     pole_jump_feet_vx=7.0, pole_jump_feet_vy=-8.0,

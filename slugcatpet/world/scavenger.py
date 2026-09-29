@@ -331,6 +331,20 @@ class Scavenger:
                  "eyes_pop", "last_eyes_open", "last_eyes_pop", "blink",
                  "_blink_off", "rise_body", "hurt_cd")
 
+    @property
+    def haul_chunk_mass(self):
+        """被拖拽时「被抓那节」的质量：Scavenger.cs:1727-1730。
+
+        被普通蛞蝓猫抓住时每帧 Lerp(旧值, 0.5 / 0.3 / 0.05, 0.6)，几帧就收敛到
+        这三档（工匠抓的分支是 0.05 / 0.05 / 0.01，见 1721-1723）。
+        """
+        return 0.5
+
+    @property
+    def haul_mass(self):
+        """被拖拽对象总质量：Scavenger.cs:1728-1730（0.5 + 0.3 + 0.05）。"""
+        return 0.85
+
     def __init__(self, x: float, y: float, seed: int = 0, id: int = 0,
                  variant: str = "saint"):
         self.x = self.last_x = float(x)

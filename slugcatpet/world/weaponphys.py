@@ -58,11 +58,30 @@ def throw_velocity(c0, dir_x: float, is_spear: bool, frc_value: float):
     return vx, vy
 
 
-def begin_thrown(obj, dir_x: float, frc_value: float) -> None:
-    """进入 Mode.Thrown：记投掷方向、退出阈值与投掷起点。"""
+def throw_velocity_vertical(c0, dir_y: float, frc_value: float):
+    """垂直投掷分支的初速 (vx, vy)（Weapon.cs:481-489）。
+
+    dir_y 用游戏系（+1 上 / -1 下）：vx = c0.vx * 0.5、|vy| = 40 * frc；
+    屏幕 y↓ 所以取负。垂直掷出的物品不翻滚（setRotation = throwDir，spin = 0）。
+    """
+    return c0.vx * 0.5, -float(dir_y) * THROW_POWER * frc_value
+
+
+def begin_thrown(obj, dir_x: float, frc_value: float, dir_y: float = 0.0) -> None:
+    """进入 Mode.Thrown：记投掷方向、退出阈值与投掷起点。
+
+    垂直掷（dir_x == 0 且 dir_y != 0）时 _throw_dir 记 0：原版只有
+    ContactPoint == throwDir 才插墙，竖直掷不该在擦到侧壁时插住（该扎地由
+    矛自己的「近乎垂直落地 → 钉成竖杆」分支管）。
+    """
     obj._thrown = True
+    if hasattr(obj, "always_stick"):
+        obj.always_stick = False
     obj._f1 = True               # 第一帧的扫掠起点＝出手前的位置（原版 firstFrameTraceFromPos）
-    obj._throw_dir = 1 if dir_x >= 0.0 else -1
+    if dir_x == 0.0 and dir_y != 0.0:
+        obj._throw_dir = 0
+    else:
+        obj._throw_dir = 1 if dir_x >= 0.0 else -1
     obj._exit_spd = exit_thrown_speed(frc_value)
     obj._throw_x = obj.x
     obj._throw_y = obj.y
@@ -74,10 +93,15 @@ def exit_check(obj) -> bool:
 
 
 def stick_roll(obj, rng) -> bool:
-    """Spear.Update 的插墙判定：飞太远不插；近处必插，远处 33%。"""
+    """Spear.Update 的插墙判定：飞太远不插；近处必插，远处 33%。
+
+    always_stick（Weapon.alwaysStickInWalls）时必定插住 —— 滑铲里掷出的矛。
+    """
     d = math.hypot(obj.x - obj._throw_x, obj.y - obj._throw_y)
     if d > STICK_MAX_DIST:
         return False
+    if getattr(obj, "always_stick", False):
+        return True
     return d < STICK_NEAR_DIST or rng.random() < STICK_CHANCE
 
 

@@ -71,6 +71,11 @@ class BatFly:
                  "goal", "_grounded", "_flaps_since_rest", "_exhausted",
                  "_goal_timer", "_stuck_ref", "_stuck_timer", "_rng")
 
+    @property
+    def haul_chunk_mass(self):
+        """被拖拽时「被抓那节」的质量：Fly.cs:86（唯一一节 0.05）。"""
+        return 0.05
+
     def __init__(self, x: float, y: float, seed: int = 0):
         self.x = self.last_x = self.lower_x = self.last_lower_x = float(x)
         self.y = self.last_y = self.lower_y = self.last_lower_y = float(y)

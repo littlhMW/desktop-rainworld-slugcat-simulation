@@ -27,6 +27,7 @@ RESET_TABLE: dict[str, object] = {
     "_ctrl_consistent_dd": 0,
     "_ctrl_fall_speed": 0.0,
     "_ctrl_prev_floor": True,
+    "_ctrl_long_belly": False,       # 防再入残留长滑铲
     "_ctrl_lower_on_ground": 0,      # 防再入误触 StandUp/DownOnFours
     "_ctrl_upper_off_ground": 0,
     "_ctrl_crawl_turn_delay": 0,
@@ -35,6 +36,8 @@ RESET_TABLE: dict[str, object] = {
     "_ctrl_pyro_counter": 0,
     "_ctrl_pyro_cooldown": 0.0,
     "_ctrl_pyro_parry_cd": 0.0,
+    "_ctrl_win": None,               # 控制态取物要用窗口的物品表
+    "_ctrl_variant": "",             # 投掷力档（圣徒轻抛/弱者减半）读种别
 }
 
 # 退出时清控制专属动画，不碰 ZeroGPoleGrab
@@ -70,6 +73,8 @@ def enter_control(pet, provider) -> None:
         beh._enter("IdleStand")
     reset_ctrl_state(body)
     body._ctrl_input = InputBuffer()   # 新建历史环，防跨会话陈旧边沿
+    body._ctrl_win = getattr(pet, "window", None)
+    body._ctrl_variant = getattr(pet.cat, "key", "")
     body._input_provider = provider
     _mount_species_ctrl(pet, body)
     pet.controlled = True

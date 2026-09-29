@@ -23,7 +23,7 @@ MONK_DEF = CatDef(
     atlas_keys=("base",),
     caps=CatCaps(tongue=False, ascension=False),   # 舌/超度 Saint 独占
     stats=replace(DEFAULT_STATS, weight_fac=0.95, max_food=5, food_hibernate=3,
-                  lungs_fac=1.2),
+                  lungs_fac=1.2, throwing_skill=0),
     # 温和体弱最亲人：偏懒易累爱黏人
     # 好脾气：不甩东西、不喜欢指指点点也不敢趴（怕）→ 原地安静地玩
     personality=replace(DEFAULT_PERSONALITY, activity=0.4, stamina=0.8, sociability=1.0,

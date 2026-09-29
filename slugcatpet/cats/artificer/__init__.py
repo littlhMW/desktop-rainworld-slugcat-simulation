@@ -37,7 +37,8 @@ ARTIFICER_DEF = CatDef(
                   swim_boost_force=6.0, swim_boost_cost=0.015,        # 强冲刺低耗
                   is_artificer=True,
                   drown_threshold=0.5,                                # 憋气极短，挣扎门提前留逃生时间
-                  karma_cap=0),                                       # 业力锁 1 级（无 Echo 可升）
+                  karma_cap=0,                                        # 业力锁 1 级（无 Echo 可升）
+                  throwing_skill=2),
     # 复仇爆破手：好动强健、极不亲人
     # 极度暴躁：玩两下就把矛/石头甩出去，绝不肯趴
     personality=replace(DEFAULT_PERSONALITY, activity=0.75, stamina=1.1,
