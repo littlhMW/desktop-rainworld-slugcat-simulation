@@ -2193,7 +2193,7 @@ class Lizard:
         held = self.state == ItemState.MOUSE or self.hauled
         # 方向带记忆：只有真正走出速度才翻面；否则停稳瞬间的
         # ±0.0x 抖动会把躯干甩到头前面，看起来就是「朝反方向走」。
-        if abs(self.vx) > TURN_VX:
+        if abs(self.vx) > TURN_VX and self.vx * self.chain_dir < 0.0:
             self.chain_dir = 1.0 if self.vx > 0.0 else -1.0
         grav = SEG_GRAV * (1.35 if held else 1.0) * self.room_gravity
         align = SEG_ALIGN_HELD if held else SEG_ALIGN
@@ -2210,8 +2210,15 @@ class Lizard:
         # 原版里是 bodyChunks[0] 被 AI 推着走、头被 head.ConnectToPoint 拉到头前方
         # 12*headSize；这里反过来：头是 AI 驱动点，躯干 0 挂在「头后方 head_conn」的
         # 锚点上 —— 拓扑等价，效果就是头永远在最前面、身体永远拖在后面（不会倒着走）。
-        anc_x = self.x - self.chain_dir * self.head_conn
-        anc_y = self.y
+        back_x, back_y = self.seg[0].x - self.x, self.seg[0].y - self.y
+        body_len = math.hypot(back_x, back_y)
+        if body_len > 1e-6:
+            body_ax, body_ay = back_x / body_len, back_y / body_len
+            anc_x = self.x + body_ax * self.head_conn
+            anc_y = self.y + body_ay * self.head_conn
+        else:
+            anc_x = self.x - self.chain_dir * self.head_conn
+            anc_y = self.y
         # ② BodyChunkConnection + 顺直软约束：
         #    杆长约束只消掉径向误差，光靠它链子会自己折回来（两节各自满足距离但
         #    朝向反了）。原版 3 个 chunk 有质量互相顶、尾节还有 tailStiffness 撑直。
@@ -2257,6 +2264,11 @@ class Lizard:
         for k, s in enumerate(self.seg):
             s.vx = s.x - ax0[k]
             s.vy = s.y - ay0[k]
+            spd = math.hypot(s.vx, s.vy)
+            if spd > MAX_SEG_SPEED:
+                q = MAX_SEG_SPEED / spd
+                s.vx *= q
+                s.vy *= q
         # ⑤ 步态波浪：躯干随步频起伏、尾梢额外摆动（原版由左右腿交替驱动 drawPositions）
         if self.state != ItemState.MOUSE:
             self.walk_phase = (self.walk_phase + 0.015 + abs(self.vx) * 0.010) % 1.0
