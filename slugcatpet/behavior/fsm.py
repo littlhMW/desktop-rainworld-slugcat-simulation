@@ -13,6 +13,7 @@ from .blocking import (blocks_path, yield_target_x, on_same_pole,
                         pole_in_the_way, pole_push_role)
 from . import social
 from .desire import build_arbiter, MoodContext
+from .interest import goal_key as _interest_key
 from .fetch import (fetch_ready, BITE_HEAD_NUDGE, EAT_APPROACH, EAT_CHOMP_POSE,
                     EAT_HOLD_POSE, EAT_INTERVAL)
 from ..cats.personality import DIET_CARNIVORE, DIET_VEGETARIAN, DIET_SPECIAL
@@ -1035,6 +1036,7 @@ class BehaviorFSM:
         # 睡眠欲望：吃饱后入睡概率从 0 缓慢升到 100
         self._sleep_urge_tick()
         if (not self._hibernating and not self.grab.active and not self._exhausted
+                and self._tongue_holding_creature() is None     # 舌头黏着生物：不许入睡
                 and not self._too_cold_to_sleep() and not self._zerog()
                 and self._sleep_roll()
                 and self.state in ("IdleStand", "LieDown")):
@@ -1063,6 +1065,10 @@ class BehaviorFSM:
 
         self._squid_lift_tick()
         self.gfx.look_at = None
+        # 圣徒舌头黏着生物：一路拽着，不许摆匍匐（下面按 tick 扣体力）
+        tongue_hold = self._tongue_holding_creature()
+        if tongue_hold is not None:
+            self.body.set_crawl(False)
         # _hibernating 一置位就当场蜷起来（LieDown 期也一样），避免「睁着眼蜷着却睡不着」
         lying = self.state == "Sleep" or self._hibernating
         self.gfx.sleeping = lying
@@ -1088,6 +1094,12 @@ class BehaviorFSM:
         elif self.state == "Swimming" and self.body.swim_mode == "surface":
             e_delta = EN_REC_REST * tuning.SWIM_SURFACE_REST_FAC   # 浮水面歇气
         self.body.energy_change(e_delta)
+        if tongue_hold is not None:
+            self.body.energy_change(-tuning.SAINT_LICK_HOLD_DRAIN)
+            if self.body.energy <= 0.0:                  # 拉不动了 → 松舌
+                tg = getattr(self.win, "tongue", None)
+                if tg is not None:
+                    tg.retract()
         if self._force_energy is not None:
             self.body.energy = self._force_energy
         if self._force_temper is not None:
@@ -4277,6 +4289,8 @@ class BehaviorFSM:
             if getattr(f, "is_karma", False):     # 业力花不填饱食度，不算帮喂目标
                 continue
             d = math.hypot(f.x - c1.x, f.y - c1.y)
+            d = _interest_key(self.win, f, d, tuning.INTEREST_JITTER,
+                              tuning.INTEREST_TAKEN_MUL)
             if d < bd:
                 best, bd = f, d
         return best
@@ -4491,6 +4505,7 @@ class BehaviorFSM:
                     return
         # 5) 恐惧：蜥蜴靠近 → 在它背后就趴下潜行挪开；打了照面直接跑
         if (self._crawl_cd <= 0 and not b.swimming and b.on_floor()
+                and self._tongue_holding_creature() is None      # 正拽着东西：不趴下
                 and not self._carrying_gift()):
             lz = self._threat_lizard()
             if lz is not None:
@@ -6031,6 +6046,25 @@ class BehaviorFSM:
         self.gfx.look_at = (lz.x, lz.y)
 
 
+    def _tongue_holding_creature(self):
+        """舌头正黏着的**生物**（果子/珍珠/地形不算）；没黏着返回 None。
+
+        圣徒拿舌头黏活物时得一直使劲拽（体力见 _tick），期间不许匍匐/入睡 ——
+        它正拉着东西，不是趴着休息。
+        """
+        tg = getattr(self.win, "tongue", None)
+        if tg is None or not tg.attached:
+            return None
+        o = getattr(tg, "attached_obj", None)
+        if o is None:
+            return None
+        for seq in (self.win.batflies, self.win.squidcadas, self.win.needleworms,
+                    self.win.lizards, self.win.scavengers):
+            for c in seq:
+                if c is o:
+                    return o
+        return None
+
     # ── 觅食欲望：吃完一口归 0，再慢慢涨回 1（饱了也涨，只是更慢）──
     def _food_urge_tick(self):
         rate = (tuning.FOOD_URGE_RATE_FULL if self.body.food >= self.body.food_max
@@ -6253,7 +6287,8 @@ class BehaviorFSM:
             w *= 1.0 + (temper - 0.5) * (0.8 if spear else -0.8)
             if spear:                        # 用矛意愿：圣徒几乎不玩矛
                 w *= clampf(float(getattr(self.pers, "spear_like", 1.0)), 0.0, 2.0)
-            return d / max(0.05, w)
+            return _interest_key(self.win, o, d / max(0.05, w),
+                                 tuning.INTEREST_JITTER, tuning.INTEREST_TAKEN_MUL)
         return min(cands, key=score)[0]
 
     def _itemplay_enter(self):

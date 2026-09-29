@@ -8,6 +8,8 @@ import math
 
 from ..core.units import clampf
 from ..world import weaponphys
+from . import tuning
+from .interest import goal_key
 from ..cats.personality import DIET_VEGETARIAN, DIET_SPECIAL
 
 GRAB_REACH = 18.0
@@ -141,7 +143,9 @@ class FlyHunter:
         if not flies:
             return "revert_wander"
         c0 = self._c0()
-        self.target = min(flies, key=lambda f: math.hypot(c0.x - f.x, c0.y - f.y))
+        self.target = min(flies, key=lambda f: goal_key(
+            self.win, f, math.hypot(c0.x - f.x, c0.y - f.y),
+            tuning.INTEREST_JITTER, tuning.INTEREST_TAKEN_MUL))
         # 已有武器直接用
         if self.body.carried_stone is not None or self.body.carried_spear is not None:
             self.weapon = self.body.carried_spear or self.body.carried_stone

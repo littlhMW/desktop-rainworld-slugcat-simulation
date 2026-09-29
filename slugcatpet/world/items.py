@@ -1233,8 +1233,8 @@ class ItemInteractionMixin:
         blit(p, self.atlas, "FlyBody", x, y, ang, 1.0, 1.0, BATFLY_BLACK, ax=0.5, ay=0.5)
 
     def _draw_batfly_wing(self, p, x, y, ang, sx):
-        """FlyWing：15×15 翅片，原版 InitiateSprites 明写 anchorY = 0。"""
-        blit(p, self.atlas, "FlyWing", x, y, ang, sx, 1.0, BATFLY_BLACK, ax=0.5, ay=0.0)
+        """FlyWing：15×15 翅片；原版 InitiateSprites 的 anchorY=0 → ay = 1 - anchorY = 1.0。"""
+        blit(p, self.atlas, "FlyWing", x, y, ang, sx, 1.0, BATFLY_BLACK, ax=0.5, ay=1.0)
 
     def _draw_batfly_eyes(self, p, x, y, ang):
         """FlyEyes：两点白眼，与身体同角。"""

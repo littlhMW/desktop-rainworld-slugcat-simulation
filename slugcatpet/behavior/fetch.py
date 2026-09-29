@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 from ..behavior import tuning
+from .interest import goal_key
 from ..planning import GIVEUP, PlanExecutor, TongueSnatch, obj_goal
 from ..cats.personality import DIET_VEGETARIAN, DIET_SPECIAL, DIET_CARNIVORE
 
@@ -41,7 +42,7 @@ def _edible_goal(obj):
     return obj_goal(obj, valid=lambda o: o.state in _EDIBLE_STATES, contact="grasp")
 
 
-def fetch_candidates(planner, edibles, diet=None, pearl_like=1.0):
+def fetch_candidates(planner, edibles, diet=None, pearl_like=1.0, unit=None):
     """选果候选：可达且不冷却的 (obj, goal, 预估耗时)，按耗时升序。
 
     pearl_like > 1 的猫（溪流）把珍珠的预估耗时缩短，于是珍珠排在果子前面 ——
@@ -66,6 +67,9 @@ def fetch_candidates(planner, edibles, diet=None, pearl_like=1.0):
                 time_est *= MEAT_PREF
             elif not getattr(f, "is_edible", True):
                 time_est /= max(1.0, float(pearl_like))   # 珍珠：越喜欢越先拿
+            if unit is not None:                          # 个体偏好 + 同伴已在拿 → 让位
+                time_est = goal_key(unit, f, time_est,
+                                    tuning.INTEREST_JITTER, tuning.INTEREST_TAKEN_MUL)
             out.append((f, g, time_est))
     out.sort(key=lambda item: item[2])
     return out
@@ -178,7 +182,8 @@ class FruitFetcher:
                                      pearl_like=self.pearl_like,
                                      want_karma=not getattr(self.body, "flower_karma", False)),
                                  diet=self.diet,
-                                 pearl_like=self.pearl_like)
+                                 pearl_like=self.pearl_like,
+                                 unit=self.win)
         if not cands:
             self.giveup = self._giveup_pending
             return True

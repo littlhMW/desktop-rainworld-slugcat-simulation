@@ -68,8 +68,8 @@ BUOYANCY = 1.05
 AGE_EGG = "egg"
 AGE_SMALL = "small"
 AGE_BIG = "big"
-# 出生年龄随机（卵 25% / 幼体 40% / 成体 35%）
-AGE_ROLL = ((AGE_SMALL, 0.5), (AGE_BIG, 0.5))     # 随机生成不带卵（卵是物件，不是面条蝇）
+# 出生年龄随机：幼体 0.8 / 成体 0.2（卵是物件，不参与随机）
+AGE_ROLL = ((AGE_SMALL, 0.8), (AGE_BIG, 0.2))
 
 CHUNKS = {AGE_SMALL: 3, AGE_BIG: 5}     # NeedleWorm.cs:78
 CHUNK_RAD_MIN = 2.0                     # NeedleWorm.cs:85 Mathf.Lerp(2f, 5f, t) * num

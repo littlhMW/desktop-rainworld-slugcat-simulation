@@ -662,3 +662,10 @@ PEARL_HOARD_P       = 0.25      # 每次重算的概率
 PEARL_HOARD_CD      = 900       # 放下之后这么久才会再去叼
 PEARL_LOOK_TICKS    = 90        # 拿到珍珠后「端在手里看一眼」的时长
 PEARL_CARRY_TICKS   = 240       # 把玩珍珠多久才放下（放下后进 PEARL_HOARD_CD 冷却，不会原地反复叼）
+
+# ── 圣徒舌头黏住生物：一路使劲拽，快速掉体力直到松舌 ──
+SAINT_LICK_HOLD_DRAIN = 1.0 / 200.0   # 每 tick；满体力约 200 tick（≈3.3 s）拉空
+
+# ── 兴趣目标抖动（同屏多只猫：别都盯上同一个最近目标）──
+INTEREST_JITTER   = 0.40        # 每只猫对每件目标的个体偏好系数 1±这个值（稳定，不逐 tick 乱跳）
+INTEREST_TAKEN_MUL = 1.55       # 已经有同伴把它当目标 → 打分乘这个数（让位）

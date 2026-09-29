@@ -13,6 +13,7 @@ from .fetch import (EAT_INTERVAL, EAT_HOLD_POSE, EAT_CHOMP_POSE, BITE_HEAD_NUDGE
                     DELIVER_REACH, DELIVER_GAP, DELIVER_TIMEOUT)
 from ..cats.personality import DIET_VEGETARIAN, DIET_SPECIAL
 from ..planning.fly_reach import in_reach
+from .interest import goal_key as _goal_key
 from ..world.needleworm import AGE_SMALL
 
 
@@ -86,7 +87,9 @@ class FlyCatcher:
             if not cands:
                 return "revert"
             c0 = self._c0()
-            self.target = min(cands, key=lambda o: math.hypot(c0.x - o.x, c0.y - o.y))
+            self.target = min(cands, key=lambda o: _goal_key(
+                self.win, o, math.hypot(c0.x - o.x, c0.y - o.y),
+                tuning.INTEREST_JITTER, tuning.INTEREST_TAKEN_MUL))
             f = self.target
             self.timer = 0
         if not getattr(f, "catchable", False):
