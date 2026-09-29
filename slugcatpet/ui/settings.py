@@ -1,13 +1,14 @@
 """设置窗：猫增删/环境单选/HUD 开关，关窗即写盘。"""
 from __future__ import annotations
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-                               QCheckBox, QRadioButton, QButtonGroup, QFrame, QDialog)
+                               QCheckBox, QRadioButton, QButtonGroup, QFrame, QDialog,
+                               QGridLayout)
 from PySide6.QtCore import Qt
 
 from ..cats import REGISTRY
 from ..i18n import t
 from .._paths import resource_dir
-from ..window import MAX_PETS
+from ..window import MAX_PETS, spawnable_kinds
 from .catmenu import variant_label, pet_label
 from .dialogs import ConfirmDialog, PickDialog
 
@@ -31,6 +32,12 @@ _QSS = (
     "QRadioButton::indicator:hover{border-color:#7c9a52;}"
     f"QRadioButton::indicator:checked{{border:2px solid #aef156;background:#aef156;"
     f"image:url({_CHECK});}}")
+
+
+def _spawn_label(key: str) -> str:
+    """生物列表标签：直接复用图标盘的 tooltip（缺翻译就退回类型名）。"""
+    lbl = t("tip_" + key)
+    return key if lbl == "tip_" + key else lbl
 
 
 class SettingsWindow(QWidget):
@@ -72,6 +79,8 @@ class SettingsWindow(QWidget):
         v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(8)
         self._section_cats(v)
+        v.addWidget(self._divider())
+        self._section_spawn(v)
         v.addWidget(self._divider())
         self._section_env(v)
         v.addWidget(self._divider())
@@ -116,6 +125,27 @@ class SettingsWindow(QWidget):
             add.setToolTip(t("settings_max_pets"))
         add.clicked.connect(self._on_add)
         v.addWidget(add)
+
+    def _section_spawn(self, v):
+        """自然生成：勾哪几种，窗口里就自己长出哪几种（列表按代码自动生成）。"""
+        v.addWidget(self._header(t("settings_spawn_section")))
+        hint = QLabel(t("settings_spawn_hint"))
+        hint.setObjectName("dim")
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(12)
+        grid.setVerticalSpacing(2)
+        on = self._window.spawn_kinds()
+        for i, key in enumerate(spawnable_kinds()):
+            chk = QCheckBox(_spawn_label(key))
+            chk.setChecked(key in on)
+            chk.toggled.connect(lambda checked, k=key: self._on_spawn_toggled(k, checked))
+            grid.addWidget(chk, i // 2, i % 2)
+        v.addLayout(grid)
+
+    def _on_spawn_toggled(self, key, checked):
+        self._window.set_spawn_kind(key, checked)
 
     def _section_env(self, v):
         v.addWidget(self._header(t("settings_env_section")))

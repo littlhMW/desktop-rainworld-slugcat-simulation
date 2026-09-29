@@ -1,7 +1,9 @@
 """全屏透明置顶桌宠窗，固定步长物理+插值渲染。"""
 from __future__ import annotations
 import os
+import sys
 _DEBUG_SEEDED = False
+import inspect
 import random
 from PySide6.QtWidgets import QApplication, QWidget
 from PySide6.QtCore import Qt, QTimer, QElapsedTimer, QRect, QPoint, QPointF, QRectF
@@ -22,6 +24,34 @@ from .world.items import ItemInteractionMixin
 from .world.enums import ItemState
 
 MAX_PETS = 10
+
+# ── 自然生成（设置面板里的「生物列表」）──
+NATURAL_SPAWN_TICKS = 900     # 每约 22s 补一只（勾选哪几种就生成哪几种，不限数量）
+SPAWN_GROUND_KINDS = frozenset(("seedcob", "karmaflower"))   # 只长在地面上的
+
+
+def spawnable_kinds() -> tuple:
+    """所有 place_<key>(lx, ly) 的类型名 —— 以后新增生物会自动出现在设置列表里。
+
+    只认「两个位置参数」的放置接口：像 place_pole(lx, ly, kind) 这种要额外参数的
+    结构类放置不算「生物」，自动排除。
+    """
+    out = []
+    for name, fn in inspect.getmembers(ItemInteractionMixin, inspect.isfunction):
+        if not name.startswith("place_"):
+            continue
+        try:
+            params = list(inspect.signature(fn).parameters.values())[1:]   # 去掉 self
+        except (TypeError, ValueError):
+            continue
+        if len(params) != 2:
+            continue
+        if all(p.default is inspect.Parameter.empty
+               and p.kind in (inspect.Parameter.POSITIONAL_ONLY,
+                              inspect.Parameter.POSITIONAL_OR_KEYWORD)
+               for p in params):
+            out.append(name[len("place_"):])
+    return tuple(sorted(out))
 
 STONE_FAST_REDRAW = 3.0    # 速度超此整窗重绘
 
@@ -271,6 +301,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._mouse_pole_vel = None        # 本 tick 光标位移（PoleClimber 读它判甩落）
         self._mouse_pole_suppress = 0      # 松开鼠标后的静默 tick（期间不当杆）
         self._cursor_half = None           # 光标虚杆半长缓存（逻辑单位）
+
+        # 自然生成（设置面板「生物列表」勾选的类型）
+        saved_spawn = self._params.get("spawn_kinds")
+        kinds = set(saved_spawn) if isinstance(saved_spawn, (list, tuple)) else set()
+        self._spawn_kinds = kinds & set(spawnable_kinds())
+        self._spawn_timer = NATURAL_SPAWN_TICKS
 
         # 寒冷系统
         self.blizzard_on = not tuning.COLD_BLIZZARD_DEFAULT_OFF
@@ -795,6 +831,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             pet.step(cur, cycle_prog)
 
         self._all_dead_tick()
+        self._natural_spawn_tick()
 
         self._tick_fruits()
         self._tick_stones()
@@ -819,6 +856,40 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             self._snow.step(self.cold_cycle_prog, self._WL, self._HL)
 
         self._update_fx()
+
+    def spawn_kinds(self) -> set:
+        """当前勾选「自然生成」的类型集合。"""
+        return set(self._spawn_kinds)
+
+    def set_spawn_kind(self, key: str, on: bool) -> None:
+        """勾/取消一种自然生成（写进 params，存档时一并落盘）。"""
+        if key not in spawnable_kinds():
+            return
+        if on:
+            self._spawn_kinds.add(key)
+        else:
+            self._spawn_kinds.discard(key)
+        self._params["spawn_kinds"] = sorted(self._spawn_kinds)
+
+    def _natural_spawn_tick(self) -> None:
+        """每 NATURAL_SPAWN_TICKS 按勾选列表补一只（不限数量）。"""
+        if not self._spawn_kinds:
+            return
+        self._spawn_timer -= 1
+        if self._spawn_timer > 0:
+            return
+        self._spawn_timer = NATURAL_SPAWN_TICKS
+        key = random.choice(sorted(self._spawn_kinds))
+        fn = getattr(self, "place_" + key, None)
+        if fn is None:                       # 旧的存档里留了已删掉的类型
+            self._spawn_kinds.discard(key)
+            return
+        x = random.uniform(self._WL * 0.1, self._WL * 0.9)
+        y = self._HL if key in SPAWN_GROUND_KINDS else self._HL * 0.3
+        try:
+            fn(x, y)
+        except Exception as e:               # 单个放不下不该拖垮整个桌宠
+            print("[slugcatpet] spawn %s failed: %r" % (key, e), file=sys.stderr)
 
     def _all_dead_tick(self):
         """全员死亡：守灵一段后集体转生（业力已在各自死亡时结算）。"""

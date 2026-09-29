@@ -353,11 +353,30 @@ class PetUnit:
         return self.tongue.shoot(mox, moy, px, py, hit=True)
 
     def fire_tongue_at_obj(self, fruit) -> bool:
-        """射舌粘住果子，返回是否射出。"""
+        """射舌粘住目标（果子、生物都行），返回是否射出。"""
         if self.tongue is None:
             return False
         mox, moy = self.gfx.mouth_world()
-        return self.tongue.shoot(mox, moy, fruit.x, fruit.y, hit=True, obj=fruit)
+        ok = self.tongue.shoot(mox, moy, fruit.x, fruit.y, hit=True, obj=fruit)
+        if ok:
+            self._notify_licked(fruit)
+        return ok
+
+    def _notify_licked(self, obj) -> None:
+        """告诉目标「被舌头黏住了」（原版 PhysicalObject.LickedByPlayer）。
+
+        面条蝇靠它决定生气/送命（见 NeedleWorm.on_licked）；别的生物没有这个
+        接口就什么都不发生。
+        """
+        hook = getattr(obj, "on_licked", None)
+        if hook is None:
+            return
+        cat = None
+        for c in self.window._needleworm_cats():
+            if c.get("pet") is self:
+                cat = c
+                break
+        hook(cat)
 
     def _ray_hit_edge(self, mx, my, cx, cy):
         w = self.window

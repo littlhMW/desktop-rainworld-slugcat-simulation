@@ -136,6 +136,11 @@ STAB_STUN = 60.0
 POKE_DAMAGE = 0.05              # BigNeedleWorm.cs:168 Violence(Stab, 0.05f, 30f)
 POKE_STUN = 30.0
 STUCK_WALL_RATE = 0.0125        # BigNeedleWorm.cs:328（0.0125/tick，>1 挣脱）
+CHAIN_FOLLOW = 0.5              # 自由飞行时尾节跟随强度（原版靠质量+绳长约束）
+CHAIN_FOLLOW_HELD = 0.88        # 被拿起/拖拽时绷紧：体长仍有变化但不弹成弹簧
+STUCK_TICKS = (20, 40)          # 茅嘴扎进墙/地后挂住 0.5~1s 才拔得出来（用户口径）
+STUCK_TICKS_MAX = 40
+STUCK_WALL_STUN = 20            # 撞墙当场的那一下僵直（原版 Stun(60)＝1.5s，按挂住时长压短）
 STUCK_CHUNK_RATE = 0.0035714286  # BigNeedleWorm.cs:261
 DODGE_COOLDOWN = 10             # BigNeedleWorm.cs:602
 DODGE_PUSH = 12.0               # BigNeedleWorm.cs:617
@@ -147,6 +152,9 @@ RESPOND_BIG = (6, 16)           # BigNeedleWormAI.BigRespondCry
 SMALL_BITES = 5                 # SmallNeedleWorm.cs:14
 SMALL_FOOD = 2                  # FoodPoints => 2
 SMALL_HP = 0.2                  # StaticWorld baseDamageResistance
+SMALL_DEATH_TICKS = 120         # 幼体被抓 3s（40 tick/s）＝ 判定死亡（用户口径）
+SMALL_SCREAM_TICKS = 600        # 同一条计时走满＝长惨叫（原版 0.2 : 1.0 的同一比例）
+SMALL_COUNTER_RATE = 1.0 / SMALL_SCREAM_TICKS
 BIG_HP = 0.4
 INSTANT_LIMIT = 1.2             # StaticWorld instantDeathDamageLimit
 
@@ -234,7 +242,7 @@ class NeedleWorm:
                  "temp_like", "like", "close_flags", "hold_child",
                  # 成体攻击
                  "attack_counter", "attack_ready", "charging_attack", "swish_dir",
-                 "swish_counter", "stuck_pos", "stuck_dir", "stuck_time",
+                 "swish_counter", "stuck_pos", "stuck_dir", "stuck_time", "stuck_ticks",
                  "lame_counter", "dodge_delay", "stun", "attack_from", "attack_target",
                  "target_vel", "target_chunk", "respond_cry", "keep_close",
                  "follow", "fleeing", "threat", "prey", "focus", "attack_event",
@@ -299,6 +307,7 @@ class NeedleWorm:
         self.stuck_pos = None
         self.stuck_dir = (0.0, 0.0)
         self.stuck_time = 0.0
+        self.stuck_ticks = 0
         self.lame_counter = 0
         self.dodge_delay = 0
         self.stun = 0
@@ -569,6 +578,8 @@ class NeedleWorm:
         if self.age == AGE_SMALL:
             self._step_scream(cats)          # 被抓住时也在跑（SmallNeedleWorm.Update:136）
         if self.state in (ItemState.MOUSE, ItemState.CARRIED):
+            self.stuck_pos = None          # 被拿起即挣脱（原版 grabbedBy → 松开茅嘴）
+            self.stuck_ticks = 0
             self._step_chain(HL)
             return
         self.last_x, self.last_y = self.x, self.y
@@ -637,9 +648,10 @@ class NeedleWorm:
         if self.scream_counter <= 0.0 or self.has_screamed:
             return
         prev = self.scream_counter
-        self.scream_counter += 1.0 / 190.0
+        self.scream_counter += SMALL_COUNTER_RATE
         if prev <= 0.2 < self.scream_counter:
-            self.die()
+            # 抓满 3s：惨叫而死（Scream 里带 die），母亲当场永久记恨抓它的人
+            self._scream(cats)
         if self.scream_counter > 1.0:
             self._scream(cats)
         elif math.floor(prev * 4.0) != math.floor(self.scream_counter * 4.0):
@@ -659,6 +671,24 @@ class NeedleWorm:
                 m.focus = holder
             m.small_respond_cry()
 
+    def _enrage_mother(self, cats) -> None:
+        """母亲永久记恨抓/舔它孩子的人。
+
+        like 与 tempLike 一起钉成 -1 才是「永久」：even_out_temps 只会把 tempLike
+        拉回 like，不会把仇恨冲淡（所以愤怒不会随时间自己消退）。
+        """
+        m = self.mother
+        if m is None or m.dead:
+            return
+        closest = self._closest_creature(cats, self._holder(cats))
+        if closest is None:
+            return
+        uid = closest["uid"]
+        m.like[uid] = -1.0            # AbstractMother.state.socialMemory...like = -1f
+        m.temp_like[uid] = -1.0
+        m.follow = closest            # abstractAI.followCreature = creature
+        m.focus = closest
+
     def _scream(self, cats) -> None:
         """SmallNeedleWorm.cs:300-326 Scream：死 + 母亲 BigRespondCry + 锁定最近生物。"""
         if self.has_screamed:
@@ -670,14 +700,31 @@ class NeedleWorm:
         if m is None or m.dead:
             return
         m.big_respond_cry()
-        closest = self._closest_creature(cats, self._holder(cats))
-        if closest is None:
+        self._enrage_mother(cats)
+
+    def on_licked(self, cat=None) -> None:
+        """被圣徒舌头黏住（原版 PhysicalObject.LickedByPlayer）。
+
+        SmallNeedleWorm.cs:126-128：幼体被舔当场 Scream（＝死），母亲随之永久记恨；
+        BigNeedleWormAI.cs:68-75：成体被舔，它自己把舔它的人记成死敌（永久）并跟上去。
+        平时面条蝇不主动敌对 —— 愤怒只从这两个入口来。
+        """
+        if self.dead:
             return
-        uid = closest["uid"]
-        m.like[uid] = -1.0            # AbstractMother.state.socialMemory...like = -1f
-        m.temp_like[uid] = -1.0
-        m.follow = closest            # abstractAI.followCreature = creature
-        m.focus = closest
+        if self.age == AGE_SMALL:
+            self._scream([cat] if cat is not None else [])
+            return
+        if self.age != AGE_BIG or cat is None:
+            return
+        uid = cat.get("uid")
+        if uid is None:
+            return
+        # worm.abstractCreature.state.socialMemory.GetOrInitiateRelationship(uid)
+        self.like[uid] = -1.0
+        self.temp_like[uid] = -1.0
+        self.follow = cat
+        self.focus = cat
+        self.big_respond_cry()
 
     def _closest_creature(self, cats, holder=None):
         """SmallNeedleWorm.cs:328-345 ClosestCreature：优先抓我的人，否则最近的大家伙。"""
@@ -992,7 +1039,7 @@ class NeedleWorm:
         value = self.swish_dir
         tip_from = (self.last_x + value[0] * FANG_LENGTH, self.last_y + value[1] * FANG_LENGTH)
         tip_to = (self.x + value[0] * (FANG_LENGTH + num), self.y + value[1] * (FANG_LENGTH + num))
-        # 1) 撞到墙/地/顶：卡住 3~4 秒（decompile: 0.0125/tick ⇒ 80 tick）
+        # 1) 撞到墙/地/顶：茅嘴钉住、身体挂住 0.5~1s（STUCK_TICKS）才拔得出来
         hit = _terrain_hit(tip_from[0], tip_from[1], tip_to[0], tip_to[1],
                             self.rad, WL, HL)
         if hit is not None:
@@ -1003,7 +1050,8 @@ class NeedleWorm:
                 self.swish_counter = 0
                 self.swish_dir = None
                 self.stuck_time = 0.0
-                self.stun = 60                # 原版 Stun(60)：眩晕期间 stuckTime 涨得极慢
+                self.stuck_ticks = self._rng.randint(*STUCK_TICKS)
+                self.stun = STUCK_WALL_STUN   # 撞上那一下的僵直
                 return
             self.swish_counter = 0            # 擦着地面滑过：不卡，只是瘸一会儿
             self.swish_dir = None
@@ -1022,6 +1070,7 @@ class NeedleWorm:
                     self.swish_counter = 0
                     self.swish_dir = None
                     self.stuck_time = 0.0
+                    self.stuck_ticks = self._rng.randint(*STUCK_TICKS)
                     self.attack_event = (c, STAB_DAMAGE, STAB_STUN)
                     return
         # 3) 没撞上：整体前冲
@@ -1053,12 +1102,14 @@ class NeedleWorm:
         self.charging_attack = 0.0
         self.swish_dir = None
         self.swish_counter = 0
-        if self.stun < 1:                    # 原版 BigNeedleWorm.cs:329 判的是 Consious
-            self.stuck_time += STUCK_WALL_RATE
-        else:
-            self.stuck_time += rng.random() / 150.0
+        # 挂住时长按 tick 倒计时（原版 0.0125/tick 会拖到 3s+，用户要 0.5~1s）
+        if self.stuck_ticks <= 0:
+            self.stuck_ticks = self._rng.randint(*STUCK_TICKS)
+        self.stuck_ticks -= 1
+        self.stuck_time = 1.0 - max(0, self.stuck_ticks) / float(STUCK_TICKS_MAX)
         self.crawl_sin += 0.4 * self.stuck_time
-        if self.stuck_time > 1.0:
+        if self.stuck_ticks <= 0:
+            self.stuck_ticks = 0
             self.stuck_time = 0.0
             self.stuck_pos = None
             self.last_stuck_tip = None
@@ -1253,6 +1304,9 @@ class NeedleWorm:
             s.x += (tx - s.x) * 0.45
             s.y += (ty - s.y) * 0.45
         grav = 0.16 * self.room_gravity
+        follow = (CHAIN_FOLLOW_HELD
+                  if self.state in (ItemState.MOUSE, ItemState.CARRIED)
+                  else CHAIN_FOLLOW)
         for i in range(sn + 1, len(self.seg)):
             s = self.seg[i]
             p = self.seg[i - 1]
@@ -1260,8 +1314,8 @@ class NeedleWorm:
             dx, dy = s.x - p.x, s.y - p.y
             d = math.hypot(dx, dy)
             ux2, uy2 = ((dx / d, dy / d) if d > 1e-6 else (ux, uy))
-            s.x += (p.x + ux2 * s.dist - s.x) * 0.5
-            s.y += (p.y + uy2 * s.dist - s.y) * 0.5 + grav
+            s.x += (p.x + ux2 * s.dist - s.x) * follow
+            s.y += (p.y + uy2 * s.dist - s.y) * follow + grav
             wave = math.sin(self.crawl_sin + i * 0.55) * (0.35 + 0.045 * (i - sn))
             s.x += -uy2 * wave
             s.y += ux2 * wave

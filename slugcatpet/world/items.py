@@ -312,6 +312,10 @@ def _dist_to_path(pts, x, y):
     return best
 
 
+# 鼠标拖面条蝇每 tick 最多挪这么多（否则光标瞬移会把身体抻长/挤成一团）
+_NW_DRAG_CAP = 12.0
+
+
 class ItemInteractionMixin:
     # 个数上限已全部取消，can_place_* 恒真（保留接口供 UI 调用）
     _FRUIT_GRAB_PAD = 7.0
@@ -2083,6 +2087,11 @@ class ItemInteractionMixin:
         if cur is None:
             return
         nw.last_x, nw.last_y = nw.x, nw.y
+        # 限速跟随：光标瞬移时身体来不及跟，会被抻长/挤成一团（用户口径）
+        dx, dy = cur[0] - nw.x, cur[1] - nw.y
+        d = math.hypot(dx, dy)
+        if d > _NW_DRAG_CAP:
+            cur = (nw.x + dx / d * _NW_DRAG_CAP, nw.y + dy / d * _NW_DRAG_CAP)
         nw.x, nw.y = cur
         nw.vx = nw.vy = 0.0
 

@@ -25,6 +25,8 @@ SEG_GRAV = 0.22               # 悬空（被拎起）时链节下坠
 SEG_AIR_FRIC = 0.90           # 链节空气阻力（原版 BodyChunk airFriction 0.999，宠物里加重防抖）
 SEG_CONN_ELASTICITY = 0.95    # 原版 BodyChunkConnection(Normal, elasticity 0.95)
 SEG_ALIGN = 0.45              # 链节「接在父节延长线上」的软约束（替代原版 chunk 间的撑直）
+SEG_ALIGN_HELD = 0.20         # 被拎起/拖动时放软：身体拖在后面，看得出被拽的体长变化
+SEG_CONN_HELD = 0.35          # 同上的杆长约束强度（原版 BodyChunkConnection 0.95 太硬，拖动时像根棍）
 DEPTH_LERP = 0.1              # 原版 depthRotation 的插值系数（LizardGraphics.Update）
 HEAD_DEPTH_LERP = 0.5         # 原版 headDepthRotation 的插值系数
 TURN_LIFT = 6.0               # 转身时上半身支起的高度（原版靠头部绳索，这里直接抬驱动点）
@@ -1536,12 +1538,14 @@ class Lizard:
         所以切向速度会保留 —— 转身/被拖时身体自然甩过去，不会卡成竖条或
         飘在头的上方。
         """
-        held = self.state == ItemState.MOUSE
+        held = self.state == ItemState.MOUSE or self.hauled
         # 方向带记忆：只有真正走出速度才翻面；否则停稳瞬间的
         # ±0.0x 抖动会把躯干甩到头前面，看起来就是「朝反方向走」。
         if abs(self.vx) > TURN_VX:
             self.chain_dir = 1.0 if self.vx > 0.0 else -1.0
         grav = SEG_GRAV * (1.35 if held else 1.0) * self.room_gravity
+        align = SEG_ALIGN_HELD if held else SEG_ALIGN
+        conn = SEG_CONN_HELD if held else SEG_CONN_ELASTICITY
         # ① BodyChunk.Update：vel 受重力、乘空气阻力，pos += vel
         for s in self.seg:
             s.vy += grav
@@ -1565,12 +1569,12 @@ class Lizard:
             prev_x, prev_y = anc_x, anc_y
             dir_x, dir_y = -self.chain_dir, 0.0
             for s in self.seg:
-                s.x += (prev_x + dir_x * s.dist - s.x) * SEG_ALIGN
-                s.y += (prev_y + dir_y * s.dist - s.y) * SEG_ALIGN
+                s.x += (prev_x + dir_x * s.dist - s.x) * align
+                s.y += (prev_y + dir_y * s.dist - s.y) * align
                 dx, dy = s.x - prev_x, s.y - prev_y
                 d = math.hypot(dx, dy)
                 if d > 1e-6:
-                    k = (d - s.dist) * SEG_CONN_ELASTICITY / d
+                    k = (d - s.dist) * conn / d
                     s.x -= dx * k
                     s.y -= dy * k
                     nl = math.hypot(s.x - prev_x, s.y - prev_y) or 1.0

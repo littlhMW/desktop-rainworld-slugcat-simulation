@@ -53,6 +53,9 @@ CORPSE_HAUL_FLING = 14.0     # 甩出去的初速（够飞出窗口被清掉）
 CORPSE_HAUL_TICKS = 1000     # 单趟最长 tick（约 25s，超时松爪）
 T_CORPSE_HAUL_RETRY = 600    # 一趟之后多久不再惦记（约 15s）
 CORPSE_HAUL_P = 0.5          # 闲下来时每次检查起意的概率
+LICK_PLAY_P = 0.55           # 圣徒：射程内有生物时起意伸舌逗它
+LICK_PLAY_CD = 240           # 一次逗弄后的冷却（约 6s）
+LICK_REACH_FRAC = 0.85       # 舌头总长的这个比例之内才够得着
 T_HPOLE_TIMEOUT = 1600
 HPOLE_MAX_CLIMBS = 3
 WAKE_STABILIZE_TICKS = 30
@@ -455,6 +458,7 @@ class BehaviorFSM:
         self._itemplay_left = 0
         self._itemplay_phase = 0
         self._itemplay_side = "r"
+        self._lick_cd = 0                # 圣徒舔生物玩耍的冷却
         self._play_face = 1              # 玩耍时的朝向倾向（进玩法时随机一次）
         # 觅食欲望：吃到东西归 0，慢慢涨回 1 才想再找吃的
         self._food_urge = 1.0
@@ -993,6 +997,21 @@ class BehaviorFSM:
                 self._itemplay_target = it
                 self._break_active_controllers()
                 self._act_or_wake("ItemPlay")
+
+        # 圣徒玩耍：伸舌黏住路过的生物逗一下（舌头系独有；被黏的生物各有反应）
+        if self._lick_cd > 0:
+            self._lick_cd -= 1
+        if (self._lick_cd <= 0 and self.win.tongue is not None
+                and not self.grab.active and not self._exhausted
+                and not self._cold_urgent() and not self._zerog()
+                and not self._hibernating and not self.body.swimming
+                and self._threat_lizard() is None
+                and self.state in ("IdleStand", "PostThrowStand", "PostThrowWander")):
+            tgt = self._lick_creature()
+            if tgt is not None and self.rng.random() < LICK_PLAY_P:
+                self.win.fire_tongue_at_obj(tgt)
+                self._lick_cd = LICK_PLAY_CD
+                self.gfx.look_at = (tgt.x, tgt.y)
 
         # 清场：场上有无用又不能吃的尸体（死蜥蜴…）→ 拖到屏幕边扔出去
         if self._haul_cd > 0:
@@ -2885,11 +2904,24 @@ class BehaviorFSM:
     def _climbable_pole_available(self) -> bool:
         return any(p.kind == "vertical" for p in self.win.poles)
 
+    def _pole_in_reach(self, p) -> bool:
+        """身体落在杆的竖直跨度内（含端外容差）＝够得着。
+
+        光标虚杆悬空、底部不接地：鼠标抬高时地面上的猫够不着它，
+        既不该选它去爬，也不该为它白跑一趟。
+        """
+        top, bot = min(p.ay, p.by), max(p.ay, p.by)
+        y = self.body.chunk1.y
+        return (top - tuning.POLE_AIRGRAB_PAD <= y
+                <= bot + tuning.POLE_AIRGRAB_PAD)
+
     def _pick_climbable_pole(self):
         best = None
         hx = self.body.chunk1.x
         for p in self.win.poles:
             if p.kind != "vertical":
+                continue
+            if not self._pole_in_reach(p):
                 continue
             if best is None or abs(p.x - hx) < abs(best.x - hx):
                 best = p
@@ -3960,10 +3992,18 @@ class BehaviorFSM:
         return 0.0 if self.body.chunk1.x < self.WL * 0.5 else float(self.WL)
 
     def _haul_release(self, vx: float = 0.0) -> None:
-        """松爪：被打断 / 放弃时把那具尸体放回自由态。"""
+        """松爪：被打断 / 放弃时把那具尸体放回自由态。
+
+        没有指定速度（被打断、超时放弃）时也朝最近的屏幕边甩出去 —— 否则尸体
+        会原地停在屏幕上（常常正好是它被拖到的那条边），既不消失也没人再管。
+        """
         tgt = self._clear_target
         if tgt is not None and getattr(tgt, "hauled", False):
-            tgt.release_haul(vx, 0.0)
+            if vx == 0.0:
+                cx = getattr(tgt, "x", self.body.chunk1.x)
+                vx = (-CORPSE_HAUL_FLING if cx < self.WL * 0.5
+                      else CORPSE_HAUL_FLING)
+            tgt.release_haul(vx, -1.0)
         self._clear_target = None
 
     def _st_clearcorpse(self, cursor, disturbed):
@@ -6259,6 +6299,32 @@ class BehaviorFSM:
         self._itemplay_left = 0
         self._itemplay_phase = 0
         self._itemplay_cd = tuning.ITEMPLY_RETRY
+
+    def _lick_targets(self):
+        """能被舌头黏着玩的生物（活的、自由态的）。"""
+        w = self.win
+        out = []
+        for seq in (w.batflies, w.squidcadas, w.needleworms, w.lizards, w.scavengers):
+            for e in seq:
+                if getattr(e, "dead", False):
+                    continue
+                if getattr(e, "state", None) != ItemState.FREE:
+                    continue
+                out.append(e)
+        return out
+
+    def _lick_creature(self):
+        """射程内最近的生物（舌头够得着才玩）。"""
+        tg = self.win.tongue
+        if tg is None or not tg.is_idle():
+            return None
+        c0 = self.body.chunk0
+        best, bd = None, tg.total * LICK_REACH_FRAC
+        for e in self._lick_targets():
+            d = math.hypot(e.x - c0.x, e.y - c0.y)
+            if d < bd:
+                best, bd = e, d
+        return best
 
     def _st_itemplay(self, cursor, disturbed):
         """拿起地上的矛/石头把玩一会儿，再放下走人。"""

@@ -59,10 +59,13 @@ class PoleClimber:
             b.walk_to(self.pole.x)
             d = abs(c1.x - self.pole.x)
             top, bot = min(self.pole.ay, self.pole.by), max(self.pole.ay, self.pole.by)
-            if d < ARRIVE_EPS and c1.on_floor:
+            # 够得着才抓得住：身体必须落在杆的竖直跨度内（含端外一点容差）。
+            # 光标虚杆悬空、底部不接地，鼠标抬高时地面上的猫就算走到光标正下方
+            # 也接不上这根杆（否则会「贴着空气从地面一路爬上杆顶」）。
+            reach = top - tuning.POLE_AIRGRAB_PAD <= c1.y <= bot + tuning.POLE_AIRGRAB_PAD
+            if d < ARRIVE_EPS and c1.on_floor and reach:
                 self._grab()
-            elif (not c1.on_floor and d < tuning.POLE_AIRGRAB_R
-                  and top - tuning.POLE_AIRGRAB_PAD <= c1.y <= bot + tuning.POLE_AIRGRAB_PAD):
+            elif not c1.on_floor and d < tuning.POLE_AIRGRAB_R and reach:
                 self._grab()      # jump-pole-hopping：空中贴杆即抓
             elif self.timer > APPROACH_TIMEOUT:
                 self.giveup = True
