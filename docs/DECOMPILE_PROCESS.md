@@ -246,10 +246,11 @@ perp    = Custom.PerpendicularVector(dir)
 | `dir = -sh.dir_x`（`sh.dir_x` 记的是「门朝屋外」，游戏的 `dir` 是指向屋内），`pZero = 入口中点 + dir*60`，全部偏移先在原版坐标系（y 向上）里算，最后 `(vx,vy) -> (zx+vx, zy-vy)` | `ShelterDoor.cs:1170-1224` |
 | `rotation = AimFromOneVectorToAnother(dir, zero)` 得到的是 Futile 正角（屏幕上逆时针），Qt `rotate()` 正角是顺时针 ⇒ **要取反** `p.rotate(-rot)` | `ShelterDoor.cs:1849` |
 
-桌宠对照原版只改两处，都在 `shelter.py::_layout` 标了 `[APPROXIMATION]`：
+桌宠对照原版只改三处，都在 `shelter.py::_layout` 标了 `[APPROXIMATION]`：
 
 1. `door_scale = clamp(h*0.92/126, 0.30, 1.0)` —— 桌宠走廊比原版短，整扇门按残高缩到 1:1 封顶。
-2. pZero 的 y 取入口带中线。层级上原版把门放在 `Items` 容器（在蜥蜴猫 `Midground` 躯干**之前**），
+2. 墙厚固定 `WALL_PX = POLE_RAD * 4`（= 2 倍杆宽）。原版墙就是 tile 级 `Solid`，没有像素厚度；桌宠要一个能看的框，就取杆子的 2 倍粗细。
+3. pZero 的 y 取入口带中线。层级上原版把门放在 `Items` 容器（在蚶蛓猫 `Midground` 躯干**之前**），
    桌宠改成整扇门都画在生物**之后——即背景层**：桌宠屋子比原版小，否则门会把躲进去的猫整个盖住。
 
 ### 13.4 提取与验收

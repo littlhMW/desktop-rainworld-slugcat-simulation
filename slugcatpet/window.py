@@ -1574,7 +1574,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             # 庇护所整间：门板开合 / 拖动 / 删除都得落在重绘范围里
             bx0, by0, bx1, by1 = sh.safe_rect()
             xs.append(bx0); ys.append(by0); xs.append(bx1); ys.append(by1)
-        if (self.shelters or ()) and storm_hud.visible(self):
+        if storm_hud.visible(self):   # HUD 只跟番茄钟走，没有屋子也要重绘
             hx0, hy0, hx1, hy1 = storm_hud.hud_rect(self)
             xs.append(hx0); ys.append(hy0); xs.append(hx1); ys.append(hy1)
         s = self._scale
@@ -2005,22 +2005,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
     # ── 暴雨设置 / 存档 ──
     def set_storm_enabled(self, on):
-        """开/关暴雨番茄钟。开启时若还没庇护所，就在地面中间先放一间默认的。"""
+        """开/关暴雨番茄钟。**不会**自动放庇护所 —— 屋子由工具栏自己框选出来。"""
         on = bool(on)
         self.storm.enabled = on
         self._params["storm_enabled"] = on
-        if on and not self.shelters:
-            tpl = template_of("large")
-            aw, ah = tpl.aspect
-            w = min(220.0, self._WL * 0.32)
-            h = w * float(ah) / float(aw)
-            self.shelters.append(Shelter(self._WL * 0.5 - w * 0.5, self._HL - h, w, h,
-                                         None, self._WL, seed=0,
-                                         door_ticks=int(tuning.STORM_DOOR_TICKS),
-                                         template=tpl))
-            self._shelter_seed += 1
-            self.world_version += 1
-            self._refresh_shelter_solids()
         if not on:
             self.storm.reset()
             self.storm_active = False
@@ -2122,11 +2110,26 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if sh is None:
             self._exit_place_mode()
             return None
+        x, y, wd, ht, tpl = sh.x, sh.y, sh.w, sh.h, sh.template
+        self._exit_place_mode()
+        return self.add_shelter(x, y, wd, ht, template=tpl)
+
+    def add_shelter(self, x, y, w=None, h=None, template=None, door_ticks=None):
+        """按矩形放一间庇护所（工具栏框选松手也走这里）。不给尺寸就用模板比例的默认大小。"""
+        tpl = template or template_of("large")
+        aw, ah = tpl.aspect
+        if w is None:
+            w = min(220.0, self._WL * 0.32)
+        if h is None:
+            h = max(Shelter.MIN_H, float(w) * float(ah) / float(aw))
+        if door_ticks is None:
+            door_ticks = tuning.STORM_DOOR_TICKS
+        sh = Shelter(x, y, w, h, None, self._WL, seed=self._shelter_seed,
+                     door_ticks=int(door_ticks), template=tpl)
         self.shelters.append(sh)
         self._shelter_seed += 1
         self.world_version += 1
         self._refresh_shelter_solids()
-        self._exit_place_mode()
         self._prev_dirty = None
         self.update()
         return sh

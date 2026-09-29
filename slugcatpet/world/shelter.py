@@ -28,6 +28,7 @@ import random
 from dataclasses import dataclass, field, replace
 
 from ..planning import point_goal
+from .pole import POLE_RAD
 
 OPEN = "open"
 CLOSING = "closing"
@@ -42,6 +43,9 @@ DOOR_SPRITES = 42              # InitiateSprites: new FSprite[42]
 DOOR_PZERO_TILES = 3.0         # pZero = MiddleOfTile(entrance) + dir * 60f
 DOOR_CLOSE_TILES = 4           # closeTiles[4] = 入口 + dir*(2..5)
 TUNNEL_H = 2                   # [APPROXIMATION] 原版 1 tile，桌宠猫不匍匐
+
+# 墙厚 = 2 倍杆宽（杆画出来就是 2*POLE_RAD 宽）。固定像素值，不再跟着贴图 tile 走。
+WALL_PX = POLE_RAD * 4.0
 
 # 配色：RW 庇护所是灰褐色金属（原版走 ColoredSprite3 + 房间调色板）
 _FRAME = (62, 58, 52, 236)
@@ -239,7 +243,7 @@ class Shelter:
     # ── 几何：全部由模板比例 + 真实矩形推出 ──
     def _layout(self):
         tpl = self.template
-        self.tile = max(4.0, self.h / float(tpl.chamber_h + tpl.wall))
+        self.tile = max(4.0, (self.h - WALL_PX) / float(max(1, tpl.chamber_h)))
         t = self.tile
         wall = self.wall_px
         # 走廊长度：先按模板给，宽度不够就压缩（chamber 宽按模板值兜底）
@@ -302,7 +306,7 @@ class Shelter:
 
     @property
     def wall_px(self):
-        return max(2.0, self.template.wall * self.tile)
+        return WALL_PX
 
     @property
     def door_t(self):
@@ -434,13 +438,13 @@ class Shelter:
         self.draw_front(p)
 
     def draw_back(self, p):
-        """猫身之后：内腔薄底 + **简单黑色边框**（墙体 / 顶 / 内墙）。"""
+        """猫身之后：20% 灰底 + **简单黑色边框**（墙体 / 顶 / 内墙）。"""
         from PySide6.QtGui import QColor
         from PySide6.QtCore import QRectF, Qt
 
         p.setPen(Qt.PenStyle.NoPen)
-        # 内腔一层很淡的暗底：屋里的猫仍然看得清
-        p.setBrush(QColor(8, 8, 10, 110))
+        # 背景：20% 灰纯色（alpha = 0.2），屋里的猫仍然看得清
+        p.setBrush(QColor(128, 128, 128, 51))
         x0, y0, x1, y1 = self.safe_rect()
         p.drawRect(QRectF(x0, y0, self.w, self.h))
         # 只画黑色墙体 —— 入口那块留白，猫从缺口进出
