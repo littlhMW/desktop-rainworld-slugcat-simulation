@@ -324,6 +324,10 @@ class BehaviorFSM:
         self.HL = window._HL
         # seed=None 时从全局 random 取种：debug 模式下先 random.seed(N) ⇒ 整套行为可复现
         self.rng = random.Random(seed if seed is not None else random.randrange(1 << 30))
+        # 尾针拔出特效自己的随机流：UnityEngine.Random 在那边是独立的，
+        # 混进 self.rng 会把行为和测试序列整体错位。
+        self._needle_rng = random.Random(
+            (seed if seed is not None else 0) * 977 + 41)
         self.grab = GrabController(self.body, self.gfx)
         self.mood = build_arbiter(self.rng, self.pers)
         self.looker = ObjectLooker(self.rng, self._look_fac)
@@ -7418,6 +7422,41 @@ class BehaviorFSM:
         g.tail_needle_prog = 0.011
         self._tail_needle_grow()
 
+    def _tail_needle_burst(self):
+        """拔出尾针那一瞬：尾中点溅 4 颗水珠 + 5 点白火花（Player.cs:10025-10035）。
+
+        原版：`pos = tail[tail.Length / 2].pos`，先 4 个 `WaterDrip`（朝髋方向、
+        速度 2~6、带随机横漂），再 5 个 `Spark`（位置随机散开 40px 内、速度 4~30、
+        寿命 18）。水珠这里用同一条白色加法粒子代替，靠低速短寿命区分。
+        """
+        if not self.win.cat.tuning.get("tail_needle"):
+            return
+        segs = getattr(getattr(self.win, "tail", None), "segs", None)
+        if not segs:
+            return
+        mid = segs[len(segs) // 2]
+        px, py = mid.x, mid.y
+        b = self.body
+        dx, dy = b.chunk1.x - px, b.chunk1.y - py
+        d = math.hypot(dx, dy) or 1.0
+        ux, uy = dx / d, dy / d
+        rng = self._needle_rng
+        for _ in range(4):                      # WaterDrip
+            k = 3.0 * rng.random()
+            ax = (rng.random() * 2.0 - 1.0) * k + ux * (2.0 + 4.0 * rng.random())
+            ay = (rng.random() * 2.0 - 1.0) * k + uy * (2.0 + 4.0 * rng.random())
+            self.win.add_spark(px + (rng.random() * 2.0 - 1.0) * 1.5,
+                               py + (rng.random() * 2.0 - 1.0) * 1.5,
+                               ax, ay, True, 26)
+        for _ in range(5):                      # Spark
+            a = rng.random() * 2.0 - 1.0
+            c = rng.random() * 2.0 - 1.0
+            n = math.hypot(a, c) or 1.0
+            sp = 4.0 + 26.0 * rng.random()
+            self.win.add_spark(px + a * rng.random() * 40.0,
+                               py + c * rng.random() * 40.0,
+                               a / n * sp, c / n * sp, True, 18)
+
     def _tail_needle_grow(self):
         """尾针生长的每 tick 推进（Player.cs:10000-10036）：到 1 才把矛交到手上。"""
         b, g = self.body, self.gfx
@@ -7442,6 +7481,7 @@ class BehaviorFSM:
         if g.tail_needle_prog < 1.0:
             return
         g.tail_needle_prog = 0.0
+        self._tail_needle_burst()          # 拔出那一瞬的溅射（Player.cs:10025-10035）
         tx, ty = b.chunk1.x, b.chunk1.y
         segs = getattr(getattr(self.win, "tail", None), "segs", None)
         if segs:
@@ -7547,13 +7587,24 @@ class BehaviorFSM:
             "spear" if isinstance(it, Spear) else "stone") or "r"
         self._play_face = 1 if self.rng.random() < 0.5 else -1
 
+    def _own_needle(self, sp) -> bool:
+        """这根矛是不是「这只猫自己尾巴长出来的针」（Spear.spearmasterNeedle）。
+
+        原版判定：`Spear.spearmasterNeedle` + 掷出者是 Spearmaster。桌宠里
+        needle 标记就是尾巴长的针（`_tail_needle_grow` 写 sp.needle = True），
+        种族看 `tail_needle` 能力位。
+        """
+        return (bool(getattr(sp, "needle", False))
+                and bool(self.win.cat.tuning.get("tail_needle")))
+
     def _itemplay_fling(self):
         """玩够了顺手甩出去（暴躁的猫）：走原版水平投掷，石头能砸晕同伴。"""
         b = self.body
         if not b.item_ready():
             return                       # 上手冷却没走完：先接着玩
         dir_x = 1 if b.facing >= 0 else -1
-        if b.carried_spear is not None:
+        if b.carried_spear is not None and not self._own_needle(b.carried_spear):
+            # 矛大师自己尾巴长的针不当玩具扔（原版针是它唯一的取食工具）
             b.throw_spear(dir_x, weaponphys.frc(weak=self._exhausted), recoil=0.3)
         elif b.carried_stone is not None:
             b.throw_stone(dir_x, weaponphys.frc(weak=self._exhausted),
@@ -7564,7 +7615,8 @@ class BehaviorFSM:
         b = self.body
         if b.carried_stone is not None:
             b.release_stone(to_free=True)
-        if b.carried_spear is not None:
+        if b.carried_spear is not None and not self._own_needle(b.carried_spear):
+            # 收尾只放下「玩的东西」：自己尾巴长的针继续拿着，别因为玩耍掉了
             b.release_spear(to_free=True)
         b.eat_raise = 0.0
         b.set_crawl(False)

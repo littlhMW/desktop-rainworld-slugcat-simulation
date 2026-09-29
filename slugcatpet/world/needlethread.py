@@ -4,7 +4,9 @@
 wiki：「掷出白色的矛针后，可以看到一条长的有机线连接矛和矛大师，就像运输营养
 物质一样，前提是矛命中了活物。」原版在 Weapon.Thrown 时 AddObject 一条
 Umbilical，一端钉在矛大师 tail[0]（尾巴根），另一端钉在矛尖后方 25px 的矛尾上，
-自身是 10~19 个自由点，寿命 300~400 tick，宽约 1px 的米黄色细线。
+自身是 10~19 个自由点，宽约 1px 的米黄色细线。
+消失时机（用户口径，覆盖原版 Spear_NeedleDisconnect 的那几处）：只有
+① 这根针实体被删掉、或 ② 下一根活针出现 时才断；扎中生物 / 插墙 / 落地都不再断。
 
 数值出处：
   Spear.cs:714           Spear_NeedleCanFeed() 时 new Umbilical(room, this, player, vel)
@@ -30,6 +32,7 @@ LIFE_MIN, LIFE_MAX = 150.0, 200.0
 LIFE_START = 2.0                 # points[i,3].x 初值（2）
 WIDTH_FULL = 0.3                 # InverseLerp(0, 0.3, life)
 GRAV_LO, GRAV_HI = 0.1, 0.6
+LIFE_HOLD = 1.0                  # 寿命下限：只负责把重力/宽度带到稳态，不再归零
 
 
 def _lerp(a, b, t):
@@ -45,7 +48,7 @@ def _ilerp(a, b, v):
 class NeedleThread:
     """尾巴根 ↔ 针尾的一条自由点细线。"""
 
-    __slots__ = ("pts", "spear", "dead")
+    __slots__ = ("pts", "spear", "dead", "last_head")
 
     def __init__(self, tail_xy, vx, vy, rng):
         n = rng.randint(10, 19)                     # Random.Range(10, 20)
@@ -61,6 +64,7 @@ class NeedleThread:
             self.pts.append([x, y, x, y, pvx, pvy, LIFE_START, life])
         self.spear = None
         self.dead = False
+        self.last_head = (float(tail_xy[0]), float(tail_xy[1]))
 
     def _life(self, i):
         if i > 0:
@@ -68,10 +72,13 @@ class NeedleThread:
         return self.pts[i][6]
 
     def update(self, head_xy, tail_xy) -> None:
-        """一 tick：自由点积分 + 相邻约束 + 寿命衰减；两端钉住。"""
+        """一 tick：自由点积分 + 相邻约束 + 寿命夹到稳态；两端钉住。
+
+        自身不会把 dead 置真 —— 这条线的生死只由外部（针实体被删 / 下一根
+        活针出现）决定，见 items._needle_thread_tick。
+        """
         pts = self.pts
         n = len(pts)
-        alive = False
         for i in range(n):
             q = pts[i]
             q[2], q[3] = q[0], q[1]
@@ -108,15 +115,17 @@ class NeedleThread:
                 pts[i - 2][4] -= ux * 0.6
                 pts[i - 2][5] -= uy * 0.6
             q[6] -= 1.0 / q[7]
-            if q[6] > 0.0:
-                alive = True
+            if q[6] < LIFE_HOLD:
+                # 原版寿命到点就 Destroy()；用户口径改成「线只跟着实体走」：
+                # 寿命只把重力/宽度带到稳态，之后一直挂着。
+                q[6] = LIFE_HOLD
         if self._life(0) > 0.0:                       # 首点钉在尾巴根
             pts[0][0], pts[0][1] = head_xy
             pts[0][4] = pts[0][5] = 0.0
+        self.last_head = (pts[0][0], pts[0][1])
         if self._life(n - 1) > 0.0:                   # 末点钉在针尾
             pts[n - 1][0], pts[n - 1][1] = tail_xy
             pts[n - 1][4] = pts[n - 1][5] = 0.0
-        self.dead = not alive
 
     def draw(self, painter) -> None:
         """逐段细线：宽度 2*0.5*InverseLerp(0,0.3,life)，alpha = min(life,1)。"""

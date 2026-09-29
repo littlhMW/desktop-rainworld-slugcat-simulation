@@ -532,6 +532,10 @@ class SlugcatGraphics(GraphicsDrawMixin):
             self.blink = self._blink_rng.randint(4, self._blink_rng.randint(4, 15))
         if self.sleeping and self.sleep_curl > 0.5:
             self.blink = max(2, self.blink)
+        if self.tail_needle_prog > 0.1:
+            # 拔针的使劲脸：原版 PlayerGraphics.cs:4331-4334 在 spearProg > 0.1 时
+            # 直接把 blink 顶到 5（本该闭眼的帧），桌宠用同一口径压住眨眼计时。
+            self.blink = max(5, self.blink)
         if (self.body.bodyMode == "Swimming" and getattr(self.body, "lungs_exhausted", False)):
             self.blink = max(self.blink, 1)
 

@@ -3023,35 +3023,34 @@ class ItemInteractionMixin:
         return (s.x, s.y)
 
     def _needle_thread_tick(self):
-        """活针出手时从尾巴根拉出一条细有机线；断线/针没了/寿命尽即消失。"""
+        """活针出手时从尾巴根拉出一条细有机线。
+
+        消失时机（用户口径，覆盖原版 Spear_NeedleDisconnect 的那几处）：
+          ① 这根针这个实体被删掉（不在 self.spears 里）；
+          ② 下一根活针出现（掷出）—— 线只跟着最新那根活针。
+        针扎中生物 / 插进墙 / 落地都不再断线（针不再喂食，线照挂）。
+        """
         ths = self.needle_threads
         live = {id(sp) for sp in self.spears}
-        for th in ths:
-            sp = th.spear
-            if (sp is None or id(sp) not in live
-                    or not getattr(sp, "needle_live", False)):
-                th.dead = True
-        ths[:] = [t for t in ths if not t.dead]
-        have = {id(t.spear) for t in ths}
-        for sp in self.spears:                       # 新掷出的活针补一条
-            if not (getattr(sp, "needle", False)
-                    and getattr(sp, "needle_live", False)):
-                continue
-            if not (sp._thrown or sp.stuck_to is not None) or id(sp) in have:
-                continue
-            tail = self._thrower_tail_pos(sp)
-            if tail is None:
-                continue
-            # 每根针一条独立的确定性随机流，不去扰动矛自己的 spin 随机数
-            th = NeedleThread(tail, sp.vx, sp.vy,
-                              random.Random(int(sp._id) * 7919 + 13))
-            th.spear = sp
-            ths.append(th)
+        ths[:] = [t for t in ths if not t.dead and id(t.spear) in live]   # ①
+        cands = [sp for sp in self.spears                                   # ②
+                 if (getattr(sp, "needle", False)
+                     and getattr(sp, "needle_live", False) and sp._thrown)]
+        if cands:
+            keep = cands[-1]                       # 最新那根活针
+            if not any(t.spear is keep for t in ths):
+                ths[:] = []                        # 旧的线让位
+                tail = self._thrower_tail_pos(keep)
+                if tail is not None:
+                    # 每根针一条独立的确定性随机流，不去扰动矛自己的 spin 随机数
+                    th = NeedleThread(tail, keep.vx, keep.vy,
+                                      random.Random(int(keep._id) * 7919 + 13))
+                    th.spear = keep
+                    ths.append(th)
         for th in ths:                               # 端点每 tick 钉到尾巴根 / 针尾
             head = self._thrower_tail_pos(th.spear)
             if head is None:
-                th.dead = True
-                continue
+                head = th.last_head                  # 掷出者不在了：线头留在原地
             th.update(head, th.spear.butt())
         ths[:] = [t for t in ths if not t.dead]
 

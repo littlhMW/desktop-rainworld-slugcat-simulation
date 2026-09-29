@@ -173,12 +173,17 @@ wiki 的说法是「掷出白色的矛针后可以看到一条长的有机线连
 | 两端：`points[0]` 每 tick 重新钉到 `PlayerGraphics.tail[0].pos`，末点钉在针尾 | `Umbilical.Update` |
 | 寿命：`(2, Lerp(150, 200, rand^0.3))`，重力 `vy -= Lerp(0.1, 0.6, life)`，宽度 `0.5 * InverseLerp(0, 0.3, life)`，颜色 `Lerp((0.95,0.8,0.55), fog, 0.2)`；寿命尽 `Destroy()` | `Umbilical.Update` |
 | 断开：`Mode.Free`(:464)、`Mode.StuckInWall`(:668)、真的喂成功(:1081)、戳到异物(:1145) 全部 `Spear_NeedleDisconnect()` | `Spear.cs` |
+| 拔出动画：`spearProg > 0.6` 头抖，`> 0.95` 封满，`== 1` 时先溅 4 个 `WaterDrip`（尾中点、朝髋、速度 2~6）+ 5 个 `Spark`（散开 40px、速度 4~30、寿命 18）再把针交到手 | `Player.cs:10013-10036` |
+| 使劲脸：`spearProg > 0.1` → `blink = 5`（本该闭眼的帧，看起来像咬紧牙往外拽） | `PlayerGraphics.cs:4331-4334` |
 
 桌宠里的对应实现（`world/needlethread.py` + `world/items.py`）：
 
 - `NeedleThread.__init__(tail_xy, vx, vy, rng)` 用与 `Umbilical` 同分布的 10~19 点起步，速度按出手速度铺开。
 - `update(head_xy, tail_xy)` 每 tick：首点重钉到尾根、末点钉到 `spear.butt()`、其余点受 `Lerp(0.1, 0.6, life)` 的等效重力与最小间距 6 约束；`life` 到 1 即 `dead`。
 - `_needle_thread_tick()` 在 `_tick_spears()` 里跑：针没了 / `needle_live` 变假（喂过、扎墙、落地）就置 `dead`；新掷出的活针补一条，随机流用 `random.Random(id(spear) * 7919 + 13)`，**不去扰动矛自己的 spin 随机数**。
-- 绘制：`window._paint_world` 在 `_draw_back_spears` / `_draw_low_spears` 之后、`pet.gfx.draw_sprites` 之前调用，所以细线永远压在猫与生物之下；`QPen` 圆头逐段连，半径随 `life` 收缩。
+- 断开时机按用户口径改写：原版那四处 `Spear_NeedleDisconnect()` 里的「喂成功 / 扎墙 / 落地」都不再断线，只有 **① 这根针实体被删掉**、**② 下一根活针掷出** 才断（同一时刻只跟最新那根活针）；掷出者不在了就把线头冻在最后一个尾根位置。
+- 寿命只用来把重力 `Lerp(0.1,0.6)` 与宽度带到稳态（夹在 `LIFE_HOLD = 1.0`），所以线不会自己淡没。
+- 拔出动画：`tail_needle_prog > 0.1` 时 `blink` 顶到 5（使劲脸），`> 0.6` 头随进度抖，封满那一 tick 在尾中点溅 4 水珠 + 5 白火花（`_tail_needle_burst()`，随机流独立于行为流）。
+- 绘制：`window._paint_world` 在 `_draw_back_spears` / `_draw_low_spears` 之后、`pet.gfx.draw_sprites` 之前调用，所以细线永远压在猫与生物之下；`QPen` 圆头逐段连。
 
 验收：`work/scratch/e2e_r91.py` 断言点数落在 10~19、首末点分别钉在尾根与针尾、`needle_live` 变假时线消失、没掷针时不冒线、绘制顺序在源码里的位置。
