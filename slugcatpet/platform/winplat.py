@@ -14,11 +14,18 @@ _SHELL_CLASSES = {
     "Windows.UI.Core.CoreWindow", "ForegroundStaging", "MultitaskingViewFrame",
     "TaskListThumbnailWnd", "XamlExplorerHostIslandWindow", "SysShadow",
     "Windows.Internal.Shell.TabProxyWindow", "ApplicationManager_ImmersiveShellWindow",
+    # 输入法 / 讲述人这类「看不见的宿主窗口」：矩形很大、IsWindowVisible 为真，
+    # 屏幕上却一个像素都没有 —— 当平台用就是一块隐形地板。
+    "Windows.UI.Input.InputSite.WindowClass", "Shell_InputSwitchTopLevelWindow",
+    "NarratorHelperWindow", "EdgeUiInputTopWndClass",
 }
 _GWL_EXSTYLE = -20
 _WS_EX_TOOLWINDOW = 0x00000080
 _WS_EX_NOACTIVATE = 0x08000000
 _WS_EX_TRANSPARENT = 0x00000020
+_WS_EX_LAYERED = 0x00080000
+_WS_EX_NOREDIRECTIONBITMAP = 0x00200000   # 没有重定向表面：自己不画像素，纯合成宿主
+_LWA_ALPHA = 0x00000002                   # SetLayeredWindowAttributes 的「用 alpha」位
 _DWMWA_CLOAKED = 14    # DWM 给窗口打的「隐身」标记（UWP 挂起 / 别的虚拟桌面）
 _MIN_W = 60.0          # 太窄的窗口不算平台
 _MIN_H = 24.0
@@ -44,6 +51,57 @@ def _cut_segments(segs, l: float, r: float):
         if r < b:
             out.append((r, b))
     return out
+
+
+def _ghost_style(ex: int) -> bool:
+    """扩展样式一眼就是「不是给用户看的窗口」：工具窗 / 不激活 / 点击穿透 / 无表面。"""
+    return bool(ex & (_WS_EX_TOOLWINDOW | _WS_EX_NOACTIVATE | _WS_EX_TRANSPARENT
+                      | _WS_EX_NOREDIRECTIONBITMAP))
+
+
+def _layered_invisible(flags: int, alpha: int) -> bool:
+    """分层窗口被设成全透明（alpha=0）：屏幕上什么都没有，却仍占着一个真矩形。"""
+    return bool(flags & _LWA_ALPHA) and int(alpha) == 0
+
+
+def _is_zoomed(user32, hwnd) -> bool:
+    """窗口最大化了吗（顶边就不再是一块真平地）。取不到就当作没最大化。"""
+    fn = getattr(user32, "IsZoomed", None)
+    if fn is None:
+        return False
+    try:
+        return bool(fn(hwnd))
+    except Exception:
+        return False
+
+
+def _ghost_class(name: str) -> bool:
+    """壳/输入法/讲述人这类「看得见但不画东西」的窗口类。"""
+    return name in _SHELL_CLASSES
+
+
+def _pixels_none(hwnd, user32) -> bool:
+    """这窗口在屏幕上真的一个像素都没有吗（隐身 / 点击穿透 / 全透明）。
+
+    这类窗口 IsWindowVisible 仍是 True、GetWindowRect 给的矩形也是真的，
+    放进平台表就是一块隐形地板（用户报的「屏幕上方有个隐形窗口」）。
+    """
+    if _cloaked(hwnd):
+        return True
+    ex = user32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
+    if _ghost_style(ex):
+        return True
+    if ex & _WS_EX_LAYERED:
+        alpha = wintypes.BYTE(0)
+        flags = wintypes.DWORD(0)
+        try:
+            if user32.GetLayeredWindowAttributes(hwnd, None, ctypes.byref(alpha),
+                                                 ctypes.byref(flags)):
+                if _layered_invisible(flags.value, alpha.value):
+                    return True
+        except Exception:
+            pass
+    return False
 
 
 def _cloaked(hwnd) -> bool:
@@ -98,14 +156,11 @@ def enumerate_tops(own_hwnds, screen_x: float, screen_y: float, scale: float):
             user32.GetWindowThreadProcessId(hwnd, ctypes.byref(wpid))
             if int(wpid.value) == my_pid:
                 return True
-            if _cloaked(hwnd):      # 挂起的 UWP / 别的虚拟桌面：矩形是陈旧的
-                return True
-            ex = user32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
-            if ex & (_WS_EX_TOOLWINDOW | _WS_EX_NOACTIVATE | _WS_EX_TRANSPARENT):
+            if _pixels_none(hwnd, user32):
                 return True
             buf = ctypes.create_unicode_buffer(256)
             user32.GetClassNameW(hwnd, buf, 256)
-            if buf.value in _SHELL_CLASSES:
+            if _ghost_class(buf.value):
                 return True
             rect = wintypes.RECT()
             if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
@@ -116,9 +171,11 @@ def enumerate_tops(own_hwnds, screen_x: float, screen_y: float, scale: float):
             x0 = (rect.left - screen_x) / scale
             x1 = (rect.right - screen_x) / scale
             y0 = (rect.top - screen_y) / scale
-            if y0 <= _TOP_EPS:                      # 最大化/全屏：顶边在屏幕外
-                return True
-            rects.append((x0, y0, x1, (rect.bottom - screen_y) / scale))
+            # 最大化 / 顶边贴屏幕顶的窗口自己不是平地，但它照样要遮挡后面的窗口
+            # （旧版这里直接丢掉，于是它盖住的那条顶边仍是「平地」—— 猫会悬在
+            #  最大化窗口上「走」）
+            rects.append((x0, y0, x1, (rect.bottom - screen_y) / scale,
+                          _is_zoomed(user32, hwnd)))
         except Exception:
             pass
         return True
@@ -134,17 +191,24 @@ def enumerate_tops(own_hwnds, screen_x: float, screen_y: float, scale: float):
 def clip_tops(rects):
     """按 Z 序（前→后）裁出「露出来的」顶边 [(x0, y0, x1)]，逻辑坐标。
 
-    rects: [(x0, y0, x1, y1)] 前→后。后面的窗口顶边被前面窗口竖直盖住的段不算地面。
+    rects: [(x0, y0, x1, y1[, 顶边不是平地])] 前→后。
+    · 后面的窗口顶边被前面窗口竖直盖住的段不算地面（挡住的部分不能走）；
+    · 顶边贴屏幕顶 / 最大化的窗口自己不当平台，但它照样遮挡后面的窗口 ——
+      旧版把这类窗口整条丢掉，于是「被最大化窗口盖住的那条顶边」仍是平地。
     """
     out = []
-    for i, (x0, y0, x1, y1) in enumerate(rects):
+    for i, r in enumerate(rects):
+        x0, y0, x1, y1 = r[0], r[1], r[2], r[3]
+        flat_top = (bool(r[4]) if len(r) > 4 else False) or y0 <= _TOP_EPS
         segs = [(x0, x1)]
         for j in range(i):                          # 前面的窗口若竖直盖住这条顶边就裁掉
-            fl, ft, fr, fb = rects[j]
+            fl, ft, fr, fb = rects[j][0], rects[j][1], rects[j][2], rects[j][3]
             if ft <= y0 <= fb:
                 segs = _cut_segments(segs, fl, fr)
                 if not segs:
                     break
+        if flat_top:
+            continue
         for a, b in segs:
             if b - a >= _MIN_W:
                 out.append((a, y0, b))

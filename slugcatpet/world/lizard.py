@@ -93,6 +93,7 @@ WANDER_MARGIN = 40.0
 WALK_TURN = 0.14              # 游走时速度趋近速率
 BLINK_RATE = 0.0125           # 头部呼吸闪烁推进速率（同游戏 LizardGraphics.breath 步长）
 MAX_SEG_SPEED = 24.0
+BODY_AX_LERP = 0.12           # 锚点方向每 tick 朝 chain_dir 靠这么多（转身时平滑滑过去，不再瞬移 2*头距）
 
 # ── 原版关系表（StaticWorld.InitStaticWorldRelationships，decomp_full/StaticWorld.cs:3668-3726）──
 # 值 = (关系类型, 强度)。类型 -> AI 模块的映射照抄 LizardAI.ModuleToTrackRelationship
@@ -573,7 +574,7 @@ class Lizard:
                  "head_angle", "last_head_angle", "jaw", "last_jaw",
                  "target", "target_obj", "bite_event", "bite_hold", "bite_cd", "_tgt_hold",
                  "walk_phase", "idle_timer", "goal_x", "hop_cd", "blink", "last_blink",
-                 "chain_dir",
+                 "chain_dir", "_ax_c",
                  "held_by_hand", "water_y", "room_gravity", "_contact_floor",
                  "dead", "spacing", "spikes", "like", "tamed", "friend_id",
                  "max_health", "health", "stun", "hurt_flash", "dead_t",
@@ -720,6 +721,7 @@ class Lizard:
         self.state = ItemState.FREE
         self.facing = 1
         self.chain_dir = 1.0
+        self._ax_c = 1.0                    # 锚点方向（chain_dir 的低通值，见 _step_chain）
         # 原版 LizardGraphics 的 depthRotation / headDepthRotation（决定头取哪一行贴图）
         self.depth = self.last_depth = -1.0          # 原版初值：朝右 = -1
         self.head_depth = self.last_head_depth = -1.0
@@ -2208,15 +2210,16 @@ class Lizard:
         # 原版里是 bodyChunks[0] 被 AI 推着走、头被 head.ConnectToPoint 拉到头前方
         # 12*headSize；这里反过来：头是 AI 驱动点，躯干 0 挂在「头后方 head_conn」的
         # 锚点上 —— 拓扑等价，效果就是头永远在最前面、身体永远拖在后面（不会倒着走）。
-        back_x, back_y = self.seg[0].x - self.x, self.seg[0].y - self.y
-        body_len = math.hypot(back_x, back_y)
-        if body_len > 1e-6:
-            body_ax, body_ay = back_x / body_len, back_y / body_len
-            anc_x = self.x + body_ax * self.head_conn
-            anc_y = self.y + body_ay * self.head_conn
-        else:
-            anc_x = self.x - self.chain_dir * self.head_conn
-            anc_y = self.y
+        #    锚点的几何与旧版一致（头后方 head_conn）。但 chain_dir 一翻面，锚点就会
+        #    瞬移到头的另一侧（差 2*head_conn ≈ 半个身位），整条躯干被一起拽过去 ——
+        #    用户报的「转身时身体碰撞体积出错」就是这个瞬移。这里锚点改用 chain_dir 的
+        #    低通值：转身时它平滑地滑过头顶（滑到中间时与头重合），一圈走完几何照旧，
+        #    不再是「啪」地跳到另一侧；静止时它恒等于 chain_dir，链形支撑与旧版相同。
+        c = getattr(self, "_ax_c", float(self.chain_dir))
+        c += (self.chain_dir - c) * BODY_AX_LERP
+        self._ax_c = c
+        anc_x = self.x - c * self.head_conn
+        anc_y = self.y
         # ② BodyChunkConnection + 顺直软约束：
         #    杆长约束只消掉径向误差，光靠它链子会自己折回来（两节各自满足距离但
         #    朝向反了）。原版 3 个 chunk 有质量互相顶、尾节还有 tailStiffness 撑直。
@@ -2224,8 +2227,18 @@ class Lizard:
         #    强行把整条身体摊平到水平线 —— 身体因此呆滞、不会自然弯曲。现在种子取
         #    「锚点→第 0 节」的当前朝向（连续性），顺直只负责撑住，不负责摆正。
         seed_x, seed_y = _dirvec(self.seg[0].x - anc_x, self.seg[0].y - anc_y)
+        w = 1.0 - abs(c)                       # 0＝没在转身，1＝锚点正滑过头顶
+        if w > 0.0:
+            #    转身半途把「头后方」的指令方向混进种子里：光靠平滑的锚点，链子会
+            #    原地不动被头拖着走（看起来倒着走），depth 也不会扫过中间几行；
+            #    混入之后身体是按转身进度「滑」到另一侧的，不是被瞬间甩过去。
+            cb = -1.0 if c >= 0.0 else 1.0
+            seed_x = seed_x * (1.0 - w) + cb * w
+            seed_y *= (1.0 - w)
         if abs(seed_x) < 1e-6 and abs(seed_y) < 1e-6:
             seed_x, seed_y = -self.chain_dir, 0.0
+        sn = math.hypot(seed_x, seed_y) or 1.0
+        seed_x, seed_y = seed_x / sn, seed_y / sn
         for _ in range(2):
             prev_x, prev_y = anc_x, anc_y
             dir_x, dir_y = seed_x, seed_y

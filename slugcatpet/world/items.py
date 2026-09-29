@@ -2947,33 +2947,57 @@ class ItemInteractionMixin:
                 out.add(id(bs))
         return out
 
+    def _low_spear_set(self):
+        """要画在「蛞蝓猫 + 生物」之前的低层矛：手上拿着的 + 扎在生物身上的。
+
+        扎在地形里成杆的矛不算：那是场景物件，仍画在上层。
+        """
+        out = set()
+        back = self._back_spear_set()
+        for sp in self.spears:
+            if id(sp) in back:                 # 背上的矛归 _draw_back_spears
+                continue
+            if sp.held_by is not None or sp.stuck_to is not None:
+                out.add(id(sp))
+        return out
+
+    def _draw_one_spear(self, p, sp):
+        """一支矛的贴图（含掷出拖尾）：低层／上层两处共用同一份几何。"""
+        ts = self._ts
+        x = sp.last_x + (sp.x - sp.last_x) * ts
+        y = sp.last_y + (sp.y - sp.last_y) * ts
+        ang = sp.stuck_angle if sp.stuck else _ang_lerp(sp.last_angle, sp.angle_deg, ts)
+        if sp._thrown and sp.state == ItemState.FREE:
+            spd = math.hypot(sp.vx, sp.vy)
+            if spd > SPEAR_TRAIL_MIN_SPEED:
+                draw_stone_trail(p, x, y, sp.vx / spd, sp.vy / spd,
+                                 min(spd * SPEAR_TRAIL_LEN_K, SPEAR_TRAIL_LEN_MAX),
+                                 SPEAR_TRAIL_HALFW, SPEAR_TRAIL_COLOR, SPEAR_TRAIL_ALPHA)
+        draw_spear(p, self.atlas, x, y, ang, length=SPEAR_DRAW_LEN)
+
     def _draw_back_spears(self, p):
         """背上的矛：画在猫之前（原版 spearOnBack 归 body 层，不该压在猫身上）。"""
-        ts = self._ts
-        for sp in self.spears:
-            if id(sp) not in self._back_spear_set():
-                continue
-            x = sp.last_x + (sp.x - sp.last_x) * ts
-            y = sp.last_y + (sp.y - sp.last_y) * ts
-            ang = _ang_lerp(sp.last_angle, sp.angle_deg, ts)
-            draw_spear(p, self.atlas, x, y, ang, length=SPEAR_DRAW_LEN)
-
-    def _draw_spears(self, p):
-        ts = self._ts
         back = self._back_spear_set()
         for sp in self.spears:
             if id(sp) in back:
-                continue
-            x = sp.last_x + (sp.x - sp.last_x) * ts
-            y = sp.last_y + (sp.y - sp.last_y) * ts
-            ang = sp.stuck_angle if sp.stuck else _ang_lerp(sp.last_angle, sp.angle_deg, ts)
-            if sp._thrown and sp.state == ItemState.FREE:
-                spd = math.hypot(sp.vx, sp.vy)
-                if spd > SPEAR_TRAIL_MIN_SPEED:
-                    draw_stone_trail(p, x, y, sp.vx / spd, sp.vy / spd,
-                                     min(spd * SPEAR_TRAIL_LEN_K, SPEAR_TRAIL_LEN_MAX),
-                                     SPEAR_TRAIL_HALFW, SPEAR_TRAIL_COLOR, SPEAR_TRAIL_ALPHA)
-            draw_spear(p, self.atlas, x, y, ang, length=SPEAR_DRAW_LEN)
+                self._draw_one_spear(p, sp)
+
+    def _draw_low_spears(self, p):
+        """手上拿的 / 扎在生物身上的矛：画在猫与生物之前。
+
+        用户口径：被拿着的矛、扎进蜥蜴／拾荒者身体的矛，都不该盖住生物本体
+        （它们跟着身体走，压在上层看起来就像贴在身上）。
+        """
+        low = self._low_spear_set()
+        for sp in self.spears:
+            if id(sp) in low:
+                self._draw_one_spear(p, sp)
+
+    def _draw_spears(self, p):
+        skip = self._back_spear_set() | self._low_spear_set()
+        for sp in self.spears:
+            if id(sp) not in skip:
+                self._draw_one_spear(p, sp)
 
     def _draw_spear_hint(self, p):
         cur = self.cursor_logical()

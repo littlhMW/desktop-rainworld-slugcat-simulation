@@ -444,6 +444,11 @@ class BehaviorFSM:
         self._blocked_ticks = 0
         self._block_grace = 0
         self._jump_over_cd = 0
+        # 被逼退记账（面敌时的「退无可退」判据）：连续退了多远／多久、卡住多久
+        self._press_x = None
+        self._press_back = 0.0
+        self._press_t = 0
+        self._stuck_t = 0
         # 挡路升级：跳过 → 推人 → 回头指指点点；杆上被挡 → 停住扒拉
         self._jump_tries = 0
         self._push_left = 0
@@ -1104,7 +1109,7 @@ class BehaviorFSM:
             self._transition("WakeSequence")
 
     def _act_facethreat_pre(self, ctx):
-        pass
+        self._threat_pressure_tick()      # 被逼退记账（每 tick 无条件）
     def _act_facethreat_gate(self, ctx):
         return (not self.grab.active and not self._exhausted and not self._zerog())
     def _act_facethreat(self, ctx):
@@ -2392,29 +2397,89 @@ class BehaviorFSM:
         self._break_active_controllers()
         self._transition("FleeLizard")
 
+    def _press_reset(self):
+        """被逼退记账归零（灵了、跳过了、不在地面上）。"""
+        self._press_x = None
+        self._press_back = 0.0
+        self._press_t = 0
+        self._stuck_t = 0
+
+    def _threat_pressure_tick(self):
+        """被逼退记账：连续退了多远、退了多久、贴墙卡住多久。
+
+        只统计「敌人就在跳得过去的范围内」的 tick：猫一旦把它甩开
+        （超出 FEAR_JUMP_MAX_R）就清零 —— 那是逃掉了，不是被逼退。
+        """
+        b = self.body
+        if b.dead or self.grab.active or not b.on_floor():
+            self._press_reset()
+            return
+        th = self._threat_lizard()
+        if th is None:
+            self._press_reset()
+            return
+        x = b.chunk1.x
+        if abs(th.x - x) > tuning.FEAR_JUMP_MAX_R:
+            self._press_reset()
+            self._press_x = x
+            return
+        if self._press_x is None:
+            self._press_x = x
+            return
+        dx = x - self._press_x
+        self._press_x = x
+        if abs(dx) < tuning.FEAR_STUCK_EPS:
+            self._stuck_t += 1
+        else:
+            self._stuck_t = 0
+        away = 1.0 if x >= th.x else -1.0
+        if dx * away > 0.0:                  # 朝远离威胁的方向挪动
+            self._press_back += abs(dx)
+            self._press_t += 1
+        else:
+            self._press_t = 0                # 被顶回来：连续后退断掉
+
     def _cornered_by(self, lz) -> bool:
-        """被这只敌人逼到角落：贴着墙，且往反方向也挪不动。"""
+        """退无可退 → 回头跳过它。
+
+        旧版只看「贴墙」与「反方向挪不动」两个瞬时几何量，于是「被一路追着
+        往墙角退、退了一屏还甩不掉」的猫永远不跳。现在加三条被逼退记账
+        （见 _threat_pressure_tick）：被逼退够远 ／ 够久 ／ 背后是墙又卡住；
+        只要它还在一跳可及的范围内就跳。
+        """
         b = self.body
         if not b.on_floor():
             return False
-        if abs(lz.x - b.chunk1.x) > tuning.FEAR_TOO_CLOSE_R:
+        gap = abs(lz.x - b.chunk1.x)
+        pressed = (self._press_back >= tuning.FEAR_PRESS_DIST
+                   or self._press_t >= tuning.FEAR_PRESS_TICKS
+                   or (self._near_wall() and self._stuck_t >= tuning.FEAR_STUCK_TICKS))
+        if pressed:
+            return gap <= tuning.FEAR_JUMP_MAX_R
+        if gap > tuning.FEAR_TOO_CLOSE_R:
             return False
         if self._near_wall():
             return True
         return abs(self._flee_target_x(lz) - b.chunk1.x) < tuning.FEAR_JUMP_MIN_GAIN
 
     def _jump_over(self, lz) -> bool:
-        """朝敌人另一侧起跳，从它头上跳过去逃跑。"""
+        """面向威胁，从它头上跳到对面去（不是往墙角里跳）。
+
+        旧版把起跳方向取成「远离敌人」，猫在墙角时那一跳实际上是撞墙；
+        用户口径是「面向威胁跳过威胁到对面」——所以这里朝敌人起跳并越过它，
+        落地时人已在另一侧，FleeLizard 接着往新的反方向跑。
+        """
         b = self.body
         if not b.on_floor():
             return False
-        side = 1.0 if b.chunk1.x >= lz.x else -1.0
-        b.facing = 1 if side > 0 else -1
+        cross = 1.0 if lz.x >= b.chunk1.x else -1.0
+        b.facing = 1 if cross > 0 else -1
         b.move_dir = b.facing
         b.walk_target_x = None
+        b.chunk0.vx = b.chunk1.vx = cross * tuning.FEAR_JUMP_VX
         b.request_jump("stand")
-        b.chunk0.vx += side * tuning.FEAR_JUMP_PUSH
         self.gfx.look_at = (lz.x, lz.y)
+        self._press_reset()          # 跳完重新记账：别在空中又判定「退无可退」
         return True
 
     def _nearest_rip_spear(self, lz=None):
@@ -2450,6 +2515,14 @@ class BehaviorFSM:
         alive = lz is not None and getattr(lz, "state", None) == ItemState.FREE
         if alive:
             self.gfx.look_at = (lz.x, lz.y)
+            # 退无可退（被逼退够远／够久，或背后是墙又挪不动）：不往回
+            # 跑了 —— 转身面向它，从它头上跳到对面继续逃。
+            if (self._jump_over_cd <= 0 and self._cornered_by(lz)
+                    and self._jump_over(lz)):
+                self._jump_over_cd = tuning.JUMP_OVER_COOLDOWN
+                self._flee_cd = FLEE_COOLDOWN
+                b.walk_to(self._flee_target_x(lz))   # 落点已在对侧，继续往反方向跑
+                return
             if self.timer % 12 == 0:              # 蜥蜴在动，隔几拍重取反方向
                 b.walk_to(self._flee_target_x(lz))
         if ((not alive) or self.timer >= FLEE_MAX_TICKS or not b.on_floor()
