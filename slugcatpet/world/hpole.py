@@ -59,6 +59,8 @@ class HPoleController:
         self._hang_walk = 0        # 悬挂时还要横向爬多少 tick
         self.goal_x = None       # 非 None：站杆面上走到这个 x 就停住（去够东西）
         self.goal_eps = None     # 停位容差（None=tuning.HPOLE_GOAL_EPS；够东西时收紧）
+        self.want = None         # 真正的目标点 (x,y)：落在杆面外时按方向/距离跳过间隙
+        self._gap_t = 0          # 卡在杆端跳不出去的 tick 数（超时清 want，别原地站死）
         # 锚点固定到杆
         lo, hi = self._extent()
         if self.tongue is not None:
@@ -341,6 +343,9 @@ class HPoleController:
         self.gfx.disbalance = self.disbalance
         self.gfx.balance_counter = self._sway_c
         self.gfx.look_at = (c0.x + b.facing * 60.0, c0.y)
+        if (self._stand_t > STAND_TICKS and self.want is not None
+                and self._gap_jump_to_want()):
+            return True                        # 目标在杆面外：带方向/距离跳过间隙
         if self._stand_t > STAND_TICKS and self.goal_x is None:
             # 原版 StandOnBeam canJump=5：站杆面能起跳（向前上跳出去）
             plan = self._hop_candidate()
@@ -355,13 +360,65 @@ class HPoleController:
         return False
 
     def _hop_candidate(self):
-        """站横杆能带方向跳过去抓住的杆（原版 jump-pole-hopping）。返回 hop_plan 元组。"""
+        """站横杆能带方向跳过去抓住的杆（原版 jump-pole-hopping）。返回 hop_plan 元组。
+
+        有目标点 want 时按「落点离目标最近」选杆与方向（斜上/斜下/左右带偏移都能跳）。
+        """
         from ..planning.pole_hop import hop_plan
         if self.win is None or self.pole is None:
             return None
         stats = getattr(getattr(self.win, "cat", None), "stats", None)
         c0 = self.body.chunk0
-        return hop_plan(stats, list(self.win.poles), c0.x, c0.y, exclude=self.pole)
+        return hop_plan(stats, list(self.win.poles), c0.x, c0.y, exclude=self.pole,
+                        want=self.want)
+
+    def _gap_jump_to_want(self) -> bool:
+        """杆面走到头还够不到目标：按目标相对位置带方向/距离跳过间隙。
+
+        三条路，按顺序挑第一条规划得通的（都不掷骰子，规划说行才动）：
+          1) 跳过去在空中抓另一根杆（hop_plan，横杆/竖杆都算）
+          2) 跳过间隙落到对侧窗口顶边（platform_hop_plan，单向平台）
+        目标还在杆面范围内就返回 False（走过去/伸手即可）。
+        """
+        if self.want is None or self.win is None or self.pole is None:
+            return False
+        wx, wy = self.want
+        lo, hi = self._walk_band()
+        if lo <= wx <= hi:
+            return False
+        c0, c1 = self.body.chunk0, self.body.chunk1
+        edge = hi if wx > hi else lo
+        if abs(c1.x - edge) > tuning.HPOLE_GOAL_EPS:
+            self.goal_x, self.goal_eps = edge, tuning.HPOLE_GOAL_EPS
+            return False                       # 先沿杆面走到那一端
+        stats = getattr(getattr(self.win, "cat", None), "stats", None)
+        if stats is None:
+            return False
+        from ..core import chunkphys
+        from ..planning.pole_hop import hop_plan, platform_hop_plan
+        plan = hop_plan(stats, list(self.win.poles), c0.x, c0.y,
+                        exclude=self.pole, want=self.want)
+        if plan is not None:
+            self._hop_to(plan)
+            return True
+        pf = platform_hop_plan(stats, chunkphys.platforms(), c0.x, c0.y, want=self.want)
+        if pf is None:
+            self._gap_t += 1                   # 跳不过去：站一会儿再放弃，别永远钉在杆端
+            if self._gap_t > tuning.HPOLE_GAP_GIVEUP:
+                self.want = None
+                self.goal_x = None
+            return False
+        kind, hold, md, _lx, _ly = pf
+        self.goal_x = None
+        self.body.facing = 1 if md > 0 else -1
+        if kind == "drop":                     # 走出去掉到下面的平台上
+            self.body.release_to_air(move_dir=md)
+        else:                                  # 带方向/距离跳过去
+            self.body.tip_launch(hold_ticks=hold, move_dir=md)
+        self.body.chunk0.cy = self.body.chunk1.cy = 0
+        self.air_target = None
+        self._reset_pose()
+        return True
 
     def _hop_to(self, plan):
         """按实测小跳弧带方向跳出杆面；空中由 FSM 的 _air_pole_grab 抓住目标杆。"""

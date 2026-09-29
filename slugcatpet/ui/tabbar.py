@@ -8,6 +8,7 @@ from PySide6.QtCore import (Qt, QTimer, QPropertyAnimation, QRect, QRectF,
 from PySide6.QtGui import (QGuiApplication, QColor, QPainter, QPen, QPolygonF,
                            QPainterPath, QPixmap, QIcon, QLinearGradient,
                            QRadialGradient)
+from .._paths import resource_dir
 from ..i18n import t
 from ..cats import get as get_cat_def
 from .tips import install as install_tip
@@ -164,11 +165,102 @@ def _paint_pole_icon(p, r, vertical, atlas=None):
         _pole_rod(p, r, vertical)                           # 杆最后压上
 
 
+# ── 原版物件/生物图标（ui 图集，就是 wiki 上那些图标）──
+# 反编译依据：
+#   ItemSymbol.SpriteNameForItem   → Symbol_Rock / Symbol_Spear / Symbol_Pearl /
+#                                    Symbol_Lantern / Symbol_DangleFruit /
+#                                    Symbol_SeedCob / Symbol_SlimeMold
+#   ItemSymbol.ColorForItem        → 上面那张贴图的 myColor（正片叠底）
+#   CreatureSymbol.SpriteNameOfCreature → Kill_Bat / Kill_Standard_Lizard /
+#                                    Kill_Cicada / Kill_Scavenger / Kill_NeedleWorm
+#   CreatureSymbol.ColorOfCreature → 生物贴图的 myColor（蜥蜴取 LizardBreeds.standardColor）
+# 原版菜单 = 贴图 + myColor，没有别的画法；这里照抄，所以图标与游戏内/wiki 完全同源。
+# 缺图集（没有 uisprites/uiSprites）时 _paint_symbol_icon 返回 False，退回原来的矢量画法。
+_SYMBOL_ICONS = {
+    "stone":     ("ui", "Symbol_Rock",          (1.0, 1.0, 1.0)),
+    "spear":     ("ui", "Symbol_Spear",         (1.0, 1.0, 1.0)),
+    "pearl":     ("ui", "Symbol_Pearl",         (0.55, 0.75, 1.0)),
+    "lamp":      ("ui", "Symbol_Lantern",       (1.0, 0.5725, 0.3176)),
+    "fruit":     ("ui", "Symbol_DangleFruit",   (0.0, 0.0, 1.0)),
+    "seedcob":   ("ui", "Symbol_SeedCob",       (0.6824, 0.1569, 0.1176)),
+    "slimemold": ("ui", "Symbol_SlimeMold",     (1.0, 0.6, 0.0)),
+    # 生物：Kill_* 是原版图鉴/竞技场击杀列表用的贴图
+    "batfly":      ("ui", "Kill_Bat",              (0.5, 0.5, 0.5)),
+    "lizard":      ("ui", "Kill_Standard_Lizard",  (1.0, 0.0, 1.0)),   # 粉蜥 standardColor
+    "squidcada":   ("ui", "Kill_Cicada",           (1.0, 1.0, 1.0)),   # CicadaA
+    "needleworm":  ("ui", "Kill_NeedleWorm",       (1.0, 0.5961, 0.5961)),
+    "scavenger":   ("ui", "Kill_Scavenger",        (0.5, 0.5, 0.5)),
+}
+
+
+_WIKI_ICON_CACHE = {}
+
+
+def _wiki_icon(kind):
+    """wiki 图源图标：本仓库打包的 resources/icons/<kind>.png。
+
+    用户口径：图标按 wiki 的 `<名字>_icon.png` 直接提取（已带原版配色），
+    不再走 ItemSymbol 的 myColor 正片叠底。缺失返回 None。
+    """
+    if kind in _WIKI_ICON_CACHE:
+        return _WIKI_ICON_CACHE[kind]
+    pm = None
+    try:
+        path = resource_dir() / "icons" / (kind + ".png")
+        if path.is_file():
+            img = QPixmap(str(path))
+            if not img.isNull():
+                pm = img
+    except Exception:
+        pm = None
+    _WIKI_ICON_CACHE[kind] = pm
+    return pm
+
+
+def _paint_symbol_icon(p, kind, r, atlas=None) -> bool:
+    """原版图标：wiki 贴图优先，其次 ui 图集 Symbol_* / Kill_* 按 myColor 叠色。
+
+    返回 True=已画（调用方不要再走矢量回退）；False=没有这一帧。
+    """
+    pm = _wiki_icon(kind)
+    w = h = 0
+    if pm is not None:
+        w, h = pm.width(), pm.height()
+    else:
+        spec = _SYMBOL_ICONS.get(kind)
+        if spec is None or atlas is None:
+            return False
+        key, frame, rgb = spec
+        try:
+            at = atlas.get(key)
+            if not at.has(frame):
+                return False
+            w, h = atlas.source_size(key, frame)
+            tint = QColor(int(round(rgb[0] * 255)), int(round(rgb[1] * 255)),
+                          int(round(rgb[2] * 255)))
+            pm = atlas.sprite(key, frame, tint)
+        except Exception:
+            return False
+    if pm is None or w <= 0 or h <= 0:
+        return False
+    k = min(r.width() / float(w), r.height() / float(h)) * 0.94
+    pw, ph = w * k, h * k
+    cx, cy = r.center().x(), r.center().y()
+    p.save()
+    p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)  # 原版点采样
+    p.drawPixmap(QRectF(cx - pw / 2, cy - ph / 2, pw, ph), pm, QRectF(pm.rect()))
+    p.restore()
+    return True
+
+
 def _paint_place_icon(p, kind, r, atlas=None):
     """在矩形 r 内画一个可交互实体图标。"""
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     cx, cy = r.center().x(), r.center().y()
     w, h = r.width(), r.height()
+
+    if _paint_symbol_icon(p, kind, r, atlas):
+        return                       # 原版贴图优先（就是 wiki/游戏内那张）
 
     if kind == "vpole":
         _paint_pole_icon(p, r, vertical=True, atlas=atlas)

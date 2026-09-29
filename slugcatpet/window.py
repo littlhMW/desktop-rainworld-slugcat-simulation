@@ -33,10 +33,11 @@ GROUND_INSET = 16.0
 # 其它窗口顶边＝单向平台：多久重新枚举一次
 PLATFORM_REFRESH_TICKS = 30
 
-# 光标＝一小节竖杆（用户指定的桌宠扩展；原版没有这根杆）：
-# 半长 + 上边留白，杆心跟着光标跑，猫能爬/站在光标上。
+# 光标＝一小节**悬空**短杆（用户指定的桌宠扩展；原版没有这根杆）：
+# 长度固定（半长 MOUSE_POLE_HALF，总长≈系统光标那一截），杆心跟着光标跑，
+# 端点**不夹窗口顶/底** —— 底部不与屏幕地面相连，所以它是一段悬空的小短杆，
+# 而不是通到地面的真竖杆。甩鼠标（本 tick 位移超阈值）能把杆上的猫甩下来。
 MOUSE_POLE_HALF = 17.0
-MOUSE_POLE_TOP_PAD = 2.0
 
 # 窗口抖动
 SHAKE_DECAY = 0.8
@@ -247,6 +248,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # 光标那一小截竖杆（不渲染、不换代、不存档）
         self._mouse_pole = None
         self._mouse_pole_on = bool(self._params.get("mouse_pole", True))
+        self._mouse_pole_prev = None       # 上一 tick 光标位置（算甩动速度）
+        self._mouse_pole_vel = None        # 本 tick 光标位移（PoleClimber 读它判甩落）
 
         # 寒冷系统
         self.blizzard_on = not tuning.COLD_BLIZZARD_DEFAULT_OFF
@@ -655,6 +658,13 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         """
         pl = self._mouse_pole
         cx, cy = (cur if cur is not None else (None, None))
+        # 甩鼠标：记下本 tick 光标位移（虚杆的 PoleClimber 读它决定是否被甩下来）
+        prev = self._mouse_pole_prev
+        if cx is not None and prev is not None:
+            self._mouse_pole_vel = (cx - prev[0], cy - prev[1])
+        else:
+            self._mouse_pole_vel = None
+        self._mouse_pole_prev = None if cx is None else (cx, cy)
         # 拖着猫的时候光标压在猫身上，这根杆会和猫完全重合（猫会去抓自己脚下那根杆），
         # 拖拽期间不生成；松手之后光标还在窗口内就照旧出现。
         busy = any(getattr(getattr(pet, "behavior", None), "grab", None) is not None
@@ -662,6 +672,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         on = (self._mouse_pole_on and not busy and cx is not None
               and 0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL)
         if not on:
+            self._mouse_pole_vel = None
             if pl is not None:
                 pl.state = ItemState.GONE
                 if pl in self.poles:
@@ -670,8 +681,9 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 self.geometry_version += 1
                 self.world_version += 1
             return
-        top = max(MOUSE_POLE_TOP_PAD, cy - MOUSE_POLE_HALF)
-        bot = min(self._HL, cy + MOUSE_POLE_HALF)
+        # 悬空定长：端点跟着光标整体平移，不夹到窗口顶/底（底部不接地）
+        top = cy - MOUSE_POLE_HALF
+        bot = cy + MOUSE_POLE_HALF
         if pl is None:
             from .world.pole import Pole, VERTICAL
             pl = Pole(VERTICAL, cx, bot, cx, top)

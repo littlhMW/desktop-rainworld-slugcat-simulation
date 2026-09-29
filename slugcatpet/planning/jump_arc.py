@@ -98,6 +98,33 @@ def get_drop_arc(stats, move_dir: int = 0) -> DropArc:
     return arc
 
 
+def get_jump_fall_arc(stats, hold_ticks: int, move_dir: int = 0) -> JumpArc:
+    """取（stats, 档, 横向）「起跳后一路掉下去」的弧（缓存）。
+
+    原版跳出去以后是自由落体 + 空中横向控制，会掉到比起跳面更低的地方；起跳弧
+    get_arc 在「重新踩到地面」那一拍就截断了，够不到比杆面低的落点。这里把起跳弧
+    与「以起跳弧末端速度开始的落体弧」接起来 —— 两段都是真实物理 sim，只是换了个
+    初速接着跑，不是估出来的抛物线。
+    """
+    key = ("jumpfall", stats, int(hold_ticks), int(move_dir))
+    arc = _cache.get(key)
+    if arc is not None:
+        return arc
+    up = get_arc(stats, hold_ticks, move_dir)
+    pts = list(up.points)
+    if len(pts) >= 2:
+        vx = pts[-1][0] - pts[-2][0]
+        vy = pts[-1][1] - pts[-2][1]
+    else:
+        vx = vy = 0.0
+    tail = _simulate_drop(stats, int(move_dir), v0=(vx, vy))
+    lx, ly = pts[-1] if pts else (0.0, 0.0)
+    pts.extend((lx + dx, ly + dy) for dx, dy in tail.points)
+    arc = JumpArc(int(hold_ticks), int(move_dir), up.takeoff_h, tuple(pts))
+    _cache[key] = arc
+    return arc
+
+
 def get_pole_jump_arc(stats, direction: int) -> PoleJumpArc:
     """取（stats, 方向）竖杆跳弧（缓存）：静止→beam jump 斜跳出→持向漂移至落地。"""
     d = 1 if int(direction) >= 0 else -1
@@ -173,10 +200,13 @@ def _simulate(stats, hold_ticks: int, move_dir: int) -> JumpArc:
     return JumpArc(hold_ticks, int(move_dir), _SIM_H - oy, tuple(pts))
 
 
-def _simulate_drop(stats, move_dir: int) -> DropArc:
-    # 顶部静止悬空→持 move_dir 自由落体→逐 tick 采样 chunk0，落地即止
+def _simulate_drop(stats, move_dir: int, v0=None) -> DropArc:
+    # 顶部悬空（静止或给定初速 v0）→持 move_dir 自由落体→逐 tick 采样 chunk0，落地即止
     body = SlugcatBody((_SIM_W / 2.0, _DROP_START_Y), _SIM_W, _DROP_H, stats=stats)
     body.move_dir = int(move_dir)
+    if v0 is not None:
+        body.chunk0.vx = body.chunk1.vx = float(v0[0])
+        body.chunk0.vy = body.chunk1.vy = float(v0[1])
     ox, oy = body.chunk0.x, body.chunk0.y
     pts = []
     for _ in range(_MAX_DROP_TICKS):

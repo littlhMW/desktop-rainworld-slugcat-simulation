@@ -3057,6 +3057,10 @@ class BehaviorFSM:
         if self.hpole is not None and self._hp_goal_x is not None:
             self.hpole.goal_x = max(min(pole.ax, pole.bx) + 2.0,
                                     min(max(pole.ax, pole.bx) - 2.0, self._hp_goal_x))
+            g = self._hp_goal_obj
+            gy = (getattr(g, "y", None) if g is not None else None)
+            self.hpole.want = (float(self._hp_goal_x),
+                               float(pole.ay if gy is None else gy))
 
     def _st_hpole(self, cursor, disturbed):
         if self.grab.active:
@@ -3114,7 +3118,10 @@ class BehaviorFSM:
                 continue
             g = None
             for p in self.win.poles:
-                if p.kind != "horizontal" or not self._hpole_spans(p, x=f.x, r=tuning.HPOLE_GOAL_EPS):
+                if p.kind != "horizontal":
+                    continue
+                if not (self._hpole_spans(p, x=f.x, r=tuning.HPOLE_GOAL_EPS)
+                        or self._hpole_gap_ok(p, f)):
                     continue
                 # 杆面能拿到的高度带：杆上跳得到（上方 HPOLE_GOAL_R）或贴杆探得到（下方
                 # HPOLE_HAND_DOWN）。再低的就是摆在窗口顶边上的，得下杆去捡（见 _hpole_step_off）
@@ -3123,6 +3130,11 @@ class BehaviorFSM:
                     continue
                 g = p
                 break
+            if g is None:
+                for p in self.win.poles:
+                    if p.kind == "horizontal" and self._hpole_gap_ok(p, f):
+                        g = p
+                        break
             if g is None:
                 continue
             if self.planner.any_touch(obj_goal(f)):
@@ -3232,6 +3244,8 @@ class BehaviorFSM:
         if h is not None:                # 控制器还留着停位 → 它会原地站到天荒地老
             h.goal_x = None
             h.goal_eps = None
+            h.want = None
+            h._gap_t = 0
 
     def _platform_under(self, o):
         """o 摆在哪块「别人窗口顶边」上；不是平台就 None。返回 (y, x0, x1)。"""
@@ -3336,6 +3350,9 @@ class BehaviorFSM:
             self._hpole_goal_clear()
             return False
         self._hp_goal_t += 1
+        h = getattr(self, "hpole", None)
+        if h is not None:
+            h.want = (float(f.x), float(f.y))   # 目标会动（飞虫/被挤走的果子）：每 tick 刷新
         side = self.body.pick_hand("fruit")
         if side is not None:
             self.gfx.hand_aim[side] = (f.x, f.y)
@@ -3346,7 +3363,6 @@ class BehaviorFSM:
                 return False             # 抓到就交回普通流程（杆上啃）
             if self._pole_jump_grab(f):  # 手够不到但跳起来能碰到：起跳空中摘
                 return True              # 已离开 HPole，调用方要立刻收手
-        h = getattr(self, "hpole", None)
         if not self._hpole_reachable_now():
             self._hpole_goal_clear()     # 目标不在杆面上了：作废
             return False
@@ -3359,25 +3375,28 @@ class BehaviorFSM:
         return False
 
     def _pole_jump_grab(self, f) -> bool:
-        """杆上跳起来够目标：能碰到就松杆起跳、空中伸手摘（原版 beam 上跳抓）。"""
-        from ..planning.jump_arc import get_arc, sweep_hit
+        """杆上跳起来够目标：能碰到就松杆起跳、空中伸手摘（原版 beam 上跳抓）。
+
+        用 beam_jump_plan 在「档位×横向输入」的实测弧里挑最省的一档 —— 于是目标是
+        斜上/斜下、左侧/右侧（带上下偏移）时都能选到合适的起跳角度与力度，
+        而不是只会原地竖直跳。横距太大（HPOLE_JUMP_FAR 外）仍然先在杆上走过去。
+        """
+        from ..planning.pole_hop import beam_jump_plan
         c0 = self.body.chunk0
-        dx = f.x - c0.x
-        if abs(dx) > tuning.HPOLE_JUMP_GRAB:
+        if abs(f.x - c0.x) > tuning.HPOLE_JUMP_FAR:
             return False                      # 水平差太远：先在杆上走过去
         stats = getattr(self.win.cat, "stats", None)
         if stats is None:
             return False
-        dy = f.y - c0.y
-        for hold in tuning.PLAN_JUMP_HOLD_GEARS:
-            if sweep_hit(get_arc(stats, hold, 0), dx, dy, tuning.GRAB_REACH) is None:
-                continue
-            self._pole_release_any()       # 先收杆（会清 _hp_goal_*），再记空中目标
-            self._hp_jump_goal = f
-            self.body.tip_launch(hold_ticks=hold, move_dir=0)
-            self._transition("Airborne")
-            return True
-        return False
+        plan = beam_jump_plan(stats, c0.x, c0.y, f.x, f.y, tuning.GRAB_REACH)
+        if plan is None:
+            return False
+        hold, md, _hit = plan
+        self._pole_release_any()           # 先收杆（会清 _hp_goal_*），再记空中目标
+        self._hp_jump_goal = f
+        self.body.tip_launch(hold_ticks=hold, move_dir=md)
+        self._transition("Airborne")
+        return True
 
     def _hp_jump_grab(self) -> None:
         """空中伸手摘杆上跳起来够的东西。"""
@@ -3397,12 +3416,43 @@ class BehaviorFSM:
             self._hp_jump_goal = None
 
     def _hpole_reachable_now(self) -> bool:
-        """目标是否仍在那条横杆线上。"""
+        """目标是否仍在那条横杆线上（或杆端外跳/走出去就到的那一小块平台上）。"""
         h = getattr(self, "hpole", None)
         p = h.pole if h is not None else None
         if p is None:
             return False
-        return self._hpole_spans(p, x=self._hp_goal_obj.x)
+        f = self._hp_goal_obj
+        if f is None:
+            return False
+        return (self._hpole_spans(p, x=f.x)
+                or self._hpole_gap_ok(p, f))
+
+    def _hpole_gap_ok(self, p, f) -> bool:
+        """目标在杆端外、但落在下面的窗口顶边（单向平台）上，跳出去就能到。
+
+        用 platform_hop_plan 按目标的相对位置挑轨迹（隔间隙跳过去 / 走出去掉下去），
+        落点还得离目标够近（HPOLE_GAP_LAND_R）——否则跳过去也是白跳。
+        """
+        if getattr(f, "state", None) not in ("free", "hanging"):
+            return False
+        lo, hi = min(p.ax, p.bx), max(p.ax, p.bx)
+        if lo <= f.x <= hi:
+            return False                     # 在杆面跨内：那是 _hpole_spans 的事
+        surf = self._platform_under(f)
+        if surf is None or surf[0] <= p.ay + tuning.HPOLE_STEP_MIN_DROP:
+            return False                     # 不在窗口顶边上 / 不比杆面低
+        stats = getattr(getattr(self.win, "cat", None), "stats", None)
+        if stats is None:
+            return False
+        from ..core import chunkphys
+        from ..planning.pole_hop import platform_hop_plan
+        px = max(lo + 14.0, min(hi - 14.0, hi if f.x > hi else lo))
+        py = p.ay - 5.0                      # 杆面站姿（HPoleController.STAND_HOVER）
+        pf = platform_hop_plan(stats, chunkphys.platforms(), px, py, want=(f.x, f.y))
+        if pf is None:
+            return False
+        _kind, _hold, _md, lx, _ly = pf
+        return abs(lx - f.x) <= tuning.HPOLE_GAP_LAND_R
 
     def _hpole_release(self):
         self._hpole_goal_clear()

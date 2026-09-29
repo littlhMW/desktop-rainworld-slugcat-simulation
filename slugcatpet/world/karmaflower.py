@@ -47,10 +47,10 @@ PETAL_MAX = 13.5              # 单瓣最远距
 PETAL_ART_LEN = 20.0          # 原版 scaleY = Distance / 20f
 PETAL_SCALE_X = 0.375         # 原版 scaleX = 0.375
 HOVER_SPRING = 20.0           # 原版 vel += (hoverPos - pos) / 20f
-HOVER_DY_MIN, HOVER_DY_MAX = 18.0, 36.0
+HOVER_DY = 27.0              # 花头悬在根上方的高度（用户口径：固定，不用原版 18~36 随机）
 HOVER_DX = 7.0
 ROOT_DX = 9.0
-ROOT_MAX_DROP = 64.0          # TryRoot 只往下找 4 格（4x16px）
+DRAG_SLIDE_MAX = 10.0         # 扎着根被鼠标拖拽时，根部每 tick 沿地面最多滑这么多
 DAMP_AIR = 0.95               # Part.Update：vel *= 0.95
 TELEPORT_JUMP = 24.0          # 单 tick 位移超过它按「瞬移」处理：部件整块跟着走
 DAMP_WATER = 0.7
@@ -115,7 +115,7 @@ class KarmaFlower(Fruit):
     """一朵业力花：扎根时悬在根上方晃，抓起瞬间断根；啃 4 口加固业力。"""
 
     __slots__ = ("grow_pos", "hover_pos", "hover_dir_add", "petals",
-                 "stalk_pts", "face_camera", "movement")
+                 "stalk_pts", "face_camera", "movement", "drag_x")
     is_meat = False
     is_karma = True                 # 吃了只加业力花条，不填饱食度
     food_value = 0                  # 原版 FoodPoints = 0
@@ -132,6 +132,7 @@ class KarmaFlower(Fruit):
         self.buoyancy = BUOYANCY
         self.bites = BITES
         self.grow_pos: tuple[float, float] | None = None
+        self.drag_x: float | None = None        # 鼠标拖拽目标根位（扎根时整株沿地面滑）
         self.hover_pos = (float(x), float(y))
         self.hover_dir_add = 0.0
         self.movement = 0.0
@@ -146,15 +147,16 @@ class KarmaFlower(Fruit):
 
     # ── 扎根（原版 TryRoot）──
     def try_root(self, ground_y: float, rng=None) -> bool:
-        """脚下 4 格内有实心地面就扎根并悬在 hover_pos；否则自由落体。"""
-        if float(ground_y) - self.y > ROOT_MAX_DROP:
-            return False
+        """扎根窗口地面（用户口径：和爆米花一致，只能长在地面上），花头固定高度。
+
+        原版 TryRoot 是「往下找 4 格有实心就扎根」；桌宠没有房间 tile，窗口底边
+        就是唯一地面，所以无条件扎在 ground_y 上，高度取固定常数（原版是 18~36 随机）。
+        """
         r = rng if rng is not None else _random.Random(int(self.x) * 31 + int(self.y))
-        # 原版：growPos 落在实心地面那格的上沿，hoverPos = growPos + (18~36) 向上
         gp = (self.x + r.uniform(-ROOT_DX, ROOT_DX), float(ground_y))
         self.grow_pos = gp
         self.hover_pos = (gp[0] + r.uniform(-HOVER_DX, HOVER_DX),
-                          gp[1] - r.uniform(HOVER_DY_MIN, HOVER_DY_MAX))
+                          gp[1] - HOVER_DY)
         self.hover_dir_add = r.uniform(-25.0, 25.0)
         self.detach_to(self.hover_pos[0], self.hover_pos[1])
         return True
@@ -167,14 +169,73 @@ class KarmaFlower(Fruit):
         if self.grow_pos is not None:
             a = _aim(self.grow_pos[0], self.grow_pos[1], self.x, self.y) + self.hover_dir_add
             self.rotation = _deg_to_vec(a)
-        for pt in self.petals:
-            pt[0], pt[1] = self.x, self.y
-            pt[2], pt[3] = self.x, self.y
+        self._lay_parts()
+
+    def _lay_parts(self) -> None:
+        """按 rotation 把花瓣/茎一次性摆到静止位（原版 ResetParts 后要几 tick spring 才张开，
+        桌宠的放置预览不 tick，不预铺就只是一个点）。"""
+        rot_deg = _vec_deg(self.rotation[0], self.rotation[1])
+        rx, ry = self.rotation
+        for i in range(PETAL_N):
+            fx, fy = _flatten(*_deg_to_vec(rot_deg + 90.0 * i), rot_deg, self.face_camera)
+            px = self.x + rx * PETAL_OFF + fx * PETAL_REACH
+            py = self.y + ry * PETAL_OFF + fy * PETAL_REACH
+            pt = self.petals[i]
+            pt[0], pt[1] = px, py
+            pt[2], pt[3] = px, py
             pt[4] = pt[5] = 0.0
-        for sp in self.stalk_pts:
-            sp[0], sp[1] = self.x, self.y
-            sp[2], sp[3] = self.x, self.y
+        if self.grow_pos is not None:            # 扎根：茎从花体一路铺到根上
+            gx, gy = self.grow_pos
+            dx, dy = gx - self.x, gy - self.y
+            d = math.hypot(dx, dy)
+            ux, uy = (dx / d, dy / d) if d > 1e-6 else (-rx, -ry)
+        else:
+            gx = gy = None
+            ux, uy = -rx, -ry
+        for j in range(STALK_N):
+            if gx is not None and j == STALK_N - 1:
+                sx, sy = gx, gy
+            else:
+                sx = self.x + ux * (j + 1) * STALK_SEG
+                sy = self.y + uy * (j + 1) * STALK_SEG
+            sp = self.stalk_pts[j]
+            sp[0], sp[1] = sx, sy
+            sp[2], sp[3] = sx, sy
             sp[4] = sp[5] = 0.0
+
+    # ── 鼠标拖拽（扎根时整株沿地面滑；爆米花同款软拖，不拉丝）──
+    def begin_drag(self, x: float) -> None:
+        self.drag_x = float(x)
+
+    def end_drag(self) -> None:
+        self.drag_x = None
+
+    def move_root_to(self, x: float) -> None:
+        """整朵花（茎+花瓣+花体）刚性平移到新根位 x；高度不变。"""
+        if self.grow_pos is None:
+            return
+        dx = float(x) - self.grow_pos[0]
+        if dx == 0.0:
+            return
+        self.grow_pos = (self.grow_pos[0] + dx, self.grow_pos[1])
+        self.hover_pos = (self.hover_pos[0] + dx, self.hover_pos[1])
+        self.x += dx
+        self.last_x += dx
+        for pt in self.petals:
+            pt[0] += dx
+            pt[2] += dx
+        for sp in self.stalk_pts:
+            sp[0] += dx
+            sp[2] += dx
+
+    def _drag_step(self) -> None:
+        if self.drag_x is None or self.grow_pos is None:
+            return
+        d = self.drag_x - self.grow_pos[0]
+        if abs(d) < 0.5:
+            return
+        step = max(-DRAG_SLIDE_MAX, min(DRAG_SLIDE_MAX, d))
+        self.move_root_to(self.grow_pos[0] + step)
 
     def detach_root(self) -> None:
         """断根（原版被抓住 / 被武器命中时 growPos = null）。"""
@@ -203,9 +264,11 @@ class KarmaFlower(Fruit):
 
     # ── 物理 ──
     def step(self, WL: float, HL: float) -> None:
+        if self.drag_x is not None and self.grow_pos is not None:
+            self._drag_step()           # 鼠标拖拽扎着根的花：整株沿地面滑
         if self.state in (ItemState.CARRIED, ItemState.MOUSE):
-            if self.grow_pos is not None:
-                # 被手/鼠标拿起的瞬间连根拔起（原版 DetatchStalk）：整株连茎一起走，
+            if self.state == ItemState.CARRIED and self.grow_pos is not None:
+                # 被手拿起的瞬间连根拔起（原版 DetatchStalk）：整株连茎一起走，
                 # 地上不留残茎；之后茎靠自己的弹簧/重力继续甩
                 self.detach_root()
             self._carry_shift()

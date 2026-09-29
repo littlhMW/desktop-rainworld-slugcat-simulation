@@ -49,6 +49,11 @@ class PoleClimber:
         self.timer += 1
         b = self.body
         c1 = b.chunk1
+        # 光标那一小截被甩：杆整个瞬移，抓不住的猫脱手摔下去（用户口径）
+        v = self._mouse_slip()
+        if v is not None:
+            self._slip_off(v)
+            return True
 
         if self.phase == "approach":
             b.walk_to(self.pole.x)
@@ -265,6 +270,38 @@ class PoleClimber:
         c0.vy += 1.0
         c1.vy += 1.0
         return b.on_floor() or self.timer > DESCEND_TIMEOUT
+
+    def _mouse_slip(self):
+        """虚杆（光标那一小截）本 tick 位移超阈值 → 返回位移；否则 None。
+
+        只有「已经挂在杆上」的阶段会被甩下来（approach 阶段还没抓，谈不上脱手）。
+        """
+        if self.phase not in ("climb", "tip", "descend"):
+            return None
+        if self.pole is None or not getattr(self.pole, "virtual", False):
+            return None
+        v = getattr(self.win, "_mouse_pole_vel", None)
+        if v is None:
+            return None
+        if v[0] * v[0] + v[1] * v[1] < tuning.MOUSE_POLE_SLIP_V ** 2:
+            return None
+        return v
+
+    def _slip_off(self, v):
+        """被甩下杆：松手 + 吃一个反向冲量（杆飞了、猫留在原地），然后自由落体。"""
+        b = self.body
+        c0, c1 = b.chunk0, b.chunk1
+        c0.pinned = False
+        c1.pinned = False
+        b.on_pole = False
+        b.animation = None
+        k = tuning.MOUSE_POLE_SLIP_FLING
+        fs = -v[0] * 0.12
+        c0.vx = max(-k, min(k, fs))
+        c1.vx = c0.vx * 0.5
+        c0.vy = tuning.TIP_FALL_VY
+        c1.vy = 0.0
+        self._reset_pose()
 
     def _fall(self, lean):
         b = self.body

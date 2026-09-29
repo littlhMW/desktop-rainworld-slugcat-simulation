@@ -2916,9 +2916,10 @@ class ItemInteractionMixin:
         return True
 
     def place_karmaflower(self, lx, ly):
+        """手动放置：和爆米花一致只长在窗口地面上（ly 只用来定位 x），高度固定。"""
         if not self.can_place_karmaflower():
             return None
-        kf = KarmaFlower(lx, ly, seed=self._karmaflower_seed, ground_y=self._HL)
+        kf = KarmaFlower(lx, self._HL, seed=self._karmaflower_seed, ground_y=self._HL)
         self._karmaflower_seed += 1
         self.karmaflowers.append(kf)
         self.world_version += 1
@@ -2935,8 +2936,8 @@ class ItemInteractionMixin:
         return True
 
     def spawn_karma_flower(self, x, y):
-        """直接长出一朵业力花（死亡排期到点后调用）。"""
-        kf = KarmaFlower(x, y, seed=self._karmaflower_seed, ground_y=self._HL)
+        """直接长出一朵业力花（死亡排期到点后调用）：只长在窗口地面上。"""
+        kf = KarmaFlower(x, self._HL, seed=self._karmaflower_seed, ground_y=self._HL)
         self._karmaflower_seed += 1
         self.karmaflowers.append(kf)
         self.world_version += 1
@@ -2984,10 +2985,12 @@ class ItemInteractionMixin:
         kf = self._karmaflower_at(pos)
         if kf is None:
             return False
-        kf.detach_root()                  # 原版：被抓住的瞬间断根
         kf.held_by_hand = None
         kf.state = ItemState.MOUSE
-        kf.detach_to(pos[0], pos[1])
+        if kf.grow_pos is None:
+            kf.detach_to(pos[0], pos[1])  # 已经断根（被猫拔起丢下）：普通自由拖拽
+        else:
+            kf.begin_drag(pos[0])         # 还扎在地上：拖拽＝整株沿地面滑（爆米花同款）
         self._dragged_karmaflower = kf
         self._karmaflower_drag_last = tuple(pos)
         return True
@@ -3003,6 +3006,9 @@ class ItemInteractionMixin:
         cur = self.cursor_logical()
         if cur is None:
             return
+        if kf.grow_pos is not None:        # 扎根：只给一个地面滑移目标，根部限速跟（不拉丝）
+            kf.begin_drag(clampf(cur[0], 6.0, self._WL - 6.0))
+            return
         kf.last_x, kf.last_y = kf.x, kf.y
         if self._karmaflower_drag_last is not None:
             kf.vx = cur[0] - self._karmaflower_drag_last[0]
@@ -3014,6 +3020,7 @@ class ItemInteractionMixin:
         kf = self._dragged_karmaflower
         if kf is None:
             return False
+        kf.end_drag()
         sp = math.hypot(kf.vx, kf.vy)
         if sp > self._FRUIT_FLING_CAP:
             k = self._FRUIT_FLING_CAP / sp
@@ -3040,8 +3047,10 @@ class ItemInteractionMixin:
             for kf in self.karmaflowers:
                 kf._impact_cb = self._shake_impact
                 kf.step(self._WL, self._HL)
+            # EATEN 也要清：bites 归零＝4 片花瓣全啃掉，连茎带花整个消失
+            # （原版 Consume() 把整株从房间里删掉，不留残茎）
             self.karmaflowers = [kf for kf in self.karmaflowers
-                                 if kf.state != ItemState.GONE]
+                                 if kf.state not in (ItemState.GONE, ItemState.EATEN)]
 
     def _draw_karmaflowers(self, p):
         for kf in self.karmaflowers:
@@ -3065,9 +3074,11 @@ class ItemInteractionMixin:
         if not (0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL):
             return
         kf = self._karmaflower_hint_object()
+        seed = self._karmaflower_preview[0]
+        kf.drag_x = None
         kf.grow_pos = None
         kf.detach_to(cx, cy)
-        kf.try_root(self._HL, random.Random(int(cx) * 131 + int(cy)))
+        kf.try_root(self._HL, random.Random(seed))   # 与放置时同 seed ⇒ 预览即所见
         p.save()
         p.setOpacity(0.5)
         draw_karmaflower(p, self.atlas, kf, 1.0)
