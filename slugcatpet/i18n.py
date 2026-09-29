@@ -139,6 +139,7 @@ _STR = {
     "tray_hud":     {"zh": "显示/隐藏状态面板 (Ctrl+Alt+H)", "en": "Show/Hide status panel (Ctrl+Alt+H)"},
     "tray_quit":    {"zh": "退出程序", "en": "Quit program"},
     "tray_abort":   {"zh": "中止光标劫持 (Ctrl+Alt+Q)", "en": "Abort cursor hijack (Ctrl+Alt+Q)"},
+    "tray_hijack":  {"zh": "允许劫持光标", "en": "Allow cursor hijack"},
     "tray_started": {"zh": "已启动。被超度的光标按 Ctrl+Alt+Q 解除；Ctrl+Alt+X 退出程序。",
                      "en": "Launched. Press Ctrl+Alt+Q to release a salvaged cursor; Ctrl+Alt+X to quit the program."},
 

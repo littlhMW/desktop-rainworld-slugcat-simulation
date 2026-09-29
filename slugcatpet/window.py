@@ -301,6 +301,9 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._mouse_pole_vel = None        # 本 tick 光标位移（PoleClimber 读它判甩落）
         self._mouse_pole_suppress = 0      # 松开鼠标后的静默 tick（期间不当杆）
         self._cursor_half = None           # 光标虚杆半长缓存（逻辑单位）
+        # 光标劫持总开关（托盘右键可关）。关掉只是不许溪流/工匠去抢系统光标，
+        # 指着光标之类的正常工作不受影响。
+        self.cursor_hijack_allowed = bool(self._params.get("cursor_hijack", True))
 
         # 自然生成（设置面板「生物列表」勾选的类型）
         saved_spawn = self._params.get("spawn_kinds")
@@ -745,6 +748,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         覆盖：抓着猫（grab）、12 种鼠标拖拽（物品/生物）、放置模式（_place_mode
         见 _mouse_pole_tick）、以及松手后的静默窗口。
         """
+        if self.cursor_hijack is not None:
+            return True
         for attr in _DRAG_ATTRS:
             if getattr(self, attr, None) is not None:
                 return True

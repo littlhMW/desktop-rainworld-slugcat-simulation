@@ -907,15 +907,11 @@ class Lizard:
         px, py = cursor
         dx, dy = px - self.x, py - self.y
         d = math.hypot(dx, dy)
-        # 原版头点每帧最多跟 40px（LizardGraphics.cs:1292 的距离上限）；
-        # 这里再按 MAX_SEG_SPEED 限速，让身体链能跟上而不被抻长。
-        if d > MAX_SEG_SPEED:
-            px = self.x + dx / d * MAX_SEG_SPEED
-            py = self.y + dy / d * MAX_SEG_SPEED
-            dx, dy, d = px - self.x, py - self.y, MAX_SEG_SPEED
+        # 与拖蛞蝓猫同一手感：头点**直接**跟光标（没有限速延迟），
+        # 身体链自己按约束追上来。只把松手时的速度限幅。
+        self.x, self.y = px, py
         self.vx = clampf(dx, -MAX_SEG_SPEED, MAX_SEG_SPEED)
         self.vy = clampf(dy, -MAX_SEG_SPEED, MAX_SEG_SPEED)
-        self.x, self.y = px, py
         if not self.dead:                       # 尸体不会张合下巴
             self.jaw = clampf(self.jaw + JAW_OPEN_RATE * 0.6, 0.0, 0.5)
 

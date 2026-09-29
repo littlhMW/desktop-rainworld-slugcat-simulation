@@ -48,3 +48,27 @@
   需要人工代入循环变量（工具 `tools/README.md` 有说明）。
 - **Mesh 类精灵**（禅乌贼触须/蛞蝓猫尾巴）没有 atlas 尺寸，形状由顶点代码决定，
   审计按「公式是否照抄」判定，而不是按像素尺寸。
+
+## 四、多角度 / 多变体精灵切换（按情况换贴图）
+
+原版「同一部件换贴图」分两类：**按角度分行**（头片、躯干片）与**按距离 / 侧别取档**（腿、手、翅）。
+桌宠只取一档就会「停在某一帧」。逐对象核对结果（原版出处 = 反编译；机械复核 = `tools/sprite_variants.py`）：
+
+| 对象 | 原版切换规则 | 出处 | 我们 | 结论 |
+| --- | --- | --- | --- | --- |
+| 蜥蜴头 5 片 | 行号 `num14 = 3 - int(|headDepthRotation|*3.9)`：|num|≈1 → 行 0（正侧），|num|→0 → 行 3（正对镜头）；`scaleX = Sign(num)` | `LizardGraphics.cs:1907-1921` | `world/lizard_gfx.py`（`head_row` + `_draw_head`） | ✅ 跑动中 0..3 行全部出现 |
+| 蜥蜴腿 | `val = clamp(int(dist/(4·limbSize))+1, 1, 9) + 9·(2-clamp(int(|flip|·3),0,2))`，后腿再 +27 ⇒ `LizardArm_01..54` | `LizardGraphics.cs:1778-1808` | `lizard_gfx.py` 四肢 | ✅ 单次跑动取到 20+ 档 |
+| 蝉乌贼 | `Cicada{0..8}{body,head,shield,eyes1,eyes2}`，`num3 = IntClamp(8 - int(|num2|/180·9), 0, 8)`、`num4 = (8-num3)·Sign(num2)·22.5` | `CicadaGraphics.cs:453-467` | `world/squidcada_gfx.py` | ✅ 0..8 行全部出现 |
+| 蛞蝓猫头 | `HeadA/B/C` 各 18 行，`num7 = round(|头角|/360·34)`；睡觉 7→4、匍匐 7、站立走动 6 | `PlayerGraphics.cs:2936-2955` | `rendering/graphics_draw.py` `_head_frame_index` | ✅ |
+| 蛞蝓猫脸 | `FaceA..D` 各 9 行（`|角|/22.5`）+ `FaceDead` / `FaceStunned` | `PlayerGraphics.cs:2946-3013` | `_face_angle_index` / `_draw_face` | ✅ |
+| 蛞蝓猫腿 | `LegsA` / `LegsACrawling` / `LegsAAir` / `LegsAOnPole` / `LegsAPole` / `LegsAVerticalPole` / `LegsAWall`，各 31 档 | `PlayerGraphics.cs:3050-3110` | `_draw_legs` | ✅（`LegsAClimbing` 只用于管道爬行，本桌宠没有管道 → 不适用） |
+| 蛞蝓猫手 | `PlayerArm0..12`，按 `dist/2` 取档 | `PlayerGraphics.cs:3144` | `_draw_hands` | ✅ 0..12 全档 |
+| 蝙蝠 | 4 片：`FlyBody` / `FlyWing`×2（`anchorY=0`）/ `FlyEyes`；翅 `rotation = ±(40+150a) + num`、`scaleX` 按扑翅收窄；`bites` 决定翅的可见性 | `FlyGraphics.cs:163-205` | `world/items.py` `_draw_one_batfly` | ✅ 本轮改为原版精灵（原先手绘矢量近似） |
+| 面条蝇 | 无分行贴图；翅 `WingSprite((l==0) != (zrot.x>0))`、獠牙按 `zx` 侧别 | `NeedleWormGraphics.cs:423-453` | `world/needleworm_gfx.py` | ✅ |
+| 拾荒者 | 无分行贴图（头是 `Circle20` + 三角网格）；仅手掌 `ScavengerHandA/B` 按 `reachedSnapPosition` 切换 | `ScavengerGraphics.cs:507/607` | `rendering/primitives.py` `_scav_hand` | ✅ A/B 都在用 |
+| 泡泡 | `Bubble.cs` 写死 `LizardBubble5`（贴图集里的 0..7 只给别的特效） | `Bubble.cs:175` | `window.py` | ✅ 与原版同值 |
+
+复核方式：`python tools/sprite_variants.py` —— 拦截图集查找（`AtlasSet.find_atlas` 缺帧静默跳过、
+`Atlas.sprite` 直取会 KeyError），把所有生物放进场景跑 900 tick（并强制扫描蜥蜴头深度 −1..+1、
+蝉乌贼 z 轴 −180..180），报「请求了但图集没有的帧」与各族实际取到的变体号。
+当前结果：213 帧、缺帧 0。

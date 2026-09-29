@@ -52,6 +52,8 @@ HOVER_DX = 7.0
 ROOT_DX = 9.0
 DRAG_LEAN_MAX = 14.0          # 扎着根被鼠标软拖：花头最多朝光标歪这么多（根不动、茎被抻长＝受力）
 DRAG_POP_DIST = 30.0          # 光标把花头从静止位拉开这么远 ⇒「啵」一下连根拔起
+GROW_TICKS = 90               # 扎根后的生长时长（约 2.2s @40tick/s）
+GROW_BEND = 12.0              # 生长途中花头偏离直线上限（弯着钻出地面再支起）
 PLUCK_VMAX = 24.0             # 拔根时从光标继承的最大拽速（再大就把花甩飞了）
 RESET_JITTER = 2.5            # 放置时的随机初态（原版 ResetParts 把部件全堆在花心）
 DAMP_AIR = 0.95               # Part.Update：vel *= 0.95
@@ -126,7 +128,7 @@ class KarmaFlower(Fruit):
     """一朵业力花：扎根时悬在根上方晃，抓起瞬间断根；啃 4 口加固业力。"""
 
     __slots__ = ("grow_pos", "hover_pos", "hover_dir_add", "petals",
-                 "stalk_pts", "face_camera", "movement", "drag_pt")
+                 "stalk_pts", "face_camera", "movement", "drag_pt", "grow_t")
     is_meat = False
     is_karma = True                 # 吃了只加业力花条，不填饱食度
     food_value = 0                  # 原版 FoodPoints = 0
@@ -147,6 +149,7 @@ class KarmaFlower(Fruit):
         self.hover_pos = (float(x), float(y))
         self.hover_dir_add = 0.0
         self.movement = 0.0
+        self.grow_t = 1.0           # 1.0 = 已长成；扎根时置 0 走生长动画
         self.petals = [[float(x), float(y), float(x), float(y), 0.0, 0.0]
                        for _ in range(PETAL_N)]
         self.stalk_pts = [[float(x), float(y), float(x), float(y), 0.0, 0.0]
@@ -169,6 +172,9 @@ class KarmaFlower(Fruit):
         self.hover_pos = (gp[0] + r.uniform(-HOVER_DX, HOVER_DX),
                           gp[1] - HOVER_DY)
         self.hover_dir_add = r.uniform(-25.0, 25.0)
+        # 生长动画：纯视觉（见 _grow_offset），物理位置立刻就是 hover_pos，
+        # 所以拖拽/弹簧/啃食等一切逻辑与以前完全一致。
+        self.grow_t = 0.0
         self.detach_to(self.hover_pos[0], self.hover_pos[1])
         self.jitter_parts(r)             # 随机初态：每朵花刚放下的样子都不同
         return True
@@ -215,6 +221,20 @@ class KarmaFlower(Fruit):
             sp[2], sp[3] = sx, sy
             sp[4] = sp[5] = 0.0
 
+    def grow_offset(self) -> tuple[float, float]:
+        """生长动画的纯视觉偏移（不动物理）：花头从根点弯着钻出地面再支起到 hover_pos。"""
+        if self.grow_pos is None or self.grow_t >= 1.0:
+            return 0.0, 0.0
+        t = self.grow_t
+        gx, gy = self.grow_pos
+        hx, hy = self.hover_pos
+        dx, dy = hx - gx, hy - gy
+        d = math.hypot(dx, dy) or 1.0
+        px, py = -dy / d, dx / d
+        e = 1.0 - (1.0 - t) ** 2
+        bend = GROW_BEND * math.sin(math.pi * t) * (1.0 if gx <= hx else -1.0)
+        return gx + dx * e + px * bend - hx, gy + dy * e + py * bend - hy
+
     # ── 鼠标拖拽（桌宠扩展）──
     #   扎着根：软拖 —— 花头朝光标歪、根不动（茎被抻长＝受力），拉开够远就「啵」一下拔根；
     #   拔根后：像拖物品一样跟着光标走，松手按速度甩出去（可以丢）。
@@ -249,10 +269,14 @@ class KarmaFlower(Fruit):
             vy *= k
         self.detach_root()
         self.vx, self.vy = vx, vy
+        # 被拉断的茎把弹性势能放出来：越靠根越吃反冲；花瓣滞后一拍再弹回
         for i, seg in enumerate(self.stalk_pts):
-            k = (1.0 - i / float(STALK_N)) * 0.6
+            k = (1.0 - i / float(STALK_N)) * 1.3
             seg[4] -= vx * k
             seg[5] -= vy * k
+        for pt in self.petals:
+            pt[4] -= vx * 0.55
+            pt[5] -= vy * 0.55
 
     def shift(self, dx: float, dy: float) -> None:
         """整株刚性平移（花体 + 花瓣 + 茎 + 根点）。"""
@@ -337,6 +361,11 @@ class KarmaFlower(Fruit):
             pt[2], pt[3] = pt[0], pt[1]
         for sp in self.stalk_pts:
             sp[2], sp[3] = sp[0], sp[1]
+
+        if self.grow_t < 1.0:                # 只是计时：外观由 grow_offset 给
+            self.grow_t = self.grow_t + 1.0 / GROW_TICKS
+            if self.grow_t > 1.0 - 1.0 / (GROW_TICKS * 2.0):
+                self.grow_t = 1.0
 
         self.vy += self.gravity * self.room_gravity
         apply_water(self, self.water_y, self.buoyancy, self.water_friction,
@@ -530,11 +559,19 @@ def _draw_ring(painter, atlas, quad) -> None:
     draw_grid_patch(painter, pm.toImage(), quad, 5)
 
 
-def _draw_stalk(painter, atlas, kf, ts: float) -> None:
-    """花体 → stalk[0..5] 的细长条，颜色从金色渐变到暗根部。"""
-    pts = [(kf.last_x + (kf.x - kf.last_x) * ts, kf.last_y + (kf.y - kf.last_y) * ts)]
-    for sp in kf.stalk_pts:
-        pts.append((sp[2] + (sp[0] - sp[2]) * ts, sp[3] + (sp[1] - sp[3]) * ts))
+def _draw_stalk(painter, atlas, kf, ts: float, ox: float = 0.0,
+                oy: float = 0.0) -> None:
+    """花体 → stalk[0..5] 的细长条，颜色从金色渐变到暗根部。
+
+    ox/oy = 生长动画的视觉偏移：花头端吃满、根端不动 ⇒ 看着像从地里弯着抽出来。
+    """
+    pts = [(kf.last_x + (kf.x - kf.last_x) * ts + ox,
+            kf.last_y + (kf.y - kf.last_y) * ts + oy)]
+    n_st = len(kf.stalk_pts)
+    for j, sp in enumerate(kf.stalk_pts):
+        w = 1.0 - j / float(max(1, n_st - 1))
+        pts.append((sp[2] + (sp[0] - sp[2]) * ts + ox * w,
+                    sp[3] + (sp[1] - sp[3]) * ts + oy * w))
     painter.save()
     aa_hint(painter)
     n = len(pts)
@@ -586,13 +623,16 @@ def draw_karmaflower(painter, atlas, kf, ts: float = 1.0) -> None:
     ts = clampf(ts, 0.0, 1.0)
     x = kf.last_x + (kf.x - kf.last_x) * ts
     y = kf.last_y + (kf.y - kf.last_y) * ts
-    _draw_stalk(painter, atlas, kf, ts)
+    ox, oy = kf.grow_offset()
+    x += ox
+    y += oy
+    _draw_stalk(painter, atlas, kf, ts, ox, oy)
     quad = []
     gx, gy, gn = x, y, 1.0
     for i in range(PETAL_N):
         pt = kf.petals[i]
-        px = pt[2] + (pt[0] - pt[2]) * ts
-        py = pt[3] + (pt[1] - pt[3]) * ts
+        px = pt[2] + (pt[0] - pt[2]) * ts + ox
+        py = pt[3] + (pt[1] - pt[3]) * ts + oy
         if i < kf.bites:
             d = math.hypot(px - x, py - y)
             _blit_petal(painter, atlas, PETAL_SPRITE, x, y, _aim(x, y, px, py), d)

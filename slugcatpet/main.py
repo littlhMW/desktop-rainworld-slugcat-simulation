@@ -177,8 +177,21 @@ def main():
     act_quit.triggered.connect(app.quit)
     act_abort = QAction(t("tray_abort"))
     act_abort.triggered.connect(cursorfx.abort_all)
+    act_hijack = QAction(t("tray_hijack"))
+    act_hijack.setCheckable(True)
+    act_hijack.setChecked(bool(pet.cursor_hijack_allowed))
+
+    def _toggle_hijack(checked):
+        pet.cursor_hijack_allowed = bool(checked)
+        params["cursor_hijack"] = bool(checked)
+        if not checked:
+            cursorfx.abort_all()
+            pet.stop_cursor_hijack()
+
+    act_hijack.toggled.connect(_toggle_hijack)
     menu.addAction(act_settings)
     menu.addAction(act_hud)
+    menu.addAction(act_hijack)
     menu.addAction(act_abort)
     menu.addSeparator()
     menu.addAction(act_quit)

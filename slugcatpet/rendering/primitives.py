@@ -629,8 +629,12 @@ def scav_pose(sc, ts=1.0, iv=None):
     cycle = float(getattr(sc, "walk_phase", 0.0)) % 1.0
     bob = math.sin(cycle * math.tau) * 0.9 * moving
 
+    # 转身：原版 chest/head 是物理块，靠 flip（Lerp 0.1/tick，由视线方向驱动）连续摆过去，
+    # 没有任何按 facing 的突跳。这里同样用 flip 当前倾方向：flip 过 0 时身体先立正、
+    # 再朝另一侧压下去 —— 就是「支起上半身把身子转过去」的观感（用 face 会瞬间镜像）。
+    lean = flip
     hip = (0.0, 0.0)
-    chest = _add(hip, _deg2flt(face * SCAV_LEAN), SCAV_LINK_HIP)
+    chest = _add(hip, _deg2flt(lean * SCAV_LEAN), SCAV_LINK_HIP)
     chest = (chest[0], chest[1] + bob + float(getattr(sc, "rise_body", 0.0)))
     # 原版 :1560：胸被「视线点」推开（看近处时上身后仰）
     lp = getattr(sc, "look_screen", None) or (hx + face * 90.0, hy - 26.0)
@@ -639,7 +643,7 @@ def scav_pose(sc, ts=1.0, iv=None):
     chest = _add(chest, push, _lmap(math.dist(look_g, chest), 50.0, 400.0, 11.0, 0.0, 0.5))
 
     # 头：朝向视线点（原版 :1957 WeightedPush(2,0, chunk0 + HeadLookDir*22, ...)）
-    base_hd = _deg2flt(face * (SCAV_HEAD_TILT - SCAV_HEAD_UP * num9))
+    base_hd = _deg2flt(lean * (SCAV_HEAD_TILT - SCAV_HEAD_UP * num9))
     ld = _dirvec(chest, look_g)
     hd = _slerp2(base_hd, ld, SCAV_HEAD_LOOK) if ld != (0.0, 0.0) else base_hd
     head = _add(chest, hd, SCAV_LINK_HEAD)
@@ -666,7 +670,12 @@ def scav_pose(sc, ts=1.0, iv=None):
               t1[1] * 0.2 / 300.0 + t2[1] / 100.0))
     if f == (0.0, 0.0):
         f = hd
-    f2 = _nrm(_lerp2(f, _deg2flt(body_deg),
+    # 原版 ScavengerGraphics.cs:1847
+    #   f2 = math.lerp(f.normalized(), -Custom.DegToFloat2(0f - num8), t).normalized()
+    # 注意那个外层取负：参考向量 = -(sin(-num8), cos(-num8)) = (sin num8, -cos num8)。
+    # 写成 +DegToFloat2(num8) 会让整个头/齿/眼组上下颠倒（这就是「头上下反了」的根因）。
+    _br = math.radians(body_deg)
+    f2 = _nrm(_lerp2(f, (math.sin(_br), -math.cos(_br)),
                      lerp(0.5, 1.0, max(num9 ** 1.1, num10))))
     f12 = _rot_origo(f2, body_deg)
 
@@ -1338,9 +1347,15 @@ def draw_scavenger(painter, atlas, sc, ts=1.0, body_rgb=None, head_rgb=None,
                  * (1.0 + 0.2 * num13) * _ilerp(0.0, 0.75, eyes_open))
         ps = iv.get("pupil", 0.0) or 0.0
         if ps > 0.0:
-            vec = _dirvec(p16, pose["look_g"])
-            k = _ilerp(0.0, 30.0, math.dist(p16, pose["look_g"])) * _ilerp(0.3, 0.7, 0.5)
-            vec = _rot_origo((vec[0] * k, vec[1] * k), num15)
+            # 原版 :1904  vec = deepPupils ? (-f) : DirVec(眼, 视线点)*InverseLerp(0,30,d)*InverseLerp(.3,.7,同情心)
+            if iv.get("deep"):
+                vec = (-pose["f"][0], -pose["f"][1])
+            else:
+                vec = _dirvec(p16, pose["look_g"])
+                k = (_ilerp(0.0, 30.0, math.dist(p16, pose["look_g"]))
+                     * _ilerp(0.3, 0.7, float(getattr(sc, "sympathy", 0.5))))
+                vec = (vec[0] * k, vec[1] * k)
+            vec = _rot_origo(vec, num15)
             vec = (vec[0] * num16 * (1.0 - ps), vec[1] * num17 * (1.0 - ps))
             vec = _rot_origo(vec, -num15)
             blit(painter, atlas, CIRCLE_SPRITE, *_scr(_add(p16, vec), org), num15,

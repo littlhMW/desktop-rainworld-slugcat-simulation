@@ -98,19 +98,10 @@ SLIME_RESTICK_PAD = 50.0
 # 触须锯齿单位圆表
 _JAG_COS = [math.cos(2.0 * math.pi * i / TENDRIL_JAG_K) for i in range(TENDRIL_JAG_K)]
 _JAG_SIN = [math.sin(2.0 * math.pi * i / TENDRIL_JAG_K) for i in range(TENDRIL_JAG_K)]
-# 蝙蝠
+# 蝙蝠：原版 FlyGraphics 只有 4 片精灵（FlyBody / FlyWing×2 / FlyEyes），没有别的件。
+# ApplyPalette（FlyGraphics.cs:207）把 body 与两翅都设成 palette.blackColor，眼睛留白。
 BATFLY_BLACK = (0, 0, 0)
 BATFLY_EYE_COLOR = (250, 250, 235)
-BATFLY_WING_COLOR = (0, 0, 0, 160)
-BATFLY_BODY_HALF_W = 2.7
-BATFLY_BODY_HALF_H = 3.3
-BATFLY_ABDOMEN_MIN = 4.0
-BATFLY_ABDOMEN_MAX = 6.0
-BATFLY_WING_LEN = 12.5
-BATFLY_WING_W = 6.0
-BATFLY_EYE_RAD = 0.5
-BATFLY_EYE_DX = 0.92
-BATFLY_EYE_DY = 1.35
 SHOVE_REACH = 22.0
 SHOVE_COOLDOWN = 12
 
@@ -153,20 +144,6 @@ STONE_STUN_BONUS = 45.0           # 上句里的 stunBonus = 45f
 KNOCK_K_PER_MASS = 1.4 * 2.1 / (18.0 * 0.12)
 # 拾荒者掷矛初速走原版 Scavenger.ThrowObject → Weapon.Thrown（见 weaponphys）：
 #   frc = (Elite || Templar) ? 0.75 : 0.35，初速 = 40 * frc，方向恒为水平
-# 翅本地多边形（锚在本体，向 -y 伸展）
-_BATFLY_WING_PTS = [
-    (0.0, 0.0),
-    (BATFLY_WING_W, -BATFLY_WING_LEN * 0.4),
-    (BATFLY_WING_W * 0.55, -BATFLY_WING_LEN * 0.85),
-    (0.0, -BATFLY_WING_LEN),
-    (-BATFLY_WING_W * 0.22, -BATFLY_WING_LEN * 0.45),
-]
-# 形状/颜色缓存：身路径按 abdomen 量化
-_BATFLY_WING_POLY = None
-_BATFLY_BODY_PATHS: dict[int, "QPainterPath"] = {}
-_BATFLY_BLACK_C = QColor(*BATFLY_BLACK)
-_BATFLY_WING_C = QColor(*BATFLY_WING_COLOR)
-_BATFLY_EYE_C = QColor(*BATFLY_EYE_COLOR)
 
 
 def _slime_body_rgb(dm, l):
@@ -310,10 +287,6 @@ def _dist_to_path(pts, x, y):
         if d < best:
             best = d
     return best
-
-
-# 鼠标拖面条蝇每 tick 最多挪这么多（否则光标瞬移会把身体抻长/挤成一团）
-_NW_DRAG_CAP = 12.0
 
 
 class ItemInteractionMixin:
@@ -1215,7 +1188,15 @@ class ItemInteractionMixin:
             self._draw_one_batfly(p, b, ts)
 
     def _draw_one_batfly(self, p, bat, ts):
-        """单只蝙蝠绘制，被吃期抽搐。"""
+        """单只蝙蝠：照 FlyGraphics.DrawSprites 摆 4 片精灵（被吃期抽搐）。
+
+        num  = aim(下层体节 → 主体节)              → body / eyes 的 rotation
+        翅 i ：a = lerp(lerp(w[i].prev, w[i].cur, ts), 0.5, lerp(0.3, 0, flapDepth))
+                a = InverseLerp(0.01, 0.99, a²)，再按转向补偿折翅
+                rotation = ±(40 + 150a) + num      （±：i==0 取 -1）
+                scaleX   = ±(1 − 0.6·sin(w·π)·(1−steerFold))（flapSpeed<0 时不收窄）
+        可见性：bites==3 两翅 / bites>1 一翅（sprite[1] 是 i=0）
+        """
         x = bat.last_x + (bat.x - bat.last_x) * ts
         y = bat.last_y + (bat.y - bat.last_y) * ts
         lx = bat.last_lower_x + (bat.lower_x - bat.last_lower_x) * ts
@@ -1225,13 +1206,13 @@ class ItemInteractionMixin:
             ox, oy = (vf % 3) - 1.0, ((vf // 2) % 3) - 1.0
             x += ox; y += oy; lx += ox; ly += oy
         body_ang = _ang_from_up(x - lx, y - ly)
-        abdomen = clampf(math.hypot(x - lx, y - ly),
-                         BATFLY_ABDOMEN_MIN, BATFLY_ABDOMEN_MAX)
-        flap_depth = bat.last_flap_depth + (bat.flap_depth - bat.last_flap_depth) * ts
+        flap_depth = lerp(bat.last_flap_depth, bat.flap_depth, ts)
         steer = lerp(bat.last_steer, bat.steer, ts)
         p.save()
         aa_hint(p)
         p.setPen(Qt.PenStyle.NoPen)
+        # 图层序照 InitiateSprites：body(0) 在底 → 两翅(1,2) → eyes(3) 在顶
+        self._draw_batfly_body(p, x, y, body_ang)
         for i in range(2):
             if (i == 0 and bat.bites != 3) or (i == 1 and bat.bites <= 1):
                 continue                              # bites: 3两翅 2一翅 1无翅
@@ -1240,63 +1221,24 @@ class ItemInteractionMixin:
             steer_fold = 0.0 if (steer < 0.0) == (i == 0) else clampf(abs(steer * 0.85) - 0.1, 0.0, 1.0)
             a = lerp(a, 0.5, steer_fold)
             a = inv_lerp(0.01, 0.99, a * a)
-            # 折角压缩到 40~145°，防读作垂臂
-            wing_ang = (-1.0 if i == 0 else 1.0) * (40.0 + 105.0 * a) + body_ang
+            wing_ang = (-1.0 if i == 0 else 1.0) * (40.0 + 150.0 * a) + body_ang
             sx = 1.0 if bat.flap_speed < 0.0 else 1.0 - 0.6 * math.sin(wcur * math.pi) * (1.0 - steer_fold)
             sx *= (-1.0 if i == 0 else 1.0)
             self._draw_batfly_wing(p, x, y, wing_ang, sx)
-        self._draw_batfly_body(p, x, y, body_ang, abdomen)
         self._draw_batfly_eyes(p, x, y, body_ang)
         p.restore()
 
-    def _draw_batfly_body(self, p, x, y, ang, abdomen):
-        """连续水滴身绘制。"""
-        q = int(round(abdomen * 8.0))         # 1/8px 量化，路径按档缓存
-        path = _BATFLY_BODY_PATHS.get(q)
-        if path is None:
-            hw = BATFLY_BODY_HALF_W
-            yh = -BATFLY_BODY_HALF_H              # 头端
-            ym = -BATFLY_BODY_HALF_H * 0.3        # 最宽处
-            yt = q / 8.0                          # 腹尖
-            path = QPainterPath()
-            path.moveTo(0.0, yh)
-            # 头圆→最宽→软尖→最宽→头圆，四段贝塞尔
-            path.cubicTo(hw * 1.05, yh + (ym - yh) * 0.2, hw, ym - 0.5, hw, ym)
-            path.cubicTo(hw, ym + (yt - ym) * 0.6, hw * 0.45, yt - 1.0, 0.0, yt)
-            path.cubicTo(-hw * 0.45, yt - 1.0, -hw, ym + (yt - ym) * 0.6, -hw, ym)
-            path.cubicTo(-hw, ym - 0.5, -hw * 1.05, yh + (ym - yh) * 0.2, 0.0, yh)
-            path.closeSubpath()
-            _BATFLY_BODY_PATHS[q] = path
-        p.save()
-        p.translate(x, y)
-        if ang:
-            p.rotate(ang)
-        p.setBrush(_BATFLY_BLACK_C)
-        p.drawPath(path)
-        p.restore()
+    def _draw_batfly_body(self, p, x, y, ang):
+        """FlyBody：5×12 身体片（锚点居中）。"""
+        blit(p, self.atlas, "FlyBody", x, y, ang, 1.0, 1.0, BATFLY_BLACK, ax=0.5, ay=0.5)
 
     def _draw_batfly_wing(self, p, x, y, ang, sx):
-        global _BATFLY_WING_POLY
-        if _BATFLY_WING_POLY is None:
-            _BATFLY_WING_POLY = QPolygonF([QPointF(px, py) for px, py in _BATFLY_WING_PTS])
-        p.save()
-        p.translate(x, y)
-        if ang:
-            p.rotate(ang)
-        p.scale(sx, 1.0)
-        p.setBrush(_BATFLY_WING_C)
-        p.drawPolygon(_BATFLY_WING_POLY)
-        p.restore()
+        """FlyWing：15×15 翅片，原版 InitiateSprites 明写 anchorY = 0。"""
+        blit(p, self.atlas, "FlyWing", x, y, ang, sx, 1.0, BATFLY_BLACK, ax=0.5, ay=0.0)
 
     def _draw_batfly_eyes(self, p, x, y, ang):
-        p.save()
-        p.translate(x, y)
-        if ang:
-            p.rotate(ang)
-        p.setBrush(_BATFLY_EYE_C)
-        p.drawEllipse(QPointF(-BATFLY_EYE_DX, -BATFLY_EYE_DY), BATFLY_EYE_RAD, BATFLY_EYE_RAD)
-        p.drawEllipse(QPointF(BATFLY_EYE_DX, -BATFLY_EYE_DY), BATFLY_EYE_RAD, BATFLY_EYE_RAD)
-        p.restore()
+        """FlyEyes：两点白眼，与身体同角。"""
+        blit(p, self.atlas, "FlyEyes", x, y, ang, 1.0, 1.0, BATFLY_EYE_COLOR, ax=0.5, ay=0.5)
 
     def _draw_batfly_hint(self, p):
         cur = self.cursor_logical()
@@ -1310,9 +1252,9 @@ class ItemInteractionMixin:
         p.setOpacity(0.5)
         aa_hint(p)
         p.setPen(Qt.PenStyle.NoPen)
+        self._draw_batfly_body(p, cx, cy, 0.0)
         self._draw_batfly_wing(p, cx, cy, -115.0, -0.9)
         self._draw_batfly_wing(p, cx, cy, 115.0, 0.9)
-        self._draw_batfly_body(p, cx, cy, 0.0, 10.0)
         self._draw_batfly_eyes(p, cx, cy, 0.0)
         p.restore()
 
@@ -2101,11 +2043,7 @@ class ItemInteractionMixin:
         if cur is None:
             return
         nw.last_x, nw.last_y = nw.x, nw.y
-        # 限速跟随：光标瞬移时身体来不及跟，会被抻长/挤成一团（用户口径）
-        dx, dy = cur[0] - nw.x, cur[1] - nw.y
-        d = math.hypot(dx, dy)
-        if d > _NW_DRAG_CAP:
-            cur = (nw.x + dx / d * _NW_DRAG_CAP, nw.y + dy / d * _NW_DRAG_CAP)
+        # 与拖蛞蝓猫同一手感：直接跟光标，不做限速延迟。
         nw.x, nw.y = cur
         nw.vx = nw.vy = 0.0
 
@@ -3171,7 +3109,7 @@ class ItemInteractionMixin:
         got = getattr(self, "_karmaflower_preview", None)
         if got is None or got[0] != seed:
             kf = KarmaFlower(0.0, 0.0, seed=seed, ground_y=self._HL)
-            for _ in range(45):            # 预览不 tick：先就地解算到静止（随机初态张开后的样子）
+            for _ in range(140):           # 预览不 tick：解算过生长动画 + 随机初态张开后的样子
                 kf.step(self._WL, self._HL)
             got = (seed, kf)
             self._karmaflower_preview = got

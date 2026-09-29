@@ -21,6 +21,8 @@ class EffectsMixin:
 
     def start_cursor_hijack(self, logical_x, logical_y, lock_ticks=None,
                             restore_on_land=False):
+        if not getattr(self, "cursor_hijack_allowed", True):
+            return None
         from ..platform.cursorfx import CursorHijack
 
         dpr = self.devicePixelRatioF()
@@ -32,6 +34,8 @@ class EffectsMixin:
             restore_on_land=restore_on_land, **kw)
 
     def start_cursor_hold(self, logical_x, logical_y, max_ticks):
+        if not getattr(self, "cursor_hijack_allowed", True):
+            return None
         from ..platform.cursorfx import CursorHijack
 
         dpr = self.devicePixelRatioF()
