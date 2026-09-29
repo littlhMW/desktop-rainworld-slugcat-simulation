@@ -45,6 +45,13 @@ ANGER_TOTAL = T_POSTTHROW_WANDER + T_POSTTHROW_STAND
 T_FETCH_COOLDOWN = 200
 T_FETCH_CHECK = 8   # 取果闸重算间隔
 HUNT_CD = 620       # 一次捕猎后的冷却（tick）
+CORPSE_HAUL_SEEK_R = 340.0   # 多远之内会主动去拖无用尸体（死蜥蜴…）
+CORPSE_HAUL_REACH = 30.0     # 离尸体这么近＝上手抓住
+CORPSE_HAUL_ARRIVE = 26.0    # 猫离屏幕边这么近＝把尸体甩出去
+CORPSE_HAUL_FLING = 14.0     # 甩出去的初速（够飞出窗口被清掉）
+CORPSE_HAUL_TICKS = 1000     # 单趟最长 tick（约 25s，超时松爪）
+T_CORPSE_HAUL_RETRY = 600    # 一趟之后多久不再惦记（约 15s）
+CORPSE_HAUL_P = 0.5          # 闲下来时每次检查起意的概率
 T_HPOLE_TIMEOUT = 1600
 HPOLE_MAX_CLIMBS = 3
 WAKE_STABILIZE_TICKS = 30
@@ -437,6 +444,9 @@ class BehaviorFSM:
         self._itemplay_cd = 0
         self._back_spear_cd = 0
         self._pearl_cd = 0            # 喜欢珍珠的猫：两颗珍珠之间的间隔
+        self._haul_cd = 0             # 清场（拖走无用尸体）的冷却
+        self._clear_target = None     # 正在拖的那具无用尸体
+        self._haul_left = 0           # 本趟剩余 tick
         self._itemplay_target = None
         self._itemplay_left = 0
         self._itemplay_phase = 0
@@ -997,6 +1007,23 @@ class BehaviorFSM:
                 self._break_active_controllers()
                 self._act_or_wake("ItemPlay")
 
+        # 清场：场上有无用又不能吃的尸体（死蜥蜴…）→ 拖到屏幕边扔出去
+        if self._haul_cd > 0:
+            self._haul_cd -= 1
+        if (self._fetch_check == 0 and self._haul_cd <= 0
+                and not self.grab.active and not self._exhausted
+                and not self._cold_urgent() and not self._zerog()
+                and not self._hibernating and not self.body.swimming
+                and self.body.on_floor()
+                and self.state in ("IdleStand", "PostThrowStand", "PostThrowWander")
+                and self._threat_lizard() is None):       # 有活威胁时先躲，不捡尸
+            jc = self._junk_corpse_near()
+            # 先看有没有垃圾再掷骰：没尸体就不动随机流（随机数纪律）
+            if jc is not None and self.rng.random() < CORPSE_HAUL_P:
+                self._clear_target = jc
+                self._break_active_controllers()
+                self._act_or_wake("ClearCorpse")
+
         self._back_spear_tick()
 
         # 睡眠欲望：吃饱后入睡概率从 0 缓慢升到 100
@@ -1085,6 +1112,8 @@ class BehaviorFSM:
         """离开欲望态时统一收尾（幂等；_break_active_controllers 已跑过也无害）。"""
         if old in _WANTS_STATES:
             self._wants_break(old)
+        if old == "ClearCorpse":
+            self._haul_release(0.0)
 
     def _act_or_wake(self, target):
         """趴/睡态先起身并稳定一会再行动；已站立则直接进入目标态。"""
@@ -1104,6 +1133,10 @@ class BehaviorFSM:
             b.set_posture(True)
             b.stop_walk()
             self._idle_hold = tuning.IDLE_BREATHER   # 落地喘息，先停一拍再重抽
+        elif st == "ClearCorpse":
+            b.set_posture(True)
+            b.stop_walk()
+            self._haul_left = CORPSE_HAUL_TICKS       # 拖尸总时长预算
         elif st == "LieDown":
             self.gfx.face_special = False     # 趴下睡觉：醒着的表情收掉
             b.set_posture(False)
@@ -3922,6 +3955,72 @@ class BehaviorFSM:
             self._flyhunt_release()
             self._hunt_cd = self._hunt_cd_after()
             self._transition("PostThrowWander")
+
+    def _junk_corpse_near(self):
+        """最近的无用尸体（不能吃的死尸：死蜥蜴…），够不着就是 None。"""
+        best, bd = None, CORPSE_HAUL_SEEK_R
+        bx = self.body.chunk1.x
+        for e in self.win.junk_corpses():
+            d = abs(e.x - bx)
+            if d < bd:
+                best, bd = e, d
+        return best
+
+    def _haul_edge(self) -> float:
+        """离自己最近的屏幕边（窗口左右边＝墙，尸体从这里甩出去）。"""
+        return 0.0 if self.body.chunk1.x < self.WL * 0.5 else float(self.WL)
+
+    def _haul_release(self, vx: float = 0.0) -> None:
+        """松爪：被打断 / 放弃时把那具尸体放回自由态。"""
+        tgt = self._clear_target
+        if tgt is not None and getattr(tgt, "hauled", False):
+            tgt.release_haul(vx, 0.0)
+        self._clear_target = None
+
+    def _st_clearcorpse(self, cursor, disturbed):
+        """清场：把无用又不能吃的尸体（死蜥蜴…）拖到屏幕边甩出去。
+
+        走位用 walk_to（跟地面行走同一套），尸体位置由 Lizard.haul 每 tick 钉在
+        猫手边；到边甩出去之后由 window._cull_flung_corpses 直接清掉。
+        """
+        b = self.body
+        if self.grab.active:
+            self._transition("Dragged")
+            return
+        tgt = self._clear_target
+        if (tgt is None or not getattr(tgt, "dead", False)
+                or getattr(tgt, "state", None) != ItemState.FREE
+                or not b.on_floor()):
+            self._transition("IdleStand")
+            return
+        self._haul_left -= 1
+        edge = self._haul_edge()
+        dirv = 1.0 if edge > b.chunk1.x else -1.0
+        if not getattr(tgt, "hauled", False):
+            if self._haul_left <= 0:               # 走太久没够着：算了
+                self._haul_cd = T_CORPSE_HAUL_RETRY
+                self._transition("IdleStand")
+                return
+            if abs(tgt.x - b.chunk1.x) > CORPSE_HAUL_REACH:
+                b.walk_to(tgt.x)                   # 走过去上手
+                self.gfx.look_at = (tgt.x, tgt.y)
+                return
+            b.stop_walk()
+            tgt.haul(b.chunk1.x, b.chunk1.y, 0.0)  # 先贴身边，下一 tick 开始拖
+            return
+        # 已经拖着：往最近的屏幕边挪，够近就甩出去
+        if abs(b.chunk1.x - edge) <= CORPSE_HAUL_ARRIVE or self._haul_left <= 0:
+            b.stop_walk()
+            tgt.release_haul(dirv * CORPSE_HAUL_FLING, -1.0)
+            self._clear_target = None
+            self._haul_cd = T_CORPSE_HAUL_RETRY
+            self._transition("IdleStand")
+            return
+        b.walk_to(edge)
+        side = "l" if dirv < 0.0 else "r"
+        hx, hy = b._carry_pos(side)
+        tgt.haul(hx, hy, -dirv)        # 身体朝行进前方摊开，不压在猫身上
+        self.gfx.look_at = (edge, self.HL - 12.0)
 
     def _hunt_cd_after(self) -> int:
         """一次捕猎后的冷却：越爱吃肉越想接着打（荤 0.6× / 杂 1.0× / 素 1.4×）。"""

@@ -46,13 +46,6 @@ LEG_DEPTH_MIN = 10.0          # 原版 LizardGraphics 里判定 |num11|>10 才�
 # ── AI ──
 NOTICE_R = 150.0              # 视野半径：注意到猫（原版关系 Eats 1.0）
 
-# 光标恐惧（原版蜥蜴对秃鹫面具的 fear 反应；宠物里把鼠标当作同级威胁源）
-CURSOR_FEAR_R = 90.0          # 光标进入此半径开始害怕
-CURSOR_FEAR_ARM = 3           # 连续贴脸这么久才真正受惊（防误触）
-CURSOR_FEAR_TICKS = 110       # 单次受惊逃跑时长（≈2.8s）
-CURSOR_FEAR_SPEED = 1.05      # 逃跑速度 × base_speed
-CURSOR_FEAR_ACCEL = 0.16
-CURSOR_FEAR_HOP = 0.02        # 逃跑时回头跳的概率
 LOST_R = 230.0                # 超出即失去兴趣
 
 # 叼走死猫/昏迷猫（原版把猎物拖回巢穴的宠物化改写：改拖到屏幕两侧角落）
@@ -540,7 +533,7 @@ class Lizard:
                  "dead", "spacing", "spikes", "like", "tamed", "friend_id",
                  "max_health", "health", "stun", "hurt_flash", "dead_t",
                  "rock_push", "rock_push_dir",
-                 "fear_t", "fear_x", "fear_y", "fear_seen", "wall_dir",
+                 "hauled", "is_meat", "wall_dir",
                  "anger", "anger_obj", "submitted_to",
                  "threat", "threat_obj", "threat_t",
                  "noise_x", "noise_y", "noise_t", "lurk",
@@ -587,11 +580,8 @@ class Lizard:
         self.rock_push_dir = 0
         self.hurt_flash = 0      # 受击白闪（渲染用）
         self.dead_t = 0          # 尸体已躺 tick
-        # 光标恐惧（原版 LizardAI 的 fear 状态）
-        self.fear_t = 0
-        self.fear_x = 0.0
-        self.fear_y = 0.0
-        self.fear_seen = 0
+        self.is_meat = False     # 蜥蜴不是食物：尸体算无用尸体（会被猫拖出屏幕清场）
+        self.hauled = False      # 正被蛞蝓猫拖着走：位置每 tick 由猫写死
         self.wall_dir = 0        # 贴在左右墙时记墙侧（窗口边缘＝墙）
         # 原版 AgressionTracker：对 AggressiveRival 对象的怒气（0..1，涨落各 0.001/tick）
         self.anger = 0.0
@@ -834,6 +824,23 @@ class Lizard:
         self.state = ItemState.FREE
         self.vx, self.vy = vx, vy
 
+    def haul(self, x, y, dirv=0.0) -> None:
+        """被蛞蝓猫拖着走（清场拖尸）：位置每 tick 由猫写死，自己不做物理。
+
+        dirv＝拖动方向（猫的走向），只用来定「身体拖在头的哪一侧」。
+        位置钉死 + step 里跳过 _integrate，尸体就不会自己往下掉 / 乱弹。
+        """
+        self.hauled = True
+        self.vx = self.vy = 0.0
+        self.x, self.y = x, y
+        if abs(dirv) > TURN_VX:
+            self.chain_dir = 1.0 if dirv > 0.0 else -1.0
+
+    def release_haul(self, vx=0.0, vy=0.0) -> None:
+        """松爪（拖到屏幕边甩出去 / 被打断）。"""
+        self.hauled = False
+        self.vx, self.vy = vx, vy
+
     # ── 主循环 ──
     def step(self, WL: float, HL: float, targets=(), cursor=None,
              prey=(), cats=(), threats=(), others=(), pack=(), rivals=()) -> None:
@@ -866,6 +873,8 @@ class Lizard:
         # 拎起来就原地往下掉 —— 表现就是「蜥蜴尸体拖不动」。
         if self.state == ItemState.MOUSE:
             self._step_held(WL, HL, cursor)
+        elif self.hauled:            # 被猫拖着走：位置由猫写，自己不做物理
+            self.vx = self.vy = 0.0
         elif self.dead:
             self._release_carry()
             self.dead_t += 1
@@ -964,9 +973,6 @@ class Lizard:
             self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE)
             self.vx *= 0.90
             return
-        if self._fear_tick(cursor, HL):           # 光标恐惧优先于捕猎
-            self._release_carry()
-            return
         if self.tamed:                           # 认主的蜥蜴不再咬人，只跟着走
             self._release_carry()
             self._follow(WL, HL, targets)
@@ -1035,39 +1041,6 @@ class Lizard:
             self.vx += (want - self.vx) * WALK_TURN
         else:
             self.vx -= self.vx * 0.22
-
-    def _fear_tick(self, cursor, HL) -> bool:
-        """光标恐惧：原版蜥蜴对秃鹫面具的逃跑反应，这里把鼠标当威胁源。
-
-        受惊期间背对光标加速逃开、闭颌、不咬任何人；结束后回到正常 AI。
-        """
-        if self.fear_t > 0:
-            self.fear_t -= 1
-            if cursor is not None:
-                self.fear_x, self.fear_y = cursor[0], cursor[1]
-            dx, dy = self.x - self.fear_x, self.y - self.fear_y
-            d = math.hypot(dx, dy) or 1.0
-            sp = self.breed.base_speed * CURSOR_FEAR_SPEED
-            self.vx += (dx / d * sp - self.vx) * CURSOR_FEAR_ACCEL
-            self.jaw = max(0.0, self.jaw - JAW_CLOSE_RATE)
-            self.target = None
-            self.target_obj = None
-            self.look_at = (self.fear_x, self.fear_y)
-            if self._contact_floor and self.rng.random() < CURSOR_FEAR_HOP:
-                self.vy = CLIMB_HOP * 0.7
-            return True
-        if cursor is None or self.dead:
-            self.fear_seen = 0
-            return False
-        if math.hypot(cursor[0] - self.x, cursor[1] - self.y) > CURSOR_FEAR_R:
-            self.fear_seen = 0
-            return False
-        self.fear_seen += 1
-        if self.fear_seen < CURSOR_FEAR_ARM:
-            return False
-        self.fear_t = CURSOR_FEAR_TICKS
-        self.fear_x, self.fear_y = cursor[0], cursor[1]
-        return True
 
     # ── 原版关系追踪器（LizardAI.ModuleToTrackRelationship，LizardAI.cs:1346-1361）──
     @property

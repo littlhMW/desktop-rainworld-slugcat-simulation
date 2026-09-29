@@ -34,10 +34,29 @@ GROUND_INSET = 16.0
 PLATFORM_REFRESH_TICKS = 30
 
 # 光标＝一小节**悬空**短杆（用户指定的桌宠扩展；原版没有这根杆）：
-# 长度固定（半长 MOUSE_POLE_HALF，总长≈系统光标那一截），杆心跟着光标跑，
+# 长度＝系统光标本身的大小（杆总长＝光标高度折算到世界坐标），杆心跟着光标跑，
 # 端点**不夹窗口顶/底** —— 底部不与屏幕地面相连，所以它是一段悬空的小短杆，
 # 而不是通到地面的真竖杆。甩鼠标（本 tick 位移超阈值）能把杆上的猫甩下来。
-MOUSE_POLE_HALF = 17.0
+CURSOR_PX_FALLBACK = 32.0        # 取不到系统光标尺寸时的兜底（标准箭头 32px）
+MOUSE_POLE_MIN_HALF = 8.0        # 杆半长下限（逻辑单位；超大画布缩放时别缩没了）
+MOUSE_POLE_RELEASE_TICKS = 80    # 松开鼠标后这么久内不当杆（2s @ 40tick/s）
+# 抓猫／拽东西／正在放东西的时候，光标不是一根杆
+_DRAG_ATTRS = ("_dragged_fruit", "_dragged_stone", "_dragged_slimemold",
+               "_dragged_batfly", "_dragged_lizard", "_dragged_squidcada",
+               "_dragged_needleworm", "_dragged_pearl", "_dragged_spear",
+               "_dragged_scavenger", "_dragged_seedcob", "_dragged_karmaflower")
+
+
+def system_cursor_px() -> float:
+    '''系统光标的屏幕像素高度（Windows GetSystemMetrics；取不到回退兜底值）。'''
+    try:
+        import ctypes
+        h = int(ctypes.windll.user32.GetSystemMetrics(14))     # SM_CYCURSOR
+        if h > 0:
+            return float(h)
+    except Exception:
+        pass
+    return CURSOR_PX_FALLBACK
 
 # 窗口抖动
 SHAKE_DECAY = 0.8
@@ -250,6 +269,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._mouse_pole_on = bool(self._params.get("mouse_pole", True))
         self._mouse_pole_prev = None       # 上一 tick 光标位置（算甩动速度）
         self._mouse_pole_vel = None        # 本 tick 光标位移（PoleClimber 读它判甩落）
+        self._mouse_pole_suppress = 0      # 松开鼠标后的静默 tick（期间不当杆）
+        self._cursor_half = None           # 光标虚杆半长缓存（逻辑单位）
 
         # 寒冷系统
         self.blizzard_on = not tuning.COLD_BLIZZARD_DEFAULT_OFF
@@ -512,6 +533,24 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         return [*self.fruits, *self.seeds, *self.slimemolds, *self.batflies,
                 *self.squidcadas, *self.needleworms]
 
+    def junk_corpses(self):
+        """无用且不能吃的尸体（清场目标）：死蜥蜴等。
+
+        能吃的尸体（蝙蝠/蝉乌贼/面条蝇是肉）不进这张表 —— 那是食物不是垃圾；
+        正被某只猫拖着的那具也不算（免得两只猫抢同一具）。
+        """
+        out = []
+        for e in (*self.lizards, *self.squidcadas, *self.batflies,
+                  *self.needleworms, *self.scavengers):
+            if not getattr(e, "dead", False) or e.state != ItemState.FREE:
+                continue
+            if getattr(e, "is_meat", False) or getattr(e, "is_edible", False):
+                continue
+            if getattr(e, "hauled", False):
+                continue
+            out.append(e)
+        return out
+
     def _tick(self):
         now = self._clock.elapsed()
         dt = (now - self._last_ms) / 1000.0
@@ -596,6 +635,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
     # ── 环境适应 ──
     def apply_workspace(self, area, geo):
         """工作区变化，重算几何并夹回物体。"""
+        self._cursor_half = None        # 换了屏幕/缩放：光标虚杆长度重算
         geom = compute_geometry(area, geo, self._scale)
         self.world_version += 1
         self.geometry_version += 1
@@ -648,6 +688,34 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         chunkphys.set_platforms(enumerate_tops(own, self._area.x(), self._area.y(),
                                                self._scale))
 
+    def _cursor_half_len(self) -> float:
+        """光标虚杆半长（逻辑单位）＝系统光标高度折算成世界坐标的一半。
+
+        屏幕 DIP = 物理像素 / 设备像素比；世界单位 = DIP / canvas_scale。
+        于是「屏幕上的那段杆」跟系统光标一样长（用户口径）。
+        """
+        if self._cursor_half is None:
+            try:
+                dpr = float(self.devicePixelRatioF()) or 1.0
+            except Exception:
+                dpr = 1.0
+            s = float(self._scale or 1)
+            self._cursor_half = max(MOUSE_POLE_MIN_HALF,
+                                    system_cursor_px() / dpr / (2.0 * s))
+        return self._cursor_half
+
+    def _mouse_pole_busy(self) -> bool:
+        """正抓着猫／正拽着东西 → 光标不是杆（免得跟手里的对象打架）。
+
+        覆盖：抓着猫（grab）、12 种鼠标拖拽（物品/生物）、放置模式（_place_mode
+        见 _mouse_pole_tick）、以及松手后的静默窗口。
+        """
+        for attr in _DRAG_ATTRS:
+            if getattr(self, attr, None) is not None:
+                return True
+        return any(getattr(getattr(pet, "behavior", None), "grab", None) is not None
+                   and pet.behavior.grab.active for pet in getattr(self, "pets", ()))
+
     def _mouse_pole_tick(self, cur) -> None:
         """光标＝一小节竖杆（用户指定的桌宠扩展）。
 
@@ -657,6 +725,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         虚拟杆不渲染、不参与交叉换杆（见 Pole.virtual / cross_point）。
         """
         pl = self._mouse_pole
+        if self._mouse_pole_suppress > 0:
+            self._mouse_pole_suppress -= 1
         cx, cy = (cur if cur is not None else (None, None))
         # 甩鼠标：记下本 tick 光标位移（虚杆的 PoleClimber 读它决定是否被甩下来）
         prev = self._mouse_pole_prev
@@ -665,10 +735,11 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         else:
             self._mouse_pole_vel = None
         self._mouse_pole_prev = None if cx is None else (cx, cy)
-        # 拖着猫的时候光标压在猫身上，这根杆会和猫完全重合（猫会去抓自己脚下那根杆），
-        # 拖拽期间不生成；松手之后光标还在窗口内就照旧出现。
-        busy = any(getattr(getattr(pet, "behavior", None), "grab", None) is not None
-                   and pet.behavior.grab.active for pet in getattr(self, "pets", ()))
+        # 非空闲时（拖着猫 / 正拽着东西 / 正在放东西 / 刚松手 2s 内）光标都不是杆：
+        # 拖拽时光标就压在对象身上，这根杆会和对象完全重合（猫会去抓自己脚下那根杆）。
+        # 空闲下来、光标还在窗口内就照旧出现。
+        busy = (self._mouse_pole_suppress > 0 or self._place_mode
+                or self._mouse_pole_busy())
         on = (self._mouse_pole_on and not busy and cx is not None
               and 0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL)
         if not on:
@@ -682,8 +753,9 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 self.world_version += 1
             return
         # 悬空定长：端点跟着光标整体平移，不夹到窗口顶/底（底部不接地）
-        top = cy - MOUSE_POLE_HALF
-        bot = cy + MOUSE_POLE_HALF
+        half = self._cursor_half_len()
+        top = cy - half
+        bot = cy + half
         if pl is None:
             from .world.pole import Pole, VERTICAL
             pl = Pole(VERTICAL, cx, bot, cx, top)
@@ -1557,6 +1629,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if not self.pets:
             return
         if e.button() == Qt.MouseButton.LeftButton:
+            self._mouse_pole_suppress = MOUSE_POLE_RELEASE_TICKS   # 松手后 2s 不当杆
             for pet in self.pets:
                 if pet.behavior is not None:
                     pet.behavior.on_release()
