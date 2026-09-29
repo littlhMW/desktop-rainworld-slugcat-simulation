@@ -750,8 +750,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                     pass
         except Exception:
             pass
-        chunkphys.set_platforms(enumerate_tops(own, self._area.x(), self._area.y(),
-                                               self._scale))
+        new_tops = enumerate_tops(own, self._area.x(), self._area.y(),
+                                  self._scale)
+        if list(new_tops) != list(chunkphys.platforms()):
+            chunkphys.set_platforms(new_tops)
+            # 平台集合真变了：寻路缓存 / 急停判据失效（首次调用早于 __init__ 的赋值）
+            self.geometry_version = getattr(self, "geometry_version", 0) + 1
 
     def _cursor_half_len(self) -> float:
         """光标虚杆半长（逻辑单位）＝系统光标高度折算成世界坐标的一半。

@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 
 from ..behavior import tuning
-from .ability import Candidate
+from .ability import MODE_STAY, MODE_TOUCH, Candidate
 from .cooldown import CooldownRegistry
 from .backflip_reach import BackflipReach
 from .ceiling_reach import CeilingDropReach
@@ -150,6 +150,21 @@ class Planner:
             from .surface import SurfaceRoute
             self._route = SurfaceRoute(self.pet)
         return self._route.plan(goal)
+
+    def route_candidate(self, goal, mode=MODE_TOUCH):
+        '''多段路线候选：直连能力全给不出方案时的兜底（控制器 = RouteExecutor）。
+
+        与单能力候选共用六轴打分的排序体系；Planner 只负责把它造出来，
+        真的逐段执行 / 落地后重规划在 planning/surface.RouteExecutor 里。
+        取食（touch）与趋暖 / 救援 / 社交靠近（stay）共用同一份兜底 ——
+        导航内核只有这一套，不再每个行为各写一次寻路。
+        '''
+        plan = self.surface_route(goal)
+        if plan is None:
+            return None
+        from .surface import RouteExecutor
+        return Candidate("route", plan.time, plan.energy,
+                         lambda: RouteExecutor(self.pet, self, goal, mode))
 
     def world_version(self):
         return getattr(self.pet, "world_version", 0)

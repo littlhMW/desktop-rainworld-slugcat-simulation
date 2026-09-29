@@ -61,6 +61,10 @@ ROUTE_EDGE = {
     "polejump": dict(risk=0.50, noise=0.25, precision=0.60, recovery=0.40),
     "ceildrop": dict(risk=0.60, noise=0.30, precision=0.65, recovery=0.45),
     "backflip": dict(risk=0.70, noise=0.35, precision=0.70, recovery=0.55),
+    "drop": dict(risk=0.15, noise=0.15, precision=0.20, recovery=0.15),
+    "climb_pole": dict(risk=0.20, noise=0.05, precision=0.25, recovery=0.20),
+    "pole_beam": dict(risk=0.50, noise=0.25, precision=0.60, recovery=0.40),
+    "finish": dict(risk=0.05, noise=0.05, precision=0.10, recovery=0.05),
     "pyrojump": dict(risk=0.90, noise=0.85, precision=0.60, recovery=0.60),
 }
 _EDGE_DEFAULT = dict(risk=0.30, noise=0.15, precision=0.40, recovery=0.25)

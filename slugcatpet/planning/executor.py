@@ -8,11 +8,12 @@ from .ability import DONE, GIVEUP, HOLD, HOLDING, MODE_STAY, MODE_TOUCH, RUNNING
 class PlanExecutor:
     """update() -> "running"|"holding"|"giveup"；mode 决定问 touch 还是 stay 候选。接触/抓取由消费方每 tick 自查并终止。"""
 
-    def __init__(self, pet, planner, goal, mode=MODE_TOUCH):
+    def __init__(self, pet, planner, goal, mode=MODE_TOUCH, allow_route=True):
         self.pet = pet
         self.planner = planner
         self.goal = goal
         self.mode = mode
+        self._allow_route = allow_route   # 直连全无解时是否允许「多段路线」兜底
         self._fails = {}           # ability_key -> 失败次数
         self._exhausted = set()    # 已 2 败踢出的方案
         self._schemes_burned = 0
@@ -106,8 +107,14 @@ class PlanExecutor:
 
     def _candidates(self):
         if self.mode == MODE_STAY:
-            return self.planner.stay_candidates(self.goal)
-        return self.planner.touch_candidates(self.goal)
+            cands = self.planner.stay_candidates(self.goal)
+        else:
+            cands = self.planner.touch_candidates(self.goal)
+        if not cands and self._allow_route:
+            rc = self.planner.route_candidate(self.goal, self.mode)
+            if rc is not None:
+                cands = [rc]              # 只有直连都给不出方案，才走多段路
+        return cands
 
     def _filtered(self):
         return [c for c in self._candidates()

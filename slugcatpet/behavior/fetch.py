@@ -120,13 +120,15 @@ def fetch_candidates(planner, edibles, diet=None, pearl_like=1.0, unit=None):
             g = _edible_goal(f)                 # 站位点被挡住：退回直奔中心
             cands = planner.touch_candidates(g)
         if not cands:
-            # 多段寻路：直连够不到，但「先跳上窗口顶边再从那里够」够得到
+            # 多段寻路：直连够不到，但「先跳上窗口顶边 / 先爬杆再从那里够」够得到。
+            # 候选目标仍是**原目标**（果子本身）：执行器把多段路当候选逐段推进，
+            # 每段落地后重新规划；把第一段落点当终点会让猫跳上去就发呆。
             hop = planner.surface_route(g)
             if hop is not None:
                 if meat and diet == DIET_CARNIVORE:
-                    out.append((f, hop.goal, hop.time * MEAT_PREF))
+                    out.append((f, g, hop.time * MEAT_PREF))
                 else:
-                    out.append((f, hop.goal, hop.time))
+                    out.append((f, g, hop.time))
             continue
         if cands:
             time_est = cands[0].time_est
