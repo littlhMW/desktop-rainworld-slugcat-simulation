@@ -112,6 +112,23 @@ D:\spenv\Scripts\python.exe -X utf8 tools/sprite_variants.py          # 多变�
 新核对的结论追加到 `docs/PARTS_REFERENCE.md`（机械表）与 `docs/PARTS_AUDIT.md`（不一致清单），
 README 只留最终结果。
 
+## 10.5 一键生成（RainWorldExtractor v2）
+
+上面第 2~7 节用手做一遍很慢，`python -m slugcatpet.gameassets dump` 会把同一套规则自动跑成一份可查询的资料库（默认 `~/.slugcatpet/rainworld_dump/`）：
+
+| 目录 | 回答什么问题 |
+| --- | --- |
+| `assets/` | 游戏里有哪些 `Texture2D` / `Sprite` / `TextAsset` / `Material` / `Shader` / `MonoBehaviour` / `MonoScript` |
+| `atlases/` `sprites/` | 某个精灵的 `frame` / `source_size` / `source_rect` / `rotated` / `trimmed` / `pivot` / `bounds` / `anchor` |
+| `creatures/` | 某只生物的精灵下标（= 图层序）、容器、元件名、`x/y/rotation/scale/anchor/element`、翻转、调色板、依赖哪节身体 |
+| `rigs/player.json` | 身体节半径 / 质量、头 / 腿 / 手的 BodyPart、4 节尾巴（按种族分支）、尾巴三角网格表、游戏写死的锚点 |
+| `animations/` | 帧族与帧数、每帧 tick 数、是否循环、触发条件；含 `InitCachedSpriteNames()` 自报的帧名与帧数 |
+| `logic/` | 每个方法写哪些精灵的哪些属性，依赖什么运行时量 |
+| `layers.json` | `RoomCamera.SpriteLayerIndex` 的 FContainer 层序 + 同容器内绘制顺序 |
+| `reports/` | 代码引用了但图集没有的元件、工程占位、运行时拼接前缀；可搜索的精灵表；帧族总览图；骨架自检图 |
+
+锚点口径仍是第 4 节的 `qt_ay = 1 - anchorY`：`BodyA` 的 `anchorY = 0.7894737f` → `qt_ay = 0.2105263`，`LegsA0` 的 `0.25f` → `0.75`，`PlayerArm0` 的 `anchorX = 0.9f` 不换算。
+
 ## 11. 蛞蝓猫外观参数（`CatDef.visual`）
 
 `PlayerGraphics.DrawSprites` 里按种族写死的缩放/偏移，一律落到 `CatDef.visual` 的键上，

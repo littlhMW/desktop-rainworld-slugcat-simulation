@@ -210,6 +210,21 @@ release 压缩包里的 `SlugcatPet.exe` 可直接运行，不需要 Python，�
 - **热路径上的重复小对象复用** —— 图集每帧元信息在载入时一次性摊平、颜色对象按值缓存（3.4x）、面条蝇体节半径与质量按年龄段记忆化（35x）、绳与缎带路径复用同一套闭环几何（1.3x）、果子绳约束只算一次距离、蜥蜴贴图取色不再新建 QColor。
 - **锚点图按几何缓存** —— 平台 / 杆 / 站位面没变就不重建那张图（重建一次约 140 ms，命中缓存后一次寻路约 2 ms）；寻路解的缓存带上猫当前 x，同一几何不同起点不会互相命中。跳 / 落候选先按跳跃包线（最高升高 / 最远横距）粗筛，够不到的面不做轨迹实测。
 
+## 逆向资料库
+
+`python -m slugcatpet.gameassets dump`（读本机正版安装；有反编译源码时自动接上 `--decomp`，也可用 `RW_DECOMP` 指定）会把资源与逻辑整理成一份可查询的 Rain World 逆向资料库，默认落在 `~/.slugcatpet/rainworld_dump/`：
+
+- `assets/` —— `Texture2D` / `Sprite` / `TextAsset` / `Material` / `Shader` / `MonoBehaviour` / `MonoScript` 逐个索引，字段名与 Unity TypeTree 对齐，并记下输入的 sha1。
+- `atlases/` `sprites/` —— 四张图集逐帧几何：`frame`、`source_size`、`source_rect`、`rotated`、`trimmed`、`pivot`、`bounds`、`anchor`（`qt_ay = 1 - anchorY`）。
+- `creatures/` —— 每只生物「怎么画」：精灵下标＝图层序、容器、元件名、`x/y/rotation/scaleX/scaleY/anchor/alpha/element`、翻转与调色板来源、依赖哪节身体。
+- `rigs/player.json` —— 逻辑骨架：2 节身体（半径 / 质量）、头 / 腿 / 手的 BodyPart、4 节尾巴（含按种族分支的段长）、尾巴三角网格表，以及游戏在 `InitiateSprites` 里写死的锚点。
+- `animations/` —— 帧族（`LegsA0..6`、`HeadA/B/C×18`、`FaceA~E×9`、`PlayerArm0..12`…）带帧数、每帧 tick 数、是否循环与触发条件；另有游戏自己在 `InitCachedSpriteNames()` 里声明的帧名与帧数，用来和真实图集逐帧对拍（例如声明了 `LegsA0..30`、图集只有 `0..6`，会直接列出来）。
+- `logic/` —— 每个方法写哪些精灵的哪些属性、依赖什么运行时量（`bodyChunks[0/1]`、`tail[0]`、`sleepCurl`、`breath`…）。
+- `layers.json` —— `RoomCamera.SpriteLayerIndex` 的 FContainer 层序，外加蛞蝓猫同容器内的精灵绘制顺序。
+- `reports/` —— 缺件清单（代码引用了但图集没有的元件 / 引擎占位 / 运行时拼接前缀三类分开列，带引用位置与严重度）、可搜索的精灵表 `sprite_index.html`、帧族总览图 `animation_sheet.png`、按真实锚点摆出的骨架自检图 `rig_preview.png`。
+
+阶段开关：`--extract-assets` / `--extract-sprites` / `--extract-rigs` / `--extract-code` 只跑其中几层，`--graphics-only` 不接源码，`--no-images` 跳过 PNG，`--show` 打印已有资料库的摘要。
+
 ## 来源
 
 本项目 fork 自 [lingxiaojun/slugcatpet](https://github.com/lingxiaojun/slugcatpet)，原仓库地址：https://github.com/lingxiaojun/slugcatpet

@@ -42,3 +42,23 @@ def assets_dir() -> Path:
 def bundled_assets_dir() -> Path:
     """仓库内资产目录（开发降级用）。"""
     return resource_dir() / "assets"
+
+
+def dump_dir() -> Path:
+    """反向资料库输出目录（~/.slugcatpet/rainworld_dump）。"""
+    return user_dir() / "rainworld_dump"
+
+
+def decomp_dir() -> Path | None:
+    """反编译源码目录：RW_DECOMP 环境变量优先，否则猜仓库旁的 work/scratch/decomp_full。"""
+    import os
+    env = os.environ.get("RW_DECOMP")
+    if env:
+        p = Path(env)
+        return p if p.is_dir() else None
+    for p in (base_dir().parent / "scratch" / "decomp_full",
+              base_dir() / "work" / "scratch" / "decomp_full",
+              Path.home() / "work" / "scratch" / "decomp_full"):
+        if p.is_dir():
+            return p
+    return None

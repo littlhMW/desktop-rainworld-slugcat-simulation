@@ -150,9 +150,15 @@ def ensure_atlases() -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "dump":
+        # 图集之外的整包逆向资料库（资源/精灵/骨架/动画/逻辑/报告）
+        from .rwdump import extract as rwdump
+        return rwdump.main(argv[1:])
     install = Path(argv[0]) if argv else detect_install()
     if install is None:
-        print("未找到 Rain World 安装。用法：python -m slugcatpet.gameassets <游戏根目录>")
+        print("未找到 Rain World 安装。\n"
+              "用法：python -m slugcatpet.gameassets <游戏根目录>\n"
+              "      python -m slugcatpet.gameassets dump [--install DIR] [--decomp DIR]")
         return 2
     try:
         dest = extract_atlases(install)
