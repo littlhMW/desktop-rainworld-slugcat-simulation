@@ -301,7 +301,9 @@ class LizardBreed:
                  "limb_quickness", "smooth_legs", "leg_pair_disp", "walk_bob",
                  "lounge_tendency",
                  # 品种差异（见文件末 BREED_TRAITS）
-                 "spawn_weight", "can_climb", "camo", "charge_leap")
+                 "spawn_weight", "can_climb", "camo", "charge_leap",
+                 # DLC 品种（LizardBreeds.cs：SpitLizard / ZoopLizard / EelLizard）
+                 "spit", "swim_speed", "leg_pairs", "lizard_spit_immune")
 
     def __init__(self, key, name_zh, name_en, hue, light, head_graphics, *,
                  size=1.0, body_rad_fac=1.0, body_length_fac=1.0, head_size=1.0,
@@ -322,7 +324,9 @@ class LizardBreed:
                  flips_from_rock=True,
                  step_length=0.5, lift_feet=0.3, feet_down=0.5, limb_speed=5.0,
                  limb_quickness=0.5, smooth_legs=True, leg_pair_disp=0.2,
-                 walk_bob=4.0, lounge_tendency=0.05):
+                 walk_bob=4.0, lounge_tendency=0.05,
+                 spit=False, swim_speed=0.0, lizard_spit_immune=False,
+                 leg_pairs=None):
         self.key = key
         self.name_zh = name_zh
         self.name_en = name_en
@@ -386,6 +390,12 @@ class LizardBreed:
         self.can_climb = True
         self.camo = False
         self.charge_leap = False
+        # DLC：喷唾液 / 免疫爆炸 / 水生速度 / 腿的挂点（(躯干节下标, 是否后腿)）
+        self.spit = bool(spit)
+        self.swim_speed = float(swim_speed)
+        self.lizard_spit_immune = bool(lizard_spit_immune)
+        self.leg_pairs = tuple(leg_pairs) if leg_pairs else (
+            (0, False), (0, False), (2, True), (2, True))
         # 体/头配色：白蜥全身纯白、头按原版压黑；蝾螈灰白；黑蜥整体近黑；其余体黑头染品种色
         if plain_color == WHITE_RGB:
             # 白蜥：躯干纯白，头走「黑↔白呼吸闪烁」（原版 HeadColor1=白 / HeadColor2=黑），
@@ -537,6 +547,41 @@ BREEDS = (
                 step_length=0.4, lift_feet=0.0, feet_down=0.0, limb_speed=6.0,
                 limb_quickness=0.6, leg_pair_disp=0.0, walk_bob=2.0,
                 lounge_tendency=1.0 / 30.0),
+    LizardBreed("caramel", "焦糖蜥", "Caramel lizard", 0.10, 0.55, (1, 1, 1, 1, 1),
+                size=1.75, base_speed=0.65, tail_segs=4, tail_len_fac=1.2,
+                limb_size=1.1, limb_thickness=1.5,
+                jaw_open_angle=90.0, jaw_apart=23.0, head_size=1.2,
+                bite_damage=1.2, bite_damage_chance=0.5, bite_chance=0.46511626,
+                attempt_bite_radius=90.0, head_shield_angle=100.0,
+                toughness=2.5, stun_toughness=2.5, taming_difficulty=0.3,
+                danger=0.8, visual_radius=2300.0, body_mass=4.2,
+                walk_bob=4.0, flips_from_rock=False,
+                sat=0.55, hue_var=0.03, light_var=0.2,
+                spit=True, lizard_spit_immune=True,
+                leg_pairs=((0, False), (0, False), (1, True), (1, True),
+                           (2, True), (2, True))),
+    LizardBreed("zoop", "草莓蜥", "Strawberry lizard", 0.95, 0.73, (0, 0, 0, 0, 0),
+                size=0.74, base_speed=5.1, tail_segs=4, tail_len_fac=1.8,
+                limb_size=0.9, limb_speed=9.0, limb_quickness=0.5,
+                lift_feet=0.6, feet_down=0.2, leg_pair_disp=0.8, walk_bob=9.0,
+                jaw_open_angle=80.0, jaw_apart=23.0, head_size=0.9,
+                bite_damage=0.18, bite_damage_chance=0.65, bite_chance=0.31,
+                attempt_bite_radius=80.0, toughness=0.7, stun_toughness=0.7,
+                taming_difficulty=2.0, danger=0.8, visual_radius=1400.0,
+                body_mass=0.9, tongue=True, tongue_range=440.0,
+                sat=0.55, hue_var=0.02, light_var=0.05),
+    LizardBreed("eel", "鳗鱼蜥", "Eel lizard", 0.42, 0.40, (2, 2, 2, 2, 2),
+                size=0.95, head_size=1.0, base_speed=3.75, tail_segs=16,
+                tail_len_fac=1.1, tail_col_start=0.9,
+                limb_size=0.75, limb_speed=9.0, limb_quickness=1.0,
+                lift_feet=0.0, walk_bob=0.4, neck_stiffness=0.9,
+                jaw_open_angle=110.0, jaw_apart=15.0,
+                bite_damage=0.2, bite_damage_chance=1.0, bite_chance=14.0 / 15.0,
+                attempt_bite_radius=800.0, body_rad_fac=0.5,
+                toughness=0.8, stun_toughness=0.8, taming_difficulty=3.0,
+                danger=0.45, visual_radius=990.0, body_mass=2.4,
+                sat=0.9, swim_speed=8.0,
+                leg_pairs=((0, False), (0, False))),
 )
 BREED_BY_KEY = {b.key: b for b in BREEDS}
 
@@ -557,6 +602,10 @@ BREED_TRAITS = {
     "black":      dict(spawn_weight=0.30),
     "salamander": dict(spawn_weight=0.25),
     "cyan":       dict(spawn_weight=0.25, charge_leap=True),
+    # DLC《倾盆大雨》：桌宠没有区域表，按「稀有 DLC 品种」折算权重
+    "caramel":    dict(spawn_weight=0.03),
+    "zoop":       dict(spawn_weight=0.05),
+    "eel":        dict(spawn_weight=0.06),
 }
 for _b in BREEDS:
     _t = BREED_TRAITS.get(_b.key, {})
@@ -606,9 +655,10 @@ class _Leg:
     """一条腿：脚点质点 + 速度 + 绝对猎点（原版 LizardLimb / Limb 的 2D 简化）。"""
 
     __slots__ = ("x", "y", "lx", "ly", "vx", "vy", "abs_x", "abs_y",
-                 "reaching", "snap", "grip", "flip", "disabled", "back", "near")
+                 "reaching", "snap", "grip", "flip", "disabled", "back", "near",
+                 "pair")
 
-    def __init__(self, x, y, back: bool, near: bool):
+    def __init__(self, x, y, back: bool, near: bool, pair: int = None):
         self.x = self.lx = float(x)
         self.y = self.ly = float(y)
         self.vx = 0.0
@@ -622,6 +672,8 @@ class _Leg:
         self.disabled = False          # currentlyDisabled（眩晕/游泳时挂起）
         self.back = back
         self.near = near
+        # 腿根挂在哪一节躯干（原版 LizardLimb 挂 bodyChunk）：0 前 / 1 中 / 2 后
+        self.pair = (2 if back else 0) if pair is None else int(pair)
 
 
 class Lizard:
@@ -756,12 +808,13 @@ class Lizard:
         self.seg = segs
 
         # 四条腿：前对挂第 0 节、后对挂第 2 节；每条腿分远近（绘制层不同）
-        fx = self.seg[0].x
-        bx = self.seg[2].x if len(self.seg) > 2 else self.seg[-1].x
-        fy = self.seg[0].y + self.body_rad * LEG_SIDE_FAC
-        by = (self.seg[2].y if len(self.seg) > 2 else self.seg[-1].y) + self.body_rad * LEG_SIDE_FAC
-        self.legs = [_Leg(fx, fy, False, False), _Leg(fx, fy, False, True),
-                     _Leg(bx, by, True, False), _Leg(bx, by, True, True)]
+        # 腿数/挂点按品种：四足是默认；鳗鱼蜥两条腿、焦糖蜥六条腿
+        # （LizardGraphics.cs:371 `new LizardLimb[Caramel ? 6 : 4]`）
+        self.legs = []
+        for li, (pair_i, is_back) in enumerate(b.leg_pairs):
+            ps = self.seg[pair_i] if pair_i < len(self.seg) else self.seg[-1]
+            self.legs.append(_Leg(ps.x, ps.y + self.body_rad * LEG_SIDE_FAC,
+                                  is_back, bool(li % 2), pair_i))
         # 原版 limbsAimFor：蜥蜴行进目标点，腿朝它伸。宠物里取躯干前方一点。
         self.limbs_aim = (self.x, self.y)
 
@@ -1360,7 +1413,7 @@ class Lizard:
         self.vx += (want - self.vx) * WALK_TURN
 
     def _hop_vy(self) -> float:
-        """蹬地起跳初速：不会爬的品种（绿蜥）压根不往上蹿。"""
+        """蹬地起跳初速：不会爬的品种（绿蜥）压根不往上蹿。焦糖蜥跳跃也靠它。"""
         if not self.breed.can_climb:
             return 0.0
         return CLIMB_HOP * math.sqrt(max(0.4, self.breed.body_size_fac))
@@ -2392,15 +2445,15 @@ class Lizard:
         grip = [0, 0, 0, 0]
         num8 = 0.0
         for i, lg in enumerate(self.legs):
-            if lg.back and len(self.seg) > 2:
-                hx, hy = self.seg[2].x, self.seg[2].y
-                rx, ry = self.seg[0].x, self.seg[0].y
-            else:
-                hx, hy = self.seg[0].x, self.seg[0].y
-                rx, ry = ((self.seg[2].x, self.seg[2].y) if len(self.seg) > 2
-                          else (hx, hy))
+            pi = lg.pair if lg.pair < len(self.seg) else len(self.seg) - 1
+            hip = self.seg[pi]
+            hx, hy = hip.x, hip.y
+            # rotationChunk：前对看最后一节、后对看第一节（原版 legPair 对侧）
+            rj = 2 if pi <= 1 else 0
+            rj = rj if rj < len(self.seg) else len(self.seg) - 1
+            rx, ry = self.seg[rj].x, self.seg[rj].y
             ux, uy = _dirvec(hx - rx, hy - ry)
-            if lg.back:
+            if pi >= 2:
                 ux, uy = -ux, -uy          # 原版：connection.index == 2 时 a *= -1
             vx, vy = _dirvec(self.limbs_aim[0] - hx, self.limbs_aim[1] - hy)
             ax, ay = _dirvec(ux + (vx - ux) * 0.4, uy + (vy - uy) * 0.4)
@@ -2486,7 +2539,7 @@ class Lizard:
                                      and lg.y >= floor - 0.5))):
                 lg.grip += 1
                 if lg.grip >= LEG_GRIP_DELAY:
-                    grip[2 if lg.back else 0] += 1
+                    grip[2 if lg.pair >= 1 else 0] += 1
             else:
                 lg.grip = 0
         self.depth_in = clampf(num8, -1.0, 1.0)
@@ -2570,13 +2623,11 @@ def _leg_flip_num(i: int, hx: float, hy: float, rx: float, ry: float, lg) -> flo
 def _leg_flip(lz, lg) -> float:
     """一条腿的翻转目标（±1.0）：原版 LizardGraphics 的 flip Lerp 目标。"""
     i = lz.legs.index(lg)
-    if lg.back and len(lz.seg) > 2:
-        hx, hy = lz.seg[2].x, lz.seg[2].y
-        rx, ry = lz.seg[0].x, lz.seg[0].y
-    else:
-        hx, hy = lz.seg[0].x, lz.seg[0].y
-        rx, ry = ((lz.seg[2].x, lz.seg[2].y) if len(lz.seg) > 2
-                  else (hx, hy))
+    pi = lg.pair if lg.pair < len(lz.seg) else len(lz.seg) - 1
+    hx, hy = lz.seg[pi].x, lz.seg[pi].y
+    rj = 2 if pi <= 1 else 0
+    rj = rj if rj < len(lz.seg) else len(lz.seg) - 1
+    rx, ry = lz.seg[rj].x, lz.seg[rj].y
     return 1.0 if _leg_flip_num(i, hx, hy, rx, ry, lg) < 0.0 else -1.0
 
 

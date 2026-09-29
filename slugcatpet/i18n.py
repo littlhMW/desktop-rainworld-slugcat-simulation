@@ -48,6 +48,7 @@ _STR = {
     "tip_spear":   {"zh": "放矛", "en": "Place spear"},
     "tip_seedcob": {"zh": "放爆米花", "en": "Place popcorn plant"},
     "tip_karmaflower": {"zh": "放业力花", "en": "Place karma flower"},
+    "tip_slugpup": {"zh": "放幼崽", "en": "Place slugpup"},
     "tip_clear":   {"zh": "清除可交互实体", "en": "Clear placed items"},
 
     # —— settings：自然生成生物列表 ——
@@ -91,7 +92,7 @@ _STR = {
     "variant_survivor":   {"zh": "求生者", "en": "Survivor"},
     "variant_rivulet":    {"zh": "溪流", "en": "Rivulet"},
     "variant_watcher":    {"zh": "观察者", "en": "Watcher"},
-    "variant_gourmand":   {"zh": "美食家", "en": "Gourmand"},
+    "variant_gourmand":   {"zh": "饕餮", "en": "Gourmand"},
     "variant_inv":        {"zh": "怪猫", "en": "Inv"},
     "variant_hunter":     {"zh": "猎手", "en": "Hunter"},
     "variant_artificer":  {"zh": "工匠", "en": "Artificer"},

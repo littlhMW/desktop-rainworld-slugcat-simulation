@@ -706,6 +706,18 @@ PEARL_CARRY_TICKS   = 240       # 把玩珍珠多久才放下（放下后进 PEA
 # ── 圣徒舌头黏住生物：一路使劲拽，快速掉体力直到松舌 ──
 SAINT_LICK_HOLD_DRAIN = 1.0 / 200.0   # 每 tick；满体力约 200 tick（≈3.3 s）拉空
 
+# ── 矛大师：尾巴长针（原版 SpearMaster 用尾针；桌宠里给一个间隔，别无限刷）──
+TAIL_NEEDLE_CD = 150            # 长出下一根尾针的间隔 tick（≈3.75 s）
+
+# ── 饕餮：体重坠落攻击（原版 Gourmand 的砸击；把跳跃动能压在目标身上）──
+SLAM_TRIGGER_R = 220.0          # 威胁进入这个距离才考虑砸
+SLAM_CD_TICKS = 240             # 砸完的冷却
+SLAM_RISE_VY = -12.5            # 起跳冲量（y↑）
+SLAM_DROP_VY = 26.0             # 下落压在目标头上的额外速度
+SLAM_DAMAGE = 1.1               # 砸中的伤害（按体重折算与矛同量级）
+SLAM_STUN_BONUS = 40.0          # 砸中的眩晕附加
+SLAM_ARRIVE_R = 46.0            # 判定「压到目标」的水平距离
+
 # ── 兴趣目标抖动（同屏多只猫：别都盯上同一个最近目标）──
 INTEREST_JITTER   = 0.40        # 每只猫对每件目标的个体偏好系数 1±这个值（稳定，不逐 tick 乱跳）
 INTEREST_TAKEN_MUL = 1.55       # 已经有同伴把它当目标 → 打分乘这个数（让位）

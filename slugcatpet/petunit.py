@@ -4,7 +4,7 @@ import math
 import random
 
 from .behavior import tuning
-from .cats import get as get_cat_def
+from .cats import PUP_VARIANT, get as get_cat_def
 from .cats.personality import individualize
 from .cats.saint.tongue import Tongue
 from .control.vmath import dirvec
@@ -21,6 +21,18 @@ TONGUE_ROOT_W = 1.8
 TONGUE_TIP_W = 0.3
 
 ZEROG_ROOM_GRAVITY = 0.5     # 判为零重力的阈值
+
+# 幼崽 / 怪猫的个体性格振幅：比常规种族大得多（同种族的幼崽也不一个模子）
+WIDE_SIGMA = {
+    "activity": 0.42, "sociability": 0.45, "temper": 0.42, "bravery": 0.45,
+    "kindness": 0.45, "patience": 0.45, "risk_tolerance": 0.45,
+    "crawl_like": 0.35, "point_like": 0.40, "hurry": 0.40, "wake_like": 0.40,
+    "swim_zeal": 0.40, "tongue_curiosity": 0.40,
+}
+# 怪猫性格重揗：这些状态下才能换脑子（正在抓东西/在杆上就等下一次）
+PERS_CHURN_SAFE = ("IdleStand", "Idle", "Wander", "LookAround", "LieDown", "Sleep")
+PERS_CHURN_MIN = 1200        # 最短 30s 就重揗一次性格数据
+PERS_CHURN_SPAN = 2400       # 最长再多 60s
 
 
 def _pers_seed(pet_id: str, index: int, variant: str) -> int:
@@ -43,22 +55,27 @@ class PetUnit:
     """一只猫，独立身体/图形/行为。"""
 
     def __init__(self, window, index: int, pet_id: str, variant: str, init_state: dict,
-                 spawn_x: float | None = None):
+                 spawn_x: float | None = None, spawn_y: float | None = None):
         self.window = window
         self.index = index
         self.id = pet_id
         self.variant = variant
+        self.is_pup = (variant == PUP_VARIANT)   # 幼崽：不是常规蛞蛓猫
         self.cat = get_cat_def(variant)     # 种族定义
         # 个体性格：在原型的连续轴上做小幅偏移（原版 IndividualVariation）。
         # 种子只取自 (族, id, index) → 同一只猫每次启动都一样，可复现。
-        self.personality = individualize(self.cat.personality,
-                                         _pers_seed(pet_id, index, variant))
+        self.personality = individualize(
+            self.cat.personality, _pers_seed(pet_id, index, variant),
+            sigma=WIDE_SIGMA if variant == PUP_VARIANT else None)
         self._reincarnate_pending = False
         self._cramp_delay = -1                              # <0 才可再抽
         self._cold_rng = random.Random(0xC01D + index)      # 确定性
         self.controlled = False
         self.behavior = None
-        self._build(init_state, spawn_x)
+        # 怪猫：性格数据一段时间就重掷一次（逻辑混沌）
+        self._pers_churn_rng = random.Random(0x1A7C + index * 7919)
+        self._pers_churn_t = 0
+        self._build(init_state, spawn_x, spawn_y)
         self._attach_behavior()
 
     def __getattr__(self, name):
@@ -81,7 +98,8 @@ class PetUnit:
         s = self.body.chunk1.support_y
         return self.body.H if s is None else s
 
-    def _build(self, init_state: dict, spawn_x: float | None = None):
+    def _build(self, init_state: dict, spawn_x: float | None = None,
+               spawn_y: float | None = None):
         w = self.window
         self.layout_data = Layout.for_cat(self.cat)   # 部件摆位
         cx = spawn_x if spawn_x is not None else w._WL / 2.0
@@ -96,6 +114,8 @@ class PetUnit:
         self.body.diet = self.personality.diet
         self.body.cold = float(init_state.get("cold", 0.0))
         self.body.visual_floor_y = floor_y
+        if spawn_y is not None:                    # 按存档 / 生物生成的位置落地
+            self.body.teleport(cx, float(spawn_y))
         # 趴姿悬空几何补偿
         from .core import chunkphys as _cp
         _hips_half_w = w.atlas.source_size("base", "HipsA")[0] / 2.0
@@ -155,6 +175,31 @@ class PetUnit:
             self.behavior = None
             return
         self.behavior = BehaviorFSM(self)
+
+    # ── 怪猫：性格数据定时重揗 ───────────────
+    def _churn_tick(self):
+        """怪猫的「逻辑混沌」：性格数据隔一段时间整份重揗。
+
+        只在安静状态换脑子（抓着东西 / 在杆上 / 正在追捕时不动），换完仍然是
+        同一只猫：身体、位置、体征、手里拿的东西都不变，只重建行为层。
+        """
+        if not self.cat.tuning.get("pers_churn"):
+            return
+        if self._pers_churn_t > 0:
+            self._pers_churn_t -= 1
+            return
+        beh = self.behavior
+        if (beh is None or beh.state not in PERS_CHURN_SAFE
+                or getattr(beh.grab, "active", False)):
+            self._pers_churn_t = 40          # 忙着呢，稍后再试
+            return
+        self._pers_churn_t = self._pers_churn_rng.randint(PERS_CHURN_MIN,
+                                                          PERS_CHURN_MIN + PERS_CHURN_SPAN)
+        self.personality = individualize(self.cat.personality,
+                                         self._pers_churn_rng.randrange(1 << 30),
+                                         sigma=WIDE_SIGMA)
+        self.body.diet = self.personality.diet
+        self._attach_behavior()
 
     def respawn(self, preserve=False):
         """重置本猫（preserve=True 保留体征）。"""
@@ -228,6 +273,7 @@ class PetUnit:
                               flat_anchor=g.gills_flat)
         g.update_tongue_rope()
         self._tick_tail()
+        self._churn_tick()
 
     def _cold_update(self, cycle_prog):
         """本猫每 tick 寒冷结算。"""

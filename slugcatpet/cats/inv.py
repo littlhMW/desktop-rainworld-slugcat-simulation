@@ -32,14 +32,15 @@ INV_DEF = CatDef(
     caps=CatCaps(tongue=False, ascension=False),
     stats=replace(DEFAULT_STATS, runspeed_fac=1.2, weight_fac=1.12, pole_fac=1.25,
                   max_food=12, food_hibernate=12, throwing_skill=2),
-    # 怪猫：食条最长、什么都吃，性格偏怪
+    # 怪猫：食条最长、什么都吃，逻辑混沌
     personality=replace(DEFAULT_PERSONALITY, activity=0.6, stamina=1.2,
                         sociability=0.4, temper=0.7, crawl_like=0.35,
                         point_like=0.7, bravery=0.75, kindness=0.35,
                         play_style="hop", diet=DIET_GOURMAND,
                         hurry=0.6, spear_like=1.1, pearl_like=1.2,
                         risk_tolerance=0.7, patience=0.35),
-    tuning={},
+    # 性格数据一段时间就整份重揗一次（PetUnit._churn_tick）
+    tuning={"pers_churn": True},
     fsm_mount=None,
-    wip=True,      # 外观差异待后续（数值/食性/性格已按反编译实装）
+    wip=False,
 )

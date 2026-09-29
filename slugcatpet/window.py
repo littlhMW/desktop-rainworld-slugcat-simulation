@@ -28,6 +28,11 @@ MAX_PETS = 10
 # ── 自然生成（设置面板里的「生物列表」）──
 NATURAL_SPAWN_TICKS = 900     # 每约 22s 补一只（勾选哪几种就生成哪几种，不限数量）
 SPAWN_GROUND_KINDS = frozenset(("seedcob", "karmaflower"))   # 只长在地面上的
+# 暂时隐藏的生成入口：代码保留，但不出现在「生物生成」列表与图标盘里。
+HIDDEN_PLACE_KINDS = frozenset(("scavenger",))
+# 幼崽：不是常规蛞蛓猫（不占蛞蛓猫名额、不进选皮菜单），但仍然是一只会自己行动的实体
+PUP_VARIANT = "slugpup"
+PUP_MAX = 4                   # 场上幼崽上限（都是完整跟踪仿真，别无限长）
 # 自然生成时的落点高度带（占窗口高的比例，y 从上往下算）：
 # 会飞的在中层空域，走地的贴着地面，果实 / 灯 / 黏菌可以挂在半空。
 SPAWN_Y_BAND = {
@@ -42,6 +47,7 @@ SPAWN_Y_BAND = {
     "pearl": (0.55, 1.00),
     "lizard": (0.60, 1.00),
     "scavenger": (0.60, 1.00),
+    "slugpup": (0.60, 1.00),
 }
 SPAWN_Y_BAND_DEFAULT = (0.55, 1.00)
 
@@ -72,7 +78,7 @@ def spawnable_kinds() -> tuple:
                    for p in params[2:]):
             continue
         out.append(name[len("place_"):])
-    return tuple(sorted(out))
+    return tuple(k for k in sorted(out) if k not in HIDDEN_PLACE_KINDS)
 
 STONE_FAST_REDRAW = 3.0    # 速度超此整窗重绘
 
@@ -366,6 +372,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._all_dead_t = 0        # 全员死亡守灵计时
         self._reincarnate_cleanup_pending = False   # 转生：全体复活那一瞬才清场
         self._build_pets()
+        self._restore_world()
 
         self._clock = QElapsedTimer()
         self._clock.start()
@@ -401,15 +408,60 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                           "temper": state.get("temper", 0.0),
                           "food": state.get("food", tuning.FOOD_INIT),
                           "karma": state.get("karma", tuning.KARMA_INIT),
-                          "cold": state.get("cold", 0.0)}
+                          "cold": state.get("cold", 0.0),
+                          "food_quarter": state.get("food_quarter", 0)}
             pet_id = state.get("id") or f"pet-{i}"
             variant = state.get("variant", "saint")
-            spawn_x = self._WL * (i + 1) / (n + 1)   # n=1 时退化为 WL/2
-            pet = PetUnit(self, i, pet_id, variant, init_state, spawn_x=spawn_x)
+            spawn_x = state.get("x")
+            spawn_y = state.get("y")
+            if spawn_x is None:                     # 老存档：按序均匀排开
+                spawn_x = self._WL * (i + 1) / (n + 1)
+            pet = PetUnit(self, i, pet_id, variant, init_state,
+                          spawn_x=spawn_x, spawn_y=spawn_y)
             if state.get("dead") and pet.behavior is not None:
                 pet.behavior.enter_dead()
+            if state.get("face") is not None:
+                pet.body.facing = int(state["face"])
             self.pets.append(pet)
             self._give_spawn_gear(pet)
+        self._build_pups()
+
+    def _build_pups(self):
+        """存档里的幼崽（存在 params['pups']，不占常规蛞蝓猫名额）。"""
+        saved = self._params.get("pups")
+        if not isinstance(saved, list) or not saved:
+            return
+        from .petunit import PetUnit as _PU
+        for i, state in enumerate(saved[:PUP_MAX]):
+            idx = -1 - i
+            init_state = {"energy": state.get("energy", 1.0),
+                          "temper": state.get("temper", 0.0),
+                          "food": state.get("food", tuning.FOOD_INIT),
+                          "karma": state.get("karma", tuning.KARMA_INIT),
+                          "cold": state.get("cold", 0.0),
+                          "food_quarter": state.get("food_quarter", 0)}
+            pet = _PU(self, idx, state.get("id") or f"pup-{i}", PUP_VARIANT,
+                      init_state, spawn_x=state.get("x", self._WL * 0.5),
+                      spawn_y=state.get("y"))
+            self.pets.append(pet)
+
+    def cat_slots_used(self) -> int:
+        """常规蛞蝓猫名额占用（幼崽不算）。"""
+        return sum(1 for p in self.pets if not getattr(p, "is_pup", False))
+
+    def pup_count(self) -> int:
+        return sum(1 for p in self.pets if getattr(p, "is_pup", False))
+
+    def _restore_world(self):
+        """按存档把环境实体（物品/生物/杆/灯）建回来。"""
+        data = self._params.get("world")
+        if not data:
+            return
+        from .persist import restore
+        try:
+            restore(self, data)
+        except Exception as e:
+            print("[slugcatpet] world restore failed: %r" % (e,), file=sys.stderr)
 
     # ── 单猫兼容别名 ──
     @property
@@ -942,7 +994,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if not pets:
             self._all_dead_t = 0
             return
-        if all(p.behavior.is_dead() for p in pets):
+        # 幼崽不参与「全员死亡」判定（它们不能被救也不会被计入门槛），
+        # 但全员复活时它们同样跟着一起复活。
+        gating = [p for p in pets if not getattr(p, "is_pup", False)] or pets
+        if all(p.behavior.is_dead() for p in gating):
             if all(p.behavior.is_reincarnating() for p in pets):
                 return                      # 倒计时中：不冒白点，也不清场
             self._all_dead_t += 1
@@ -1212,7 +1267,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
     # ── 增删猫 ──
     def add_pet(self, variant="saint"):
         """新增一只猫，满员返回 None。"""
-        if len(self.pets) >= MAX_PETS:
+        if self.cat_slots_used() >= MAX_PETS:
             return None
         used_idx = {p.index for p in self.pets}
         used_id = {p.id for p in self.pets}

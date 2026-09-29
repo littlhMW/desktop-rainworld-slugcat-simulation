@@ -193,7 +193,9 @@ def draw_lizard(p, atlas, lz, ts: float) -> None:
 
     _draw_body(p, lz, spine, rads)
     _draw_spikes(p, atlas, lz, spine, rads)
-    for i in (0, 2, 1, 3):                      # 远侧前后腿 → 近侧前后腿
+    # 远侧腿（偶数号）先画，再画近侧腿（奇数号）；四足时即 (0,2,1,3)
+    n_leg = len(lz.legs)
+    for i in list(range(0, n_leg, 2)) + list(range(1, n_leg, 2)):
         _draw_leg(p, atlas, lz, i, ts)
     _draw_head(p, atlas, lz, hx, hy, s0x, s0y, rot, jaw, head_color(lz, ts), ts)
     p.restore()
@@ -247,7 +249,8 @@ def _draw_body(p, lz, spine, rads):
 
 def _leg_anchor(lz, lg, ts):
     """腿根 = 所挂躯干节中心（游戏里 limb 挂在 bodyChunk 上）。"""
-    seg = lz.seg[0] if not lg.back else (lz.seg[2] if len(lz.seg) > 2 else lz.seg[-1])
+    pi = lg.pair if lg.pair < len(lz.seg) else len(lz.seg) - 1
+    seg = lz.seg[pi]
     return lerp(seg.lx, seg.x, ts), lerp(seg.ly, seg.y, ts)
 
 
@@ -315,7 +318,7 @@ def _draw_leg(p, atlas, lz, i, ts):
     fx = lerp(lg.lx, lg.x, ts)
     fy = lerp(lg.ly, lg.y, ts)
     hx, hy = _leg_anchor(lz, lg, ts)
-    if not lg.back and len(lz.seg) > 1:              # 游戏：前腿髋 20% 拉向第 1 节
+    if lg.pair == 0 and len(lz.seg) > 1:             # 游戏：前腿髋 20% 拉向第 1 节
         s1 = lz.seg[1]
         hx = lerp(hx, lerp(s1.lx, s1.x, ts), 0.2)
         hy = lerp(hy, lerp(s1.ly, s1.y, ts), 0.2)

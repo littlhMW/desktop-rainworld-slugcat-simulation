@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Gourmand（美食家）种族定义：食谱极广的杂食猫。
+"""Gourmand（饕餮）种族定义：食谱极广的杂食猫。
 
 数值反编译出处：
   SlugcatStats.cs:115-166  SlugcatFoodMeter → (11, 7)
@@ -15,6 +15,12 @@ from dataclasses import replace
 from .base import CatCaps, CatDef
 from .personality import DEFAULT_PERSONALITY, DIET_GOURMAND
 from .stats import DEFAULT_STATS
+
+def _fsm_mount(fsm):
+    """按 tuning.slam 注册饕餮的独占状态（体重坠落攻击）。"""
+    from .gourmand_slam import mount_slam
+    mount_slam(fsm)
+
 
 GOURMAND_DEF = CatDef(
     key="gourmand",
@@ -33,14 +39,15 @@ GOURMAND_DEF = CatDef(
     caps=CatCaps(tongue=False, ascension=False),
     stats=replace(DEFAULT_STATS, weight_fac=1.35, pole_fac=0.8,
                   max_food=11, food_hibernate=7, throwing_skill=2),
-    # 美食家：慢吞吞、能吃、爱做东西给你看
+    # 饕餮：极其善良、一般勇敢；不喜欢用矛，宁可跳起来用体重砸下去
     personality=replace(DEFAULT_PERSONALITY, activity=0.45, stamina=1.15,
-                        sociability=0.75, temper=0.4, crawl_like=0.45,
-                        point_like=0.35, bravery=0.6, kindness=0.7,
+                        sociability=0.8, temper=0.35, crawl_like=0.45,
+                        point_like=0.35, bravery=0.5, kindness=0.95,
                         play_style="sit", diet=DIET_GOURMAND,
-                        hurry=0.3, spear_like=0.9, pearl_like=0.9,
+                        hurry=0.3, spear_like=0.0, pearl_like=0.9,
                         risk_tolerance=0.45, patience=0.9),
-    tuning={},
-    fsm_mount=None,
-    wip=True,      # 外观差异待后续（数值/食性/性格已按反编译实装）
+    # 体重坠落攻击（原版饕餮的独占能力）
+    tuning={"slam": True},
+    fsm_mount=_fsm_mount,
+    wip=False,
 )

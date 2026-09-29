@@ -1690,7 +1690,7 @@ class ItemInteractionMixin:
         seed = self._lizard_seed
         got = getattr(self, "_lizard_preview", None)
         if got is None or got[0] != seed:
-            lz = Lizard(0.0, 0.0, BREEDS[seed % len(BREEDS)], seed=seed)
+            lz = Lizard(0.0, 0.0, pick_breed(seed), seed=seed)
             lz.state = ItemState.MOUSE
             got = (seed, lz)
             self._lizard_preview = got
@@ -1731,6 +1731,40 @@ class ItemInteractionMixin:
         p.setOpacity(0.5)
         draw_lizard(p, self.atlas, lz, 1.0)
         p.restore()
+
+    # ── 幼崽（Slugpup）：不是常规蛞蝓猫，从「生物生成」里放 ──
+    def can_place_slugpup(self) -> bool:
+        from ..window import PUP_MAX
+        return sum(1 for p in self.pets if getattr(p, "is_pup", False)) < PUP_MAX
+
+    def place_slugpup(self, lx, ly):
+        """放一只幼崽：会自己行动，但不占蛞蝓猫名额、不参与救援、也不被救援。"""
+        from ..petunit import PetUnit
+        from ..window import PUP_VARIANT
+        if not self.can_place_slugpup():
+            return None
+        used = {p.index for p in self.pets}
+        k = 0
+        while k in used:
+            k += 1
+        init_state = {"energy": 1.0, "temper": 0.0, "food": tuning.FOOD_INIT,
+                      "karma": tuning.KARMA_INIT, "cold": 0.0}
+        pet = PetUnit(self, k, f"pup-{k}", PUP_VARIANT, init_state,
+                      spawn_x=lx, spawn_y=ly)
+        self.pets.append(pet)
+        self._prev_dirty = None
+        self._after_pets_changed()
+        self._exit_place_mode()
+        self.update()
+        return pet
+
+    def enter_place_slugpup_mode(self):
+        if not self.can_place_slugpup():
+            return False
+        self._place_mode = True
+        self._place_kind = "slugpup"
+        self._begin_place_capture()
+        return True
 
     def enter_place_fruit_mode(self):
         if not self.can_place_fruit():

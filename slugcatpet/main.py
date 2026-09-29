@@ -28,7 +28,7 @@ HK_ABORT = 1
 HK_QUIT = 2
 HK_HUD = 3
 _APP_PARAMS = user_dir() / "app.json"
-SCHEMA_VERSION = 2   # pets[] 分猫存档
+SCHEMA_VERSION = 3   # pets[] 分猫存档 + pups[] 幼崽 + world 环境实体
 AUTOSAVE_MS = 60_000
 
 
@@ -44,7 +44,7 @@ def _tray_icon() -> QIcon:
 
 
 def _migrate_params(params: dict) -> dict:
-    """旧 schema 迁移为 v2 pets[] 格式。"""
+    """旧 schema 迁移为当前 pets[]/pups[]/world 格式。"""
     if params.get("schema_version") == SCHEMA_VERSION and isinstance(params.get("pets"), list):
         return params
     from .behavior import tuning
@@ -61,6 +61,8 @@ def _migrate_params(params: dict) -> dict:
             "dead": params.pop("dead", False),
         }
         params["pets"] = [pet_state]
+    if not isinstance(params.get("pups"), list):
+        params["pups"] = []
     params["schema_version"] = SCHEMA_VERSION
     return params
 
@@ -142,18 +144,27 @@ def main():
     tab.show()
 
     def _write_state():
-        """序列化状态并写盘。"""
+        """序列化状态并写盘：蛞蝓猫（位置/体征/受伤）+ 幼崽 + 全部环境实体。"""
+        from .persist import snapshot
         params["tab_y"] = tab._y
         params["tab_expanded"] = tab.expanded
         params["hud_x"] = hud.x()
         params["hud_y"] = hud.y()
-        params["pets"] = [
-            {"id": p.id, "variant": p.variant,
-             "energy": p.body.energy, "temper": p.body.temper,
-             "food": p.body.food, "karma": p.body.karma, "cold": p.body.cold,
-             "dead": p.behavior is not None and p.behavior.is_truly_dead()}
-            for p in pet.pets
-        ]
+
+        def _cat(p):
+            b = p.body
+            return {"id": p.id, "variant": p.variant,
+                    "energy": b.energy, "temper": b.temper,
+                    "food": b.food, "food_quarter": getattr(b, "food_quarter", 0),
+                    "karma": b.karma, "cold": b.cold,
+                    "x": round(float(b.chunk1.x), 2),
+                    "y": round(float(b.chunk1.y), 2),
+                    "face": int(getattr(b, "facing", 1)),
+                    "dead": p.behavior is not None and p.behavior.is_truly_dead()}
+
+        params["pets"] = [_cat(p) for p in pet.pets if not getattr(p, "is_pup", False)]
+        params["pups"] = [_cat(p) for p in pet.pets if getattr(p, "is_pup", False)]
+        params["world"] = snapshot(pet)
         params["schema_version"] = SCHEMA_VERSION
         _save_params(params)
 

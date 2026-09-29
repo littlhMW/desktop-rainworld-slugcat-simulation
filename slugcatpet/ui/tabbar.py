@@ -693,9 +693,9 @@ class TabBar(QWidget):
                        ("lizard", t("tip_lizard"), self._place_lizard),
                        ("squidcada", t("tip_squidcada"), self._place_squidcada),
                        ("needleworm", t("tip_needleworm"), self._place_needleworm),
-                       ("scavenger", t("tip_scavenger"), self._place_scavenger),
                        ("pearl", t("tip_pearl"), self._place_pearl),
                        ("spear", t("tip_spear"), self._place_spear),
+                       ("slugpup", t("tip_slugpup"), self._place_slugpup),
                        ("seedcob", t("tip_seedcob"), self._place_seedcob),
                        ("karmaflower", t("tip_karmaflower"), self._place_karmaflower),
                        ("erase", t("tip_erase"), self._erase_mode),
@@ -909,6 +909,9 @@ class TabBar(QWidget):
     def _place_scavenger(self):
         self.pet.enter_place_scavenger_mode()
         self._collapse()
+
+    def _place_slugpup(self):
+        self.pet.enter_place_slugpup_mode()
 
     def _place_seedcob(self):
         self.pet.enter_place_seedcob_mode()

@@ -5,14 +5,15 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushB
                                QGridLayout)
 from PySide6.QtCore import Qt
 
-from ..cats import REGISTRY
+from ..cats import REGISTRY, pickable_variants
 from ..i18n import t
 from .._paths import resource_dir
 from ..window import MAX_PETS, spawnable_kinds
 from .catmenu import variant_label, pet_label
 from .dialogs import ConfirmDialog, PickDialog
 
-_VARIANTS = tuple(REGISTRY)
+# 幼崽不在「添加蛞蛓猫」里（它走「生物生成」那一栏）
+_VARIANTS = pickable_variants()
 
 _CHECK = (resource_dir() / "icons" / "check.svg").as_posix()   # 缺 QtSvg 时退化为高亮块
 
@@ -103,7 +104,8 @@ class SettingsWindow(QWidget):
 
     def _section_cats(self, v):
         v.addWidget(self._header(t("settings_cats_section")))
-        pets = list(self._window.pets)
+        # 幼崽不是常规蛞蛓猫：不列在蛞蛓猫名单里（它们从生物生成里来）
+        pets = [p for p in self._window.pets if not getattr(p, "is_pup", False)]
         can_remove = len(pets) > 1
         for pet in pets:
             row = QHBoxLayout()
@@ -119,7 +121,7 @@ class SettingsWindow(QWidget):
             row.addWidget(rm)
             v.addLayout(row)
         add = QPushButton(t("settings_add"))
-        full = len(pets) >= MAX_PETS
+        full = self._window.cat_slots_used() >= MAX_PETS
         add.setEnabled(not full)
         if full:
             add.setToolTip(t("settings_max_pets"))

@@ -513,6 +513,7 @@ class BehaviorFSM:
         self._air_pole_target = None    # 空中想抓住的那根杆（带方向跳杆时记下）
         self._itemplay_cd = 0
         self._back_spear_cd = 0
+        self._tail_needle_cd = 0      # 矛大师：尾巴长针的间隔
         self._pearl_cd = 0            # 喜欢珍珠的猫：两颗珍珠之间的间隔
         self._haul_cd = 0             # 清场（拖走无用尸体）的冷却
         self._clear_target = None     # 正在拖的那具无用尸体
@@ -1336,6 +1337,7 @@ class BehaviorFSM:
 
     def _act_sleeproll_pre(self, ctx):
         self._back_spear_tick()
+        self._tail_needle_tick()
         self._sleep_urge_tick()
     def _act_sleeproll_gate(self, ctx):
         return (not self._hibernating and not self.grab.active and not self._exhausted
@@ -2191,11 +2193,15 @@ class BehaviorFSM:
         已经在救的不抢（复用 _revive_claimed_by 的认领规则）。
         """
         b = self.body
+        if getattr(self.win, "is_pup", False):
+            return None                     # 幼崽：不救人（也不会被救）
         my_gap = abs(th.x - b.chunk1.x)
         c1 = b.chunk1
         best, bd = None, tuning.HELPFEED_SEEK_R
         for p in self._peers():
             ob = p.body
+            if getattr(p, "is_pup", False):
+                continue                    # 幼崽不算救援目标
             if not self._peer_needs_help(ob) or self._revive_claimed_by(p) is not None:
                 continue
             d = math.hypot(ob.chunk1.x - c1.x, ob.chunk1.y - c1.y)
@@ -4878,10 +4884,14 @@ class BehaviorFSM:
 
     def _dead_peer_near(self):
         """附近倒地的同伴（真死 / 晕着的都算）；已经有人在救的不抢。"""
+        if getattr(self.win, "is_pup", False):
+            return None                     # 幼崽：不救人（也不会被救）
         best, bd = None, tuning.HELPFEED_SEEK_R
         c1 = self.body.chunk1
         for p in self._peers():
             ob = p.body
+            if getattr(p, "is_pup", False):
+                continue                    # 幼崽不算救援目标
             if not self._peer_needs_help(ob) or self._revive_claimed_by(p) is not None:
                 continue
             d = math.hypot(ob.chunk1.x - c1.x, ob.chunk1.y - c1.y)
@@ -5840,6 +5850,8 @@ class BehaviorFSM:
     def _social_stroke(self, tgt, ob, horizontal):
         """抚摸（横线）/ 拍拍（竖线）：手贴着对象来回画 2~5 次。"""
         g = self._social_gesture
+        if not isinstance(g, social.StrokeGesture):
+            g = None
         if g is None or g.done:
             n = self.rng.randint(tuning.PET_REPS_MIN, tuning.PET_REPS_MAX)
             self._social_gesture = g = (
@@ -5865,6 +5877,8 @@ class BehaviorFSM:
             self._end_social()
             return
         g = self._social_gesture
+        if not isinstance(g, social.StrokeGesture):
+            g = None
         if g is None:
             reps = self.rng.randint(tuning.WAKE_SHAKE_REPS_MIN,
                                     tuning.WAKE_SHAKE_REPS_MAX)
@@ -5891,8 +5905,11 @@ class BehaviorFSM:
         if not ob.dead:
             # 只是被打晕：按不活，改成拍拍它（晕的自己会醒）
             self._social_kind = "pat"
+            self._social_gesture = None     # 手势槽按动作类型复用：换动作必须换手势
             return
         g = self._social_gesture
+        if not isinstance(g, social.PressGesture):
+            g = None
         if g is None:
             reps = self.rng.randint(tuning.REVIVE_PRESS_MIN, tuning.REVIVE_PRESS_MAX)
             self._social_gesture = g = social.PressGesture(
@@ -7052,6 +7069,43 @@ class BehaviorFSM:
         self.gfx.hand_aim["l"] = None
         self.gfx.hand_aim["r"] = None
         self._catch_cd = tuning.CATCH_RETRY
+
+    def _tail_needle_tick(self):
+        """矛大师：尾巴自己长针（原版 SpearMaster 的独占能力）。
+
+        针从尾梢长出来直接入手；手里/背上已有矛、正抓着东西、睡着、游泳、
+        无重力时不长。长针有间隔，避免无限刷矛。
+        """
+        if not self.win.cat.tuning.get("tail_needle"):
+            return
+        b = self.body
+        if b.carried_spear is not None or b.back_spear is not None:
+            return
+        if self._tail_needle_cd > 0:
+            self._tail_needle_cd -= 1
+            return
+        if self.grab.active or self._hibernating or b.swimming or self._zerog():
+            return
+        if self.state not in ("IdleStand", "PostThrowStand", "PostThrowWander"):
+            return
+        from ..world.spear import Spear
+        tx, ty = b.chunk1.x, b.chunk1.y
+        try:
+            segs = self.win.tail.segs
+            if segs:
+                tx, ty = segs[-1].x, segs[-1].y
+        except Exception:
+            pass
+        win = self.win.window
+        sp = Spear(tx, ty, seed=win._spear_seed, angle_deg=180.0)
+        win._spear_seed += 1
+        win.spears.append(sp)
+        win.world_version += 1
+        if not b.grab_spear(sp):
+            sp.state = "free"
+            return
+        self._tail_needle_cd = tuning.TAIL_NEEDLE_CD
+        self.gfx.blink = 12
 
     def _back_spear_tick(self):
         """原版 Player.spearOnBack：能背矛的猫闲下来会把脚边多余的矛背到背上。"""

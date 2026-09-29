@@ -33,14 +33,15 @@ SPEARMASTER_DEF = CatDef(
     caps=CatCaps(tongue=False, ascension=False),
     stats=replace(DEFAULT_STATS, runspeed_fac=1.2, weight_fac=0.85, pole_fac=1.25,
                   max_food=10, food_hibernate=5, throwing_skill=2),
-    # 矛大师：快、轻、只信矛；没嘴所以从不吃地上的东西
-    personality=replace(DEFAULT_PERSONALITY, activity=0.8, stamina=1.1,
-                        sociability=0.3, temper=0.65, crawl_like=0.3,
-                        point_like=0.7, bravery=0.8, kindness=0.3,
-                        play_style="hop", diet=DIET_SPECIAL,
-                        hurry=0.8, spear_like=1.6, pearl_like=0.7,
-                        risk_tolerance=0.8, patience=0.3),
-    tuning={},
+    # 矛大师：性格很好、极其耐心、极其勇敢善良；没嘴所以从不吃地上的东西
+    personality=replace(DEFAULT_PERSONALITY, activity=0.7, stamina=1.1,
+                        sociability=0.7, temper=0.35, crawl_like=0.3,
+                        point_like=0.25, bravery=0.95, kindness=0.95,
+                        play_style="sit", diet=DIET_SPECIAL,
+                        hurry=0.35, spear_like=1.6, pearl_like=0.7,
+                        risk_tolerance=0.55, patience=0.95),
+    # 尾巴自己长针（原版 SpearMaster 的独占能力：新鲜的针从尾巴长出来）
+    tuning={"tail_needle": True},
     fsm_mount=None,
-    wip=True,      # 外观差异待后续（数值/食性/性格已按反编译实装）
+    wip=False,
 )

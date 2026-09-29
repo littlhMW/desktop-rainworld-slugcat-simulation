@@ -31,13 +31,13 @@ WATCHER_DEF = CatDef(
     caps=CatCaps(tongue=False, ascension=False),
     stats=replace(DEFAULT_STATS, max_food=7, food_hibernate=4,
                   throwing_skill=1, lungs_fac=0.8),
-    # 观察者：安静、爱看、耐心好
-    personality=replace(DEFAULT_PERSONALITY, activity=0.4, stamina=1.0,
-                        sociability=0.6, temper=0.35, crawl_like=0.5,
-                        point_like=0.8, bravery=0.45, kindness=0.65,
-                        play_style="sit", hurry=0.25,
+    # 观察者：孤僻（不喜欢任何互动、喜欢远离其他猫、也不喜欢救人），一般勇敢
+    personality=replace(DEFAULT_PERSONALITY, activity=0.35, stamina=1.0,
+                        sociability=0.05, temper=0.35, crawl_like=0.5,
+                        point_like=0.05, bravery=0.5, kindness=0.05,
+                        play_style="sit", hurry=0.25, wake_like=0.05,
                         risk_tolerance=0.35, patience=0.85),
     tuning={},
     fsm_mount=None,
-    wip=True,      # 外观差异待后续（数值/食性/性格已按反编译实装）
+    wip=False,
 )

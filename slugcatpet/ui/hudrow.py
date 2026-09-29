@@ -52,14 +52,17 @@ class _Pips(QWidget):
         super().__init__()
         self._total = int(total)
         self._filled = 0
+        self._quarter = 0        # 下一格已吃到的 1/4 数（0..3）
         gap = 4
         self.setFixedSize(self._total * PIP + (self._total - 1) * gap, PIP)
         self._gap = gap
 
-    def set_filled(self, n):
+    def set_filled(self, n, quarter=0):
         n = max(0, min(self._total, int(n)))
-        if n != self._filled:
+        q = max(0, min(3, int(quarter)))
+        if n != self._filled or q != self._quarter:
             self._filled = n
+            self._quarter = q
             self.update()
 
     def paintEvent(self, _ev):
@@ -68,8 +71,16 @@ class _Pips(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         x = 0
         for i in range(self._total):
-            p.setBrush(_BAR_FG if i < self._filled else _BAR_BG)
+            p.setBrush(_BAR_BG)
             p.drawRoundedRect(x, 0, PIP, PIP, 3, 3)
+            if i < self._filled:
+                p.setBrush(_BAR_FG)
+                p.drawRoundedRect(x, 0, PIP, PIP, 3, 3)
+            elif i == self._filled and self._quarter:
+                # 原版 Player.HUD 的 1/4 格：本格只填左下角那 1/4 小段
+                p.setBrush(_BAR_FG)
+                p.drawRoundedRect(x, 0, max(2, int(PIP * self._quarter / 4.0)),
+                                  PIP, 3, 3)
             x += PIP + self._gap
         p.end()
 
@@ -162,7 +173,8 @@ class PetRow(QFrame):
         self.karma_val.setText(f"{k + 1}/{kmax + 1}")
 
         self.stam_bar.set_ratio(max(0.0, min(1.0, float(body.energy))))
-        self.food_pips.set_filled(max(0, min(body.food_max, int(body.food))))
+        self.food_pips.set_filled(max(0, min(body.food_max, int(body.food))),
+                                  getattr(body, "food_quarter", 0))
         self.temper_bar.set_ratio((max(-1.0, min(1.0, float(body.temper))) + 1.0) * 0.5)
 
         cold = float(getattr(body, "cold", 0.0))
