@@ -1854,6 +1854,9 @@ class SlugcatBody:
         side = self._take_hand("spear", side)
         if side is None:
             return False
+        # 带线针被二次捡起（已经离过手）：尾巴上那条线当场断掉
+        if getattr(spear, "needle_world", False):
+            spear.needle_disconnect(cut=True)
         self.carried_spear = spear
         self.hand_of["spear"] = side
         spear.state = ItemState.CARRIED

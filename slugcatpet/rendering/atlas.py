@@ -84,6 +84,11 @@ class Atlas:
             self._cache.popitem(last=False)
         return pm
 
+    def replace_image(self, image: QImage) -> None:
+        """把底层贴图换成预处理过的版本（帧缓存随之作废）。"""
+        self.image = image
+        self._cache.clear()
+
     def source_size(self, frame_name: str) -> tuple[int, int]:
         """原始画布尺寸 = 注册坐标系大小。"""
         m = self._meta[self._key(frame_name)]

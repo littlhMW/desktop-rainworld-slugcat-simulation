@@ -1279,6 +1279,30 @@ class NeedleWorm:
         return True
 
     # ── 查询（接口兼容）──
+    def hit_chunks(self):
+        """碰撞体：原版是 bodyChunks（半径取 GraphSegmentRad 的 chunk 半径）+ 獠牙。
+
+        宠物里链的前 ``snout_n`` 段是「吻」——只用于作画，``rad`` 记的是描边半径
+        1.0；直接拿去判定，整张脸就成了一条 1px 的细线，矛从正面扎过来会穿过去，
+        看起来就是「成年面条蝇打不中」。这里把吻段按第 0 个 chunk 的半径往吻尖
+        线性收细（照原版主 chunk 的粗细），并补上伸出的獠牙尖。
+        """
+        segs = self.seg
+        if self.age == AGE_EGG or not segs:
+            return [(s.x, s.y, s.rad) for s in segs]
+        fat = lerp(0.75, 1.35, self.fatness)
+        head = _chunk_rads(self.age)[0] * fat
+        sn = max(1, self.snout_n)
+        out = []
+        for i, s in enumerate(segs):
+            r = lerp(head, head * 0.5, i / float(sn)) if i < sn else s.rad
+            out.append((s.x, s.y, r))
+        if self.age == AGE_BIG and self.fang_out > 0.0:
+            tip = self.stab_reach()
+            if tip is not None:
+                out.append((tip[0], tip[1], 2.5))
+        return out
+
     def stab_reach(self):
         """獠牙尖位置（BigNeedleWorm.cs:37 FangPos）。"""
         if self.age != AGE_BIG or len(self.seg) <= self.snout_n + 1:

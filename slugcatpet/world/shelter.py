@@ -19,7 +19,8 @@
 桌宠适配（都标了来源）：
 * 原版 corridor 高 1 tile，猫是匍匐钻过去的；桌宠的猫不匍匐，所以走廊放宽到
   ``TUNNEL_H`` tile（[APPROXIMATION]），并把它放在地面高度上，猫走着就能进门。
-* 底边永远贴地（``ground_y``）—— 原版 chamber 的地板就是房间最下面那排 Solid。
+* 任意矩形：底边 ``y + h`` 就是这间庇护所自己的地板（不再强制贴桌面地面），
+  像资源管理器框选那样拉出来的矩形直接就是庇护所。
 """
 from __future__ import annotations
 
@@ -201,21 +202,21 @@ class DoorPhases:
 
 
 class Shelter:
-    """地面上一间庇护所：``(x, y, w, h)`` 就是真矩形，底边贴 ``ground_y``。"""
+    """一间庇护所：``(x, y, w, h)`` 就是真矩形，底边 ``y + h`` 是它自己的地板。"""
 
     MIN_W = 60.0
     MAX_W = 760.0
     MIN_H = 44.0
     MAX_H = 340.0
 
-    def __init__(self, x, y, w, h, ground_y, WL, seed=0, door_ticks=None,
+    def __init__(self, x, y, w, h, ground_y=None, WL=0.0, seed=0, door_ticks=None,
                  template=None, door_side=None):
-        self.ground_y = float(ground_y)
         self.w = _clampf(float(w), self.MIN_W, self.MAX_W)
-        # 真矩形：高度就是拖出来的高度（只在极端值上兜底），不再被 MIN/MAX 架空
-        self.h = _clampf(self.ground_y - float(y), self.MIN_H, self.MAX_H)
-        self.y = self.ground_y - self.h
+        self.h = _clampf(float(h), self.MIN_H, self.MAX_H)
         self.x = float(x)
+        self.y = float(y)
+        # 任意矩形：地板就是自己的底边，跟桌面地面无关（ground_y 参数只为旧调用兼容）
+        self.ground_y = self.y + self.h
         self.WL = float(WL)
         self.seed = int(seed)
         self.template = template if isinstance(template, ShelterTemplate) \
@@ -290,18 +291,14 @@ class Shelter:
         # + dir * 60 落在走廊中间，closeTiles 也铺在走廊上（entrance + dir*(n+2)）。
         # 这里 dir_x 记的是「朝屋外」的方向（门在哪边），dir 取它的相反数。
         sgn = 1.0 if self.door_side == "right" else -1.0
-        self.dir_x = sgn
-        # 机构净高约 130px（±65）；缩放到恰好覆盖外墙高度
-        self.door_scale = _clampf(self.h / 130.0, 0.35, 1.0)
-        # [APPROXIMATION] 原版 pZero 落在走廊里（dir 朝屋内），但那套机构是给原版
-        # 至少 3 tile 高的走廊做的，桌宠走廊只有 2 tile、庇护所整体才 ~5 tile 高：
-        # 照搬会把整扇门压在屋里，把站在走廊/门口的猫整个盖住（回归测试
-        # ``e2e_stormpx_r89`` 要求「猫躲进庇护所后仍然看得见」）。所以桌宠改成把
-        # 机构装在外墙外侧：x = 入口中点 + 朝外 * 60。
-        # y 用入口带中线，再夹到「机构刚好贴地」，免得画到地面以下。
-        half = 65.0 * self.door_scale
-        py = min((ey0 + ey1) * 0.5, self.ground_y - half - 2.0)
-        self.p_zero = (ecx + sgn * 60.0, py)
+        self.dir_x = sgn                       # 门朝屋外的那一侧
+        # 门机构整幅画布 140×126（ShelterGate 图集的 sourceSize，游戏里 1:1 不缩放）。
+        # 桌宠的庇护所可以比一间房小，按「高度塞得下」等比缩，最大 1:1。
+        self.door_scale = _clampf(self.h * 0.92 / 126.0, 0.30, 1.0)
+        # 原版 pZero = MiddleOfTile(entrance) + dir * 60，dir 指向屋内（见上）。
+        # 桌宠的门洞可能比一间房小，+60 后夹在庇护所里，保证机构不会甩到墙外。
+        self.p_zero = (_clampf(ecx - sgn * 60.0, self.x + 2.0,
+                               self.x + self.w - 2.0), (ey0 + ey1) * 0.5)
 
     @property
     def wall_px(self):
@@ -437,106 +434,38 @@ class Shelter:
         self.draw_front(p)
 
     def draw_back(self, p):
-        """猫身之后：内腔暗底（纯色 alpha mask，不用图）+ 墙体 + 结构。"""
-        from PySide6.QtGui import QColor, QPen
-        from PySide6.QtCore import QRectF, QPointF, Qt
+        """猫身之后：内腔薄底 + **简单黑色边框**（墙体 / 顶 / 内墙）。"""
+        from PySide6.QtGui import QColor
+        from PySide6.QtCore import QRectF, Qt
 
-        e = self.wall_px
-        x0, y0, x1, y1 = self.safe_rect()
-        body = QRectF(x0, y0, self.w, self.h)
         p.setPen(Qt.PenStyle.NoPen)
-        # 1) 整个足迹先铺深色 alpha 蒙版（原版是房间背景 + wallbehind 材质，
-        #    这里按文档口径只做纯色 mask）
-        p.setBrush(QColor(*_INNER))
-        p.drawRect(body)
-        # 2) 墙体（Solid tile）：左右 + 顶 + 外墙上段 + 内墙
-        p.setBrush(QColor(*_FRAME))
+        # 内腔一层很淡的暗底：屋里的猫仍然看得清
+        p.setBrush(QColor(8, 8, 10, 110))
+        x0, y0, x1, y1 = self.safe_rect()
+        p.drawRect(QRectF(x0, y0, self.w, self.h))
+        # 只画黑色墙体 —— 入口那块留白，猫从缺口进出
+        p.setBrush(QColor(0, 0, 0, 255))
         for (a, b, c, d) in self.wall_rects():
             p.drawRect(QRectF(a, b, c - a, d - b))
-        # 3) 内腔底色再压亮一点，让屋里能看清猫
-        inner = QColor(*_INNER)
-        inner.setAlpha(150)
-        p.setBrush(inner)
-        for (a, b, c, d) in self.interior_rects():
-            p.drawRect(QRectF(a, b, c - a, d - b))
-        # 4) 第二层金属线
-        ins = e * 1.55
-        p.setPen(QPen(QColor(*_METAL_LO), max(1.0, e * 0.28)))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRect(body.adjusted(ins, ins, -ins, -ins))
-        # 5) 支撑条：两根立柱 + 一道横梁（都不压入口）
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(*_METAL_LO))
-        strut_w = max(2.0, self.w * 0.022)
-        top = y0 + ins
-        bot = y1 - e * 0.6
-        ex0, _, ex1, _ = self.entrance
-        for fx in (0.22, 0.78):
-            sx = x0 + self.w * fx
-            if ex0 - strut_w <= sx <= ex1 + strut_w:
-                continue
-            p.drawRect(QRectF(sx - strut_w * 0.5, top, strut_w, bot - top))
-        p.drawRect(QRectF(x0 + ins, y0 + self.h * 0.30, self.w - ins * 2.0,
-                          strut_w * 0.8))
-        # 6) 角落结构 + 铆钉
-        cs = max(3.0, self.w * 0.05)
-        p.setBrush(QColor(*_METAL))
-        rr = max(1.0, cs * 0.16)
-        for fx, fy in self._rivets:
-            cx = x0 + self.w * fx
-            cy = y0 + self.h * fy
-            p.drawRect(QRectF(cx - cs * 0.5, cy - cs * 0.5, cs, cs))
-        p.setBrush(QColor(*_RIVET))
-        for fx, fy in self._rivets:
-            p.drawEllipse(QPointF(x0 + self.w * fx, y0 + self.h * fy), rr, rr)
-        # 7) 入口（比内部更黑）
-        dx0, dy0, dx1, dy1 = self.entrance
-        p.setBrush(QColor(16, 15, 14, 255))
-        p.drawRect(QRectF(dx0, dy0, dx1 - dx0, dy1 - dy0))
+        # 门关到一半以上：入口也封成黑的（挡住里面的猫）
+        if self.close_fac > 0.5:
+            dx0, dy0, dx1, dy1 = self.entrance
+            p.drawRect(QRectF(dx0, dy0, dx1 - dx0, dy1 - dy0))
 
     def draw_front(self, p, atlas=None):
-        """猫身前：门框 + 门板（会挡住站在门口/走廊里的猫）+ 机械锁。"""
-        from PySide6.QtGui import QColor, QPen
-        from PySide6.QtCore import QRectF, QPointF, Qt
-
-        # 真门贴图（原版 42 张 ShelterGate_*）优先
+        """猫身前：原版 ShelterGate_* 大门。图集缺失时退回一块纯黑门板。"""
         if atlas is not None:
             from ..rendering import shelter_gate
             if shelter_gate.draw_door(p, atlas, self):
                 return
-        e = self.wall_px
-        dx0, dy0, dx1, dy1 = self.entrance
-        p.setPen(QPen(QColor(*_FRAME), max(1.0, e * 0.9)))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRect(QRectF(dx0 - e * 0.5, dy0 - e * 0.5,
-                          (dx1 - dx0) + e, (dy1 - dy0) + e))
+        from PySide6.QtGui import QColor
+        from PySide6.QtCore import QRectF, Qt
+
         p.setPen(Qt.PenStyle.NoPen)
-        rr = max(1.0, e * 0.16)
+        p.setBrush(QColor(0, 0, 0, 255))
         for (px0, py0, px1, py1) in self.panel_rects():
-            if px1 - px0 <= 0.5:
-                continue
-            p.setBrush(QColor(*_DOOR))
-            p.drawRect(QRectF(px0, py0, px1 - px0, py1 - py0))
-            p.setPen(QPen(QColor(*_DOOR_HI), max(1.0, e * 0.18)))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRect(QRectF(px0 + 1.0, py0 + 1.0, (px1 - px0) - 2.0,
-                              (py1 - py0) - 2.0))
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(*_RIVET))
-            p.drawEllipse(QPointF((px0 + px1) * 0.5,
-                                  py0 + (py1 - py0) * 0.28), rr, rr)
-            p.drawEllipse(QPointF((px0 + px1) * 0.5,
-                                  py0 + (py1 - py0) * 0.72), rr, rr)
-        dcx = (dx0 + dx1) * 0.5
-        closed = ease(self.close_fac)
-        lock_w = max(4.0, (dx1 - dx0) * 0.42) * closed
-        if lock_w > 0.6:
-            ly = dy0 + (dy1 - dy0) * 0.16
-            p.setBrush(QColor(*_METAL_HI))
-            p.drawRect(QRectF(dcx - lock_w * 0.5, ly, lock_w,
-                              max(2.0, (dy1 - dy0) * 0.10)))
-        p.setBrush(QColor(*_RUST))
-        p.drawEllipse(QPointF(dcx, dy0 + (dy1 - dy0) * 0.5), rr * 1.2, rr * 1.2)
+            if px1 - px0 > 0.5:
+                p.drawRect(QRectF(px0, py0, px1 - px0, py1 - py0))
 
     # ── 存档 ──
     def to_dict(self):
@@ -560,11 +489,15 @@ def shelter_from_dict(d, WL, ground_y=None):
     """从存档建回（旧档缺字段一律有默认值）。"""
     if not isinstance(d, dict):
         return None
-    gy = float(d.get("ground_y", ground_y if ground_y is not None else 0.0))
+    h = float(d.get("h", 80.0))
+    y = d.get("y")
+    if y is None:
+        # 更老的档只有 ground_y（底边贴桌面地面）
+        y = float(d.get("ground_y", ground_y if ground_y is not None else 0.0)) - h
     try:
-        sh = Shelter(float(d.get("x", 0.0)), float(d.get("y", gy - 80.0)),
-                     float(d.get("w", 140.0)), float(d.get("h", 80.0)),
-                     gy, WL, seed=int(d.get("seed", 0) or 0),
+        sh = Shelter(float(d.get("x", 0.0)), float(y),
+                     float(d.get("w", 140.0)), h,
+                     None, WL, seed=int(d.get("seed", 0) or 0),
                      door_ticks=int(d.get("door_ticks", 0) or 0),
                      template=d.get("template") if isinstance(d.get("template"), str) else None)
     except Exception:

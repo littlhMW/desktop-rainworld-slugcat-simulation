@@ -3973,7 +3973,10 @@ class BehaviorFSM:
             return
         if (b.carried_spear is None and b.carried_stone is None) or self._exhausted:
             return
-        lz = self._nearest_lizard(tuning.AIR_THROW_R)
+        if self._spear_rage():                      # 矛大师狂暴：整屏找非猫目标
+            lz = self._rage_target(tuning.SPEAR_RAGE_R)
+        else:
+            lz = self._nearest_lizard(tuning.AIR_THROW_R)
         if lz is None or lz.dead or self._carrying_gift():
             return
         if self._throw_weapon_at(lz):
@@ -5267,6 +5270,13 @@ class BehaviorFSM:
             return True
         return False
 
+    def _needle_pref(self, sp) -> float:
+        """矛大师永远优先用白针：活着的尾针在候选里权重极大。"""
+        if (self.win.cat.tuning.get("tail_needle")
+                and getattr(sp, "needle_live", False)):
+            return 0.05
+        return 1.0
+
     def _spear_usable(self, sp) -> bool:
         """地上这枝矛此刻取不取用：钉成杆的矛只有工匠拔得动（用户口径）。"""
         if not getattr(sp, "pinned", False):
@@ -5293,7 +5303,7 @@ class BehaviorFSM:
                 continue
             if not (getattr(s, "stuck", False) or (abs(s.vx) < 0.4 and abs(s.vy) < 0.4)):
                 continue
-            d = math.hypot(s.x - c1.x, s.y - c1.y) / sfac
+            d = math.hypot(s.x - c1.x, s.y - c1.y) / sfac * self._needle_pref(s)
             if d < bd:
                 best, bd = s, d
         return best
@@ -7556,7 +7566,8 @@ class BehaviorFSM:
                 continue
             if not (sp.stuck or (abs(sp.vx) < 0.4 and abs(sp.vy) < 0.4)):
                 continue
-            cands.append((sp, math.hypot(sp.x - c0.x, sp.y - c0.y)))
+            cands.append((sp, math.hypot(sp.x - c0.x, sp.y - c0.y)
+                          * self._needle_pref(sp)))
         cands = [c for c in cands if c[1] < tuning.ITEMPLY_SEEK_R]
         if not cands:
             return None
@@ -7595,6 +7606,7 @@ class BehaviorFSM:
         种族看 `tail_needle` 能力位。
         """
         return (bool(getattr(sp, "needle", False))
+                and bool(getattr(sp, "needle_live", False))
                 and bool(self.win.cat.tuning.get("tail_needle")))
 
     def _itemplay_fling(self):

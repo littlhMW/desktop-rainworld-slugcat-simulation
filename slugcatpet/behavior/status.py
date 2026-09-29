@@ -100,7 +100,8 @@ def status_text(beh) -> str:
 _STATE_TARGET = {
     "MakeWay": ("_makeway_of", "_blocker_target"),
     "ScoldBlocker": ("_blocker_target", "_pole_blocker"),
-    "Socialize": ("_social_target",),
+    "Socialize": ("_social_target", "_protest_target", "_apology_target",
+                  "_thank_target"),
     "ItemPlay": ("_itemplay_target",),
     "HelpFeed": ("_help_target",),
     "CoverAlly": ("_help_target", "_cover_ally"),
@@ -114,13 +115,14 @@ _STATE_TARGET = {
     "ClearCorpse": ("_clear_target",),
     "SeekWarmth": ("_warm_goal_obj",),
     "StormSeekShelter": ("_storm_goal_obj",),
+    "ShelterSleep": ("_storm_goal_obj",),
     "Swimming": ("_swim_goal",),
     "HPole": ("_hp_goal_obj", "_hp_step_obj"),
     "SeekHPole": ("_hp_goal_obj",),
     "PoleClimb": ("_hp_goal_obj", "_poleclimb_pole"),
     "CeilingHang": ("_air_pole_target",),
     "RelocateToWall": ("_air_pole_target",),
-    "Airborne": ("_air_pole_target",),
+    "Airborne": ("_air_pole_target", "_zerog_target"),
     "EatCob": ("_cob",),
     "SeedCob": ("_cob",),
     "TongueClimb": (),
@@ -169,8 +171,10 @@ def _describe(obj, beh, peers):
     from ..i18n import t
     if obj is None:
         return ""
-    if obj == "cursor" or isinstance(obj, (tuple, list)):
+    if obj == "cursor":
         return t("tg_cursor")
+    if isinstance(obj, (tuple, list)):
+        return t("tg_place")
     if isinstance(obj, (int, float)):
         return t("tg_place")
     if obj is getattr(beh, "body", None) or obj is getattr(beh, "win", None):
@@ -223,7 +227,7 @@ def target_text(beh, peers=None) -> str:
 
 
 def status_pair(beh, peers=None):
-    """状态面板一次给两段：(正在干嘛, 目标是什么)。"""
+    """状态面板一次给两段：(在做什么, 目标是什么)。"""
     if beh is None:
         return "", ""
     return status_text(beh), target_text(beh, peers)

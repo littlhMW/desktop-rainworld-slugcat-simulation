@@ -274,10 +274,18 @@ def _ball_hit(creature, ball, pad: float = 0.0):
     """
     ax, ay = getattr(ball, "last_x", ball.x), getattr(ball, "last_y", ball.y)
     bx, by = _seg_end(ball)
-    chunks = [(creature, creature.x, creature.y,
-               getattr(creature, "head_rad", getattr(creature, "rad", 0.0)))]
-    for seg in (getattr(creature, "seg", None) or ()):
-        chunks.append((seg, seg.x, seg.y, seg.rad))
+    hc = getattr(creature, "hit_chunks", None)
+    chunks = None
+    if callable(hc):
+        try:
+            chunks = [(creature, cx, cy, cr) for (cx, cy, cr) in hc()]
+        except Exception:
+            chunks = None
+    if not chunks:
+        chunks = [(creature, creature.x, creature.y,
+                   getattr(creature, "head_rad", getattr(creature, "rad", 0.0)))]
+        for seg in (getattr(creature, "seg", None) or ()):
+            chunks.append((seg, seg.x, seg.y, seg.rad))
     best = None
     for chunk, cx, cy, cr in chunks:
         got = _sweep_circle(ax, ay, bx, by, cx, cy, ball.rad + cr + pad)
@@ -2962,6 +2970,7 @@ class ItemInteractionMixin:
                 if sp.stuck_to is not None:      # 插在生物身上：跟着它走
                     host, ox, oy = sp.stuck_to
                     if host.state == ItemState.GONE:
+                        sp.needle_disconnect(cut=True)   # 宿主被删：线跟着一起没
                         sp.unstuck()
                         sp.stuck_to = None
                         sp.stuck_local = None
@@ -3032,7 +3041,11 @@ class ItemInteractionMixin:
         """
         ths = self.needle_threads
         live = {id(sp) for sp in self.spears}
-        ths[:] = [t for t in ths if not t.dead and id(t.spear) in live]   # ①
+        # ① 针实体被删掉 ② 针已褪成黑色（fade==0）③ 被二次捡起 / 宿主被删
+        ths[:] = [t for t in ths
+                  if not t.dead and id(t.spear) in live
+                  and getattr(t.spear, "needle_fade", 0) > 0
+                  and not getattr(t.spear, "needle_thread_cut", False)]
         cands = [sp for sp in self.spears                                   # ②
                  if (getattr(sp, "needle", False)
                      and getattr(sp, "needle_live", False) and sp._thrown)]

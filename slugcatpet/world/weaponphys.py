@@ -75,6 +75,8 @@ def begin_thrown(obj, dir_x: float, frc_value: float, dir_y: float = 0.0) -> Non
     矛自己的「近乎垂直落地 → 钉成竖杆」分支管）。
     """
     obj._thrown = True
+    if getattr(obj, "needle", False):
+        obj.needle_world = True      # 针已离手：以后谁再把它捡起来，线都断
     if hasattr(obj, "always_stick"):
         obj.always_stick = False
     obj._f1 = True               # 第一帧的扫掠起点＝出手前的位置（原版 firstFrameTraceFromPos）

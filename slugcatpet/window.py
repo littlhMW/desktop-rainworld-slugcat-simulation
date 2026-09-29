@@ -835,9 +835,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                     *self.needleworms, *self.spears, *self.scavengers):
             _clamp_item_to_bounds(obj, WL, HL)
         for sh in getattr(self, "shelters", ()) or ():
-            sh.ground_y = HL
-            sh.y = HL - sh.h
+            sh.WL = WL
             sh.x = min(max(sh.x, 0.0), max(0.0, WL - sh.w))
+            sh.y = min(max(sh.y, 0.0), max(0.0, HL - sh.h))
+            sh.ground_y = sh.y + sh.h
             sh.center_x = sh.x + sh.w * 0.5
             sh.center_y = sh.y + sh.h * 0.5
             sh._layout()
@@ -1714,11 +1715,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         rain_draw.draw_rain_under(p, self.rain, self.shelters, self._WL, self._HL)
 
         if self.shelters:
-            # 后层（内腔暗底 + 墙体 + 结构）画在猫之前：躲进去的猫仍然看得见；
-            # 水层再把它挖掉，里面保持干燥。前层（门板/机械锁）在生物之后。
+            # 后层（内腔暗底 + 墙体 + 结构）画在猫之前：躲进去的猫仍然看得见，
+            # 大门也一并画在猫之前（桌宠里不能让门把躲进去的猫盖住）。
             p.save()
             p.setClipRect(self._ground_clip(), Qt.ClipOperation.IntersectClip)
             self._draw_shelter_backs(p)
+            self._draw_shelter_fronts(p)
             p.restore()
 
         p.save()
@@ -1767,12 +1769,6 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             self._draw_scavengers(p)
         p.restore()
 
-        if self.shelters:
-            # 前层：门板会挡住站在门口/走廊里的猫
-            p.save()
-            p.setClipRect(self._ground_clip(), Qt.ClipOperation.IntersectClip)
-            self._draw_shelter_fronts(p)
-            p.restore()
 
         if self.water_surface is not None:
             self._draw_water(p)
@@ -2019,7 +2015,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             w = min(220.0, self._WL * 0.32)
             h = w * float(ah) / float(aw)
             self.shelters.append(Shelter(self._WL * 0.5 - w * 0.5, self._HL - h, w, h,
-                                         self._HL, self._WL, seed=0,
+                                         None, self._WL, seed=0,
                                          door_ticks=int(tuning.STORM_DOOR_TICKS),
                                          template=tpl))
             self._shelter_seed += 1
@@ -2096,7 +2092,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._shelter_drag_start = (lx, ly)
 
     def _shelter_drag_rect(self):
-        """当前拖出来的预览庇护所；没开始拖就按模板比例贴在光标上。"""
+        """当前拖出来的预览庇护所 —— 像资源管理器框选那样，**任意矩形**，不贴地。"""
         cur = self.cursor_logical()
         if cur is None:
             return None
@@ -2105,19 +2101,18 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         aw, ah = tpl.aspect
         ar = float(ah) / float(aw)
         if self._shelter_drag_start is None:
-            # 未开始拖：光标 y 定上沿，宽度按模板比例推出来
-            h = max(Shelter.MIN_H, self._HL - float(cur[1]))
+            # 还没按下：光标处给一个模板比例的默认大小
+            h = max(Shelter.MIN_H, 110.0)
             w = max(Shelter.MIN_W, h / ar)
-            return Shelter(cur[0], self._HL - h, w, h, self._HL, self._WL,
+            return Shelter(cur[0] - w * 0.5, cur[1] - h * 0.5, w, h, None, self._WL,
                            seed=self._shelter_seed, door_ticks=ticks, template=tpl)
         sx, sy = self._shelter_drag_start
         cx, cy = cur
         x0, x1 = min(sx, cx), max(sx, cx)
-        top = min(sy, cy)
-        # 只落在地面：底边永远贴 HL，宽高就是拖出来那个矩形（h 不再被架空）
-        return Shelter(x0, top, max(x1 - x0, Shelter.MIN_W), self._HL - top,
-                       self._HL, self._WL, seed=self._shelter_seed, door_ticks=ticks,
-                       template=tpl)
+        y0, y1 = min(sy, cy), max(sy, cy)
+        return Shelter(x0, y0, max(x1 - x0, Shelter.MIN_W),
+                       max(y1 - y0, Shelter.MIN_H), None, self._WL,
+                       seed=self._shelter_seed, door_ticks=ticks, template=tpl)
 
     def _finish_shelter_place(self):
         if not self._place_mode or self._place_kind != "shelter":

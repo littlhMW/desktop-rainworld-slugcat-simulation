@@ -237,10 +237,22 @@ perp    = Custom.PerpendicularVector(dir)
 | 相位曲线：`DoorGraphic` 的 `flapsOpen / pistonsClosed / segments / pistons / covers / cylinders / pumpsEnter(0.59,0.7) / pumpsExit(0.75,1) / segmentAlpha` | `ShelterDoor.cs:972-1006` |
 | 齿轮 `rotation = Closed * (j>=2 ? 400 : -150) * (j%2==0 ? -1 : 1)`（绝对赋值，不叠加基准角） | `ShelterDoor.cs:1875` |
 
-桌宠近似：pZero 落在走廊里（原版），但那套机构是给原版至少 3 tile 高的走廊做的，
-桌宠走廊只有 2 tile，照搬会把整扇门压在屋里、把站在门口的猫整个盖住。所以桌宠把机构
-装到外墙外侧（`p_zero.x = 入口中点 + 朝外 * 60`），y 取入口带中线再夹到「机构刚好贴地」，
-两处都在 `shelter.py::_layout` 标了 `[APPROXIMATION]`。
+#### 拼装约定（最容易错的四条）
+
+| 事实 | 出处 |
+| --- | --- |
+| 每个部件（除齿轮 58×58、Hatch 20×9）的 `sourceSize` 都是 **140×126** ：部件在画布里是**预摆好**的，`DrawSprites` 里的偏移是叠在基准位置上的**动画增量**（把 42 张全画在 pZero 就会自动拼出一扇门） | 图集 `shelterGate` 的 `spriteSourceSize` |
+| 盖图是**索引色**（R=深度索引、G恒 0、B∈{0,127,255}），直接画出来是纯蓝。要按 `ColoredSprite3` 的查表上色：行 = `round(lerp(0.5,2.5,B))`（对应 `palette0.png` 的 7/6/5 行），列 = `round(lerp(0.5,29.5,R))` | shader `ColoredSprite3` + `palette0.png` |
+| `dir = -sh.dir_x`（`sh.dir_x` 记的是「门朝屋外」，游戏的 `dir` 是指向屋内），`pZero = 入口中点 + dir*60`，全部偏移先在原版坐标系（y 向上）里算，最后 `(vx,vy) -> (zx+vx, zy-vy)` | `ShelterDoor.cs:1170-1224` |
+| `rotation = AimFromOneVectorToAnother(dir, zero)` 得到的是 Futile 正角（屏幕上逆时针），Qt `rotate()` 正角是顺时针 ⇒ **要取反** `p.rotate(-rot)` | `ShelterDoor.cs:1849` |
+
+桌宠对照原版只改两处，都在 `shelter.py::_layout` 标了 `[APPROXIMATION]`：
+
+1. `door_scale = clamp(h*0.92/126, 0.30, 1.0)` —— 桌宠走廊比原版短，整扇门按残高缩到 1:1 封顶。
+2. pZero 的 y 取入口带中线。层级上原版把门放在 `Items` 容器（在蜥蜴猫 `Midground` 躯干**之前**），
+   桌宠改成整扇门都画在生物**之后——即背景层**：桌宠屋子比原版小，否则门会把躲进去的猫整个盖住。
+
+### 13.4 提取与验收
 
 ### 13.4 提取与验收
 

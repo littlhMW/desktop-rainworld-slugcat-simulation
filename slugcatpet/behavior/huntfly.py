@@ -74,8 +74,13 @@ class FlyHunter:
         rage = bool(getattr(self.fsm, "_spear_rage", lambda: False)())
         seek_r = tuning.SPEAR_RAGE_R if rage else SEEK_R
         out = []
-        for f in (*self.win.batflies, *self.win.squidcadas,
-                  *self.win.needleworms):
+        pool = [*self.win.batflies, *self.win.squidcadas,
+                *self.win.needleworms]
+        if rage:
+            # 矛大师饿疯了：**所有非蛞蝓猫生物**都是猎物（含蜥蜴 / 拾荒者）
+            pool += [*getattr(self.win, "lizards", ()),
+                     *getattr(self.win, "scavengers", ())]
+        for f in pool:
             if not rage and not _edible(f, diet):
                 continue
             if rage and (f.dead or f.state != "free"):
@@ -168,8 +173,11 @@ class FlyHunter:
             self.timer = 0
             return "running"
         best, bestd = None, 1e9
+        want_needle = bool(self.win.cat.tuning.get("tail_needle"))
         for o in (*self._ground_spears(), *self._ground_stones()):
             d = math.hypot(c0.x - o.x, c0.y - o.y)
+            if want_needle and getattr(o, "needle_live", False):
+                d *= 0.05            # 矛大师永远优先用白针
             if d < bestd:
                 best, bestd = o, d
         if best is None:
@@ -211,7 +219,8 @@ class FlyHunter:
 
     def _phase_aim(self, want):
         f = self.target
-        if f is None or not _edible(f, self._diet()) or not want:
+        rage = bool(getattr(self.fsm, "_spear_rage", lambda: False)())
+        if f is None or not want or (not rage and not _edible(f, self._diet())):
             return "giveup"
         if self.timer > GIVEUP_TICKS:
             return "giveup"

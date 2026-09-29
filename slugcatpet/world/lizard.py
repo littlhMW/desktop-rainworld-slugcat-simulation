@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from ..core.units import clampf, lerp, inv_lerp
 from ..behavior.relationship import Relations
 from .enums import ItemState
+from . import lizard_cos
 from .lizard_ai import (CARRY_HURRY, DEN_ARRIVE_R, DOMINANCE_DEFER, WARN_R,
                         ApproachPlan, Memory, Observation, PackAlert, PreyTracker,
                         SocialMemory, choose_den, flank_offset, los_blocked,
@@ -460,10 +461,20 @@ class LizardBreed:
         return _hsl2rgb(h, self.sat, l)
 
     def tail_tint(self, rng, color):
-        """尾梢渐变色（游戏 iVars.tailColor）：白蜥/黑蜥恒无，其余 1/2 概率，色=品种色。"""
-        if self.plain_color is not None or rng.random() > 0.5:
+        """尾梢渐变（游戏 iVars.tailColor，LizardGraphics.cs:718-721）。
+
+        原版是 `tailColor = 0; if (type != WhiteLizard && Random.value > 0.5)
+        tailColor = Random.value;` —— **只有白蜥恒无**（黑蜥也有，只是它的
+        effectColor 本来就深，看不出渐变），数值就是那次掷点本身。
+        BodyColor 里 `f2 = pow(曲线) * tailColor`，tailColor 直接是渐变强度，
+        不做 0.35+0.65 的拉伸。蝾螈虽然掷得出，但 BodyColor 走 SalamanderColor
+        分支，尾巴照样看不到渐变。
+        """
+        if self.key == "white":
             return None
-        return (color, 0.35 + 0.65 * rng.random())
+        if rng.random() <= 0.5:
+            return None
+        return (color, rng.random())
 
 
 # 九种基础蜥蜴：数值逐项照抄 LizardBreeds.cs（PinkLizard/GreenLizard/BlueLizard/
@@ -602,28 +613,6 @@ BREED_BY_KEY = {b.key: b for b in BREEDS}
 #                shoulder=LongShoulderScales/WingScales、head=LongHeadScales、
 #                whisker=Whiskers（黑蜥固有）、antenna=Antennae（黄蜥固有）、
 #                gill=AxolotlGills（蝾螈/鳗鱼蜥）、fin=TailFin（尾鳍）。
-BREED_COSMETICS = {
-    # 粉蜥：LizardGraphics.cs:497 是 LongShoulderScales（<0.5），不是背刺
-    "pink":       (("shoulder", 0.5),),
-    # 绿蜥：SpineSpikes 0.8 已在 spikes 里；num8>0 → LongHeadScales 只有 1/10
-    "green":      (("head", 0.1),),
-    # 黄蜥：Antennae 恒定（:565-570），且被排除在 LongHeadScales 之外
-    "yellow":     (("antenna", 1.0),),
-    # 红蜥：LongShoulderScales + SpineSpikes 都必有（:587-595）
-    "red":        (("shoulder", 1.0),),
-    # 黑蜥：Whiskers 固有（:577）
-    "black":      (("whisker", 1.0),),
-    # 蝾螈：AxolotlGills + TailFin 固有（:571-574）
-    "salamander": (("gill", 1.0), ("fin", 1.0)),
-    # 青蜥：WingScales 0.75（:466-469）
-    "cyan":       (("shoulder", 0.75),),
-    # 鳗鱼蜥：AxolotlGills + TailGeckoScales 必有，LongShoulderScales/TailFin 0.75
-    "eel":        (("gill", 1.0), ("shoulder", 0.75), ("fin", 0.75)),
-    # 草莓蜥：SpineSpikes 0.825 之外补 WingScales（:458）
-    "zoop":       (("shoulder", 0.175),),
-}
-for _b in BREEDS:
-    _b.cosmetics = BREED_COSMETICS.get(_b.key, ())
 BREED_TRAITS = {
     "pink":       dict(spawn_weight=1.00),
     "green":      dict(spawn_weight=0.90, can_climb=False),
@@ -851,32 +840,17 @@ class Lizard:
         # 原版 limbsAimFor：蜥蜴行进目标点，腿朝它伸。宠物里取躯干前方一点。
         self.limbs_aim = (self.x, self.y)
 
-        # 背刺（游戏 SpineSpikes）：数量/长度/大小曲线逐个随机
+        # 花纹（LizardCosmetics/*）：逐条照抄 LizardGraphics.cs:439-640 的生成链，
+        # 见 world/lizard_cos.py。背刺（SpineSpikes）也在这条链里，不再是单独的
+        # 「品种概率」表。走独立随机流，免得扰动 this.rng（步态/咬合/眨眼都吃这条
+        # 流，加一次掷点会让同一只蜥蜴的整条行为序列错位）。
         self.spikes = None
-        if b.spikes:
-            graphic, colored, chance = b.spikes
-            if rng.random() < chance:
-                n = rng.randint(5, 8)
-                end = rng.uniform(0.2, 0.95)             # 覆盖到体长/总长的比例
-                lo = rng.uniform(0.15, 0.5)
-                hi = max(lo, rng.uniform(lo, 1.1))
-                skew = rng.uniform(0.1, 0.9)
-                pts = []
-                for k in range(n):
-                    t = k / (n - 1.0)
-                    pts.append((0.05 + (end - 0.05) * t,
-                                lo + (hi - lo) * math.sin((t ** skew) * math.pi)))
-                self.spikes = (graphic, colored, pts)
-
-        # 品种花纹（LizardCosmetics/*）：每个族按概率掷一次，定了就不变。
-        # 走独立随机流，免得扰动 this.rng（步态/咬合/眨眼都吃这条流，
-        # 加一次掷点会让同一只蜥蜴的整条行为序列错位）。
-        self.cosmetics = []
         crng = _random.Random(self.seed * 104729 + 7)
-        for kind, chance in getattr(b, "cosmetics", ()):
-            if chance >= 1.0 or crng.random() < chance:
-                g = 0 if kind == "antenna" else crng.choice((3, 4, 5, 6))
-                self.cosmetics.append((kind, g))
+        body_len = self.head_conn * 0.5 + sum(sg.dist for sg in segs if not sg.tail)
+        tail_len = sum(sg.dist for sg in segs if sg.tail)
+        total_len = body_len + tail_len
+        self.cosmetics = lizard_cos.roll_cosmetics(
+            crng, b.key, total_len, (body_len / total_len) if total_len > 0 else 0.5)
         self.cosmetic_pts = None      # 渲染缓存（首次绘制时按几何算好）
 
         # 攀爬（原版 LizardPather 的 Climb/Wall tile）：贴在竖杆或背景墙竖边上

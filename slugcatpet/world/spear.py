@@ -56,7 +56,8 @@ class Spear:
                  "collide_with_objects", "held_by", "embedded", "stuck_to", "stuck_local", "_still",
                  "thrower", "no_self_t", "pinned", "pole", "toss_t",
                  "aim_cursor", "cursor_pin", "needle", "needle_live",
-                 "needle_type", "needle_fade", "damage")
+                 "needle_type", "needle_fade", "damage", "needle_thread_cut",
+                 "needle_world")
 
     def __init__(self, x: float, y: float, seed: int = 0, angle_deg: float = 90.0):
         self.x = self.last_x = float(x)
@@ -112,6 +113,11 @@ class Spear:
         self.damage = 1.0                     # spearDamageBonus（原版默认 1f）
         self.needle_type = 0                  # BioSpear1..3（Spear_makeNeedle 的 type）
         self.needle_fade = NEEDLE_FADE_MAX    # fadecounter：断线后每 tick -1
+        # 线必须**立刻**断（不等褪色）：二次被捡 / 扎中的宿主被删
+        self.needle_thread_cut = False
+        # 这根针有没有离过手（掷出去过）。刚长出来直接递到主人手里时是 False：
+        # 那不算「二次捡起」，线还在。
+        self.needle_world = False
 
     @property
     def pos(self):
@@ -138,9 +144,15 @@ class Spear:
         a = math.radians(self.stuck_angle if self.stuck else self.angle_deg)
         return (self.x - math.sin(a) * LEN * 0.5, self.y + math.cos(a) * LEN * 0.5)
 
-    def needle_disconnect(self) -> None:
-        """Spear_NeedleDisconnect：活性没了（针从白褪成黑色，不能再吸食）。"""
+    def needle_disconnect(self, cut: bool = False) -> None:
+        """Spear_NeedleDisconnect：活性没了（针从白褪成黑色，不能再吸食）。
+
+        cut=True 额外把尾巴上那条有机线**当场**剪断（二次被捡 / 宿主被删）。
+        默认 False：线先跟着针一起褪色，等针真变黑（fade==0）才消失。
+        """
         self.needle_live = False
+        if cut:
+            self.needle_thread_cut = True
 
     def needle_tick(self) -> None:
         """Spear.Update：断线后 fadecounter 每 tick -1（Spear.cs:382-385）。"""
