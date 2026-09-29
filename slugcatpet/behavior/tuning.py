@@ -363,11 +363,13 @@ REVIVE_ARM_MIN = 12.0        # 复活时每条胳膊至少要伸出这么多（�
 REVIVE_TOUCH_R = 34.0        # 最近 chunk 对间距：挨着尸体就算摸到（原 26 一直够不着）
 REVIVE_TOUCH_TICKS = 150
 REVIVE_APPROACH_TICKS = 900
+RESCUE_LEVEL_PAD = 26.0      # 倒地同伴在自己上下这么高之内＝同一层，直接走过去
 REVIVE_PRESS_MIN = 4         # 复活：按压次数
 REVIVE_PRESS_MAX = 8
 REVIVE_PRESS_TICKS = 12      # 单次下压 tick
 REVIVE_RELEASE_TICKS = 8     # 单次抬手 tick
-REVIVE_PRESS_DOWN = 0.6      # 下压时身体向下的力
+REVIVE_PRESS_DOWN = 1.0      # 下压时身体向下的力（用力按下去）
+REVIVE_HAND_PRESS = 5.0      # 下压时两只手往目标里按进去的深度（px）
 
 # 恐惧：匍匐潜行躲避
 CRAWL_FEAR_R = 150.0          # 蜥蜴进这个半径 → 趴下潜行

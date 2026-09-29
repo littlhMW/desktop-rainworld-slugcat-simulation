@@ -7,7 +7,8 @@ import random
 from ..behavior import tuning
 from ..core.creature import (RUN_UPPER, ZEROG_GRAB_DIST, THROW_ORIGIN_DX, THROW_ORIGIN_DY,
                              WALK_STOP_EPS, _closest_on_segment)
-from ..planning import (GIVEUP, HOLDING, MODE_STAY, PlanExecutor, Planner, obj_goal)
+from ..planning import (GIVEUP, HOLDING, MODE_STAY, Goal, PlanExecutor, Planner,
+                        obj_goal)
 from ..planning.fly_reach import in_reach
 from .blocking import (blocks_path, yield_target_x, on_same_pole,
                         pole_in_the_way, pole_push_role)
@@ -88,7 +89,8 @@ COB_STAND_STEPS = (60.0, 46.0, 34.0, 24.0, 16.0)
                           # 掷矛位的候选距离（从远到近）：站远处掷不中就往豆荚挪一档
 T_CRAWL_RETRY = 300       # 匍匐躲避冷却
 T_PROTEST_RETRY = 900     # 抗议被抢东西的冷却
-T_REVIVE_RETRY = 200      # 复活失败重试
+T_REVIVE_RETRY = 200      # 复活磨到超时才放弃：长冷却
+T_REVIVE_RETRY_SOON = 40  # 被威胁打断 / 刚救完：短冷却，马上能再上手
 # ── 躲在「持有矛/石头的同伴」背后（有威胁、自己空手）──
 T_COVER_RETRY = 240       # 躲完让位的冷却
 COVER_TICKS = 300         # 单次躲在同伴背后的时长上限
@@ -186,7 +188,7 @@ _FETCH_NEVER = frozenset(("FetchFruit", "Ascension", "Dragged", "Dead", "WakeSeq
 _FETCH_PLAY = frozenset(("PoleClimb", "HPole", "CeilingHang"))
 
 
-_EN_VIGOROUS = frozenset(("TongueClimb", "PoleClimb", "HPole", "CeilingHang", "Swimming",
+_EN_VIGOROUS = frozenset(("TongueClimb", "PoleClimb", "CeilingHang", "Swimming",
                           "PyroRomp", "RivFlip", "PyroMaul", "RivSnatch"))
 _EN_LIGHT = frozenset(("RelocateToWall", "PostThrowWander", "FetchFruit", "AngryStone",
                        "WakeSequence", "CursorLick", "SeekWarmth", "SeekHPole", "MakeWay",
@@ -398,6 +400,9 @@ class BehaviorFSM:
         self._social_gesture = None
         self._social_press_seen = 0
         self._social_press_per = 1
+        self._social_press_down = False   # 本 tick 正在往下按（手也往目标里压）
+        self._revive_gave_up = False      # 复活是「磨到超时放弃」还是被打断
+        self._rescue_exec = None          # 救援赶路的执行器（复用觅食那套寻路）
         self._apology_target = None      # 误伤同伴 → 抱歉：面对它匍匐
         self._apology_t = 0
         self._thank_target = None        # 被同伴救活 → 去拍拍恩人
@@ -905,7 +910,10 @@ class BehaviorFSM:
             handler(cursor, disturbed)
         self._push_pose_tick()
         e_delta = _energy_delta(self.state, self._drain_fac)
-        if (self.state == "PoleClimb" and self.poleclimb is not None
+        if self.state == "HPole":
+            # 横杆＝地面移动口径（轻度），不额外算攀爬体力
+            e_delta = -EN_DRAIN_LIGHT * self._drain_fac
+        elif (self.state == "PoleClimb" and self.poleclimb is not None
                 and self.poleclimb.phase == "tip"):
             e_delta = -EN_DRAIN_LIGHT * self._drain_fac   # 站杆顶不算剧烈
         elif self.state == "Swimming" and self.body.swim_mode == "surface":
@@ -1150,8 +1158,10 @@ class BehaviorFSM:
                 and self._fetch_cooldown <= 0
                 and self.state not in _FETCH_NEVER)
     def _act_fetchfood(self, ctx):
-            fetch_cands = fetch_ready(self.planner, self.win.fetchables(),
-                                      diet=self.pers.diet, unit=self.win)
+            fetch_cands = fetch_ready(
+                self.planner,
+                self.win.fetchables(want_karma=not self.body.flower_karma),
+                diet=self.pers.diet, unit=self.win)
             if fetch_cands:
                 take = True
                 if self.state in _FETCH_PLAY:
@@ -1578,7 +1588,7 @@ class BehaviorFSM:
             self._social_kind = self._social_kind_for(tgt)
             self._social_target = tgt
             self._social_left = 0        # 随机时长交给 _social_enter 掷
-            if self._social_kind == "crouch_walk":
+            if self._social_kind == "crouch_walk" and not self.body.on_pole:
                 # 匍匐行走：交给现有的 CrawlAway（害怕强敌潜行）
                 self._crawl_from = None
                 self._crawl_left = tuning.CRAWL_AWAY_TICKS
@@ -2171,7 +2181,7 @@ class BehaviorFSM:
         best, bd = None, tuning.HELPFEED_SEEK_R
         for p in self._peers():
             ob = p.body
-            if not ob.dead or self._revive_claimed_by(p) is not None:
+            if not self._peer_needs_help(ob) or self._revive_claimed_by(p) is not None:
                 continue
             d = math.hypot(ob.chunk1.x - c1.x, ob.chunk1.y - c1.y)
             if d >= bd:
@@ -3794,7 +3804,8 @@ class BehaviorFSM:
             return False                 # 上杆本来就是为了够那个东西
         if not (b.food < b.food_max and self._food_seek_ready()):
             return False
-        if not fetch_ready(self.planner, self.win.fetchables(),
+        if not fetch_ready(self.planner,
+                           self.win.fetchables(want_karma=not b.flower_karma),
                            diet=self.pers.diet, unit=self.win):
             return False
         self._break_active_controllers()
@@ -4800,13 +4811,62 @@ class BehaviorFSM:
                 best, best_need = p, need
         return best
 
+    @staticmethod
+    def _peer_needs_help(ob) -> bool:
+        """倒地要同伴搭手：真死，或者被击晕还没醒（原版被击晕也是倒地）。"""
+        return bool(ob.dead) or getattr(ob, "stun", 0) > 0
+
+    def _wants_rescue(self, kind: float) -> bool:
+        """肯不肯去救倒地的同伴。
+
+        旧版这条路上完全没有 kindness —— 无威胁时人人都会救，有威胁时又只有
+        kindness >= FEAR_KIND_RESCUE 才救，两边口径不一致。这里统一：善良度
+        够高一定去，其余按善良度掷骰（每个决策 tick 掷一次，累计很快）。
+        """
+        return kind >= tuning.FEAR_KIND_RESCUE or self.rng.random() < kind
+
+    @staticmethod
+    def _rescue_key(ob):
+        return ("rescue", id(ob))
+
+    def _rescue_goal(self, ob):
+        """救援目标点：同伴最近的一截身体（坐标每帧重取，跟着它走）。"""
+        return Goal(lambda: (ob.chunk1.x, ob.chunk1.y), lambda: True,
+                    self._rescue_key(ob))
+
+    def _rescue_step(self, ob) -> None:
+        """救援赶路：复用觅食那套表面寻路（走 / 跳 / 落 / 爬杆 / 上窗口顶边）。
+
+        旧版只 b.walk_to(尸体.x)：同伴躺在平台/杆上，或者中间隔着缺口时，AI 已经
+        决定去救、画面却只在原地朝那个 x 走 —— 这就是「AI 明明该救却看着不积极」。
+        规划放弃（真的够不到）才退回直奔。
+        """
+        if not self._peer_needs_help(ob):
+            self._rescue_exec = None
+            self.body.stop_walk()
+            return
+        b = self.body
+        if (b.on_floor()
+                and abs(ob.chunk1.y - b.chunk1.y) <= tuning.RESCUE_LEVEL_PAD):
+            # 同层：直接走过去（原版地面追人就是这么走的）
+            self._rescue_exec = None
+            b.walk_to(ob.chunk1.x)
+            return
+        ex = self._rescue_exec
+        if ex is None or ex.goal.key() != self._rescue_key(ob):
+            ex = self._rescue_exec = PlanExecutor(
+                self.win, self.planner, self._rescue_goal(ob))
+        if ex.update() == GIVEUP:
+            self._rescue_exec = None
+            self.body.walk_to(ob.chunk1.x)
+
     def _dead_peer_near(self):
-        """附近倒地的同伴（死了就去扒拉救活）；已经有人在救的不抢。"""
+        """附近倒地的同伴（真死 / 晕着的都算）；已经有人在救的不抢。"""
         best, bd = None, tuning.HELPFEED_SEEK_R
         c1 = self.body.chunk1
         for p in self._peers():
             ob = p.body
-            if not ob.dead or self._revive_claimed_by(p) is not None:
+            if not self._peer_needs_help(ob) or self._revive_claimed_by(p) is not None:
                 continue
             d = math.hypot(ob.chunk1.x - c1.x, ob.chunk1.y - c1.y)
             if d < bd:
@@ -4974,10 +5034,11 @@ class BehaviorFSM:
                 self._break_active_controllers()
                 self._transition("Socialize")
                 return
-        # 2) 倒地的同伴：过去用特殊表情扒拉救活
+        # 2) 倒地的同伴（真死 / 被击晕）：过去用特殊表情扒拉救活。善良的更积极
         if self._revive_cd <= 0 and not b.swimming:
             dp = self._dead_peer_near()
-            if dp is not None:
+            # 先看有没有倒地的同伴再掷骰：没同伴就不动随机流（随机数纪律）
+            if dp is not None and self._wants_rescue(kind):
                 self._social_kind = "revive"
                 self._social_target = dp
                 self._social_left = tuning.REVIVE_APPROACH_TICKS
@@ -5381,6 +5442,9 @@ class BehaviorFSM:
         self.body.set_crawl(False)          # 匍匐类社交动作收势：站起来
         self._social_gesture = None
         self._social_press_seen = 0
+        self._social_press_down = False
+        self.gfx.face_override = None       # 借来的表情（按压时的晕眩脸）收势
+        self._rescue_exec = None            # 救援赶路的执行器（换了目标就重建）
         self._social_urge = 0.0             # 社交欲望：做完归 0，重新慢慢攒
         if self._social_target is self._apology_target and self._apology_target is not None:
             self._apology_target = None     # 抱歉做完了
@@ -5391,7 +5455,10 @@ class BehaviorFSM:
         elif self._social_kind == "gift":
             self._gift_left = 0
         if self._social_kind == "revive":
-            self._revive_cd = T_REVIVE_RETRY
+            # 被威胁打断 / 刚救完：短冷却，马上能再上手；磨到超时才算真放弃
+            self._revive_cd = (T_REVIVE_RETRY if self._revive_gave_up
+                               else T_REVIVE_RETRY_SOON)
+            self._revive_gave_up = False
         elif self._social_kind == "protest":
             self._protest_cd = T_PROTEST_RETRY
         else:
@@ -5647,7 +5714,8 @@ class BehaviorFSM:
         self._social_touch = 0
         self._social_gesture = None      # 本次动作的手势（抚摸/拍拍/复活）
         self._social_press_seen = 0
-        if social.is_crouch(kind):       # 匍匐族：趴着做完整段
+        self._revive_gave_up = False
+        if social.is_crouch(kind) and not b.on_pole:   # 匍匐族：趴着做完整段（杆上不匍匐）
             b.set_crawl(True)
         else:
             b.set_posture(True)
@@ -5671,15 +5739,20 @@ class BehaviorFSM:
             self._end_social()
             return
         ob = tgt.body
-        if social.is_crouch(kind):
-            b.set_crawl(True)              # 匍匐族：整段都趴着
+        if social.is_crouch(kind) and not b.on_pole:
+            b.set_crawl(True)              # 匍匐族：整段都趴着（杆上不匍匐）
         self._social_left -= 1
         d = math.hypot(ob.chunk1.x - b.chunk1.x, ob.chunk1.y - b.chunk1.y)
         if kind == "revive":
             # 必须贴进按压半径（量的是最近 chunk 对），否则永远救不活
             d = self._touch_dist(ob)
+        if kind == "revive" and d > tuning.SOCIAL_ARRIVE and self._both_hands_on(ob):
+            d = tuning.SOCIAL_ARRIVE     # 两只手真按上了就算到位（与 IK 同一套几何）
         if d > tuning.SOCIAL_ARRIVE:
-            b.walk_to(ob.chunk1.x)
+            if kind == "revive":
+                self._rescue_step(ob)    # 救援赶路：走 / 跳 / 落 / 爬杆
+            else:
+                b.walk_to(ob.chunk1.x)
             self.gfx.look_at = (ob.chunk0.x, ob.chunk0.y)
             self._clear_hands()
             if d > tuning.SOCIAL_ABANDON_R and not getattr(ob, "dead", False):
@@ -5687,11 +5760,14 @@ class BehaviorFSM:
                 self._end_social()
                 return
         else:
+            self._rescue_exec = None
             b.stop_walk()
             b.facing = 1 if ob.chunk0.x >= b.chunk0.x else -1
             self.gfx.look_at = (ob.chunk0.x, ob.chunk0.y)
             self._social_act(kind, tgt, ob)
         if self._social_left <= 0:
+            if kind == "revive":
+                self._revive_gave_up = True   # 磨到超时才算真放弃（长冷却）
             self._end_social()
 
     def _st_social_gift(self, lz):
@@ -5796,6 +5872,10 @@ class BehaviorFSM:
         if beh is None:
             self._end_social()
             return
+        if not ob.dead:
+            # 只是被打晕：按不活，改成拍拍它（晕的自己会醒）
+            self._social_kind = "pat"
+            return
         g = self._social_gesture
         if g is None:
             reps = self.rng.randint(tuning.REVIVE_PRESS_MIN, tuning.REVIVE_PRESS_MAX)
@@ -5803,6 +5883,9 @@ class BehaviorFSM:
                 reps, tuning.REVIVE_PRESS_TICKS, tuning.REVIVE_RELEASE_TICKS)
             self._social_press_per = max(1, tuning.REVIVE_TOUCH_TICKS // reps)
         self.gfx.face(True, PRIO_URGENT)     # 复活按压的表情
+        # 用力按的时候借晕眩脸来演「憋着一股劲儿往下按」（借表情，不是真晕）
+        self.gfx.face_override = "stun"
+        self._social_press_down = g.pressing
         if not self._both_hands_on(ob):
             return                                  # 两只手都要按上去（够不着就先挪身子）
         if g.pressing:                              # 身体跟着用力向下
@@ -5834,8 +5917,10 @@ class BehaviorFSM:
         所以只有真的贴上去、两只手都按到了才会推进按压计数。
         """
         a, b = ob.chunk0, ob.chunk1
-        self.gfx.hand_aim["l"] = (a.x, a.y)
-        self.gfx.hand_aim["r"] = (b.x, b.y)
+        # 下压那一拍：两只手不只贴着，还往目标身体里按进去一点（用力按下去）
+        press = tuning.REVIVE_HAND_PRESS if self._social_press_down else 0.0
+        self.gfx.hand_aim["l"] = (a.x, a.y + press)
+        self.gfx.hand_aim["r"] = (b.x, b.y + press)
         hl, hr = self.gfx.hands[0], self.gfx.hands[1]
         rd = tuning.REVIVE_TOUCH_R
 
@@ -6744,6 +6829,10 @@ class BehaviorFSM:
         b = self.body
         if self._crawl_left <= 0:
             self._crawl_left = tuning.CRAWL_AWAY_TICKS
+        if b.on_pole:                    # 杆上没有匍匐：站着走完这一段
+            b.set_crawl(False)
+            b.set_posture(True)
+            return
         b.set_posture(False)
         b.set_crawl(True)
 

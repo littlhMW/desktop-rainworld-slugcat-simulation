@@ -250,10 +250,13 @@ class FruitFetcher:
         # 目标链分家：业力花不是食物（不填饱食度），走独立的 KarmaAction，
         # 不再混进「吃」这条链里当普通候选（旧版混在一起，于是猫吃饱了还反复
         # 进觅食、吃完花 food 不涨 → 觅食欲望不归零）。
+        # 花条已满：业力花从所有自主进食候选里彻底消失（拔完立刻就不再挑第二朵）
+        want_karma = not self.body.flower_karma
         if self.karma_only:
-            pool = list(self.win.karma_targets())
+            pool = list(self.win.karma_targets()) if want_karma else []
         else:
-            pool = self.win.fetchables(pearl_like=self.pearl_like)
+            pool = self.win.fetchables(pearl_like=self.pearl_like,
+                                       want_karma=want_karma)
         cands = fetch_candidates(self.planner, pool,
                                  diet=self.diet,
                                  pearl_like=self.pearl_like,
@@ -343,6 +346,14 @@ class FruitFetcher:
         if self.timer > CARRY_FALL_TIMEOUT and f.stalk is not None:
             f.stalk = None
         if ready and (self.body.on_floor() or self.body.on_pole):
+            if getattr(f, "is_karma", False) and self.body.flower_karma:
+                # 最终保险：花条满了还攥着业力花 → 松手退回选择，绝不再咬
+                self.body.release_fruit()
+                f.state = "free"
+                f.held_by_hand = None
+                self.phase = "select"
+                self.timer = 0
+                return False
             self.phase = "eat"
             self.timer = 0
             self.chew.reset()            # 每次拿起都重走完整前摇
