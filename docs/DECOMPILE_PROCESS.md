@@ -79,6 +79,10 @@ FSprite 顶点：`_textureRect.y = -anchorY * height`（Unity y↑，`FSprite.cs
 
 * `StaticWorld` 的 `CreatureTemplate` 关系值 → 我们的 `lizard_rel` / `hostile_to` / 好感表。
 * `XAI.Update` 的 `Behavior` 与 `DetermineBehavior` 优先级 → 我们的状态机分支与优先级。
+* AI 分层照 `LizardAI`：`PreyTracker` / `AgressionTracker` / `ThreatTracker` / `NoiseTracker` /
+  `LurkTracker` / `PackTracker` / `InjuryTracker` 各自独立收集信息 → `lizard_ai.py` 的
+  `Memory` / `PreyTracker` / `SocialMemory` / `PackAlert` / `Observation`；
+  `LizardAI.VisualScore` 的视野锥 + `Community` 视线 → `Observation.los` 与 `los_blocked`。
 * `SocialEvent` / `tempLike` / `like` 的加减量 → 我们的好感与记忆字段。
 * 交互钩子：`LickedByPlayer`、`BitByPlayer`、`Violence`、`Collide` → 我们对应的
   `on_licked` / `bite` / `hurt` / 碰撞处理。

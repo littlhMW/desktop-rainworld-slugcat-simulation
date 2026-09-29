@@ -1376,11 +1376,17 @@ class ItemInteractionMixin:
                 e.state = ItemState.GONE
 
     def _step_lizards(self):
-        """推进所有蜥蜴：物理/AI + 咬到猫结算。"""
+        """推进所有蜥蜴：感知快照 → 各自决策 → 一起执行 → 咬到猫结算。
+
+        原版每只蜥蜴是独立 agent，但看到的是同一个世界。旧版是「A 决策 → A 咬 →
+        世界变了 → B 决策」，数组第一只天然占先手（几只也容易像同步抢）。这里改成
+        三段：全体先基于同一份快照感知，再各自决定，最后才执行。
+        """
         self._step_lizard_drag()
         if not self.lizards:
             return
         cur = self.cursor_logical()
+        tick = getattr(self, "_pole_tick", 0)
         # 每只猫带上「死了 / 昏迷」两个标记：蜥蜴靠它们决定叼走、咬死还是追击
         targets = []
         for pet in self.pets:
@@ -1389,16 +1395,52 @@ class ItemInteractionMixin:
                 continue
             targets.append((pet, pet.body.chunk0.x, pet.body.chunk0.y,
                             beh.is_dead(), beh.state == "Stunned"))
+        blockers = self._lizard_blockers()
+        live = [lz for lz in self.lizards
+                if not lz.dead and lz.state == ItemState.FREE]
+        # ① 感知：所有蜥蜴看同一份世界快照
         for lz in self.lizards:
             prey, threats, others, pack = self._lizard_relations(lz)
-            lz.step(self._WL, self._HL, targets=targets, cursor=cur,
-                    prey=prey, cats=targets, threats=threats, others=others, pack=pack)
-            self._lizard_bite(lz)
+            lz.perceive(self._WL, self._HL, targets=targets, prey=prey,
+                        threats=threats, others=others, pack=pack,
+                        lizards=live, blockers=blockers, tick=tick)
+        # ② 决策；黄蜥在这一步之后广播猎物情报，同伴按自己的序号去包夹
+        for lz in self.lizards:
+            lz.decide(self._WL, self._HL)
+        alerts = [a for a in (lz.offer_alert() for lz in self.lizards)
+                  if a is not None]
+        for a in alerts:
+            for lz in self.lizards:
+                if lz.id != a.leader:
+                    lz.absorb_alert(a.decayed(tick))
+        # ③ 执行：这时才真正改世界
+        for lz in self.lizards:
+            lz.act(self._WL, self._HL, cursor=cur)
+            lz.step_physics(self._WL, self._HL, cursor=cur)
+            self._lizard_bite(lz, tick)
             # 蜥蜴的猎物也上认领板（Lizard.intent）：全场只有一份「谁在追什么」
             obj_i, kind_i = lz.intent()
             board_for(self).register_actor(lz, obj_i, kind_i)
         self._cull_flung_corpses()
         self.lizards = [lz for lz in self.lizards if lz.state != ItemState.GONE]
+
+    def _lizard_blockers(self):
+        """蜥蜴的视线遮挡物：杆子（线段）与体型够大的生物（圆）。
+
+        原版蜥蜴的视觉会被环境影响；桌宠里能挡视线的就是杆子和别的生物。每 tick
+        建一次快照，整场蜥蜴共用同一份（「同一份世界快照」这件事也就顺带保证了）。
+        """
+        segs = []
+        for pl in self.poles:
+            if getattr(pl, "state", None) != ItemState.FREE or getattr(pl, "virtual", False):
+                continue
+            segs.append((pl.ax, pl.ay, pl.bx, pl.by, 3.0))
+        circles = [(lz.x, lz.y, lz.body_rad) for lz in self.lizards
+                   if not lz.dead and lz.state == ItemState.FREE]
+        for sc in self.scavengers:
+            if not sc.dead and sc.state == ItemState.FREE:
+                circles.append((sc.x, sc.y, float(getattr(sc, "rad", 14.0))))
+        return (tuple(segs), tuple(circles))
 
     def _lizard_relations(self, lz):
         """按原版关系表（StaticWorld.cs:3668-3726 + LizardAI.ModuleToTrackRelationship）
@@ -1444,8 +1486,14 @@ class ItemInteractionMixin:
         self._shake[0] += 2.0 * lz.facing
         self._shake[1] += 1.4
 
-    def _lizard_bite(self, lz):
-        """咬合结算：蛞蝓猫 → 眩晕；同类 → 原版 Violence(Bite)；蝉乌贼 → 被吃掉。"""
+    def _lizard_bite(self, lz, tick=None):
+        """咬合结算：蛞蝓猫 → 眩晕；同类 → 原版 Violence(Bite)；蝉乌贼 → 被吃掉。
+
+        咬倒 / 咬死一只猫就记进这只蜥蜴的 PreyTracker（原版：追到并咬倒的猎物才算
+        自己的），别人不能随便接手 —— 路过的蜥蜴只处理没人管的尸体。
+        """
+        if tick is None:
+            tick = getattr(self, "_pole_tick", 0)
         ev = lz.bite_event
         if ev is None:
             return
@@ -1460,6 +1508,7 @@ class ItemInteractionMixin:
             death_chance = lz.breed.bite_damage_chance * _pet_bite_death_mult(obj)
             if death_chance > 0.0 and lz.rng.random() < death_chance:
                 beh.kill()
+                lz.prey.claim(obj, tick, killed=True)
                 self._shake[0] += 2.0 * lz.facing
                 self._shake[1] += 1.4
                 return
@@ -1468,10 +1517,12 @@ class ItemInteractionMixin:
             if died:
                 # 致死掷骰没过时 num 仍是 1.5 ⇒ 原版这条路也必死；宠物按掷骰结果放行
                 if beh.apply_stun(max(LIZARD_STUN_TICKS, stun)):
+                    lz.prey.claim(obj, tick, fainted=True)
                     self._shake[0] += 1.6 * lz.facing
                     self._shake[1] += 1.0
                 return
             if beh.apply_stun(stun):
+                lz.prey.claim(obj, tick, fainted=True)
                 self._shake[0] += 1.6 * lz.facing
                 self._shake[1] += 1.0
             return
