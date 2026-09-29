@@ -664,12 +664,14 @@ POLE_THROW_CLIMB_DY = 40.0      # 目标高出这么多（≈一次跳跃的高�
 T_POLE_THROW_RETRY  = 300       # 爬杆也没够到目标：这么久之内不再试
 
 # ── 喜欢珍珠的猫（溪流）：闲着会把地上的珍珠叼起来拿着 ──
-PROTEST_WITNESS_R = 200.0   # 看见同伴被抢的半径（会跟着起哄的目击者范围）
-PROTEST_WITNESS_P = 0.5     # 目击者跟着一起指指点点的概率
+# 目击半径按事件类型分开，见 behavior/events.py 的 WITNESS_R
 ROUTE_RISK_W = 0.25         # 路线风险权重（越谨慎的猫越不愿为省时间去跳）
-GRUDGE_TICKS = 2400         # 被抢的记忆保留多久（≈60 秒）
-LOSS_SCOLD_BASE = 0.35      # 抢位形槽抢输了 → 去指指点点的基准概率
 GRUDGE_SCOLD_MUL = 3.0      # 被抢过的人靠近时，「指指点点」权重放大倍数
+# ── 社会事件 → 反应：记仇阈值与围观时长 ──
+GRUDGE_RESENT_THRESH = 0.05   # 怨气到这个值才算「记仇」；一次被抢的 0.35 衰减到
+                              # 它以下约 2400 tick（≈60 s）—— 这就是记仇的保质期
+TEMPER_CHALLENGE  = 0.06      # 选择「挑战」反应时上来的脾气（更爱顶）
+OBSERVE_TICKS     = 150       # 选择「围观」时的驻足时长（≈3.75 s）
 PEARL_HOARD_P       = 0.25      # 每次重算的概率
 PEARL_HOARD_CD      = 900       # 放下之后这么久才会再去叼
 PEARL_LOOK_TICKS    = 90        # 拿到珍珠后「端在手里看一眼」的时长

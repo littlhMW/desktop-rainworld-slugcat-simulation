@@ -9,6 +9,7 @@ import math
 import random as _random
 
 from ..core.units import clampf, lerp
+from ..behavior.relationship import Relations
 from ..core.gfxmath import _hsl2rgb
 from ..rendering.primitives import (SCAV_STANCE, scav_pose, scav_spear_pose,
                                     scav_shoulder)
@@ -372,7 +373,7 @@ class Scavenger:
                  "last_flip", "last_neutral", "last_look_up",
                  "eyes_pop", "last_eyes_open", "last_eyes_pop", "blink",
                  "_blink_off", "rise_body", "hurt_cd",
-                 "pers", "alert_r", "speed_walk", "aim_ticks", "flee_ticks")
+                 "pers", "alert_r", "speed_walk", "aim_ticks", "flee_ticks", "rel")
 
     @property
     def haul_chunk_mass(self):
@@ -464,6 +465,7 @@ class Scavenger:
         self.variant = variant
         self.like0 = LIKE0_BY_VARIANT.get(variant, 0.5)
         self.like = self.like0     # 对猫的好感 0..1（原版 relationship.like）
+        self.rel = Relations(self)   # 动态关系：好感 / 记恨（事件总线记账）
         self.bring_pearl_home = False   # 原版 GrabObject(DataPearl) 时置位
         self.gift_t = -1                # ≥0 表示回礼倒计时
         self.gift_event = False         # 窗口读走后生成回礼的矛

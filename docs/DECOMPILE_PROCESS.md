@@ -83,7 +83,15 @@ FSprite 顶点：`_textureRect.y = -anchorY * height`（Unity y↑，`FSprite.cs
   `LurkTracker` / `PackTracker` / `InjuryTracker` 各自独立收集信息 → `lizard_ai.py` 的
   `Memory` / `PreyTracker` / `SocialMemory` / `PackAlert` / `Observation`；
   `LizardAI.VisualScore` 的视野锥 + `Community` 视线 → `Observation.los` 与 `los_blocked`。
-* `SocialEvent` / `tempLike` / `like` 的加减量 → 我们的好感与记忆字段。
+* `SocialEvent` / `RelationshipTracker` / `tempLike` / `like` 的加减量与衰减 →
+  `behavior/events.py`（事实总线：谁对谁做了什么）+ `behavior/relationship.py`
+  （静态基线 + 个体记忆 + 近期事件 → 实时关系，按 DECAY 表随时间回基线）；
+  反应系数照 `LizardAI` / `ScavengerAI` 的 Utility 权重落到 `behavior/social_response.py`。
+* `LizardAI.DetermineBehavior` 的 Utility 与 `LizardAI` 的移动规划 → 我们的行为状态机；
+  `PathFinder` / `Pather` 的代价 → `planning/route.py` 的六轴（时间 / 体力 / 风险 /
+  噪音 / 精度 / 后摇）与 `planning/hop_reach.py` 的落点安全边距。
+* 交互站位（原版 `Creature.DangerPos` / 各类 `XAI` 的接近点选择）→ `behavior/pose.py`
+  的 Interaction Pose：目标 + 动作 + 位形槽 → 站位点与朝向。
 * 交互钩子：`LickedByPlayer`、`BitByPlayer`、`Violence`、`Collide` → 我们对应的
   `on_licked` / `bite` / `hurt` / 碰撞处理。
 * 每段照抄的代码都在注释里写 `文件名.cs:行号`。

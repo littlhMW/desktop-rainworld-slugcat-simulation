@@ -61,6 +61,7 @@ _SOCIAL = {
     "wake": "st_wake_peer",
     "gift": "st_gift",
     "crouch_walk": "st_crouch_walk",
+    "watch": "st_watch",
 }
 
 

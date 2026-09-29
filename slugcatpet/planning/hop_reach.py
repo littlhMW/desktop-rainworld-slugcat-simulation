@@ -16,6 +16,7 @@ from .backflip_reach import takeoff_c0_h
 from .jump_arc import get_arc, get_backflip_arc
 from .jump_reach import SETTLE_MAX, SETTLE_VX
 from .pole_hop import land_sweep
+from .route import landing_safe
 
 LAUNCH_STEP = 24.0                  # 起跳点采样步长（目标两侧各取两档）
 LAUNCH_TRIES = (-2, -1, 0, 1, 2)
@@ -115,8 +116,12 @@ class HopReach(Ability):
         if floor - surf[0] > _max_rise(pet.cat.stats) + tuning.GRAB_REACH:
             return None                  # 那块面高过一个跳跃的极限：跳不上去
         launch_y = floor - takeoff_c0_h(pet.cat.stats)
-        return plan_hop(pet, gx, gy, floor, launch_y,
+        plan = plan_hop(pet, gx, gy, floor, launch_y,
                         getattr(pet, "geometry_version", 0))
+        if plan is not None and not landing_safe(plan[4], surf[1], surf[2]):
+            # 落点贴着平台边：理论上跳得到，但这只猫不愿意赌
+            return None
+        return plan
 
     def can_touch(self, goal):
         plan = self._plan(goal)

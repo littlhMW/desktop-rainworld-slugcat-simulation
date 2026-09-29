@@ -19,6 +19,7 @@ from ..rendering.primitives import (blit, draw_fruit, draw_rope, draw_stone,
                                     PEARL_ART_RAD)
 from .enums import ItemState
 from ..behavior.board import board_for
+from ..behavior import events as EV
 from .slimemold import (SlimeMold, _dirvec as _slime_dir, _lerp_map as _slime_lerp_map,
                         TENDRIL_JAG_K)
 from .stone import Stone
@@ -545,6 +546,10 @@ class ItemInteractionMixin:
                 self._shake[0] += 0.5 * (1.0 if s.vx >= 0.0 else -1.0)
                 if killed:
                     self._lizard_death_fx(lz)
+                EV.emit_for(self, EV.CREATURE_KILLED if killed else EV.CREATURE_HURT,
+                            subject=_weapon_owner(s), obj=lz,
+                            intensity=1.0 if killed else 0.55,
+                            x=hit[0], y=hit[1])
                 break
             for sc in self.scavengers:
                 if sc.dead or not s.fling or s.state != ItemState.FREE:
@@ -553,9 +558,13 @@ class ItemInteractionMixin:
                     continue
                 if _seg_dist(s.last_x, s.last_y, s.x, s.y, sc.x, sc.y) >= s.rad + sc.rad:
                     continue
-                sc.hurt(STONE_DMG)
+                _sc_died = sc.hurt(STONE_DMG)
                 if _weapon_owner(s) is not None:
                     sc.on_attacked(0.5)
+                EV.emit_for(self, EV.CREATURE_KILLED if _sc_died else EV.CREATURE_HURT,
+                            subject=_weapon_owner(s), obj=sc,
+                            intensity=1.0 if _sc_died else 0.5,
+                            x=s.x, y=s.y)
                 s.deflect(self._stun_rng)
                 s.fling = False
                 self._shake[1] += 0.3
@@ -1509,6 +1518,7 @@ class ItemInteractionMixin:
             if death_chance > 0.0 and lz.rng.random() < death_chance:
                 beh.kill()
                 lz.prey.claim(obj, tick, killed=True)
+                self._lizard_strike_ev(lz, obj, EV.CREATURE_KILLED, 1.0, tick)
                 self._shake[0] += 2.0 * lz.facing
                 self._shake[1] += 1.4
                 return
@@ -1518,11 +1528,13 @@ class ItemInteractionMixin:
                 # 致死掷骰没过时 num 仍是 1.5 ⇒ 原版这条路也必死；宠物按掷骰结果放行
                 if beh.apply_stun(max(LIZARD_STUN_TICKS, stun)):
                     lz.prey.claim(obj, tick, fainted=True)
+                    self._lizard_strike_ev(lz, obj, EV.CREATURE_HURT, 0.85, tick)
                     self._shake[0] += 1.6 * lz.facing
                     self._shake[1] += 1.0
                 return
             if beh.apply_stun(stun):
                 lz.prey.claim(obj, tick, fainted=True)
+                self._lizard_strike_ev(lz, obj, EV.CREATURE_HURT, 0.7, tick)
                 self._shake[0] += 1.6 * lz.facing
                 self._shake[1] += 1.0
             return
@@ -1537,13 +1549,20 @@ class ItemInteractionMixin:
             self._shake[1] += 0.5
             if killed:
                 self._lizard_death_fx(obj)
+            self._lizard_strike_ev(lz, obj,
+                                   EV.CREATURE_KILLED if killed else EV.CREATURE_HURT,
+                                   0.9 if killed else 0.6, tick)
             return
         if isinstance(obj, Squidcada):            # 被蜥蜴吃掉（原版 Eats 关系）
             obj.die()
             obj.state = ItemState.EATEN
             self._shake[1] += 0.3
         elif isinstance(obj, Scavenger):          # 原版 LizardTemplate→Scavenger Eats 0.8
-            if dmg > 0.0 and obj.hurt(dmg):
+            if dmg > 0.0:
+                died = obj.hurt(dmg)
+                self._lizard_strike_ev(
+                    lz, obj, EV.CREATURE_KILLED if died else EV.CREATURE_HURT,
+                    0.9 if died else 0.6, tick)
                 self._shake[0] += 1.2 * lz.facing
                 self._shake[1] += 0.8
         elif isinstance(obj, NeedleWorm):         # 原版 Eats 0.25(成)/0.3(幼)
@@ -1555,6 +1574,11 @@ class ItemInteractionMixin:
                 if obj.dead:
                     obj.state = ItemState.EATEN
             self._shake[1] += 0.3
+
+    def _lizard_strike_ev(self, lz, victim, kind, intensity, tick=None):
+        """蜥蜴的伤害动作上总线：附近的猫会各自解释（怕 / 恨 / 想救）。"""
+        EV.emit_for(self, kind, subject=lz, obj=victim, intensity=intensity,
+                    tick=tick)
 
     def _draw_lizards(self, p):
         ts = self._ts
@@ -2642,6 +2666,10 @@ class ItemInteractionMixin:
                 self._shake[1] += 0.6
                 if killed:
                     self._lizard_death_fx(lz)
+                EV.emit_for(self, EV.CREATURE_KILLED if killed else EV.CREATURE_HURT,
+                            subject=_weapon_owner(sp), obj=lz,
+                            intensity=1.0 if killed else 0.8,
+                            x=hit_x, y=hit_y)
                 break
             for sc in (self.scavengers if thrown else ()):
                 if sc.dead or sc.state != ItemState.FREE:
@@ -2650,9 +2678,14 @@ class ItemInteractionMixin:
                     continue
                 spd = math.hypot(sp.vx, sp.vy) or 1.0
                 dvec = (sp.vx / spd, sp.vy / spd)
-                sc.hurt(SPEAR_DMG)
+                _sc_died = sc.hurt(SPEAR_DMG)
                 if _weapon_owner(sp) is not None:
                     sc.on_attacked(SPEAR_DMG)
+                EV.emit_for(self,
+                            EV.CREATURE_KILLED if _sc_died else EV.CREATURE_HURT,
+                            subject=_weapon_owner(sp), obj=sc,
+                            intensity=1.0 if _sc_died else 0.75,
+                            x=sp.x, y=sp.y)
                 sp.vx = sp.vy = 0.0
                 sp.stuck = True
                 sp.stuck_angle = sp.angle_deg

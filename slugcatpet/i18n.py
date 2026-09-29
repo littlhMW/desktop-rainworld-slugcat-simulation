@@ -146,6 +146,7 @@ _STR = {
     "st_revive": {"zh": "正在复活同伴", "en": "Reviving a peer"},
     "st_wake_peer": {"zh": "正在摇醒同伴", "en": "Waking a peer"},
     "st_gift": {"zh": "正在送礼", "en": "Giving a gift"},
+    "st_watch": {"zh": "正在围观", "en": "Watching"},
     "st_crouch_walk": {"zh": "正在匍匐潜行", "en": "Sneaking"},
     "st_chase_cursor": {"zh": "正在追鼠标", "en": "Chasing cursor"},
     "st_fetch": {"zh": "正在觅食", "en": "Foraging"},

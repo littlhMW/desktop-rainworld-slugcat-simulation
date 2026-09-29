@@ -28,6 +28,22 @@ MAX_PETS = 10
 # ── 自然生成（设置面板里的「生物列表」）──
 NATURAL_SPAWN_TICKS = 900     # 每约 22s 补一只（勾选哪几种就生成哪几种，不限数量）
 SPAWN_GROUND_KINDS = frozenset(("seedcob", "karmaflower"))   # 只长在地面上的
+# 自然生成时的落点高度带（占窗口高的比例，y 从上往下算）：
+# 会飞的在中层空域，走地的贴着地面，果实 / 灯 / 黏菌可以挂在半空。
+SPAWN_Y_BAND = {
+    "fruit": (0.15, 0.75),
+    "batfly": (0.20, 0.70),
+    "squidcada": (0.15, 0.65),
+    "needleworm": (0.20, 0.70),
+    "lamp": (0.35, 1.00),
+    "slimemold": (0.30, 1.00),
+    "stone": (0.55, 1.00),
+    "spear": (0.55, 1.00),
+    "pearl": (0.55, 1.00),
+    "lizard": (0.60, 1.00),
+    "scavenger": (0.60, 1.00),
+}
+SPAWN_Y_BAND_DEFAULT = (0.55, 1.00)
 
 
 def spawnable_kinds() -> tuple:
@@ -893,7 +909,11 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             self._spawn_kinds.discard(key)
             return
         x = random.uniform(self._WL * 0.1, self._WL * 0.9)
-        y = self._HL if key in SPAWN_GROUND_KINDS else self._HL * 0.3
+        if key in SPAWN_GROUND_KINDS:
+            y = self._HL
+        else:
+            lo, hi = SPAWN_Y_BAND.get(key, SPAWN_Y_BAND_DEFAULT)
+            y = self._HL * random.uniform(lo, hi)
         try:
             fn(x, y)
         except Exception as e:               # 单个放不下不该拖垮整个桌宠

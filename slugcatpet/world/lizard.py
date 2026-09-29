@@ -9,6 +9,7 @@ import math
 import random as _random
 
 from ..core.units import clampf, lerp, inv_lerp
+from ..behavior.relationship import Relations
 from .enums import ItemState
 from .lizard_ai import (CARRY_HURRY, DEN_ARRIVE_R, DOMINANCE_DEFER, WARN_R,
                         ApproachPlan, Memory, Observation, PackAlert, PreyTracker,
@@ -556,7 +557,7 @@ class Lizard:
                  "alert", "warning_t", "stage", "stage_obj", "peers",
                  "_blockers", "_tick",
                  "depth", "last_depth", "head_depth", "last_head_depth", "turn_lift",
-                 "depth_in")
+                 "depth_in", "rel")
 
     def __init__(self, x: float, y: float, breed: LizardBreed | None = None,
                  seed: int = 0, id: int = 0):
@@ -630,6 +631,7 @@ class Lizard:
         self.prey = PreyTracker()    # 「这只是我的猎物」（咬倒 → 归我 → 回巢穴）
         self.plan = None             # 这一帧的接近路线（ApproachPlan）
         self.soc = SocialMemory()    # 同族关系：支配度 / 认怂 / 敬意
+        self.rel = Relations(self)   # 动态关系：好感 / 恐惧 / 记恨（事件总线记账）
         self.soc.dominance = self.dominance
         self.alert = None            # 黄蜥的猎物情报（PackTracker）
         self.warning_t = 0           # 举头警告剩余 tick
@@ -1558,7 +1560,7 @@ class Lizard:
                 continue
             if o.dist > notice:
                 continue
-            score = o.dist / max(0.05, o.weight)
+            score = o.dist / max(0.05, o.weight * (1.0 + 1.5 * self.rel.fears(o.obj)))
             if bestscore is None or score < bestscore:
                 best, bestscore, bestobj = (o.x, o.y), score, o.obj
         self.threat, self.threat_obj = best, bestobj
@@ -1599,6 +1601,7 @@ class Lizard:
             w = o.weight
             if self.soc.defers_to(o.obj, self._tick):
                 w *= 0.35
+            w *= 1.0 + 1.2 * self.rel.hostility_to(o.obj)   # 有仇的更想打
             tiles = (abs(o.x - self.x) + abs(o.y - self.y)) / TILE
             num = w * inv_lerp(10.0 + w * 70.0, 5.0, tiles)
             if num > base:

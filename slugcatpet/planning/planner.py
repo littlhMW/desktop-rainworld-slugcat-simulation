@@ -12,6 +12,7 @@ from .hop_reach import HopReach
 from .jump_reach import JumpReach
 from .pole_reach import PoleDropReach, PoleJumpReach, PoleTongueReach
 from .pyro_reach import PyroJumpReach
+from .route import edge_for, route_cost
 from .tongue_hang_stay import TongueHangStay
 from .tongue_reach import TongueReach
 from .walk_reach import WalkReach
@@ -57,34 +58,27 @@ class Planner:
         out.sort(key=self._route_cost)
         return out
 
-    # ── 路线打分：耗时 × 动作风险（按性格）──
+    # ── 路线打分：六轴（时间 / 体力 / 风险 / 噪音 / 精度 / 后摇）× 性格 ──
     # 原版生物不会精确追求「最短时间」：谨慎的个体宁可绕路走，急躁 / 勇敢的
-    # 才愿意为省几 tick 去赌一个跳跃。这里给每种动作一个风险系数，再按性格
-    # （bravery 越高越不在乎风险）缩放成排序用的代价 —— 只改**排序**，
-    # Candidate.time_est 原样保留（执行器的超时/进度判断仍用真实耗时）。
-    _ROUTE_RISK = {
-        "walk": 0.0, "tongue": 0.15, "tonguehang": 0.15, "climb": 0.20,
-        "hop": 0.25, "poledrop": 0.25, "poletongue": 0.30, "jump": 0.45,
-        "polejump": 0.50, "ceildrop": 0.60, "backflip": 0.70, "pyrojump": 0.90,
-    }
-
+    # 才愿意为省几 tick 去赌一个跳跃。六轴表在 planning/route.py，这里只
+    # 负责把「这只猫此刻的性格」喂进去 —— 只改**排序**，Candidate.time_est
+    # 原样保留（执行器的超时/进度判断仍用真实耗时）。
     def _route_cost(self, c) -> float:
-        # 只有一个轴管「路上敢不敢冒险」：risk_tolerance。bravery 管的是面对
-        # 敌人敢不敢上（见 fsm），两者不重复计。
-        fac = 1.15 - 1.2 * self._axis("risk_tolerance")      # 谨慎 ←→ 莽
-        risk = self._ROUTE_RISK.get(c.ability_key, 0.3)
-        return c.time_est * (1.0 + tuning.ROUTE_RISK_W * risk * fac)
+        edge = edge_for(c.ability_key, c.time_est, c.energy_est)
+        return route_cost(edge, self._pers())
 
-    def _axis(self, name: str) -> float:
-        """取性格轴（0..1）：优先行为层当前人格（运行期可能被替换），再回落种族原型。"""
+    def _pers(self):
+        """当前人格：优先行为层（运行期可能被替换），再回落种族原型。"""
         beh = getattr(self.pet, "behavior", None)
         pers = getattr(beh, "pers", None)
         if pers is None:
             pers = getattr(getattr(self.pet, "cat", None), "personality", None)
-        try:
-            return min(1.0, max(0.0, float(getattr(pers, name, 0.5))))
-        except (TypeError, ValueError):
-            return 0.5
+        return pers
+
+    def _axis(self, name: str) -> float:
+        """取性格轴（0..1）。"""
+        from .route import axis as _axis_of
+        return _axis_of(self._pers(), name)
 
     def touch_candidates(self, goal):
         return self._candidates(goal, "can_touch")

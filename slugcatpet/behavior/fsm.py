@@ -13,7 +13,11 @@ from .blocking import (blocks_path, yield_target_x, on_same_pole,
                         pole_in_the_way, pole_push_role)
 from . import social
 from .board import board_for
-from .anim_intent import PRIO_FORCE, PRIO_URGENT
+from . import events as EV
+from .relationship import WITNESS_SCALE, relations_for
+from .social_response import (SocialContext, target_of,
+                              choose as _choose_response)
+from .anim_intent import PRIO_AMBIENT, PRIO_FORCE, PRIO_URGENT, point_of
 from .desire import build_arbiter, MoodContext
 from .interest import goal_key as _interest_key
 from .fetch import (fetch_ready, BITE_HEAD_NUDGE, EAT_APPROACH, EAT_CHOMP_POSE,
@@ -387,7 +391,6 @@ class BehaviorFSM:
         self._help_target = None
         self._protest_left = 0
         self._protest_target = None
-        self._grudge = {}                # 被抢的记忆：(对方 id, 自己 id) → (对象, 到期)
         self._fight_left = 0
         self._fight_target = None
         self._fight_climber = None       # 为够到高处的目标而爬的那根竖杆
@@ -411,6 +414,11 @@ class BehaviorFSM:
         self._crawl_cd = 0
         self._protest_cd = 0
         self._revive_cd = 0
+        # 动态关系表 + 事件游标：关系由事件驱动、每 tick 衰减（behavior/relationship.py）
+        self._rel = relations_for(self.win)
+        self._ev_seen = -1                # 事件总线游标（事件序号，不是 tick）
+        self._protest_kind = "protest"
+        self._last_response = ("", 0.0)     # 最近一次社会反应（状态面板 / 测试用）
         self._saved_walk = None
         self._fight_throw_t = 0
         self._throw_jumped = False           # 上一次 _throw_weapon_at 只是起跳没出手
@@ -875,6 +883,10 @@ class BehaviorFSM:
         # 选择就能看到同伴们此刻盯上了什么。
         board_for(self.win).sync(self.win, getattr(self.win, "_pole_tick", 0))
         self._board_loss_tick()
+        self._watch_fetch_steal()          # 同样只负责«发现被抢 + 发事件»
+        # 事件总线：消化这一 tick 别人做过的事（关系变化 + 社会反应）。
+        # 决策不写在这一层 —— 这里只把「发生了什么」翻成「我要做什么」。
+        self._event_tick()
 
         # 面敌逻辑（合并旧「躲蜥蜴」+「恐惧」两套）：威胁的唯一入口。
         # 恐慌区（FEAR_TOO_CLOSE_R 内）不管手头有没有正事一律接管；中距离只在
@@ -916,7 +928,7 @@ class BehaviorFSM:
                 and self.state not in _FETCH_NEVER):
             fetch_cands = fetch_ready(self.planner,
                                       self.win.fetchables(want_karma=not self.body.flower_karma),
-                                      diet=self.pers.diet)
+                                      diet=self.pers.diet, unit=self.win)
             if fetch_cands:
                 take = True
                 if self.state in _FETCH_PLAY:
@@ -3462,7 +3474,7 @@ class BehaviorFSM:
             return False
         if not fetch_ready(self.planner,
                            self.win.fetchables(want_karma=not b.flower_karma),
-                           diet=self.pers.diet):
+                           diet=self.pers.diet, unit=self.win):
             return False
         self._break_active_controllers()
         self._act_or_wake("FetchFruit")
@@ -4559,7 +4571,6 @@ class BehaviorFSM:
             v = getattr(self, k)
             if v > 0:
                 setattr(self, k, v - 1)
-        self._watch_fetch_steal()
         if self.grab.active or self._exhausted or self._zerog():
             return
         if self.state not in _WANTS_FROM:
@@ -4640,10 +4651,10 @@ class BehaviorFSM:
         # 3) 被抢了果子 → 去扒拉指指点点那个小偷
         if self._protest_cd <= 0 and self._protest_target is not None:
             th = self._protest_target
-            if th.body.dead:
+            if getattr(getattr(th, "body", None), "dead", True):
                 self._protest_target = None
             else:
-                self._start_protest(th)
+                self._start_protest(th, self._protest_kind)
                 return
         # 4) 反击：被咬/被砸后（anger>0）仇人还在附近
         #    手里/脚边有家伙时也会主动迎战（原版持械的猫）
@@ -4736,9 +4747,13 @@ class BehaviorFSM:
                 return k
         return opts[-1][0]
 
-    def _start_protest(self, thief):
-        """被抢东西 → 过去扒拉指指点点（旁边的同伴看见也会跟着起哄）。"""
-        self._social_kind = "protest"
+    def _start_protest(self, thief, kind="protest"):
+        """被抢东西 → 过去扒拉指指点点（旁边的同伴看见也会跟着起哄）。
+
+        kind 由 SocialResponseChooser 定：protest=指指点点（指责）、
+        point=指着（请求/示意）、watch=围观（留下来看着）。
+        """
+        self._social_kind = kind
         self._social_target = thief
         self._social_left = tuning.PROTEST_TICKS
         self._break_active_controllers()
@@ -4746,11 +4761,12 @@ class BehaviorFSM:
         self._witness_protest(thief)
 
     def _board_loss_tick(self):
-        """抢位形槽抢输了：看向 / 指一指 / 指指点点那个抢先的人。
+        """抢位形槽抢输了 → 生成一条「我的目标被谁拿走了」的事件。
 
-        位形槽满了不是「不能去」，是「去了要排队」——排队这件事在社会层要有个
-        反应（原版拾荒者、蛞蝓猫都会对「被抢先」做出动作）。太远、手里正忙、
-        正在做别的社交动作时就算了（社交动作一律不强制）。
+        位形槽满了不是「不能去」，是「去了要排队」；排队在社会层要有反应。
+        这里只负责生成事实与关系账，具体反应（指 / 指指点点 / 追过去 / 围观 /
+        算了）交给 SocialResponseChooser 按性格与关系定。太远就算了 —— 社交
+        动作一律不强制。
         """
         if self.state not in _WANTS_FROM or self.grab.active or self._zerog():
             return
@@ -4763,42 +4779,23 @@ class BehaviorFSM:
         wb = getattr(winner, "body", None)
         if wb is None or getattr(wb, "dead", False):
             return
-        if self._protest_cd > 0:
-            return
         d = math.hypot(wb.chunk1.x - self.body.chunk1.x,
                        wb.chunk1.y - self.body.chunk1.y)
-        if d > tuning.PROTEST_R:          # 太远就算了：社交动作不强制
+        if d > tuning.PROTEST_R:
             return
-        # 这笔账记上（下次它靠近我的东西，社交动作会偏向指指点点）
-        self._remember_grievance(winner)
-        p = clampf(tuning.LOSS_SCOLD_BASE
-                   * (0.4 + 1.2 * float(getattr(self.pers, "point_like", 0.5)))
-                   * (0.5 + 1.0 * float(getattr(self.pers, "temper", 0.5))), 0.0, 1.0)
-        if self.rng.random() < p:
-            self._protest_target = winner      # 排队到下一个空档去指指点点
-        self.gfx.look(winner, PRIO_URGENT)     # 至少先看它一眼
+        EV.emit_for(self.win, EV.OBJECT_TAKEN, subject=winner, obj=obj,
+                    other=self.win, intensity=0.7)
 
     def _witness_protest(self, thief):
-        """目击同伴被抢：闲着又看得见的猫有概率跟着一起指指点点。
+        """目击同伴被抢：往总线上发一条「有人在指责谁」，谁跟不跟由各自决定。
 
-        原版拾荒者的威吓/指认本来就是群体行为；这里让「一个猫的动作被另一只
-        猫看见、然后产生下一个动作」自然成链。不会引爆全场：只挑此刻无事、
-        还没在抗议冷却里的猫，而且每只猫抗议完自己也会进冷却。
+        原版拾荒者的威吓与指认本来就是群体行为；这里让「一个猫的动作被另一只
+        猫看见、然后产生下一个动作」成链 —— 目击者在自己的 _event_tick 里按
+        性格与关系选反应（高 sociability 的留下来围观，高 point_like 的跟着指），
+        而不是在这里全场广播、人人必做。
         """
-        for p in self._living_peers():
-            if p is self.win or getattr(p.body, "dead", False):
-                continue
-            beh = getattr(p, "behavior", None)
-            if (beh is None or beh._protest_cd > 0 or beh.grab.active
-                    or beh.state not in _WANTS_FROM):
-                continue
-            d = math.hypot(p.body.chunk1.x - self.body.chunk1.x,
-                           p.body.chunk1.y - self.body.chunk1.y)
-            if d > tuning.PROTEST_WITNESS_R:
-                continue
-            if self.rng.random() >= tuning.PROTEST_WITNESS_P:
-                continue
-            beh._protest_target = thief
+        EV.emit_for(self.win, EV.GESTURE_SCOLDED, subject=self.win, obj=thief,
+                    intensity=0.6)
 
     def _watch_fetch_steal(self):
         """盯住正在取的果子：被别人抢先拿走 → 记下小偷，回头去扒拉。"""
@@ -4820,10 +4817,8 @@ class BehaviorFSM:
             # 认不出是谁拿走的：只当「东西没了」，不冤枉最近的同伴
             # （旧版找不到人就退化成 _nearest_peer()，于是经常骂错人）
             return
-        self._remember_grievance(thief)
-        self._protest_target = thief
-        if self.state in _WANTS_FROM and self._protest_cd <= 0:
-            self._start_protest(thief)
+        EV.emit_for(self.win, EV.OBJECT_TAKEN, subject=thief, obj=f,
+                    other=self.win, intensity=0.7)
 
     def _thief_of(self, f):
         """谁拿走了这件东西：先看手上，再看谁正认领它（认领板）。认不出则 None。"""
@@ -4840,20 +4835,104 @@ class BehaviorFSM:
 
     # ── 被抢的记忆：下次它再靠近我的东西，这笔账还在 ──
     def _remember_grievance(self, other) -> None:
-        self._grudge[(id(other), id(self.win))] = (other,
-                                                   getattr(self.win, "_pole_tick", 0)
-                                                   + tuning.GRUDGE_TICKS)
+        """被它抢过 / 被它打过：记一笔怨气（记在关系表里，会随时间衰减）。"""
+        self._rel.note_toward(other, "resentment", 0.35,
+                              getattr(self.win, "_pole_tick", 0))
 
     def _grudge_alive(self, other) -> bool:
-        """这笔账还没过期（对象还活着）。"""
-        e = self._grudge.get((id(other), id(self.win)))
-        if e is None:
-            return False
-        obj, until = e
-        if getattr(obj.body, "dead", False) or until < getattr(self.win, "_pole_tick", 0):
-            del self._grudge[(id(other), id(self.win))]
-            return False
-        return True
+        """这笔账还没过期：怨气还没衰减到阈值以下（旧版是按 tick 计时）。"""
+        return self._rel.resents(other) >= tuning.GRUDGE_RESENT_THRESH
+
+    # ── 事件 → 关系 → 社会反应（FSM 在这里只是执行器）──
+    def _social_ctx(self, dist) -> SocialContext:
+        """反应判断能看到的当下情境。"""
+        busy = 1.0 if self.grab.active else (
+            0.0 if self.state in _WANTS_FROM else 0.6)
+        return SocialContext(
+            busy=busy,
+            threat=1.0 if self._threat_present() else 0.0,
+            far=clampf((dist - tuning.PROTEST_R * 0.5)
+                       / max(1.0, tuning.PROTEST_R * 0.5), 0.0, 1.0))
+
+    def _react(self, event, who, dist):
+        """按事件选一个社会反应并落到状态上（SocialResponseChooser）。
+
+        反应可能是「什么都不做」—— 那不是失败，而是这只猫对这件事的解释。
+        选出来的反应写进 _last_response，状态面板与测试都读它。
+        """
+        if who is None or who is self.win:
+            return None
+        resp, strength = _choose_response(event, self.pers, self._rel,
+                                          self._social_ctx(dist), self.rng)
+        self._last_response = (resp, strength)
+        self.gfx.look(who, PRIO_URGENT)          # 至少先看它一眼
+        if getattr(who, "body", None) is None:
+            # 对象不是同伴（蜥蜴 / 拾荒者）：没有「社交」可言，只剩敢不敢打。
+            # 「挑战 / 指责」在这里都翻成「记上这一笔，回头找它算账」——
+            # 复用被咬之后的报复路径（_wants_tick 第 4 条会去找家伙）。
+            if resp in ("challenge", "scold"):
+                self.body.temper_shift(tuning.TEMPER_CHALLENGE)
+                self.anger = max(self.anger, ANGER_TOTAL)
+            return resp
+        if resp == "scold":
+            self._protest_kind = "protest"
+            self._protest_target = who
+        elif resp in ("point", "ask", "follow"):
+            self._protest_kind = "point"
+            self._protest_target = who
+        elif resp == "challenge":
+            self._protest_kind = "protest"
+            self._protest_target = who
+            self.body.temper_shift(tuning.TEMPER_CHALLENGE)
+        elif resp == "observe":
+            self._protest_kind = "watch"        # 留下来看一会儿（围观本身是身体语言）
+            self._protest_target = who
+            self.gfx.look(who, PRIO_AMBIENT)
+        elif resp == "replace_target" and event.obj is not None:
+            # 算了：这件东西不跟它抢了，转头干别的（认领板黑名单，见 board.py）
+            board_for(self.win).blacklist(self.win, event.obj,
+                                          getattr(self.win, "_pole_tick", 0))
+        return resp
+
+    def _event_tick(self) -> None:
+        """消化总线上的事件：先记关系，再按性格/关系选反应。
+
+        高优先级反应（被咬、被抓、目标死亡）本来就在别的分支逐 tick 处理；
+        这里管的是普通社会事件 —— 谁的东西被谁拿走、谁被谁打了、谁在指谁。
+
+        记账和反应都先过一道「我看见了吗」：当事人全额，旁边看见的目击者按
+        WITNESS_SCALE 打折，目击半径之外的人和这件事无关 —— 否则屏幕另一头
+        发生什么都会改变我对某只猫的看法，那不是关系，是全局广播。
+        """
+        tick = int(getattr(self.win, "_pole_tick", 0) or 0)
+        self._rel.decay(tick)
+        bus = EV.bus_for(self.win)
+        me = self.win
+        dead = bool(getattr(self.body, "dead", False))
+        for ev in bus.since(self._ev_seen):
+            self._ev_seen = ev.seq                  # 看过就推进游标
+            mine = ev.involves(me)
+            if not mine and (dead or not bus.witnesses(ev, (me,))):
+                continue                       # 没看见（或已经死了）：与我无关
+            self._rel.note(ev, scale=1.0 if mine else WITNESS_SCALE)
+            if ev.subject is None or dead:
+                continue
+            who = target_of(ev)
+            if who is None or who is me:       # 该反应的对象是自己：没什么好说的
+                continue
+            if (self._social_left > 0 or self._protest_cd > 0 or self.grab.active
+                    or self._zerog() or self.state not in _WANTS_FROM):
+                continue
+            p = point_of(who)
+            if p is None:
+                continue
+            d = math.hypot(p[0] - self.body.chunk1.x, p[1] - self.body.chunk1.y)
+            # 看见了就记账、就有反应 —— 「值不值得走过去」不在这里一刀切：
+            # 距离折进 ctx.far（越远的「指责 / 挑战」分越低），真要去理论由
+            # 社交态自己的接近与放弃逻辑决定（社交动作一律不强制）。
+            if ev.intensity < EV.REACT_INTENSITY_MIN:
+                continue
+            self._react(ev, who, d)
 
     # ── 睡眠欲望：吃饱后入睡概率从 0 缓慢升到 100 ──
     def _settle_to_rest(self):
@@ -5201,6 +5280,8 @@ class BehaviorFSM:
             if self._social_left <= 0:               # 抱歉/道谢：沿用调用方给的时长
                 self._social_left = self.rng.randint(tuning.SOCIAL_TICKS_MIN,
                                                      tuning.SOCIAL_TICKS_MAX)
+        elif kind == "watch":
+            self._social_left = tuning.OBSERVE_TICKS
         else:
             self._social_left = self.rng.randint(tuning.SOCIAL_TICKS_MIN,
                                                  tuning.SOCIAL_TICKS_MAX)
@@ -5295,6 +5376,9 @@ class BehaviorFSM:
             self.gfx.face(False, PRIO_URGENT)
             if not self._aim_target(tgt):
                 self._end_social()
+        elif kind == "watch":
+            # 围观：站着看着，不动手（围观本身就是一种身体语言）
+            self.gfx.face(False, PRIO_URGENT)
         else:
             # 指指点点：伸-收快速 1~5 下，指完一轮再来一轮
             if self.timer % tuning.SOCIAL_POKE_INTERVAL == 0:
@@ -5373,6 +5457,15 @@ class BehaviorFSM:
         if g.step():
             beh.nuzzle(tuning.REVIVE_TOUCH_TICKS, by=self.win)   # 按完就复活
             self.body.temper_shift(tuning.TEMPER_FEED)
+            if tgt is not self.win:
+                # 救活了谁：上总线（目击者会各自反应），被救的那只记下这份亲近
+                EV.emit_for(self.win, EV.CREATURE_RESCUED, subject=self.win,
+                            obj=tgt, intensity=0.9)
+                rt = relations_for(tgt)
+                rt.note_toward(self.win, "affinity", 0.60,
+                               getattr(self.win, "_pole_tick", 0))
+                rt.note_toward(self.win, "respect", 0.25,
+                               getattr(self.win, "_pole_tick", 0))
             self._end_social()
 
     def _both_hands_on(self, ob) -> bool:
@@ -6090,7 +6183,7 @@ class BehaviorFSM:
         # 已经出手过就让攀爬器按「想下杆」走（到顶后跳杆/爬下），不再第二掷
         if cl.update(self._fight_climb_thrown):
             self._fight_climber_release()
-            self._pole_throw_cd = T_POLE_THROW_RETRY
+            self._pole_throw_cd = tuning.T_POLE_THROW_RETRY
 
     def _st_fightthreat(self, cursor, disturbed):
         b = self.body

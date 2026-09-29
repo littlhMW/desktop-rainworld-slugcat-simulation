@@ -4,6 +4,7 @@ import math
 
 from ..behavior import tuning
 from .interest import goal_key
+from .pose import interaction_goal
 from ..planning import GIVEUP, PlanExecutor, TongueSnatch, obj_goal
 from ..cats.personality import DIET_VEGETARIAN, DIET_SPECIAL, DIET_CARNIVORE
 
@@ -37,9 +38,17 @@ def _seg_point_dist(ax, ay, bx, by, px, py):
     return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
 
 
-def _edible_goal(obj):
-    """可食目标 Goal：离开 free/hanging 即失效。"""
-    return obj_goal(obj, valid=lambda o: o.state in _EDIBLE_STATES, contact="grasp")
+def _edible_goal(obj, unit=None):
+    """可食目标 Goal：离开 free/hanging 即失效。
+
+    给了 unit 就按它排到的位形槽决定站位（Interaction Pose，见 behavior/pose.py）：
+    第一只猫直奔中心（旧行为），第二只站左边、第三只站右边 —— 同一颗果子
+    容得下两只猫，而它们不再抢同一格。
+    """
+    valid = lambda o: o.state in _EDIBLE_STATES
+    if unit is None:
+        return obj_goal(obj, valid=valid, contact="grasp")
+    return interaction_goal(obj, unit, "eat", valid=valid)
 
 
 def fetch_candidates(planner, edibles, diet=None, pearl_like=1.0, unit=None):
@@ -57,10 +66,14 @@ def fetch_candidates(planner, edibles, diet=None, pearl_like=1.0, unit=None):
         meat = getattr(f, "is_meat", False)
         if meat and diet in (DIET_VEGETARIAN, DIET_SPECIAL):
             continue    # 素食/圣徒不自主吃肉
-        g = _edible_goal(f)
+        g = _edible_goal(f, unit)
         if planner.in_cooldown(g):
             continue
         cands = planner.touch_candidates(g)
+        if not cands and unit is not None and getattr(g, "pose", None) is not None \
+                and g.pose.side != 0.0:
+            g = _edible_goal(f)                 # 站位点被挡住：退回直奔中心
+            cands = planner.touch_candidates(g)
         if cands:
             time_est = cands[0].time_est
             if meat and diet == DIET_CARNIVORE:
@@ -76,7 +89,7 @@ def fetch_candidates(planner, edibles, diet=None, pearl_like=1.0, unit=None):
     return out
 
 
-def fetch_ready(planner, edibles, diet=None):
+def fetch_ready(planner, edibles, diet=None, unit=None):
     """触发闸用：早退版 fetch_candidates，仅返回可达列表。"""
     out = []
     for f in edibles:
@@ -86,7 +99,7 @@ def fetch_ready(planner, edibles, diet=None):
             continue
         if getattr(f, "is_meat", False) and diet in (DIET_VEGETARIAN, DIET_SPECIAL):
             continue
-        g = _edible_goal(f)
+        g = _edible_goal(f, unit)
         if planner.in_cooldown(g):
             continue
         if planner.any_touch(g):
