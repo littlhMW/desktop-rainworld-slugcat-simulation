@@ -47,6 +47,7 @@ T_FETCH_CHECK = 8   # 取果闸重算间隔
 HUNT_CD = 620       # 一次捕猎后的冷却（tick）
 CORPSE_HAUL_SEEK_R = 340.0   # 多远之内会主动去拖无用尸体（死蜥蜴…）
 CORPSE_HAUL_REACH = 30.0     # 离尸体这么近＝上手抓住
+CORPSE_HAUL_MAX_DY = 70.0    # 尸体高出自己这么多（躺在别的窗口顶边上）＝够不到
 CORPSE_HAUL_ARRIVE = 26.0    # 猫离屏幕边这么近＝把尸体甩出去
 CORPSE_HAUL_FLING = 14.0     # 甩出去的初速（够飞出窗口被清掉）
 CORPSE_HAUL_TICKS = 1000     # 单趟最长 tick（约 25s，超时松爪）
@@ -3961,6 +3962,8 @@ class BehaviorFSM:
         best, bd = None, CORPSE_HAUL_SEEK_R
         bx = self.body.chunk1.x
         for e in self.win.junk_corpses():
+            if abs(e.y - self.body.chunk1.y) > CORPSE_HAUL_MAX_DY:
+                continue                      # 躺在别的窗口顶边上的：够不到
             d = abs(e.x - bx)
             if d < bd:
                 best, bd = e, d
@@ -3997,8 +4000,9 @@ class BehaviorFSM:
         edge = self._haul_edge()
         dirv = 1.0 if edge > b.chunk1.x else -1.0
         if not getattr(tgt, "hauled", False):
-            if self._haul_left <= 0:               # 走太久没够着：算了
-                self._haul_cd = T_CORPSE_HAUL_RETRY
+            if (self._haul_left <= 0
+                    or abs(tgt.y - b.chunk1.y) > CORPSE_HAUL_MAX_DY):
+                self._haul_cd = T_CORPSE_HAUL_RETRY     # 走太久 / 够不到：算了
                 self._transition("IdleStand")
                 return
             if abs(tgt.x - b.chunk1.x) > CORPSE_HAUL_REACH:
