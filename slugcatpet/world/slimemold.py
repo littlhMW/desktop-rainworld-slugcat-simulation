@@ -140,6 +140,22 @@ class SlimeMold:
         self.state = ItemState.HANGING
         self.reset_tendrils()
 
+    def carry_tendrils(self) -> None:
+        """本体被外部搬走（鼠标拖 / 预览跟光标）时，触须刚性跟着走。
+
+        只靠 ROOT_SPRING 追的话，本体一帧瞬移几十像素，显式积分的弹簧会过冲
+        发散 —— 现场就是触手被拉成一堆长条黏在窗口角上。
+        """
+        dx, dy = self.x - self.last_x, self.y - self.last_y
+        if dx == 0.0 and dy == 0.0:
+            return
+        for t in self.tendrils:
+            t[0] += dx
+            t[1] += dy
+            t[2] += dx
+            t[3] += dy
+        self.last_x, self.last_y = self.x, self.y
+
     def reset_tendrils(self) -> None:
         """触须散布到本体周围（ResetSlime）。"""
         rng = self._rng
@@ -156,8 +172,9 @@ class SlimeMold:
         if self.state == ItemState.EATEN:
             return
         if self.state in (ItemState.CARRIED, ItemState.MOUSE):
-            # kinematic：仅推触须跟随本体
+            # kinematic：本体被手/鼠标搬走，触须先刚性跟住再走弹簧
             self._contact_floor = False
+            self.carry_tendrils()
             self._step_tendrils(WL, HL)
             return
         self.last_x, self.last_y = self.x, self.y

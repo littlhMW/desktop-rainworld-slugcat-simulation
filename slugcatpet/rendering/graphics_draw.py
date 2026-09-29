@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 
 from ..core.units import clampf
@@ -23,7 +23,8 @@ class GraphicsDrawMixin:
         # 腿裁到**当前**脚下那块地为止：趴在窗口顶边上时腿不该垂到下面被看见
         floor = self.body.support_y()
         p.save()
-        p.setClipRect(-1e4, -1e4, 2e4, floor + 1e4)
+        p.setClipRect(QRectF(-1e4, -1e4, 2e4, floor + 1e4),
+                      Qt.ClipOperation.IntersectClip)
         self._draw_legs(p, atlas, ts)
         p.restore()
         self._draw_arms(p, atlas, ts)

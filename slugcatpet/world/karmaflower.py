@@ -25,7 +25,7 @@ from PySide6.QtGui import QColor, QPainter, QPolygonF, QRadialGradient, QTransfo
 from ..core.chunkphys import apply_water
 from ..core.units import clampf, inv_lerp, lerp
 from ..rendering.pixelmode import aa_hint, pen_width
-from ..rendering.primitives import blit
+from ..rendering.primitives import blit, draw_grid_patch
 from .enums import ItemState
 from .fruit import Fruit, _perp
 
@@ -52,6 +52,7 @@ HOVER_DX = 7.0
 ROOT_DX = 9.0
 DRAG_LEAN_MAX = 14.0          # 扎着根被鼠标软拖：花头最多朝光标歪这么多（根不动、茎被抻长＝受力）
 DRAG_POP_DIST = 30.0          # 光标把花头从静止位拉开这么远 ⇒「啵」一下连根拔起
+PLUCK_VMAX = 24.0             # 拔根时从光标继承的最大拽速（再大就把花甩飞了）
 RESET_JITTER = 2.5            # 放置时的随机初态（原版 ResetParts 把部件全堆在花心）
 DAMP_AIR = 0.95               # Part.Update：vel *= 0.95
 DAMP_WATER = 0.7
@@ -233,6 +234,25 @@ class KarmaFlower(Fruit):
     def detach_root(self) -> None:
         """断根（原版被抓住 / 被武器命中时 growPos = null）。"""
         self.grow_pos = None
+
+    def pluck(self, vx: float, vy: float) -> None:
+        """拉到极限被连根拔起：断根 + 继承光标的拽速 + 茎被抽出来的惯性。
+
+        原版 DetatchStalk 只把 growPos 置空（花是被手抓起来的，速度由手给）。
+        桌宠是鼠标往外拽：把这一下拽速继承给花体，花才会跟手飞出去/被拖着走，
+        不会「啵」一声原地定住；茎各节按离花心越远越吃反冲，看着像被抽出来。
+        """
+        sp = math.hypot(vx, vy)
+        if sp > PLUCK_VMAX:
+            k = PLUCK_VMAX / sp
+            vx *= k
+            vy *= k
+        self.detach_root()
+        self.vx, self.vy = vx, vy
+        for i, seg in enumerate(self.stalk_pts):
+            k = (1.0 - i / float(STALK_N)) * 0.6
+            seg[4] -= vx * k
+            seg[5] -= vy * k
 
     def shift(self, dx: float, dy: float) -> None:
         """整株刚性平移（花体 + 花瓣 + 茎 + 根点）。"""
@@ -496,32 +516,18 @@ def _blit_petal(painter, atlas, spr, x, y, ang, d) -> None:
 def _draw_ring(painter, atlas, quad) -> None:
     """原版 TriangleMesh.QuadGridMesh 把 EndGameCircle 铺在 4 个花瓣尖之间。
 
-    quadToQuad 对退化四边形（花瓣被啃光、或被弹簧挤成一条线）会解出奇异矩阵，
-    把 32x32 的花环贴图整块拉爆 —— 先按面积判据挡掉。
+    走 5×5 双线性网格（和原版 MakeGridMesh(..., 5) 同构）：花瓣被啃掉、被物理
+    挤成一条线时花环只是跟着变形，不再有射影映射那种「炸成满屏拉丝」。
     """
-    area = 0.0
-    for i in range(4):
-        ax, ay = quad[i]
-        bx, by = quad[(i + 1) % 4]
-        area += ax * by - bx * ay
-    if abs(area) < 4.0:
-        return
     key = atlas.find_atlas(RING_SPRITE)
     if key is None:
         return
-    w, h = atlas.source_size(key, RING_SPRITE)
+    xs = [q[0] for q in quad]
+    ys = [q[1] for q in quad]
+    if max(xs) - min(xs) < 0.4 and max(ys) - min(ys) < 0.4:
+        return                                  # 四点糊在一起：没啥可铺
     pm = atlas.sprite(key, RING_SPRITE, QColor(*GOLD_RGB))
-    src = QPolygonF([QPointF(0.0, 0.0), QPointF(w, 0.0),
-                     QPointF(w, h), QPointF(0.0, h)])
-    dst = QPolygonF([QPointF(*quad[0]), QPointF(*quad[1]),
-                     QPointF(*quad[2]), QPointF(*quad[3])])
-    tr = QTransform()
-    if not QTransform.quadToQuad(src, dst, tr):
-        return
-    painter.save()
-    painter.setTransform(tr, True)
-    painter.drawImage(0, 0, pm.toImage())
-    painter.restore()
+    draw_grid_patch(painter, pm.toImage(), quad, 5)
 
 
 def _draw_stalk(painter, atlas, kf, ts: float) -> None:

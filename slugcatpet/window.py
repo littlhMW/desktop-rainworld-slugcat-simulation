@@ -590,7 +590,6 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         shake_active = self._shake[0] != 0.0 or self._shake[1] != 0.0
         fx_active = (pet_fx or self.sparks or self.shockwaves or self.fx or self.bubbles
                      or self.cursor_hijack is not None or self._place_mode or fast_stone
-                     or self._any_kill_dialog()   # 舌头跨屏够弹窗
                      or snow_active
                      or shake_active)
         # 零重力/蝙蝠已含在 _dirty_rect，不放这里
@@ -787,15 +786,6 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             self._shake[0] = self._shake[1] = 0.0
         cur = self.cursor_logical()
         self._mouse_pole_tick(cur)
-
-        # 躲杀期间周期性抬窗到弹窗之上
-        if self._any_kill_dialog():
-            self._kill_raise_t = getattr(self, "_kill_raise_t", 0) + 1
-            if self._kill_raise_t % 8 == 1:
-                try:
-                    self.raise_()
-                except Exception:
-                    pass
 
         self._zerog_update()
         cycle_prog = self._cold_update_world()
@@ -1102,47 +1092,11 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                                    *self.slimemolds, *self.pearls])
 
     # ── 按猫杀死编排 ──
-    def _any_kill_dialog(self):
-        return any(getattr(p, "_kill_dialog", None) is not None for p in self.pets)
-
     def request_kill(self, pet):
-        """弹该猫的杀死确认弹窗。"""
-        if pet.behavior is None or pet._kill_dialog is not None:
-            return
-        from .i18n import t
-        from .ui.dialogs import ConfirmDialog
-        from .ui.catmenu import pet_label
-        dlg = ConfirmDialog(t("dlg_confirm_title"),
-                            t("dlg_kill_text", name=pet_label(pet, list(self.pets))),
-                            t("dlg_kill_yes"), t("dlg_kill_no"), parent=self)
-        dlg.finished.connect(lambda result, p=pet: self._on_pet_kill_finished(p, result))
-        pet._kill_dialog = dlg            # 供 FSM 舌点取消
-        n = sum(1 for p in self.pets if p is not pet and p._kill_dialog is not None)
-        dlg.place_center(offset=QPoint(48 * n, 48 * n))   # 多弹窗错位
-        dlg.show()
-        dlg.activateWindow()              # Esc 即刻可用
-        try:
-            self.raise_()                 # 提到弹窗之上
-        except Exception:
-            pass
-
-    def _on_pet_kill_finished(self, pet, result):
-        from PySide6.QtWidgets import QDialog
-        box = pet._kill_dialog
-        pet._kill_dialog = None
-        silent = pet._kill_dismiss_silent
-        pet._kill_dismiss_silent = False
-        do_kill = (result == QDialog.DialogCode.Accepted)
-        by_saint = pet._kill_cancel_by_saint
-        pet._kill_cancel_by_saint = False
-        if box is not None:
-            box.deleteLater()
+        """右键「杀死该猫」：无确认，直接杀死。"""
         if pet.behavior is None:
             return
-        if do_kill:
-            pet.behavior.kill()
-        elif not silent:                  # 静默消解不扣好感
-            pet.behavior.kill_threat_canceled(by_saint)
+        pet.behavior.kill()
 
     # ── 增删猫 ──
     def add_pet(self, variant="saint"):
@@ -1185,7 +1139,6 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if getattr(pet, "controlled", False):
             self.stop_control()               # 先退出控制再移除
         self._drop_carried(pet)
-        pet.dismiss_kill_dialog()             # 静默消解挂起弹窗
         if pet.behavior is not None:          # 收尾行为控制器
             try:
                 pet.behavior._break_active_controllers()
@@ -1240,8 +1193,6 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
     def start_control(self, pet):
         """开始控制该猫。"""
         if pet is None or pet not in self.pets or getattr(pet, "controlled", False):
-            return
-        if pet._kill_dialog is not None:
             return
         beh = pet.behavior
         if beh is None or beh.is_truly_dead() or beh.is_reincarnating() or beh.blocks_interaction():
@@ -1483,13 +1434,19 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if self._shake[0] or self._shake[1]:
             p.translate(self._shake[0], self._shake[1])
 
+        p.save()
+        p.setClipRect(self._ground_clip(), Qt.ClipOperation.IntersectClip)
         if self.fruits:
             self._draw_fruit_ropes(p)
 
         if self.seedcobs:
             self._draw_seedcobs(p)
+        p.restore()
 
         self._draw_fx_under(p)
+
+        p.save()
+        p.setClipRect(self._ground_clip(), Qt.ClipOperation.IntersectClip)
 
         if self.spears:
             self._draw_back_spears(p)
@@ -1529,6 +1486,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             self._draw_needleworms(p)
         if self.scavengers:
             self._draw_scavengers(p)
+        p.restore()
 
         if self.water_surface is not None:
             self._draw_water(p)
@@ -1542,7 +1500,17 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             self._snow.draw(p, self._WL, self._HL, self._scale)
 
         if self._place_mode:
+            p.save()
+            p.setClipRect(self._ground_clip(), Qt.ClipOperation.IntersectClip)
             self._draw_place_hint(p)
+            p.restore()
+
+    def _ground_clip(self):
+        """地面线（HL）以下就是任务栏：生物/物体一律裁在线以上，脚踩在线上。
+
+        绘制在裁剪前已经按 shake 平移过，所以裁剪线的设备坐标要减掉这次平移量。
+        """
+        return QRectF(-1.0e5, -1.0e5, 2.0e5, 1.0e5 + self._HL - self._shake[1])
 
     def mousePressEvent(self, e):
         if self._place_mode:

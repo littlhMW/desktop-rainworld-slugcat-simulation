@@ -127,6 +127,19 @@ NW_ATTEMPT_DIST = 120.0          # Weapon.cs:149 closestCritDist < 120f → Atta
 NW_HATCH_GAP = 14.0              # 卵孵出 2 只幼体时左右分开一点
 PEARL_GRAB_PAD = 6.0
 SPEAR_GRAB_PAD = 8.0
+# 玩家用鼠标甩矛：够快就当成原版 Weapon.Thrown 投出去（带伤害、会自然下坠）
+SPEAR_PLAYER_THROW_MIN = 9.0     # 松手速度下限（低于此只是放下）
+SPEAR_PLAYER_FRC_K = 1.0 / 9.0   # 速度 → frc（0.5..1.0，决定退出投掷的阈值）
+SPEAR_PLAYER_POWER_K = 2.0       # 速度 → 出手速度
+SPEAR_PLAYER_POWER_MIN = 12.0
+SPEAR_PLAYER_POWER_MAX = 44.0
+# 飞矛拖尾（同石头那套）
+SPEAR_TRAIL_MIN_SPEED = 8.0
+SPEAR_TRAIL_LEN_K = 1.5
+SPEAR_TRAIL_LEN_MAX = 46.0
+SPEAR_TRAIL_HALFW = 1.6
+SPEAR_TRAIL_ALPHA = 80
+SPEAR_TRAIL_COLOR = (196, 176, 138)   # 木质杆身的拖尾色
 SCAVENGER_GRAB_PAD = 14.0
 SPEAR_HIT_SPEED = 7.0            # （保留）飞矛最低速度；现按原版只认 Mode.Thrown
 SPEAR_HIT_PAD = 6.0
@@ -659,8 +672,8 @@ class ItemInteractionMixin:
         for pl in self.poles:
             if getattr(pl, "virtual", False):
                 continue        # 光标那截：看不见，只是给猫爬的
-            if getattr(pl, "mimic", None) is not None:
-                continue
+            if getattr(pl, "from_spear", None) is not None:
+                continue        # 插住的矛自己成杆：由矛贴图（_draw_spears）画，别再叠一根杆
             self._draw_pole_rod(p, pl.ax, pl.ay, pl.bx, pl.by, POLE_RAD)
         p.restore()
 
@@ -1024,10 +1037,13 @@ class ItemInteractionMixin:
         if m is None:
             return
         sx, sy, bx, by = self._slime_edge_anchor(cx, cy)
+        m.last_x, m.last_y = m.x, m.y
         m.x, m.y = bx, by
-        if m.stuck_pos is None:                  # 首帧钉锚
+        m.vx = m.vy = 0.0
+        if m.stuck_pos is None:                  # 首帧钉锚（顺带把触须铺到本体上）
             m.stick_to(sx, sy)
-        else:                                    # 后续弹簧跟随
+        else:                                    # 跟随光标：触须刚性跟住 + 锚点更新
+            m.carry_tendrils()
             m.stuck_pos = (sx, sy)
             ux, uy = _slime_dir(bx, by, sx, sy)
             m.rotation = (-ux, -uy)
@@ -1984,6 +2000,11 @@ class ItemInteractionMixin:
         sc.vx = sc.vy = 0.0
         sc.dir_x, sc.dir_y = 1.0, 0.0
         sc.rest = 0
+        sc.facing = 1
+        sc.hd = (1.0, 0.0)
+        sc.zx, sc.zy = 1.0, 0.0
+        sc.lzx, sc.lzy = 1.0, 0.0
+        sc.lay_tentacles()             # 预览不 tick：触须得手动铺到本体前端
         p.save()
         p.setOpacity(0.5)
         draw_squidcada(p, self.atlas, sc, 1.0)
@@ -2246,9 +2267,7 @@ class ItemInteractionMixin:
         if not (0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL):
             return
         nw = self._needleworm_hint_object()
-        nw.x = nw.last_x = cx
-        nw.y = nw.last_y = cy
-        nw.vx = nw.vy = 0.0
+        nw.snap_to(cx, cy)             # 预览不 tick：整条链一起搬过去
         nw.facing = 1
         p.save()
         p.setOpacity(0.5)
@@ -2403,6 +2422,12 @@ class ItemInteractionMixin:
 
     def clear_spears(self):
         for sp in self.spears:
+            pl = sp.pole                            # 钉住的矛＝一截杆：连杆一起撤
+            if pl is not None:
+                if pl in self.poles:
+                    self.poles.remove(pl)
+                sp.pole = None
+                self.geometry_version += 1
             for sc in self.scavengers:
                 if sp is sc.spear:
                     sc.spear = None
@@ -2432,6 +2457,8 @@ class ItemInteractionMixin:
         for sp in self.spears:
             if sp.state != ItemState.FREE:
                 continue
+            if sp.pinned:                    # 钉进墙/地成了杆子：拔不动
+                continue
             d = _dist_to_path([sp.butt(), sp.tip()], cx, cy) - SPEAR_HALF_W
             if d <= SPEAR_GRAB_PAD and d < bestd:
                 best, bestd = sp, d
@@ -2442,6 +2469,8 @@ class ItemInteractionMixin:
         if sp is None:
             return False
         sp.unstuck()
+        sp.stuck_to = None               # 插在生物身上的也能拔下来
+        sp.toss_t = 0
         sp.state = ItemState.MOUSE
         sp.last_x, sp.last_y = pos
         sp.x, sp.y = pos
@@ -2471,16 +2500,27 @@ class ItemInteractionMixin:
         self._spear_drag_last = tuple(cur)
 
     def _end_spear_drag(self) -> bool:
+        """松手：甩得够快＝按原版 Weapon.Thrown 投出去（带伤害、自然下坠），否则放下。"""
         sp = self._dragged_spear
         if sp is None:
             return False
         speed = math.hypot(sp.vx, sp.vy)
-        if speed > self._SPEAR_FLING_CAP:
+        if sp.state == ItemState.MOUSE:
+            sp.state = ItemState.FREE
+        if speed >= SPEAR_PLAYER_THROW_MIN:
+            ux, uy = sp.vx / speed, sp.vy / speed
+            power = clampf(speed * SPEAR_PLAYER_POWER_K,
+                           SPEAR_PLAYER_POWER_MIN, SPEAR_PLAYER_POWER_MAX)
+            frc = clampf(speed * SPEAR_PLAYER_FRC_K, 0.5, 1.0)
+            weaponphys.begin_thrown(sp, 1.0 if ux >= 0.0 else -1.0, frc)
+            sp.vx = ux * power
+            sp.vy = uy * power - weaponphys.LIFT_SPEAR   # 原版出手那一下的小上抬
+            sp.angle_deg = sp.last_angle = weaponphys.vel_angle(sp.vx, sp.vy)
+            sp.thrower = None
+        elif speed > self._SPEAR_FLING_CAP:
             k = self._SPEAR_FLING_CAP / speed
             sp.vx *= k
             sp.vy *= k
-        if sp.state == ItemState.MOUSE:
-            sp.state = ItemState.FREE
         self._dragged_spear = None
         self._spear_drag_last = None
         return True
@@ -2624,16 +2664,24 @@ class ItemInteractionMixin:
 
     # ── 钉住的矛＝对应长度的杆（原版 Spear.cs:435 stuckInWall → horizontal/verticalBeam）──
     def _make_spear_pole(self, sp):
-        """给钉住的矛注册一截同长的杆：竖着钉的成竖杆，横着钉的成横杆。"""
+        """给钉住的矛注册一截同长的杆：竖着钉的成竖杆，横着钉的成横杆。
+
+        原版 Spear.Update 把 stuckInWall 的那一格标成 verticalBeam / horizontalBeam ——
+        即这枝矛本身就是一截杆。端点取矛的杆尖/杆尾，并裁进窗口（埋进墙里的那截不该
+        让猫爬出屏幕）。杆只参与攀爬，不渲染（渲染走矛自己的贴图）。
+        """
         from .pole import Pole, VERTICAL, HORIZONTAL
         tx, ty = sp.tip()
         bx, by = sp.butt()
-        if abs(ty - by) >= abs(tx - bx):
-            lo, hi = (ty, by) if ty <= by else (by, ty)
-            pl = Pole(VERTICAL, sp.x, hi, sp.x, lo, seed=self._pole_seed)
-        else:
-            lo, hi = (tx, bx) if tx <= bx else (bx, tx)
-            pl = Pole(HORIZONTAL, lo, sp.y, hi, sp.y, seed=self._pole_seed)
+        if abs(ty - by) >= abs(tx - bx):                 # 立着钉 → 竖杆
+            x = min(max(sp.x, POLE_RAD), self._WL - POLE_RAD)
+            top, bot = (ty, by) if ty <= by else (by, ty)
+            pl = Pole(VERTICAL, x, bot, x, top, seed=self._pole_seed)
+        else:                                            # 横着钉 → 横杆
+            y = min(max(sp.y, POLE_RAD), self._HL - POLE_RAD)
+            left, right = (tx, bx) if tx <= bx else (bx, tx)
+            pl = Pole(HORIZONTAL, max(left, 0.0), y, min(right, self._WL), y,
+                      seed=self._pole_seed)
         self._pole_seed += 1
         pl.from_spear = sp
         self.poles.append(pl)
@@ -2683,6 +2731,12 @@ class ItemInteractionMixin:
             x = sp.last_x + (sp.x - sp.last_x) * ts
             y = sp.last_y + (sp.y - sp.last_y) * ts
             ang = sp.stuck_angle if sp.stuck else _ang_lerp(sp.last_angle, sp.angle_deg, ts)
+            if sp._thrown and sp.state == ItemState.FREE:
+                spd = math.hypot(sp.vx, sp.vy)
+                if spd > SPEAR_TRAIL_MIN_SPEED:
+                    draw_stone_trail(p, x, y, sp.vx / spd, sp.vy / spd,
+                                     min(spd * SPEAR_TRAIL_LEN_K, SPEAR_TRAIL_LEN_MAX),
+                                     SPEAR_TRAIL_HALFW, SPEAR_TRAIL_COLOR, SPEAR_TRAIL_ALPHA)
             draw_spear(p, self.atlas, x, y, ang, length=SPEAR_DRAW_LEN)
 
     def _draw_spear_hint(self, p):
@@ -3010,7 +3064,11 @@ class ItemInteractionMixin:
         if kf.grow_pos is not None:        # 扎根：软拖 —— 花头朝光标歪、根不动（茎被抻长＝受力）
             kf.begin_drag(cur[0], cur[1])
             if kf.drag_pull() > KARMA_DRAG_POP:
-                kf.detach_root()           # 「啵」一下拔出来；下一 tick 起就像拖物品一样
+                kx = ky = 0.0
+                if self._karmaflower_drag_last is not None:
+                    kx = cur[0] - self._karmaflower_drag_last[0]
+                    ky = cur[1] - self._karmaflower_drag_last[1]
+                kf.pluck(kx, ky)           # 拉到极限：连根拔起并把拽速继承给花体
                 self._karmaflower_drag_last = tuple(cur)
             return
         kf.last_x, kf.last_y = kf.x, kf.y

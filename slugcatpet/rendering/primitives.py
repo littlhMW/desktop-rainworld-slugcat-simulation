@@ -3,8 +3,8 @@ from __future__ import annotations
 import math
 import random as _random
 from PySide6.QtGui import (QColor, QLinearGradient, QPainter, QPainterPath, QPen,
-                           QPolygonF, QRadialGradient)
-from PySide6.QtCore import QPointF, Qt
+                           QPolygonF, QRadialGradient, QTransform)
+from PySide6.QtCore import QPointF, QRectF, Qt
 
 from ..core.units import clampf, lerp
 from .pixelmode import aa_hint, pen_width
@@ -605,6 +605,10 @@ def draw_scavenger(painter, atlas, sc, ts=1.0, body_rgb=None, head_rgb=None,
     painter.save()
     aa_hint(painter)
     painter.setPen(Qt.PenStyle.NoPen)
+    # 脚底以下就是任务栏：把下肢/手裁在自己的落脚线上（原版脚是踩在格子里的）
+    painter.setClipRect(QRectF(-1.0e5, -1.0e5, 2.0e5,
+                                1.0e5 + hy + SCAV_STANCE + 1.5),
+                        Qt.ClipOperation.IntersectClip)
 
     # ── 尾（原版 Tail：tailSegs 段，从髋向后下方垂）──
     nseg = int(iv.get("tail_segs", 0) or 0)
@@ -891,6 +895,89 @@ def _scav_hand(painter, atlas, org, sh_g, tgt_g, flip, s, body_rgb, hand_rgb,
     blit(painter, atlas, SCAV_HAND_B if gripping else SCAV_HAND_A,
          *_scr(f3, org), _vec_deg(_dirvec(f3, f)), -num * 2.0 * 3.0 / 18.0, 1.0,
          hand_col, ax=0.5, ay=1.0)
+
+
+def _affine_tri(s0, s1, s2, d0, d1, d2):
+    """(src 三角 → dst 三角) 的仿射矩阵；退化三角返回 None。"""
+    ax, ay = s1[0] - s0[0], s1[1] - s0[1]
+    bx, by = s2[0] - s0[0], s2[1] - s0[1]
+    det = ax * by - bx * ay
+    if abs(det) < 1e-9:
+        return None
+    Ax, Ay = d1[0] - d0[0], d1[1] - d0[1]
+    Bx, By = d2[0] - d0[0], d2[1] - d0[1]
+    m11 = (Ax * by - Bx * ay) / det
+    m21 = (-Ax * bx + Bx * ax) / det
+    m12 = (Ay * by - By * ay) / det
+    m22 = (-Ay * bx + By * ax) / det
+    dx = d0[0] - (m11 * s0[0] + m21 * s0[1])
+    dy = d0[1] - (m12 * s0[0] + m22 * s0[1])
+    return QTransform(m11, m12, m21, m22, dx, dy)
+
+
+def draw_grid_patch(painter, image, quad, n=5) -> None:
+    """把贴图铺到四边形 quad 上（原版 TriangleMesh.QuadGridMesh 的等价实现）。
+
+    quad 顺序 = (u0,v0) (u1,v0) (u1,v1) (u0,v1)。原版是 n×n 网格 + 双线性插值，
+    每小格各自仿射 —— 所以四边形被挤扁/缺一角时只是跟着变形。绝不能像
+    QTransform.quadToQuad 那样在近退化四边形上解射影矩阵：那会把贴图甩到无穷远，
+    整朵花环炸成满屏拉丝（花瓣被啃掉一片时必炸）。
+    """
+    img = image
+    w, h = img.width(), img.height()
+    if w <= 0 or h <= 0:
+        return
+    painter.save()
+    painter.setPen(Qt.PenStyle.NoPen)
+    # 平行四边形（＝纯仿射）快路：一次画完
+    ex = quad[0][0] + quad[2][0] - quad[1][0] - quad[3][0]
+    ey = quad[0][1] + quad[2][1] - quad[1][1] - quad[3][1]
+    if ex * ex + ey * ey < 0.25:
+        tr = _affine_tri((0.0, 0.0), (w, 0.0), (0.0, h), quad[0], quad[1], quad[3])
+        if tr is not None:
+            painter.setTransform(tr, True)
+            painter.drawImage(0, 0, img)
+        painter.restore()
+        return
+    grid = []
+    for j in range(n + 1):
+        v = j / float(n)
+        row = []
+        for i in range(n + 1):
+            u = i / float(n)
+            k0 = (1.0 - u) * (1.0 - v)
+            k1 = u * (1.0 - v)
+            k2 = u * v
+            k3 = (1.0 - u) * v
+            row.append((quad[0][0] * k0 + quad[1][0] * k1 + quad[2][0] * k2 + quad[3][0] * k3,
+                        quad[0][1] * k0 + quad[1][1] * k1 + quad[2][1] * k2 + quad[3][1] * k3))
+        grid.append(row)
+    for j in range(n):
+        for i in range(n):
+            x0, x1 = w * i / float(n), w * (i + 1) / float(n)
+            y0, y1 = h * j / float(n), h * (j + 1) / float(n)
+            s00, s10, s11, s01 = (x0, y0), (x1, y0), (x1, y1), (x0, y1)
+            p00, p10 = grid[j][i], grid[j][i + 1]
+            p11, p01 = grid[j + 1][i + 1], grid[j + 1][i]
+            for sa, sb, sc, da, db, dc in ((s00, s10, s11, p00, p10, p11),
+                                           (s00, s11, s01, p00, p11, p01)):
+                if abs((sb[0] - sa[0]) * (sc[1] - sa[1])
+                       - (sc[0] - sa[0]) * (sb[1] - sa[1])) < 0.35:
+                    continue                     # 退化小格：这块贴图本来就看不见
+                tr = _affine_tri(sa, sb, sc, da, db, dc)
+                if tr is None:
+                    continue
+                path = QPainterPath()
+                path.moveTo(QPointF(*da))
+                path.lineTo(QPointF(*db))
+                path.lineTo(QPointF(*dc))
+                path.closeSubpath()
+                painter.save()
+                painter.setClipPath(path, Qt.ClipOperation.IntersectClip)
+                painter.setTransform(tr, True)
+                painter.drawImage(0, 0, img)
+                painter.restore()
+    painter.restore()
 
 
 def draw_scavenger_spear(painter, atlas, sc, ts=1.0) -> None:

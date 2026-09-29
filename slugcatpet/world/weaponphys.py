@@ -21,6 +21,10 @@ LIFT_WEAPON = 3.0             # 石头/珍珠的上抬
 EXIT_THROWN_SPEED = 30.0      # Weapon.exitThrownModeSpeed 默认值
 WEAK_EXIT_K = 20.0            # frc < 1 → overrideExitThrownSpeed = Min(30, frc * 20)
 SPEAR_FLIGHT_LIFT = 0.45      # Spear.Update: vel.y += 0.45f（只抵掉一半重力）
+SPEAR_FLIGHT_FLAT_PX = 110.0  # 掷出的矛先平飞这一段（这段内上抬抵掉重力），过了这段
+                              # 回落到原版的 0.45 上抬 → 半重力自然下落。
+                              # 用户点名要「投出的矛需要有一段距离自然下落的物理」；
+                              # 平飞段只改出手后的头一段，远处弹道与原版逐帧一致。
 STICK_MAX_DIST = 560.0        # 超出这个飞行距离不再插墙
 STICK_NEAR_DIST = 140.0       # 近距离必定插墙
 STICK_CHANCE = 0.33           # 远距离插墙概率（ExplosiveSpear 才 0.8）

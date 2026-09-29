@@ -343,6 +343,33 @@ class SlugcatBody:
         c0.vx = c1.vx = tuning.POLE_HOP_VX * d
         c0.vy = c1.vy = -tuning.POLE_HOP_VY
 
+    def play_hop(self, direction, vx, vy_scale=1.0):
+        """玩耍跳：朝 direction、带上横速 vx 的小跳（方向与距离由调用方随机）。
+
+        和 request_jump("stand") 的原地跳不同 —— 原版玩家起跳的横速来自起跳前的
+        地面加速，宠物猫没有输入，只能在起跳这一帧把横速直接写进两个 chunk。
+        朝向也跟着跳的方向（玩耍时的面向倾向）。
+        """
+        c0, c1 = self.chunk0, self.chunk1
+        d = 1.0 if direction >= 0 else -1.0
+        c0.pinned = c1.pinned = False
+        self.on_pole = False
+        self.animation = None
+        self.feet_stuck = None
+        self.crawl_anchor = None
+        self.crawl_pose = 0.0
+        self.standing = True
+        self._jump_pending = self._jump_hold = self._jump_hold_left = None
+        self.facing = int(d)
+        self.move_dir = int(d)
+        self.walk_target_x = None
+        self.coyote = 0
+        s = self.stats
+        c0.vy = s.jump_head * float(vy_scale)
+        c1.vy = s.jump_feet * float(vy_scale)
+        c0.vx = c1.vx = float(vx) * d
+        self.jump_boost = s.jump_boost
+
     def backflip_launch(self, direction, boosted=False):
         """站立位后空翻发射。"""
         c0, c1 = self.chunk0, self.chunk1

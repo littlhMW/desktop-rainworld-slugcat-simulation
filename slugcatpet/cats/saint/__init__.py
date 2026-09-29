@@ -43,7 +43,6 @@ SAINT_DEF = CatDef(
                         toy_pref={"ceiling_play": 1.4}),
     tuning={
         "temper_ascend_gate": -0.20,          # ≤此值才可超度
-        "temper_kill_cancel_saint": -0.20,    # 舌头取消杀死弹窗的好感扣减
     },
     fsm_mount=_fsm_mount,
     wip=False,

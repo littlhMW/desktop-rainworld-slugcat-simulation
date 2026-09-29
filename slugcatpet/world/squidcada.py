@@ -144,10 +144,7 @@ class Squidcada:
         self.hd = (1.0 if self.facing >= 0 else -1.0, 0.0)
         self.zx, self.zy = self.hd
         self.lzx, self.lzy = self.zx, self.zy
-        # 4 条触须各自带一点初始散开量：原版是 4 个独立 Limb，飘着就自然分开
-        self.tent = [(float(x) + _TENT_SPREAD[i][0], float(y) + 6.0 + _TENT_SPREAD[i][1],
-                      0.0, 0.0) for i in range(4)]
-        self.tent_last = list(self.tent)
+        self._lay_tent_pts(x, y)
         # ── 个体差异：对照 Cicada.GenerateIVars ──
         # fatness = ClampedRandomVariation(gender ? 0.6 : 0.4, 0.1, 0.5) * 2
         base = 0.6 if self.male else 0.4
@@ -172,6 +169,16 @@ class Squidcada:
         self._contact_floor = False
         self._contact_ceil = False
         self._contact_x = 0
+
+    def _lay_tent_pts(self, x, y) -> None:
+        """触须铺到本体前端（原版 4 条独立 Limb 的初始位）。"""
+        self.tent = [(float(x) + _TENT_SPREAD[i][0], float(y) + 6.0 + _TENT_SPREAD[i][1],
+                      0.0, 0.0) for i in range(4)]
+        self.tent_last = list(self.tent)
+
+    def lay_tentacles(self) -> None:
+        """把触须按当前本体位重新铺开（放置预览用：预览不 tick，不铺就留在原点）。"""
+        self._lay_tent_pts(self.x, self.y)
 
     # ── 查询 ──
     @property

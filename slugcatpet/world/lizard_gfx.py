@@ -216,7 +216,7 @@ def _draw_body(p, lz, spine, rads):
             thw = [rads[idx - 1] * 0.98] + [r * 0.98 for r in rads[idx:]]
             tpath = _strip_path(tpts, thw)
             p.save()
-            p.setClipPath(path)
+            p.setClipPath(path, Qt.ClipOperation.IntersectClip)
             tg = QLinearGradient(QPointF(*tpts[0]), QPointF(*tpts[-1]))
             for k in range(len(tpts)):
                 t = k / max(1, len(tpts) - 1)

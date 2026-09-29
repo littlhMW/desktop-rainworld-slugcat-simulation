@@ -12,7 +12,6 @@ import math
 import random as _random
 
 from ..core.chunkphys import aabb_wall_collide, apply_water
-from ..core.units import clampf
 from . import weaponphys as wp
 from .enums import ItemState
 
@@ -114,8 +113,12 @@ class Spear:
         a = math.radians(self.stuck_angle if self.stuck else self.angle_deg)
         return (self.x - math.sin(a) * LEN * 0.5, self.y + math.cos(a) * LEN * 0.5)
 
-    def stick(self, WL: float, HL: float, wall: int = 0) -> None:
-        """插入地面（wall=0）或左右墙（wall=±1）。钉住的矛＝一截同长的杆。"""
+    def stick(self, WL: float, wall: int) -> None:
+        """掷进左右墙（wall=±1）：杆横着插住、杆尖埋进墙里，成为一截同长的横杆。
+
+        地面插矛不走这里（原版 ContactPoint.y 分支标 verticalBeam），见
+        rest_on_ground（斜插，可拾取）与 embed_vertical（垂直、成竖杆、不可拾取）。
+        """
         self.stuck = True
         self.pinned = True                         # 原版：stuckInWall 的格子标成 beam
         self._thrown = False
@@ -124,12 +127,9 @@ class Spear:
         self.spin = 0.0
         self.spinning = False
         self._still = 0
-        if wall:                                    # 掷进侧墙：杆横着插住
-            self.stuck_angle = 90.0 if wall > 0 else 270.0
-            self.x = (WL - LEN * 0.5 + self.embedded) if wall > 0 else (LEN * 0.5 - self.embedded)
-        else:                                       # 插地：立住
-            self.y = HL - LEN * 0.5 + self.embedded
-            self.stuck_angle = clampf(self.angle_deg, 45.0, 135.0)
+        self.stuck_angle = 90.0 if wall > 0 else 270.0
+        self.x = (WL - LEN * 0.5 + self.embedded) if wall > 0 else (LEN * 0.5 - self.embedded)
+        self._sync_interp()
 
     def unstuck(self) -> None:
         self.stuck = False
@@ -144,11 +144,11 @@ class Spear:
         self._still = 0
         self.spin = wp.spear_random_spin(self._rng, self.room_gravity)
 
-    def rest_on_ground(self) -> None:
+    def rest_on_ground(self, HL: float) -> None:
         """Spear.Update(Free+spinning) 的收势：停转、速度清零、杆尖朝下插进地面。
 
         原版：rotation = DegToVec(Lerp(-50,50,rand)+180) —— 杆尖向地，杆身斜插出地面。
-        位置不动（不像旧实现那样瞬移到立杆位），所以落地不再有跳动/抖动。
+        位置不跳变（只在杆尖越到地面线以下时把整根杆抬回来），所以落地不抖也不穿地。
         """
         self.spinning = False
         self._still = 0
@@ -157,6 +157,34 @@ class Spear:
         self.stuck_angle = self.angle_deg
         self.vx = self.vy = 0.0
         self.stuck = True
+        self._seat_on_floor(HL)
+        self._sync_interp()
+
+    def _sync_interp(self) -> None:
+        """停住的矛不再走 step：把插值基准（last_*）钉到当前位姿。
+
+        绘制按 last→cur 插值；停住的物体若 last 停在上一 tick，就会每帧在
+        「上一 tick 的位置 ↔ 最终位置」之间来回画 —— 用户看到的「矛抖抖抖」。
+        """
+        self.last_x = self.x
+        self.last_y = self.y
+        self.last_angle = self.angle_deg
+
+    def _flight_far(self) -> bool:
+        """是否已飞出「平飞段」（出手后先抵消重力飞一段，之后自然下落）。"""
+        return math.hypot(self.x - self._throw_x, self.y - self._throw_y) >= wp.SPEAR_FLIGHT_FLAT_PX
+
+    def _seat_on_floor(self, HL: float) -> None:
+        """杆尖若越到地面线（HL）以下，把整根杆抬回去让杆尖正好触地。
+
+        地面线以下就是任务栏，露出去就是「垂到任务栏下」；杆尖抵线看起来才像插进地里。
+        """
+        a = math.radians(self.stuck_angle)
+        over = (self.y + abs(math.cos(a)) * LEN * 0.5) - HL
+        if over > 0.0:
+            self.y -= over
+            if self.last_y > self.y:
+                self.last_y = self.y
 
     def embed_vertical(self, HL: float) -> None:
         """杆身竖直钉进地面（原版 Spear 撞地：ContactPoint == throwDir 才插住）。
@@ -173,7 +201,8 @@ class Spear:
         self.pinned = True
         self.angle_deg = self.last_angle = 180.0     # 杆尖朝下
         self.stuck_angle = 180.0
-        self.y = HL - LEN * 0.5 + self.embedded
+        self.y = HL - LEN * 0.5                      # 杆尖抵住地面线
+        self._sync_interp()
 
     def step(self, WL: float, HL: float) -> None:
         if self.stuck or self.state in (ItemState.MOUSE, ItemState.CARRIED):
@@ -189,9 +218,13 @@ class Spear:
         self.last_angle = self.angle_deg
         if self.no_self_t > 0:
             self.no_self_t -= 1
-        if self._thrown:                            # Spear.Update: vel.y += 0.45f（y↑）
-            self.vy -= wp.SPEAR_FLIGHT_LIFT
-        self.vy += self.gravity * self.room_gravity
+        # 掷出：出手后先平飞一段（上抬抵掉重力），过了 SPEAR_FLIGHT_FLAT_PX 回落到
+        # 原版 Spear.Update 的 vel.y += 0.45f（半重力自然下落）。没掷出的照常吃满重力。
+        g = self.gravity * self.room_gravity
+        if not self._thrown:
+            self.vy += g
+        elif self._flight_far():
+            self.vy += g - wp.SPEAR_FLIGHT_LIFT
         self.angle_deg = (self.angle_deg + self.spin) % 360.0
         apply_water(self, self.water_y, self.buoyancy, self.water_friction,
                     self.room_gravity, self.air_friction)
@@ -210,7 +243,7 @@ class Spear:
                 if step_y > abs(step_x) * FLOOR_EMBED_STEEP:
                     self.embed_vertical(HL)
                 else:
-                    self.rest_on_ground()
+                    self.rest_on_ground(HL)
                 return
             if self._contact_ceil:
                 # 顶边也是平面：不弹，直接清掉竖直速度交给重力落回
@@ -219,7 +252,7 @@ class Spear:
                 return
             if self._contact_x == self._throw_dir:  # Weapon.Update: ContactPoint == throwDir
                 if wp.stick_roll(self, self._rng):
-                    self.stick(WL, HL, wall=self._throw_dir)
+                    self.stick(WL, self._throw_dir)
                 else:
                     self._enter_free()              # Weapon.HitWall：弹开 + 随机翻滚
             elif wp.exit_check(self):
@@ -234,7 +267,7 @@ class Spear:
             else:
                 self._still = 0
             if self._contact_floor or self._still > 20:
-                self.rest_on_ground()
+                self.rest_on_ground(HL)
         elif moved > 6.0:
             # 未翻滚且位移够大 → 起转（SetRandomSpin 后 spinning=True，之后转速固定）
             self.spinning = True

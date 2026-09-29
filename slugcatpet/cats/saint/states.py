@@ -6,7 +6,6 @@ from ...behavior.fsm import BehaviorFSM
 from .ascension import Ascension
 from .climb import TongueClimber, CeilingHanger
 from .cursorlick import CursorLicker, RELICK_COOLDOWN
-from .dodgekill import KillDodger
 
 T_GRAB_TO_ASCEND = 200      # 被拎住这么久且满足超度门 → 直接超度
 
@@ -17,7 +16,6 @@ def mount(fsm):
     if caps.tongue:
         _mount_climb(fsm)
         _mount_cursorlick(fsm)
-        _mount_dodgekill(fsm)
     if caps.ascension:
         _mount_ascension(fsm)
 
@@ -35,19 +33,6 @@ def mount(fsm):
                 fsm._transition("Ascension")
 
         fsm.register_ticker(ascend_threat_tick)
-    if caps.tongue or caps.ascension:
-
-        def threat_response():
-            # 满足超度门→超度并消弹窗；否则舌躲杀（游泳中不进）
-            if caps.ascension and _ascend_ready(fsm):
-                fsm._dismiss_kill_dialog()
-                fsm._transition("Ascension")
-            elif caps.tongue and not fsm.body.swimming:
-                fsm._transition("DodgeKill")
-
-        fsm.threat_response = threat_response
-
-
 def _mount_climb(fsm):
     """爬墙链：RelocateToWall → TongueClimb → CeilingHang。"""
 
@@ -178,47 +163,6 @@ def _mount_cursorlick(fsm):
         fsm._relick_cooldown = RELICK_COOLDOWN
 
     fsm.register_state("CursorLick", enter=enter, tick=st_cursorlick,
-                       brk=brk, kill_break=brk)
-
-
-def _mount_dodgekill(fsm):
-    """舌躲杀 DodgeKill：杀死弹窗存在期间 KillDodger 舌点「取消」。"""
-
-    def enter():
-        fsm.gfx.hand_aim["l"] = None
-        fsm.gfx.hand_aim["r"] = None
-        fsm.body.set_posture(True)
-        fsm.body.stop_walk()
-        fsm.dodge = KillDodger(fsm.win, fsm.rng)
-
-    def st_dodgekill(cursor, disturbed):
-        if getattr(fsm.win, "_kill_dialog", None) is None:
-            brk()
-            fsm._transition("IdleStand" if fsm.body.on_floor() else "Airborne")
-            return
-        if fsm.grab.active:
-            brk()
-            fsm._transition("Dragged")
-            return
-        if fsm.dodge is None:
-            brk()
-            fsm._transition("IdleStand")
-            return
-        done = fsm.dodge.update()
-        if done:
-            brk()
-            fsm._transition("IdleStand" if fsm.body.on_floor() else "Airborne")
-
-    def brk():
-        if fsm.dodge is not None:
-            fsm.dodge.release()
-            fsm.dodge = None
-        fsm._break_tongue()
-        fsm.body.stop_walk()
-        fsm.gfx.hand_aim["l"] = None
-        fsm.gfx.hand_aim["r"] = None
-
-    fsm.register_state("DodgeKill", enter=enter, tick=st_dodgekill,
                        brk=brk, kill_break=brk)
 
 

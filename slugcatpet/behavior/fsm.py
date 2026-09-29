@@ -68,6 +68,9 @@ COB_THROW_CD = 24         # 两矛之间的最短间隔（等矛飞出去、看�
 COB_TRY_MAX = 5           # 一次啃食预算里最多掷几次矛
 COB_JUMP_APEX = 46.0      # 站立起跳能把掷矛线抬高的量（实测 49.5，留点余量）
 COB_STAND_EPS = 4.0       # 站位的收尾公差（WALK_STOP_EPS=2，留点姿态余量）
+COB_SIDE_EPS = 6.0        # 猫离豆荚中点多近算「站在正下方」（方向会乱翻，得先退开）
+COB_STAND_STEPS = (60.0, 46.0, 34.0, 24.0, 16.0)
+                          # 掷矛位的候选距离（从远到近）：站远处掷不中就往豆荚挪一档
 T_CRAWL_RETRY = 300       # 匍匐躲避冷却
 T_PROTEST_RETRY = 900     # 抗议被抢东西的冷却
 T_REVIVE_RETRY = 200      # 复活失败重试
@@ -117,9 +120,9 @@ ZEROG_POLE_SEEK_PROB = 0.5
 ZEROG_POLE_PLAY_TICKS = 120
 ZEROG_SLIDE_PERIOD = 30
 # 零重力下保留原态，其余打断转漂浮 idle
-_ZEROG_KEEP = frozenset(("IdleStand", "Dragged", "Dead", "Stunned", "Ascension", "DodgeKill", "Swimming"))
+_ZEROG_KEEP = frozenset(("IdleStand", "Dragged", "Dead", "Stunned", "Ascension", "Swimming"))
 # 浸水下保留态，其余打断转 Swimming
-_SWIM_KEEP = frozenset(("Swimming", "Ascension", "Dragged", "Dead", "Stunned", "DodgeKill",
+_SWIM_KEEP = frozenset(("Swimming", "Ascension", "Dragged", "Dead", "Stunned",
                         "TongueClimb", "CeilingHang"))
 
 ARM_REACH_NEAR = 24.0
@@ -147,24 +150,24 @@ _STATE_TO_MOOD = {"PoleClimb": "pole_climb",
                   "ChaseCursor": "play_cursor", "Socialize": "socialize"}
 # 疲劳强制休息不打断的态
 _EXHAUST_BLOCKED = frozenset(("Dragged", "Dead", "Stunned", "Ascension",
-                              "DodgeKill", "WakeSequence", "LieDown", "Sleep", "SeekWarmth",
+                              "WakeSequence", "LieDown", "Sleep", "SeekWarmth",
                               "Swimming"))
 # 趋暖强制中断不打断的态
 _COLD_BLOCKED = frozenset(("Dragged", "Dead", "Stunned", "Ascension",
-                           "DodgeKill", "WakeSequence", "SeekWarmth", "Swimming"))
+                           "WakeSequence", "SeekWarmth", "Swimming"))
 # 避水强制中断不打断的态
 _WATER_BLOCKED = frozenset(("RelocateToWall", "TongueClimb", "CeilingHang", "Swimming",
-                            "Dragged", "Dead", "Stunned", "Ascension", "DodgeKill"))
+                            "Dragged", "Dead", "Stunned", "Ascension"))
 # 取果触发不打断的态
 _FETCH_NEVER = frozenset(("FetchFruit", "Ascension", "Dragged", "Dead", "WakeSequence",
-                          "Stunned", "DodgeKill", "SeekWarmth", "Swimming",
+                          "Stunned", "SeekWarmth", "Swimming",
                           "LieDown", "Sleep",          # 趴/睡时别把猫叫起来去取果
                           "PyroMaul", "RivSnatch", "CatchFly", "ItemPlay"))
 # play 态接管取果需果在舌头射程内
 _FETCH_PLAY = frozenset(("PoleClimb", "HPole", "CeilingHang"))
 
 
-_EN_VIGOROUS = frozenset(("TongueClimb", "PoleClimb", "HPole", "CeilingHang", "DodgeKill", "Swimming",
+_EN_VIGOROUS = frozenset(("TongueClimb", "PoleClimb", "HPole", "CeilingHang", "Swimming",
                           "PyroRomp", "RivFlip", "PyroMaul", "RivSnatch"))
 _EN_LIGHT = frozenset(("RelocateToWall", "PostThrowWander", "FetchFruit", "AngryStone",
                        "WakeSequence", "CursorLick", "SeekWarmth", "SeekHPole", "MakeWay",
@@ -315,7 +318,6 @@ class BehaviorFSM:
         self._poleclimb_start = None
         self._hp = None
         self._hp_phase = None
-        self.dodge = None
         self.fetch = None
         self.planner = Planner(window)
         self._fetch_cooldown = 0
@@ -340,6 +342,7 @@ class BehaviorFSM:
         self._cob_seek_cd = 0
         self._cob_try = 0             # 这一轮打豆荚已经掷了几次矛
         self._cob_throw_cd = 0
+        self._cob_off_i = 0           # 掷矛位候选（COB_STAND_STEPS）的下标
         self._play_left = 0
         self._social_left = 0
         self._social_kind = "pet"
@@ -452,6 +455,7 @@ class BehaviorFSM:
         self._itemplay_left = 0
         self._itemplay_phase = 0
         self._itemplay_side = "r"
+        self._play_face = 1              # 玩耍时的朝向倾向（进玩法时随机一次）
         # 觅食欲望：吃到东西归 0，慢慢涨回 1 才想再找吃的
         self._food_urge = 1.0
         self._food_prev = self.body.food
@@ -495,7 +499,6 @@ class BehaviorFSM:
         self._ext_state_moods = {}
         self._ext_tickers = []
         self._interaction_blockers = set()
-        self.threat_response = None
         self.drag_takeover = None
         self.stun_takeover = None
         cat = getattr(self.win, "cat", None)
@@ -572,9 +575,6 @@ class BehaviorFSM:
             self.body.stop_walk()
             self._hp = None
             self._hp_phase = None
-        if self.dodge is not None:
-            self.dodge.release()
-            self.dodge = None
         if self.body.carried_fruit is not None:
             self.body.carried_fruit.stalk = None
             self.body.carried_fruit.state = "free"
@@ -633,7 +633,6 @@ class BehaviorFSM:
             return
         had_flower = self.body.flower_karma
         self._death_karma_settle()
-        self._dismiss_kill_dialog()
         self._break_active_controllers()
         self.grab.force_release()
         self._hibernating = False
@@ -651,7 +650,6 @@ class BehaviorFSM:
             return
         had_flower = self.body.flower_karma
         self._death_karma_settle()
-        self._dismiss_kill_dialog()
         self._break_active_controllers()
         self.grab.force_release()
         self.body.swim_target = None
@@ -672,7 +670,6 @@ class BehaviorFSM:
         pyro_explosion(self.win, self.body)
         had_flower = self.body.flower_karma
         self._death_karma_settle()
-        self._dismiss_kill_dialog()
         self._break_active_controllers()
         self.grab.force_release()
         self.body.swim_target = None
@@ -685,10 +682,6 @@ class BehaviorFSM:
         self._reincarnate = True
         self._revive_timer = tuning.REINCARNATE_TICKS
         self._schedule_karma_flower(had_flower)
-
-    def kill_threat_canceled(self, by_saint: bool):
-        self.body.temper_shift(self.win.cat.tuning["temper_kill_cancel_saint"] if by_saint
-                               else tuning.TEMPER_KILL_CANCEL_HUMAN)
 
     def _death_karma_settle(self) -> bool:
         """死亡业力结算：有业力花条（原版 reinforcedKarma）→ 消耗花条、业力不掉；
@@ -804,18 +797,11 @@ class BehaviorFSM:
             f.state = "free"
         self._prev_zerog = z
 
-        if (getattr(self.win, "_kill_dialog", None) is not None
-                and self.threat_response is not None
-                and self.state not in ("Sleep", "Dead", "DodgeKill", "Ascension")):
-            self._break_active_controllers()
-            self.grab.force_release()
-            self.threat_response()
-
         self.grab.tick()
         if (self.grab.active and self.state not in
                 ("Dragged", "Ascension", "Dead", "TongueClimb", "CeilingHang",
                  "FetchFruit", "CursorLick", "AngryStone", "PoleClimb", "HPole",
-                 "DodgeKill", "SeekHPole")):
+                 "SeekHPole")):
             self._transition("Dragged")
         if self.grab.active:
             self.grab.drag(cursor) if cursor is not None else None
@@ -5430,6 +5416,7 @@ class BehaviorFSM:
         self._cob_eat_t = 0
         self._cob_try = 0
         self._cob_throw_cd = 0
+        self._cob_off_i = 0           # 掷矛位候选（COB_STAND_STEPS）的下标
         self.body.set_posture(True)
         self.body.stop_walk()
 
@@ -5532,6 +5519,7 @@ class BehaviorFSM:
 
         stand_x：假装站在这个 x 上掷（默认＝现在的位置）。挑站位时要用它逐个试：
         命中与否跟掷出点的 x 有关（豆荚斜着挂，同一个高度上也有一段段的空隙）。
+
         """
         from ..world.items import SPEAR_COB_PAD, _cob_hit
         from ..world.spear import AIR_FRICTION, GRAVITY, RAD as SPEAR_RAD
@@ -5551,14 +5539,17 @@ class BehaviorFSM:
         ox = c0.x if stand_x is None else float(stand_x)
         x = ox + float(dir_x) * THROW_ORIGIN_DX
         y = c0.y - THROW_ORIGIN_DY
+        tx0, ty0 = x, y                              # 出手点：平飞段按到这里的距离算
         lx = ox - float(dir_x) * THROW_ORIGIN_DX      # 原版 firstFrameTraceFromPos
         ly = c0.y
         grav = GRAVITY * self.win.room_gravity
         probe = _ShotProbe(SPEAR_RAD)
         for _ in range(64):
-            if not toss:
-                vy -= weaponphys.SPEAR_FLIGHT_LIFT
-            vy += grav
+            if toss:
+                vy += grav           # 轻抛没进 Mode.Thrown → Spear.step 里吃满重力
+            elif math.hypot(x - tx0, y - ty0) >= weaponphys.SPEAR_FLIGHT_FLAT_PX:
+                vy += grav - weaponphys.SPEAR_FLIGHT_LIFT       # 平飞段之后：原版半重力
+            # 平飞段内不加重力（上抬抵掉）
             vx *= AIR_FRICTION
             vy *= AIR_FRICTION
             x += vx
@@ -5577,10 +5568,28 @@ class BehaviorFSM:
         """豆荚整个在掷矛线上方 → 得跳起来（或在空中）才打得到。"""
         return self._cob_band(cb)[1] < self._throw_line()
 
+    def _cob_side(self, cb) -> int:
+        """从哪边打（＝掷矛方向）：猫在豆荚哪一侧就站哪一侧、朝豆荚掷。
+
+        正下方（|dx| ≤ COB_SIDE_EPS）时方向会逐帧翻：挑离墙更近的一侧退开。
+        """
+        mid = (cb.p0[0] + cb.p1[0]) * 0.5
+        dx = self.body.chunk0.x - mid
+        if abs(dx) > COB_SIDE_EPS:
+            return 1 if dx < 0.0 else -1
+        return 1 if mid < self.win._WL * 0.5 else -1
+
     def _cob_stand_x(self, cb) -> float:
-        """站到哪个水平位置：挑离掷矛线更近的那个 chunk。"""
+        """站到哪个水平位置：挑离掷矛线更近的那个 chunk，再往猫这侧退 COB_STAND_DX。
+
+        不能站在 chunk 正下方：矛的出手点在身体前 THROW_ORIGIN_DX 处，站正下方
+        等于出手点已经越过豆荚（原版 Weapon.cs:416 是 lastPos→pos 的扫掠判定，
+        越过就不会相交）——所以必须站在豆荚外侧，朝豆荚掷。
+        """
         line = self._throw_line()
-        return cb.p0[0] if abs(cb.p0[1] - line) <= abs(cb.p1[1] - line) else cb.p1[0]
+        cx = cb.p0[0] if abs(cb.p0[1] - line) <= abs(cb.p1[1] - line) else cb.p1[0]
+        off = COB_STAND_STEPS[min(self._cob_off_i, len(COB_STAND_STEPS) - 1)]
+        return cx - self._cob_side(cb) * off
 
     def _cob_ground_reach(self, cb) -> bool:
         """站在地上、起跳，能不能把掷矛线抬进豆荚的判定带。"""
@@ -5640,17 +5649,15 @@ class BehaviorFSM:
         tgt = tx
         if b.walk_min is not None:                   # 和 Body.walk_to 一样先夹进可行走范围
             tgt = min(max(tx, b.walk_min), b.walk_max)
-        # 朝豆荚本体（两 chunk 中点）掷，不是朝站位点：站在豆荚正下方时
-        # tx 会落到身体这一侧，拿它定方向会把矛往反方向扔出去。
-        dir_x = 1 if (cb.p0[0] + cb.p1[0]) * 0.5 >= b.chunk0.x else -1
+        # 方向＝从豆荚外侧朝豆荚掷（tx 在豆荚外侧，拿它定方向会翻）。
+        dir_x = self._cob_side(cb)
         high = self._cob_high(cb)
-        # 站着够得着（豆荚不在掷矛线上方）就先看「现在的位置掷不掷得中」：
-        # 原来的固定 COB_STAND_DX 停位会让猫停在半路的空档里（预演说打不中），
-        # 站着不动把预算耗完才放弃——用户看到的就是「圣徒敲不动爆米花」。
-        can_toss = b.on_floor() and not high and self._cob_would_hit(cb, dir_x)
+        # 先站到豆荚外侧的掷矛位再掷。远距离掷是掷硬币：出手点离豆荚越远，
+        # 命中高度（掷矛线）对身体的零点几像素越敏感，预演说中、真矛擦边落空。
+        # （旧版「站着不动也能掷」的捷径就是这么把豆荚打不开的。）
         near = abs(tgt - b.chunk0.x) <= (COB_STAND_DX if high else COB_STAND_EPS)
-        if b.on_floor() and not can_toss and not near:
-            b.walk_to(tx)                            # 掷不中就走到底下的站位，别停在半路
+        if b.on_floor() and not high and not near:
+            b.walk_to(tgt)
             if self._cob_left <= 0:
                 self._cob_end()
             return
@@ -5665,6 +5672,12 @@ class BehaviorFSM:
             if self._launch_weapon(dir_x):
                 self._cob_try += 1
                 self._cob_throw_cd = COB_THROW_CD
+                self._cob_off_i = 0      # 掷过一次：下一根矛从最远的掷矛位重新试
+            return
+        if (b.on_floor() and not high
+                and self._cob_off_i + 1 < len(COB_STAND_STEPS)):
+            # 这个距离掷不中（圣徒的轻抛抬得快，站远了从豆荚上方擦过）→ 挪近一档
+            self._cob_off_i += 1
             return
         if self._cob_high(cb):               # 豆荚比掷矛线高
             if self._cob_try < 2 and self._cob_ground_reach(cb):
@@ -6213,6 +6226,7 @@ class BehaviorFSM:
         from ..world.spear import Spear
         self._itemplay_side = b.pick_hand(
             "spear" if isinstance(it, Spear) else "stone") or "r"
+        self._play_face = 1 if self.rng.random() < 0.5 else -1
 
     def _itemplay_fling(self):
         """玩够了顺手甩出去（暴躁的猫）：走原版水平投掷，石头能砸晕同伴。"""
@@ -6294,22 +6308,41 @@ class BehaviorFSM:
         t = self.timer
         # 拿在手里就是玩（eat_raise 保持 0，手别乱晃）；姿态随性格
         style = getattr(self.pers, "play_style", "sit")
+        b.facing = self._play_face                           # 玩耍时保持朝向倾向
         if style == "crawl":
             b.set_crawl(True)                                # 匍匐着玩
             if t % tuning.ITEMPLY_PRANCE_CD == 0:
-                b.walk_to(b.chunk1.x + (18.0 if (t // tuning.ITEMPLY_PRANCE_CD) % 2 else -18.0))
+                self._play_face = 1 if (t // tuning.ITEMPLY_PRANCE_CD) % 2 else -1
+                b.facing = self._play_face
+                b.walk_to(b.chunk1.x + self._play_face * 18.0)
         elif style == "hop":
             if t % tuning.ITEMPLY_PRANCE_CD == 0:
-                b.walk_to(b.chunk1.x + self.rng.choice((-40.0, 40.0)))
-                if b.on_floor():
-                    b.request_jump("stand")                  # 边走边跳
+                self._play_hop()                             # 带方向/距离的随机小跳
         else:
             b.set_crawl(False)
+            if t % tuning.ITEMPLY_PRANCE_CD == 0 and self.rng.random() < tuning.ITEMPLY_TURN_P:
+                self._play_face = -self._play_face           # 坐着玩也会换个朝向
         if self._itemplay_left <= 0 or t > 2400:
             if self.rng.random() < getattr(self.pers, "temper", 0.5) * tuning.ITEMPLY_FLING_P:
                 self._itemplay_fling()                       # 暴躁的猫：玩完甩出去
             self._itemplay_end()
             self._transition("IdleStand")
+
+    def _play_hop(self) -> float:
+        """玩耍跳：方向与距离都随机；返回这次抽到的横向落点（带符号，供验收）。
+
+        宠物猫没有输入，横速只能在起跳那一帧写进 chunk；横速由「落点距离 / 滞空 tick」
+        反推，这样抽到的距离就是真的跳出去的距离（不是只把距离当摆设）。
+        """
+        b = self.body
+        d = 1.0 if self.rng.random() < 0.5 else -1.0
+        dist = self.rng.uniform(tuning.ITEMPLY_HOP_DIST_MIN, tuning.ITEMPLY_HOP_DIST_MAX)
+        self._play_face = int(d)
+        b.facing = int(d)
+        b.walk_to(b.chunk1.x + d * dist)
+        if b.on_floor() or b.coyote > 0:
+            b.play_hop(d, dist / tuning.ITEMPLY_HOP_AIRTIME, tuning.ITEMPLY_HOP_VY_K)
+        return d * dist
 
     # ── 觅食时捡矛（打未开荚的爆米花）──
     def _nearest_fetchable_spear(self):
@@ -6349,7 +6382,3 @@ class BehaviorFSM:
             b.grab_spear(sp, side)
         return True
 
-    def _dismiss_kill_dialog(self):
-        """静默消解本猫的死亡威胁弹窗。"""
-        if getattr(self.win, "_kill_dialog", None) is not None:
-            self.win.dismiss_kill_dialog()

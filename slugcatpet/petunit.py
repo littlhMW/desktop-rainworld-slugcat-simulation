@@ -43,9 +43,6 @@ class PetUnit:
         self._reincarnate_pending = False
         self._cramp_delay = -1                              # <0 才可再抽
         self._cold_rng = random.Random(0xC01D + index)      # 确定性
-        self._kill_dialog = None            # 本猫杀死确认弹窗
-        self._kill_cancel_by_saint = False
-        self._kill_dismiss_silent = False   # 静默消解，跳过扣好感
         self.controlled = False
         self.behavior = None
         self._build(init_state, spawn_x)
@@ -149,7 +146,6 @@ class PetUnit:
         if self.controlled:              # 先退控制，防丢 provider
             from .control.session import exit_control
             exit_control(self)
-        self.dismiss_kill_dialog()       # 静默消解挂起弹窗
         w = self.window
         if preserve:
             b = self.body
@@ -162,38 +158,6 @@ class PetUnit:
         self._attach_behavior()
         w._prev_dirty = None             # 强制整窗重绘
         w.update()
-
-    # ── 杀死确认弹窗 ──
-    def _kill_cancel_button(self):
-        box = self._kill_dialog
-        return None if box is None else getattr(box, "cancel_btn", None)
-
-    def kill_cancel_target(self):
-        """取消按钮中心的世界坐标，缺失返回 None。"""
-        btn = self._kill_cancel_button()
-        if btn is None:
-            return None
-        w = self.window
-        try:
-            g = btn.mapToGlobal(btn.rect().center())
-            local = w.mapFromGlobal(g)
-            return w.to_logical(local.x(), local.y())
-        except Exception:
-            return None
-
-    def click_kill_cancel(self):
-        """程序点击本猫取消按钮。"""
-        btn = self._kill_cancel_button()
-        if btn is not None:
-            self._kill_cancel_by_saint = True
-            btn.click()
-
-    def dismiss_kill_dialog(self):
-        """静默消解本猫死亡弹窗。"""
-        box = self._kill_dialog
-        if box is not None:
-            self._kill_dismiss_silent = True
-            box.reject()          # 触发 finished 回调
 
     # ── 每 tick 推进 ──
     def step(self, cursor, cycle_prog):

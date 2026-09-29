@@ -397,6 +397,18 @@ class NeedleWorm:
         segs[-1].dist = segs[-2].dist if len(segs) > 1 else 1.0
         return segs
 
+    def snap_to(self, x: float, y: float) -> None:
+        """把整条虫硬搬到 (x,y)（放置预览用：预览不 tick，不搬整条链会留在原地）。"""
+        dx, dy = float(x) - self.x, float(y) - self.y
+        self.x = self.last_x = float(x)
+        self.y = self.last_y = float(y)
+        self.vx = self.vy = 0.0
+        for s in self.seg:
+            s.x += dx
+            s.y += dy
+            s.lx = s.x
+            s.ly = s.y
+
     # ── 查询 ──
     @property
     def pos(self):

@@ -21,7 +21,7 @@ class CatCaps:
 
 # 能力开启时 tuning 必须携带的配套键
 CAP_REQUIRED_TUNING = {
-    "ascension": ("temper_ascend_gate", "temper_kill_cancel_saint"),
+    "ascension": ("temper_ascend_gate",),
     "pyro": ("pyro_heat_cap",),
 }
 

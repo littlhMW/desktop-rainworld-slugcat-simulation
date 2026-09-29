@@ -55,11 +55,11 @@ def build_cat_menu(pet, pets=None, open_settings=None, parent=None) -> QMenu:
     else:
         act = menu.addAction(t("menu_kill_pet"))
         # 飞升/挂确认期置灰
-        act.setEnabled(not blocked and pet._kill_dialog is None)
+        act.setEnabled(not blocked)
         act.triggered.connect(lambda: pet.window.request_kill(pet))
         ctl = menu.addAction(t("menu_control_pet"))
         # 同上门禁，控他猫即切换
-        ctl.setEnabled(not blocked and pet._kill_dialog is None)
+        ctl.setEnabled(not blocked)
         ctl.triggered.connect(lambda: pet.window.start_control(pet))
 
     s = menu.addAction(t("menu_open_settings"))

@@ -95,7 +95,6 @@ DRAG_SHAKE_CD     = 40         # 甩掉一件后的冷却（tick）
 DRAG_SHAKE_THROW  = 0.6        # 甩出速度 = 摆动速度 × 该系数
 DRAG_SHAKE_TEMPER = -0.0005    # 被摇烦
 TEMPER_STUN = -0.25
-TEMPER_KILL_CANCEL_HUMAN = -0.10
 TEMPER_KILL_REVIVED = -0.50
 TEMPER_FEED = 0.20
 TEMPER_LICK = 0.10
@@ -440,6 +439,11 @@ ITEMPLY_TICKS_MIN   = 150
 ITEMPLY_TICKS_MAX   = 320
 ITEMPLY_RETRY       = 480
 ITEMPLY_PRANCE_CD   = 55       # 玩得高兴时每隔这么久蹦一下
+ITEMPLY_HOP_DIST_MIN = 14.0    # 玩耍跳的横向落点距离（随机 → 方向、距离都不一样）
+ITEMPLY_HOP_DIST_MAX = 46.0
+ITEMPLY_HOP_AIRTIME  = 7.0     # 一次小跳的滞空 tick（横速 = 落点距离 / 滞空）
+ITEMPLY_HOP_VY_K     = 0.80    # 玩耍跳比全力跳矮一点
+ITEMPLY_TURN_P      = 0.35     # 坐着玩时每隔 PRANCE_CD 换个朝向的概率
 ITEMPLY_FLING_P     = 0.55     # 收手时按 temper 加权，暴躁的猫把家伙甩出去
 ITEMPLY_P           = 0.55     # 闲下来时每次抽查愿意去玩的概率
 
