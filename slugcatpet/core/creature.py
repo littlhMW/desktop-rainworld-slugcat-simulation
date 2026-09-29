@@ -228,6 +228,7 @@ class SlugcatBody:
         self.back_spear = None        # 背后的备用矛（原版 Player.spearOnBack）
         self.stun = 0
         self.arm_aim = {"l": None, "r": None}
+        self.hand_pos = {"l": None, "r": None}   # 手上帧世界坐标（graphics 每帧写回）
         self.arm_full_reach = 24.0
         self.eat_raise = 0.0
 
@@ -327,6 +328,21 @@ class SlugcatBody:
         c1.vy = s.pole_jump_feet_vy
         self.walk_target_x = None
         self.move_dir = int(d if move_dir is None else move_dir)
+
+    def pole_hop(self, direction, move_dir=None):
+        """杆上跳向邻近杆：小冲量斜跳（原版 jump-pole-hopping）。
+
+        pole_jump 是全力 beam jump（横速 stats.pole_jump_head_vx≈6px/tick，一条弧要
+        飞 300+px），从杆顶朝 40px 外的邻杆跳出会从它头顶掠过、落到远处地面 —— 邻杆
+        跳必须用小冲量（同高有效横距≈tuning.POLE_HOP_MAX_DX）；
+        planning.pole_hop 的规划弧与这里同源（jump_arc.get_pole_hop_arc），否则
+        「规划说够得着、执行却飞过头」。
+        """
+        self.pole_jump(direction, move_dir)
+        d = 1.0 if direction >= 0 else -1.0
+        c0, c1 = self.chunk0, self.chunk1
+        c0.vx = c1.vx = tuning.POLE_HOP_VX * d
+        c0.vy = c1.vy = -tuning.POLE_HOP_VY
 
     def backflip_launch(self, direction, boosted=False):
         """站立位后空翻发射。"""
@@ -1287,7 +1303,9 @@ class SlugcatBody:
         x = self.wall_hold_x(self.wall_side)
         g = 0.9 * self.room_gravity
         if self.wall_slide and self.wall_climb_dir > 0:
-            climb = WALL_LEDGE_SLIDE                     # 抓不住：贴墙缓慢下滑
+            # 抓不住：贴墙缓慢下滑。climb 是「净下降速度」，底下 vy = climb - g，
+            # 旧写法让重力吃掉大半（0.5 → 0.14px/帧），猫在墙边挂 20 秒像卡死。
+            climb = WALL_LEDGE_SLIDE + g
         else:
             climb = WALL_CLIMB_SPEED * self.wall_climb_dir   # dir=-1 → 向上
         c0 = self.chunk0
@@ -1545,6 +1563,22 @@ class SlugcatBody:
         ox, oy = _rot(sgn * CARRY_OFF_X * s, CARRY_OFF_Y * s, ang)
         return c0.x + ox, c0.y + oy
 
+    def _carry_anchor(self, side):
+        """携带物落点 + 这只手要不要被携带点驱动：(x, y, aimed)。
+
+        原版 Player.cs:5984-5990：轻物每帧被搬到 hands[i].pos（**物跟手**）；
+        而 SlugcatHand.EngageInMovement 在 ClimbingOnBeam 时自己抓杆并 return false
+        （SlugcatHand.cs:41-74 的 flag 分支整段跳过 HuntRelativePosition），
+        手不跟物。旧实现反过来把手钉在携带点上 ⇒ 爬杆时那只手不抓杆、拉着东西
+        僵在半空（左手持物爬杆最明显）。这里改成原版方向：物跟手。
+        """
+        cx, cy = self._carry_pos(side)
+        if self.bodyMode == "ClimbingOnBeam":
+            hp = self.hand_pos.get(side)
+            if hp is not None:
+                return hp[0], hp[1], False
+        return cx, cy, True
+
     def reach_for(self, fruit, side):
         """Aim hand at fruit; clear opposite side (only one hand reaches)."""
         self._aim_hand(side, fruit.x, fruit.y)
@@ -1604,11 +1638,11 @@ class SlugcatBody:
         if f is None:
             return
         side = self.hand_of.get("fruit")
-        cx, cy = self._carry_pos(side)
+        cx, cy, aimed = self._carry_anchor(side)
         f.last_x, f.last_y = f.x, f.y
         f.x, f.y = cx, cy
         f.set_rotation_to_grabber(self.chunk0.x, self.chunk0.y)
-        self._aim_hand(side, cx, cy)
+        self._aim_hand(side, cx if aimed else None, cy if aimed else None)
         if f.stalk is not None:
             if f.stalk.step(f):
                 f.stalk = None
@@ -1677,11 +1711,11 @@ class SlugcatBody:
         if s is None:
             return
         side = self.hand_of.get("stone")
-        cx, cy = self._carry_pos(side)
+        cx, cy, aimed = self._carry_anchor(side)
         s.last_x, s.last_y = s.x, s.y
         s.last_rotation = s.rotation_deg
         s.x, s.y = cx, cy
-        self._aim_hand(side, cx, cy)
+        self._aim_hand(side, cx if aimed else None, cy if aimed else None)
 
     # ── 矛（原版 Spear：玩家持矛时杆斜指前上方，掷出后走弹道）──
     def grab_spear(self, spear, side=None):
@@ -1825,12 +1859,12 @@ class SlugcatBody:
             bs.angle_deg = bang
             return
         side = self.hand_of.get("spear")
-        cx, cy = self._carry_pos(side)
+        cx, cy, aimed = self._carry_anchor(side)
         sp.last_x, sp.last_y = sp.x, sp.y
         sp.x, sp.y = cx, cy
         sp.last_angle = sp.angle_deg
         sp.angle_deg = self.spear_hold_angle()
-        self._aim_hand(side, cx, cy)
+        self._aim_hand(side, cx if aimed else None, cy if aimed else None)
 
 
 def _dot_norm(vx, vy, ux, uy):

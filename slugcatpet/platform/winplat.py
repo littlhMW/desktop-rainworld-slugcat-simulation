@@ -18,6 +18,7 @@ _SHELL_CLASSES = {
 _GWL_EXSTYLE = -20
 _WS_EX_TOOLWINDOW = 0x00000080
 _WS_EX_NOACTIVATE = 0x08000000
+_WS_EX_TRANSPARENT = 0x00000020
 _MIN_W = 60.0          # 太窄的窗口不算平台
 _MIN_H = 24.0
 _TOP_EPS = 4.0         # 顶边贴到/超出屏幕顶的窗口（最大化）不算平台
@@ -62,6 +63,7 @@ def enumerate_tops(own_hwnds, screen_x: float, screen_y: float, scale: float):
             own.add(int(h))
         except Exception:
             pass
+    my_pid = int(ctypes.windll.kernel32.GetCurrentProcessId())
     rects = []          # 按 Z 序（前→后）收集窗口矩形，逻辑坐标
 
     def _visit(hwnd, _lparam):
@@ -70,8 +72,15 @@ def enumerate_tops(own_hwnds, screen_x: float, screen_y: float, scale: float):
                 return True
             if user32.IsIconic(hwnd):
                 return True
+            # 自家进程的辅助窗口（托盘提示 / QToolTip / 热键消息窗 / 各种隐藏助手）
+            # 永远不会是平台。这些窗口拿不到 winId（隐藏时 winId()==0）也不在
+            # topLevelWidgets 里，靠 own 集合漏得掉 → 猫会站上一个「隐形窗口」。
+            wpid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(wpid))
+            if int(wpid.value) == my_pid:
+                return True
             ex = user32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
-            if ex & (_WS_EX_TOOLWINDOW | _WS_EX_NOACTIVATE):
+            if ex & (_WS_EX_TOOLWINDOW | _WS_EX_NOACTIVATE | _WS_EX_TRANSPARENT):
                 return True
             buf = ctypes.create_unicode_buffer(256)
             user32.GetClassNameW(hwnd, buf, 256)

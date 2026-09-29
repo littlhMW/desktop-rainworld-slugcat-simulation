@@ -233,14 +233,14 @@ class PoleClimber:
         return hop_plan(stats, list(self.win.poles), c0.x, c0.y, exclude=self.pole)
 
     def _hop_to(self, plan):
-        """按实测跳弧带方向跳出杆顶；空中由 FSM 的 _air_pole_grab 抓住目标杆。"""
+        """按实测小跳弧带方向跳出杆顶；空中由 FSM 的 _air_pole_grab 抓住目标杆。"""
         b = self.body
         pole, md, _tick = plan
         self._snap_axis()
         b.facing = 1 if md > 0 else -1
         self.handoff = None
         self.air_target = pole
-        b.pole_jump(md, move_dir=md)
+        b.pole_hop(md, move_dir=md)
         b.chunk0.cy = b.chunk1.cy = 0   # 已经离杆：别用上一帧的落地标记
         self._reset_pose()
 

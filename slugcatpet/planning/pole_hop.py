@@ -3,14 +3,15 @@
 原版 Controls/Pole_Movement 的 jump-pole-hopping：站在杆上（竖杆顶或横杆面）
 朝一侧 beam jump 跳出，飞行中贴到另一根杆就抓住，于是能一路换杆爬到目的地。
 
-弧线取 get_pole_jump_arc（空中松杆位起跳的实测轨迹，一路采到落地）——平地起跳弧
-只覆盖「起跳点以上」那段，目标是下方的杆时根本扫不到。
+弧线取 get_pole_hop_arc（空中松杆位小冲量起跳的实测轨迹，一路采到落地）——平地起跳弧
+只覆盖「起跳点以上」那段，目标是下方的杆时根本扫不到。注意必须用「小跳」弧：
+全力 get_pole_jump_arc 横速≈6px/tick，40px 外的邻杆会被从头顶掠过，规划与执行不符。
 """
 from __future__ import annotations
 
 from ..behavior import tuning
 from ..world.pole import VERTICAL
-from .jump_arc import get_pole_jump_arc
+from .jump_arc import get_pole_hop_arc
 
 
 def pole_hit(pole, x, y, r):
@@ -29,7 +30,7 @@ def hop_plan(stats, poles, x, y, exclude=None, grab=None):
     r = tuning.POLE_AIRGRAB_R if grab is None else grab
     best = None
     for md in (1, -1):
-        arc = get_pole_jump_arc(stats, md)
+        arc = get_pole_hop_arc(stats, md)
         for p in poles:
             if p is exclude:
                 continue

@@ -90,6 +90,12 @@ COB_STAND_EPS = 4.0       # 站位的收尾公差（WALK_STOP_EPS=2，留点姿�
 T_CRAWL_RETRY = 300       # 匍匐躲避冷却
 T_PROTEST_RETRY = 900     # 抗议被抢东西的冷却
 T_REVIVE_RETRY = 200      # 复活失败重试
+# ── 躲在「持有矛/石头的同伴」背后（有威胁、自己空手）──
+T_COVER_RETRY = 240       # 躲完让位的冷却
+COVER_TICKS = 300         # 单次躲在同伴背后的时长上限
+COVER_SEEK_R = 260.0      # 同伴离这么近才值得过去躲
+COVER_BACK_OFF = 26.0     # 站在同伴背对威胁那一侧的偏移
+COVER_MIN_GAP = 70.0      # 躲过去的落点离威胁至少这么远，太近就宁可跑开
 SPEAR_AI_SPEED = 34.0     # 投矛初速（同 huntfly.SPEED_SPEAR）
 STONE_AI_SPEED = 26.0     # 投石初速（同 huntfly.SPEED_STONE）
 # 被咬/被矛的致死判定：原版 Player.DeathByBiteMultiplier（故事模式 0.7 + 难度/5）
@@ -107,9 +113,13 @@ _WANTS_FROM = frozenset(("IdleStand", "PostThrowWander", "PostThrowStand", "Make
 # 必须保证「离开该态」时一定跑到一次，否则 walk_min/walk_max 会永久留 None
 _WANTS_STATES = frozenset(("WallClimb", "CeilingHang", "ChaseCursor", "Socialize",
                            "HelpFeed", "FightThreat", "CrawlAway", "EatCob",
-                           "ScoldBlocker", "CatchFly", "ItemPlay"))
+                           "ScoldBlocker", "CatchFly", "ItemPlay", "CoverAlly"))
 
 WALL_MARGIN = 40.0
+
+# 投掷视线：自己与目标之间站着别的蛞蝓猫就不出手（用户规格）
+THROW_BLOCK_R = 14.0            # 同伴躯干算多粗（挡枪判定半径）
+THROW_BLOCK_LEN = 320.0         # 没给目标时的水平射线长度
 
 # 零重力漂浮 idle
 ZEROG_ARRIVE_R = 30.0
@@ -176,7 +186,7 @@ _EN_VIGOROUS = frozenset(("TongueClimb", "PoleClimb", "HPole", "CeilingHang", "D
                           "PyroRomp", "RivFlip", "PyroMaul", "RivSnatch"))
 _EN_LIGHT = frozenset(("RelocateToWall", "PostThrowWander", "FetchFruit", "AngryStone",
                        "WakeSequence", "CursorLick", "SeekWarmth", "SeekHPole", "MakeWay",
-                       "FleeLizard", "CatchFly", "ItemPlay"))
+                       "FleeLizard", "CatchFly", "ItemPlay", "CoverAlly"))
 _EN_REST = frozenset(("LieDown", "Sleep"))
 _EN_IDLE = frozenset(("IdleStand", "PostThrowStand"))
 
@@ -333,6 +343,7 @@ class BehaviorFSM:
         self._flee_cd = 0
         # 六类欲望：匍匐/爬墙/吊顶/玩耍/社交/帮取食/抗议/战斗/复活/睡眠
         self._wall_goal = 0
+        self._wall_approach_t = 0        # 走向这面墙已经用掉的 tick（超时就放弃）
         self._wall_left = 0
         self._wall_ready = False
         self._wall_top_y = 0.0        # 这面墙的可攀爬上沿 y
@@ -390,6 +401,8 @@ class BehaviorFSM:
         self._help_cd = 0
         self._fight_cd = 0
         self._arm_cd = 0                 # 「为了威胁去捡家伙」的冷却
+        self._cover_ally = None          # 躲到谁背后（有威胁、自己空手）
+        self._cover_cd = 0
         self._air_throw_cd = 0
         self._crawl_cd = 0
         self._protest_cd = 0
@@ -744,7 +757,7 @@ class BehaviorFSM:
             self.body.swim_target = None
         elif st in ("WallClimb", "CeilingHang", "ChaseCursor", "Socialize",
                     "HelpFeed", "FightThreat", "CrawlAway", "EatCob",
-                    "ScoldBlocker", "CatchFly", "ItemPlay"):
+                    "ScoldBlocker", "CatchFly", "ItemPlay", "CoverAlly"):
             self._wants_break(st)
 
     def _break_tongue(self):
@@ -1120,6 +1133,8 @@ class BehaviorFSM:
             b.stop_walk()
         elif st == "MakeWay":
             self._enter_makeway()
+        elif st == "CoverAlly":
+            self._cover_enter()
         elif st == "FleeLizard":
             self._enter_fleelizard()
         elif st == "WallClimb":
@@ -1379,8 +1394,10 @@ class BehaviorFSM:
         elif (blocker is not None and self._can_ground_blockreact()
               and self._blocked_ticks >= tuning.BLOCKED_JUMP_TICKS
               and self._jump_over_cd <= 0):
-            if self._scold_now(blocker, tuning.BLOCKED_POINT_FIRST_MAX
-                               * (1.3 - 0.6 * self._hurry())):
+            # 有威胁时不再「性格不好就先骂」：无论性格都先跳过阻挡者自己让步（用户规格）
+            if (not self._threat_present() and self._scold_now(
+                    blocker, tuning.BLOCKED_POINT_FIRST_MAX
+                    * (1.3 - 0.6 * self._hurry()))):
                 self._blocked_ticks = 0        # 性格不好：懒得跳，先指着骂
             else:                              # 默认先跳，跳不过再推/指
                 self.body.request_jump("stand", hold_ticks=tuning.JUMP_OVER_HOLD)
@@ -4011,7 +4028,7 @@ class BehaviorFSM:
         for k in ("_social_cd", "_help_cd", "_fight_cd", "_crawl_cd",
                   "_protest_cd", "_revive_cd", "_wall_cd", "_scold_cd",
                   "_pole_nudge_cd", "_act_cd", "_apology_t", "_thank_t",
-                  "_arm_cd"):
+                  "_arm_cd", "_cover_cd"):
             v = getattr(self, k)
             if v > 0:
                 setattr(self, k, v - 1)
@@ -4034,6 +4051,9 @@ class BehaviorFSM:
                 close = fd <= tuning.FEAR_TOO_CLOSE_R
                 if close:
                     self._flee_lizard_now(flz)
+                    return
+                # 自己空手又有个持械同伴在旁边：躲到它背后（往远离威胁的方向挪）
+                if self._cover_cd <= 0 and self._cover_ally_start(flz):
                     return
                 if self._crawl_cd <= 0:
                     if (kind >= tuning.FEAR_KIND_RESCUE and self._revive_cd <= 0):
@@ -4405,12 +4425,106 @@ class BehaviorFSM:
             self._flycatch_release()
         elif st == "ItemPlay":
             self._itemplay_end()
+        elif st == "CoverAlly":
+            self._cover_cd = T_COVER_RETRY
+            self._cover_ally = None
+            self.gfx.face_special = False
         self._restore_walk_limits()
+
+    # ── 有威胁、自己空手：躲到「持有矛/石头的同伴」背后（用户规格）──
+    def _peer_armed(self, p) -> bool:
+        """同伴手上/背上有没有家伙（矛/石头）。"""
+        ob = getattr(p, "body", None)
+        if ob is None or ob.dead:
+            return False
+        return (ob.carried_spear is not None or ob.carried_stone is not None
+                or getattr(ob, "back_spear", None) is not None)
+
+    def _armed_peer(self):
+        """最近一个持械同伴（有威胁时空手猫的掩体）。"""
+        best, bd = None, COVER_SEEK_R
+        c1 = self.body.chunk1
+        for p in self._living_peers():
+            if not self._peer_armed(p):
+                continue
+            ob = p.body
+            d = math.hypot(ob.chunk1.x - c1.x, ob.chunk1.y - c1.y)
+            if d < bd:
+                best, bd = p, d
+        return best
+
+    def _cover_x(self, ally, th):
+        """躲到同伴背后时该站的 x：同伴背对威胁的那一侧。"""
+        ob = getattr(ally, "body", None) if ally is not None else None
+        if ob is None or ob.dead or not self._peer_armed(ally):
+            return None
+        side = 1.0 if ob.chunk1.x >= th.x else -1.0
+        lo = 0.0 if self.body.walk_min is None else self.body.walk_min
+        hi = self.WL if self.body.walk_max is None else self.body.walk_max
+        return clampf(ob.chunk1.x + side * COVER_BACK_OFF, lo, hi)
+
+    def _cover_ally_start(self, th) -> bool:
+        """有威胁、自己空手 → 起手「躲到持械同伴背后」。返回是否已切态。"""
+        b = self.body
+        if self._weapon_ready():
+            return False                    # 手里有家伙：照旧迎战/逃
+        gw = self._nearest_ground_weapon()
+        if (gw is not None
+                and math.hypot(gw.x - b.chunk1.x, gw.y - b.chunk1.y)
+                <= tuning.ARM_SEEK_R):
+            return False                    # 近处有家伙可捡：先去拿
+        ally = self._armed_peer()
+        tx = self._cover_x(ally, th) if ally is not None else None
+        if tx is None:
+            return False
+        if abs(tx - th.x) < COVER_MIN_GAP:
+            return False                    # 躲过去的落点离威胁太近：宁可跑开
+        self._cover_ally = ally
+        self._break_active_controllers()
+        self._transition("CoverAlly")
+        return True
+
+    def _cover_enter(self):
+        b = self.body
+        b.set_posture(True)
+        b.stop_walk()
+
+    def _st_coverally(self, cursor, disturbed):
+        """空手的猫缩在持械同伴背对威胁的那一侧（跟着它挪，威胁没了就走开）。"""
+        b = self.body
+        if self.grab.active:
+            self._transition("Dragged")
+            return
+        ally = self._cover_ally
+        ob = getattr(ally, "body", None) if ally is not None else None
+        th = self._threat_lizard()
+        if (ob is None or ob.dead or th is None or not self._peer_armed(ally)
+                or self.timer >= COVER_TICKS):
+            self._transition("IdleStand")
+            return
+        fd = math.hypot(th.x - b.chunk1.x, th.y - b.chunk1.y)
+        if fd <= tuning.FEAR_TOO_CLOSE_R:
+            self._flee_lizard_now(th)                   # 威胁压上来：逃命优先于躲掩体
+            return
+        if self._weapon_ready():                        # 自己拿到家伙了：不躲了
+            self._transition("IdleStand")
+            return
+        tx = self._cover_x(ally, th)                    # 站到威胁够不着的那一侧
+        if tx is None:
+            self._transition("IdleStand")
+            return
+        if abs(tx - b.chunk1.x) > WALK_STOP_EPS:
+            b.walk_to(tx)
+        else:
+            b.stop_walk()
+        b.facing = 1 if th.x >= b.chunk0.x else -1      # 面朝威胁，随时能跑
+        self.gfx.look_at = (th.x, th.y)
 
     # ── 爬墙：窗口左右边缘＝墙（原版 ClimbOnBeam 位姿）──
     def _wall_enter(self):
         b = self.body
         self._wall_goal = self._wall_side_now()
+        self._wall_approach_t = 0
         self._wall_left = self.rng.randint(tuning.WALL_CLIMB_TICKS_MIN,
                                            tuning.WALL_CLIMB_TICKS_MAX)
         self._wall_ready = False
@@ -4464,7 +4578,14 @@ class BehaviorFSM:
             self._transition("Dragged")
             return
         if not self._wall_ready:
+            self._wall_approach_t += 1
             tx = edgeqm.wall_hold_x(self._wall_goal, self.WL)
+            if self._wall_approach_t > (tuning.WALL_APPROACH_TIMEOUT
+                                        + abs(tx - b.chunk1.x) * 1.5):
+                # 走不到墙上（被同伴顶住 / 目标墙太远）：收工，别一直朝墙走
+                self._wall_cd = T_WALL_RETRY
+                self._transition("IdleStand")
+                return
             if abs(b.chunk1.x - tx) > 6.0:
                 b.move_dir = 1 if tx > b.chunk1.x else -1
                 b.facing = b.move_dir
@@ -4476,6 +4597,13 @@ class BehaviorFSM:
         self._wall_left -= 1
         c0 = b.chunk0
         if self._wall_sliding or b.at_wall_top or (c0.y - c0.rad) <= self._wall_top_y + 0.5:
+            if self._wall_left <= 0:
+                # 预算用完：贴墙滑降也不能无限挂着（旧实现滑降期不再看 _wall_left，
+                # 缓慢下滑看起来就是「卡死在屏幕边缘」）
+                b.release_wall()
+                self._wall_cd = T_WALL_RETRY
+                self._transition("Airborne" if not b.on_floor() else "IdleStand")
+                return
             if self._wall_top_y <= tuning.WALL_TOP_GRAB_R:  # 这面墙直通顶边
                 b.release_wall()
                 if self._can_ceil_cling():                  # 圣徒的舌头才能上去吊顶
@@ -5558,9 +5686,37 @@ class BehaviorFSM:
             self._fight_throw_t = 0
             self._throw_weapon_at(tgt)
 
-    def _launch_weapon(self, dir_x) -> bool:
+    def _throw_line_blocked(self, dir_x, tgt=None) -> bool:
+        """自己→目标之间站着别的蛞蝓猫 → 这一掷取消。
+
+        投掷一律水平（Weapon.cs:463-502 玩家只有水平分支），所以沿掷出方向扫一条
+        与胸口同高的线段：任何同伴躯干落在线段 THROW_BLOCK_R 内就算被挡住。
+        给了 tgt 就只用「自己到目标」那一段，免得把目标身后的同伴也算进去。
+        """
+        c0 = self.body.chunk0
+        ax, ay = c0.x, c0.y
+        if tgt is not None:
+            bx, by = tgt.x, tgt.y
+            if (bx - ax) * dir_x <= 0.0:
+                return False                 # 目标在背后：交给调用方处理
+        else:
+            bx, by = ax + dir_x * THROW_BLOCK_LEN, ay
+        for o in getattr(self.win, "pets", ()):
+            if o is self.win:
+                continue
+            ob = getattr(o, "body", None)
+            if ob is None or ob.dead:
+                continue
+            for c in (ob.chunk0, ob.chunk1):
+                if _closest_on_segment(c.x, c.y, ax, ay, bx, by)[2] < THROW_BLOCK_R:
+                    return True
+        return False
+
+    def _launch_weapon(self, dir_x, tgt=None) -> bool:
         """按原版水平掷出手里的矛/石头（不做高度判断，由调用方负责对准）。"""
         b = self.body
+        if self._throw_line_blocked(dir_x, tgt):
+            return False                     # 同伴挡在掷出线上：不出手
         spear = b.carried_spear
         if (spear is not None and b.carried_stone is not None
                 and b.held_kind("r") == "stone"):
@@ -5598,7 +5754,7 @@ class BehaviorFSM:
         if abs(dy) > THROW_JUMP_DY and b.on_floor():
             b.request_jump("stand")             # 站在地上：跳到那一层再水平掷出
             return False                        # 已经在空中就直接掷（原版空中投矛）
-        return self._launch_weapon(1 if dx >= 0.0 else -1)
+        return self._launch_weapon(1 if dx >= 0.0 else -1, tgt)
 
     # ── 恐惧：匍匐潜行挪开 ──
     def _behind_creature(self, c) -> bool:

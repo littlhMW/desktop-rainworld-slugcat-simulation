@@ -744,6 +744,7 @@ class SlugcatGraphics(GraphicsDrawMixin):
                     quickness = 0.5
 
             hand.update(sx, sy, aim, speed=speed, quickness=quickness)
+            b.hand_pos[side] = (hand.x, hand.y)   # 物跟手（原版 Player.cs:5988 用 hands[i].pos）
 
     def _beam_hand_target(self, j, anim, axis):
         """爬杆 / 站顶的手目标。"""

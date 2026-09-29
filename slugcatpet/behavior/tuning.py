@@ -235,6 +235,7 @@ WALL_CLIMB_MAX_H = 30.0       # 墙最多只能攀爬「一只蛞蝓猫的高度
 WALL_TOP_TIRED_FRAC = 0.55    # 力竭时上沿更低（爬不动这么远）
 WALL_LEDGE_HOLD = 26          # 够到墙头后抓沿悬住的 tick
 WALL_LEDGE_JUMP_PROB = 0.55   # 抓沿后蹬墙跳（否则贴墙缓慢滑下）
+WALL_APPROACH_TIMEOUT = 900   # 走向墙的硬上限：走不到就放弃（防「永远朝墙走」卡死）
 
 # 被抓：偶尔挣扎（原版 Player 被叼住时蹬腿乱蹬）
 DRAG_STRUGGLE_PROB = 0.012    # 每 tick 起挣扎的概率
@@ -497,7 +498,7 @@ HP_HOP_MAX_DX = 70.0          # 横杆跳杆最大横距
 HP_HOP_UP_DY = 46.0           # 目标杆高于自身这么多以内才敢跳
 AIR_POLE_CD = 16              # 刚离开杆后这段时间不把同一根杆又抓回来（防粘杆死循环）
 POLE_HOP_PROB = 0.30           # 下杆时改为跳向另一根杆的概率
-POLE_HOP_MAX_DX = 46.0        # 杆顶跳另一根竖杆的最大横距（≈一次起跳滞空射程）
+POLE_HOP_MAX_DX = 46.0        # 小跳落到“同高邻杆”的有效横距（小跳弧在同高处的水平覆盖）
 POLE_HOP_VX = 4.0              # 跳向另一根杆的横冲量
 POLE_HOP_VY = 4.2              # 跳向另一根杆的上抛
 TIP_FALL_VX = 1.2             # 杆顶失衡滑落横速（原版失衡只是视觉量，不带发射冲量）

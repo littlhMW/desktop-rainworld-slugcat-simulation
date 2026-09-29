@@ -44,6 +44,18 @@ class PoleJumpArc:
 
 
 @dataclass(frozen=True)
+class PoleHopArc:
+    """一条（stats×方向）杆间小跳弧：points=逐 tick chunk0 相对起跳点位移（y↓）。
+
+    与 PoleJumpArc 同起点、同物理，只是冲量换成 tuning.POLE_HOP_VX/VY（小跳）：
+    只上冲 ~8px 就转入下落，同高处水平覆盖≈POLE_HOP_MAX_DX，因此能落到 40px 外
+    同高的邻杆上（全力 beam jump 会直接从它头顶掠过）。
+    """
+    direction: int
+    points: tuple[tuple[float, float], ...]
+
+
+@dataclass(frozen=True)
 class BackflipArc:
     """一条（stats×方向×boosted）站立后空翻弧：points=相对起跳点位移。"""
     direction: int
@@ -93,6 +105,17 @@ def get_pole_jump_arc(stats, direction: int) -> PoleJumpArc:
     arc = _cache.get(key)
     if arc is None:
         arc = _simulate_pole_jump(stats, d)
+        _cache[key] = arc
+    return arc
+
+
+def get_pole_hop_arc(stats, direction: int) -> PoleHopArc:
+    """取（stats, 方向）杆间小跳弧（缓存）：松杆位→小冲量斜跳→持向漂移→落地。"""
+    d = 1 if int(direction) >= 0 else -1
+    key = ("polehop", stats, d)
+    arc = _cache.get(key)
+    if arc is None:
+        arc = _simulate_pole_hop(stats, d)
         _cache[key] = arc
     return arc
 
@@ -220,3 +243,17 @@ def _simulate_pole_jump(stats, direction: int) -> PoleJumpArc:
         if body.on_floor():
             break
     return PoleJumpArc(int(direction), tuple(pts))
+
+
+def _simulate_pole_hop(stats, direction: int) -> PoleHopArc:
+    # 与 _simulate_pole_jump 同一起点/物理，只是冲量换成小跳（pole_hop）
+    body = SlugcatBody((_SIM_W / 2.0, _PJUMP_START_Y), _SIM_W, _DROP_H, stats=stats)
+    ox, oy = body.chunk0.x, body.chunk0.y
+    body.pole_hop(direction)
+    pts = []
+    for _ in range(_MAX_DROP_TICKS):
+        body.step()
+        pts.append((body.chunk0.x - ox, body.chunk0.y - oy))
+        if body.on_floor():
+            break
+    return PoleHopArc(int(direction), tuple(pts))

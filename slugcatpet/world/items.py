@@ -257,6 +257,21 @@ def _cob_hit(cb, sp, pad: float = 0.0):
     return None
 
 
+def _small_hit(small, sp, pad: float = 0.0):
+    """小生物（蝠蝇/蝉乌贼/面条蝇）扫掠命中：带链节的逐节判，圆形的按半径判。
+
+    旧实现拿矛的当前点去比小生物中心，40px/帧 的矛一帧跨过整只虫 ⇒ 永远打不中。
+    原版 Weapon.cs:413-416 是逐 chunk 扫掠判定，这里对齐。
+    """
+    if getattr(small, "seg", None):
+        return _ball_hit(small, sp, pad)
+    ax, ay = getattr(sp, "last_x", sp.x), getattr(sp, "last_y", sp.y)
+    ex, ey = _seg_end(sp)
+    if _seg_dist(ax, ay, ex, ey, small.x, small.y) < sp.rad + small.rad + pad:
+        return (ex, ey)
+    return None
+
+
 def _seg_dist(ax, ay, bx, by, x, y) -> float:
     """点 (x,y) 到线段 AB 的最短距离。投掷物 40px/帧，逐帧位置判定会穿过链节。"""
     dx, dy = bx - ax, by - ay
@@ -2564,7 +2579,7 @@ class ItemInteractionMixin:
                            *self.needleworms) if thrown else ()):   # 小生物：一矛带走
                 if small.dead or small.state != ItemState.FREE:
                     continue
-                if math.hypot(sp.x - small.x, sp.y - small.y) >= sp.rad + small.rad + SPEAR_HIT_PAD:
+                if _small_hit(small, sp, SPEAR_HIT_PAD) is None:
                     continue
                 kx = sp.vx * 0.10
                 ky = min(sp.vy * 0.10 - 1.2, -1.0)
