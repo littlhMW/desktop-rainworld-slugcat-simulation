@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 
+from ...behavior.action import BAND_PREEMPT, TAG_CHARACTER, TAG_EMERGENCY
 from ...behavior.fetch import BITE_HEAD_NUDGE
 from ...control.mouse import is_over
 from ...planning.jump_reach import SETTLE_MAX, SETTLE_VX
@@ -120,11 +121,20 @@ def mount_maul(fsm):
         fsm._pm_near_t = 0
         fsm._pm_rolled = False
 
-    def trigger(mode):
+    def pyro_start(ctx):
         fsm._pm_cooldown = COOLDOWN
-        fsm._pm_mode = mode
         reset_track()
         fsm._transition("PyroMaul")
+        return True
+
+    # 爆跳本体登记进统一注册表（preempt band）：触发点在 ticker 原位，
+    # 由 try_action 起手，于是行为与随机数流与旧版一致。
+    fsm.register_action("PyroMaul", BAND_PREEMPT, gate=lambda ctx: True,
+                        start=pyro_start, tags=(TAG_CHARACTER, TAG_EMERGENCY))
+
+    def trigger(mode):
+        fsm._pm_mode = mode
+        fsm.actions.try_action("PyroMaul", fsm.act_ctx())
 
     def watch():
         # 冷却回落 + 经过追踪（远→爆跳/贴身驻留→走近啃）+ 旁路打断兜底

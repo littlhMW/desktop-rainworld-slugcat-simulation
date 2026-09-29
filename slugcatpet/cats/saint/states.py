@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from ...behavior import tuning
+from ...behavior.action import BAND_PREEMPT, TAG_CHARACTER, TAG_EMERGENCY
 from ...behavior.fsm import BehaviorFSM
 from .ascension import Ascension
 from .climb import TongueClimber, CeilingHanger
@@ -19,18 +20,26 @@ def mount(fsm):
     if caps.ascension:
         _mount_ascension(fsm)
 
+        def ascend_start(ctx):
+            fsm._transition("Ascension")
+            return True
+
+        # 超度威胁：动作本体登记进统一注册表（preempt band），ticker 只在
+        # 原时机点起手 —— 顺序与旧版逐 tick 一致。
+        fsm.register_action(
+            "SaintAscend", BAND_PREEMPT,
+            gate=lambda ctx: (fsm.state not in ("Ascension", "Dead", "Dragged", "Stunned")
+                              and not fsm.grab.active and fsm.karma is None
+                              and _ascend_ready(fsm) and fsm._threat_present()),
+            start=ascend_start, tags=(TAG_CHARACTER, TAG_EMERGENCY))
+
         def ascend_threat_tick():
             """威胁圈（≈1/3 桌面宽）内有活威胁且满足超度门 → 主动超度它。
 
             超度门本身要求业力满 + 饱食度满，所以不会滥用；每超度一次饱食度清零。
             睡着也照做（恐惧优先级最高，醒着才有机会跑）。
             """
-            if fsm.state in ("Ascension", "Dead", "Dragged", "Stunned"):
-                return
-            if fsm.grab.active or fsm.karma is not None:
-                return
-            if _ascend_ready(fsm) and fsm._threat_present():
-                fsm._transition("Ascension")
+            fsm.actions.try_action("SaintAscend", fsm.act_ctx())
 
         fsm.register_ticker(ascend_threat_tick)
 def _mount_climb(fsm):

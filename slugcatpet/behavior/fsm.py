@@ -19,6 +19,11 @@ from .social_response import (SocialContext, target_of,
                               choose as _choose_response)
 from .anim_intent import PRIO_AMBIENT, PRIO_FORCE, PRIO_URGENT, point_of
 from .desire import build_arbiter, MoodContext
+from .action import (ActionArbiter, ActionContext, ActionSpec,
+                     build_arbiter as build_action_arbiter,
+                     BAND_EMERGENCY, BAND_NEED, BAND_PERSONALITY, BAND_PREEMPT,
+                     TAG_EMERGENCY, TAG_FOOD, TAG_INTERACT, TAG_SOCIAL,
+                     TAG_PERSONALITY, TAG_NAV, TAG_CHARACTER)
 from .interest import goal_key as _interest_key
 from .fetch import (fetch_ready, BITE_HEAD_NUDGE, EAT_APPROACH, EAT_CHOMP_POSE,
                     EAT_HOLD_POSE, EAT_INTERVAL)
@@ -233,6 +238,21 @@ def _spear_takeable(sp) -> bool:
     if host is None:
         return True
     return hasattr(host[0], "can_feed")
+
+
+class _MoodWeight:
+    """mood 候选项的基础权重（不含噪声）：与 MoodArbiter 的 weight 公式逐项一致。"""
+
+    __slots__ = ("cand",)
+
+    def __init__(self, cand):
+        self.cand = cand
+
+    def __call__(self, ctx):
+        c = self.cand
+        return (c.base * c.energy_factor(ctx.body.energy)
+                * c.temper_factor(ctx.body.temper)
+                * c.cold_factor(ctx.body.cold))
 
 
 def _lerpmap(x, lo, hi, flo, fhi):
@@ -541,10 +561,28 @@ class BehaviorFSM:
         self.drag_takeover = None
         self.stun_takeover = None
         cat = getattr(self.win, "cat", None)
+        # 统一动作注册表：主 tick 里所有「决定」的唯一出处（见 behavior/action.py）。
+        # 先建表再 fsm_mount：角色的独有动作（preempt band）在挂载时登记进来。
+        self.actions = build_action_arbiter(self.rng)
         if cat is not None and cat.fsm_mount is not None:
             cat.fsm_mount(self)
 
+        self._register_actions()
+        self._register_mood_actions()
+
         self._enter("IdleStand")
+
+    def register_action(self, key, band, gate, start, pre=None, score=None,
+                        tags=(), cooldown=0, interrupt=0.0, one_shot=False):
+        """角色模块用：把独有动作登记进同一个动作注册表（key 全局唯一）。"""
+        return self.actions.register(ActionSpec(
+            key=key, band=band, gate=gate, pre=pre, start=start, score=score,
+            tags=frozenset(tags), cooldown=cooldown, interrupt=interrupt,
+            one_shot=one_shot))
+
+    def act_ctx(self):
+        """当前 tick 的动作上下文（角色 ticker 走注册表起手时用）。"""
+        return ActionContext(self, self.cursor)
 
     # 独占状态注册与查询
     def register_state(self, name, enter=None, tick=None, brk=None, kill_break=None, fx=None,
@@ -836,289 +874,11 @@ class BehaviorFSM:
             f.state = "free"
         self._prev_zerog = z
 
-        self.grab.tick()
-        if (self.grab.active and self.state not in
-                ("Dragged", "Ascension", "Dead", "TongueClimb", "CeilingHang",
-                 "FetchFruit", "CursorLick", "AngryStone", "PoleClimb", "HPole",
-                 "SeekHPole")):
-            self._transition("Dragged")
-        if self.grab.active:
-            self.grab.drag(cursor) if cursor is not None else None
-        self._shake_drop_tick()
+        # ── 决策：唯一入口。保命 → 该做的事（见 behavior/action.py）──
+        ctx = ActionContext(self, cursor)
+        self.actions.tick()
+        self.actions.decide(ctx)
 
-        # 浸水优先级：溺爆/溺死/入水/出水
-        if self.body.pyro_drown and self.state != "Dead":
-            self.kill_pyro_drown()
-        elif self.body.drown >= 1.0 and self.state != "Dead":
-            self.kill_drown()
-        elif self.body.swimming:
-            if self.state not in _SWIM_KEEP:
-                self._break_active_controllers()
-                self._transition("Swimming")
-        elif self.state == "Swimming":
-            self.body.swim_target = None
-            self._transition("IdleStand" if self.body.on_floor() else "Airborne")
-
-        # 无重力强制转漂浮 idle
-        if self._zerog() and self.state not in _ZEROG_KEEP:
-            self._break_active_controllers()
-            self._transition("IdleStand")
-
-        # 避水自救压过趋暖
-        if (self._water_urgent() and not self.grab.active and not self._zerog()
-                and self.state not in _WATER_BLOCKED):
-            self._break_active_controllers()
-            self._wall_side = -1 if self.body.chunk1.x < self.WL / 2 else 1
-            self._transition("RelocateToWall")
-
-        # 趋暖强制中断，避水期间让位
-        if (self._cold_urgent() and not self.grab.active and not self._zerog()
-                and not self._water_urgent()
-                and self.state not in _COLD_BLOCKED):
-            self._break_active_controllers()
-            self._transition("SeekWarmth")
-
-        # 挡路互动扫描
-        self._scan_blocking()
-
-        # 认领板：把这只猫此刻的「正事目标」登记成认领（认领 / 拥挤成本 /
-        # 失败黑名单都从这里来，见 board.py）。放在仲裁之前，本 tick 的
-        # 选择就能看到同伴们此刻盯上了什么。
-        board_for(self.win).sync(self.win, getattr(self.win, "_pole_tick", 0))
-        self._board_loss_tick()
-        self._watch_fetch_steal()          # 同样只负责«发现被抢 + 发事件»
-        # 事件总线：消化这一 tick 别人做过的事（关系变化 + 社会反应）。
-        # 决策不写在这一层 —— 这里只把「发生了什么」翻成「我要做什么」。
-        self._event_tick()
-
-        # 面敌逻辑（合并旧「躲蜥蜴」+「恐惧」两套）：威胁的唯一入口。
-        # 恐慌区（FEAR_TOO_CLOSE_R 内）不管手头有没有正事一律接管；中距离只在
-        # 「没正事」的态里决定迎战 / 去拿家伙 / 救人 / 撤退（见 _face_threat_tick）。
-        if self._flee_cd > 0:
-            self._flee_cd -= 1
-        if (self.state in ("LieDown", "Sleep") and not self.grab.active
-                and self._threat_present()):
-            self._hibernating = False          # 威胁在场：睡着也要立刻醒
-            self._transition("WakeSequence")
-        if not self.grab.active and not self._exhausted and not self._zerog():
-            self._face_threat_tick(cursor)
-
-        # 五类欲望：社交 / 帮取食 / 反击 / 匍匐躲避 / 被抢抗议
-        self._wants_tick(cursor)
-
-        # 体力告急强制休息
-        if (not self._exhausted and not self._hibernating and not self.grab.active
-                and not self._cold_urgent() and not self._zerog()
-                and self.body.energy < tuning.EXHAUST_ENTER_ENERGY
-                and self.state not in _EXHAUST_BLOCKED):
-            self._exhausted = True
-            self._enter_exhaustion()
-
-        if self._fetch_cooldown > 0:
-            self._fetch_cooldown -= 1
-
-        # 取果触发：门禁 + 间隔节流重算候选
-        self._fetch_check = (self._fetch_check + 1) % T_FETCH_CHECK
-        self._food_urge_tick()
-        self._social_urge_tick()
-        if (self._fetch_check == 0
-                and self.body.food < self.body.food_max
-                and self._food_seek_ready()
-                and not self.grab.active and not self._exhausted
-                and not self._cold_urgent() and not self._zerog()
-                and self._fetch_cooldown <= 0
-                and self.state not in _FETCH_NEVER):
-            fetch_cands = fetch_ready(self.planner, self.win.fetchables(),
-                                      diet=self.pers.diet, unit=self.win)
-            if fetch_cands:
-                take = True
-                if self.state in _FETCH_PLAY:
-                    tg = self.win.tongue
-                    if tg is None:
-                        take = False
-                    else:
-                        mox, moy = self.gfx.mouth_world()
-                        take = any(math.hypot(f.x - mox, f.y - moy) <= tg.total
-                                   for f in fetch_cands)
-                if take:
-                    self._break_active_controllers()
-                    self._act_or_wake("FetchFruit")
-            else:
-                self._hpole_food_trip()
-
-        # 业力花（KarmaAction）：独立于「吃」的目标链 —— 业力花不填饱食度、
-        # 只填隐藏花条，所以单独一条路（旧版混进食链：吃完花 food 不涨，
-        # 于是觅食欲望不归零、猫吃饱了还反复进觅食判断）。
-        if self._karma_cd > 0:
-            self._karma_cd -= 1
-        if (self._fetch_check == 0 and self._karma_cd <= 0
-                and self.win.karmaflowers and not self.body.flower_karma
-                and not self.grab.active and not self._exhausted
-                and not self._cold_urgent() and not self._zerog()
-                and not self._hibernating and not self.body.swimming
-                and self.state in _WANTS_FROM
-                and self.rng.random() < tuning.KARMA_SEEK_P):
-            if self._karma_flowers_reachable():
-                self._break_active_controllers()
-                self._fetch_karma = True
-                self._act_or_wake("FetchFruit")
-
-        # 喜欢珍珠的猫（溪流）：闲着也会去把地上的珍珠叼起来拿着
-        if self._pearl_cd > 0:
-            self._pearl_cd -= 1
-        if (self._fetch_check == 0 and self._pearl_cd <= 0
-                and float(getattr(self.pers, "pearl_like", 1.0)) > 1.0
-                and self.body.carried_fruit is None and self.body.carried_spear is None
-                and self.state in ("IdleStand", "PostThrowStand", "PostThrowWander")
-                and not self.grab.active and not self._exhausted
-                and not self._cold_urgent() and not self._zerog()
-                and not self._hibernating and not self.body.swimming
-                and self.rng.random() < tuning.PEARL_HOARD_P):
-            if self._free_pearl_near() is not None:
-                self._pearl_cd = tuning.PEARL_HOARD_CD
-                self._break_active_controllers()
-                self._act_or_wake("FetchFruit")
-
-        # 爆米花（原版外部食物源）：开荚的贴上去就能啃；饿了主动走过去
-        if self._cob_cd > 0:
-            self._cob_cd -= 1
-        if self._cob_seek_cd > 0:
-            self._cob_seek_cd -= 1
-        if self._cob_throw_cd > 0:
-            self._cob_throw_cd -= 1
-        if self._pole_throw_cd > 0:
-            self._pole_throw_cd -= 1
-        self._cob_check = (self._cob_check + 1) % tuning.COB_CHECK_TICKS
-        if (self._cob_check == 0 and self._cob_seek_cd <= 0
-                and self.body.food < self.body.food_max
-                and self._food_seek_ready()
-                and not self.grab.active and not self._exhausted
-                and not self._cold_urgent() and not self._zerog()
-                and self.state in _WANTS_FROM):
-            cb = self._nearest_cob(feedable=True)
-            if cb is None and self._cob_spear_willing():
-                cb = self._nearest_cob(feedable=False)     # 没开荚：去捡矛打
-            if cb is not None:
-                self._cob = cb
-                self._break_active_controllers()
-                self._act_or_wake("EatCob")
-
-        # 狩猎飞虫（原版：蝙蝠/蝉乌贼在空中 → 捡石/持矛预判投掷）
-        if self._hunt_cd > 0:
-            self._hunt_cd -= 1
-        full = self.body.food >= self.body.food_max
-        meat = self._meat_zeal()
-        hunting = (not full and meat > 0.0 and self._food_seek_ready())   # 没饱：正经狩猎（吃素的猫不猎）
-        # 饱了：捕食也算娱乐项目（空手也会先去捡石头/矛再打）
-        playing = (full and self.rng.random() < tuning.HUNT_PLAY_PROB)
-        if (self._fetch_check == 0 and self._hunt_cd <= 0
-                and (hunting or playing)
-                and not self.grab.active and not self._exhausted
-                and not self._cold_urgent() and not self._zerog()
-                and not self._hibernating and not self.body.swimming
-                and self.state in ("IdleStand", "PostThrowStand", "PostThrowWander")):
-            from .huntfly import FlyHunter
-            probe = FlyHunter(self.win, self.rng, self)
-            if probe._flies() and (probe._ground_stones() or probe._ground_spears()
-                                   or self.body.carried_stone is not None
-                                   or self.body.carried_spear is not None):
-                self._break_active_controllers()
-                self._act_or_wake("HuntFly")
-
-        # 徒手抓飞虫：饿了抓来吃，吃饱了抓着玩一会儿再放走
-        if self._catch_cd > 0:
-            self._catch_cd -= 1
-        if (self._catch_cd <= 0
-                and not self.grab.active and not self._exhausted
-                and not self._cold_urgent() and not self._zerog()
-                and not self._hibernating and not self.body.swimming
-                and self.state in ("IdleStand", "PostThrowStand", "PostThrowWander")
-                and self._nearest_catchable() is not None):
-            self._break_active_controllers()
-            self._act_or_wake("CatchFly")
-
-        # 平时也爱捡地上的矛/石头把玩（正饿着找食时先不玩，别把矛/石头抢走）
-        if self._itemplay_cd > 0:
-            self._itemplay_cd -= 1
-        if (self._fetch_check == 0 and self._itemplay_cd <= 0
-                and not (self.body.food < self.body.food_max and self._food_urge >= 1.0)
-                and not self.grab.active and not self._exhausted
-                and not self._cold_urgent() and not self._zerog()
-                and not self._hibernating and not self.body.swimming
-                and self.state in ("IdleStand", "PostThrowStand", "PostThrowWander")
-                and self.rng.random() < tuning.ITEMPLY_P):
-            it = self._nearest_play_item()
-            if it is not None:
-                self._itemplay_target = it
-                self._break_active_controllers()
-                self._act_or_wake("ItemPlay")
-
-        # 圣徒玩耍：伸舌黏住路过的生物逗一下（舌头系独有；被黏的生物各有反应）
-        if self._lick_cd > 0:
-            self._lick_cd -= 1
-        if (self._lick_cd <= 0 and self.win.tongue is not None
-                and not self.grab.active and not self._exhausted
-                and not self._cold_urgent() and not self._zerog()
-                and not self._hibernating and not self.body.swimming
-                and self._threat_lizard() is None
-                and self.state in ("IdleStand", "PostThrowStand", "PostThrowWander")):
-            tgt = self._lick_creature()
-            if tgt is not None and self.rng.random() < self._lick_want():
-                self.win.fire_tongue_at_obj(tgt)
-                self._lick_cd = LICK_PLAY_CD
-                self.gfx.look_at = (tgt.x, tgt.y)
-
-        # 清场：场上有无用又不能吃的尸体（死蜥蜴…）→ 拖到屏幕边扔出去
-        if self._haul_cd > 0:
-            self._haul_cd -= 1
-        if (self._fetch_check == 0 and self._haul_cd <= 0
-                and not self.grab.active and not self._exhausted
-                and not self._cold_urgent() and not self._zerog()
-                and not self._hibernating and not self.body.swimming
-                and self.body.on_floor()
-                and self.state in ("IdleStand", "PostThrowStand", "PostThrowWander")
-                and self._threat_lizard() is None):       # 有活威胁时先躲，不捡尸
-            jc = self._junk_corpse_near()
-            # 先看有没有垃圾再掷骰：没尸体就不动随机流（随机数纪律）
-            if jc is not None and self.rng.random() < CORPSE_HAUL_P:
-                self._clear_target = jc
-                self._break_active_controllers()
-                self._act_or_wake("ClearCorpse")
-
-        self._back_spear_tick()
-
-        # 睡眠欲望：吃饱后入睡概率从 0 缓慢升到 100
-        self._sleep_urge_tick()
-        if (not self._hibernating and not self.grab.active and not self._exhausted
-                and self._tongue_holding_creature() is None     # 舌头黏着生物：不许入睡
-                and not self._too_cold_to_sleep() and not self._zerog()
-                and self._sleep_roll()
-                and self.state in ("IdleStand", "LieDown")):
-            self._hibernating = True
-            self._sleep_drop_hands()          # 睡觉前把手里的东西放下（原版睡着不留吃的）
-            if self.state == "IdleStand":
-                self._transition("LieDown")
-
-        if (self.state in ("PostThrowWander", "PostThrowStand") and self.anger > 0
-                and not self.grab.active and self._grounded_stone_available()):
-            self._transition("AngryStone")
-
-        lick_dwell_need = _lerpmap(self.body.temper, -1.0, 1.0,
-                                   LICK_DWELL * 1.5, LICK_DWELL * 0.5)
-        if ("CursorLick" in self._ext_states
-                and self.state == "IdleStand" and not self.grab.active and not self._exhausted
-                and not self._zerog()
-                and self._relick_cooldown <= 0 and self._dwell >= lick_dwell_need
-                and cursor is not None
-                and self.HL * LICK_BAND_LO <= cursor[1] <= self.HL * LICK_BAND_HI
-                and abs(self.body.chunk0.x - cursor[0]) < self.WL * LICK_GATE_FRAC):
-            self._transition("CursorLick")
-
-        if self.anger > 0 and self.state in ("PostThrowWander", "PostThrowStand", "AngryStone"):
-            self.anger -= 1
-
-        self._squid_lift_tick()
-        self.gfx.look_at = None
         # 圣徒舌头黏着生物：一路拽着，不许摆匍匐（下面按 tick 扣体力）
         tongue_hold = self._tongue_holding_creature()
         if tongue_hold is not None:
@@ -1169,6 +929,433 @@ class BehaviorFSM:
         self._food_prev = self.body.food
         self.mood.tick_freshness(self._active_mood())
         self.timer += 1
+
+    # ── 统一动作注册表：主 tick 的全部「决定」都登记在这里 ──
+    # 旧版 update() 里那条又长又散的 if 链搬进来了：顺序 = 注册顺序，
+    # 每条动作的 pre（无条件记账）/ gate（什么条件做）/ start（做什么）
+    # 都是从原处逐字搬过来的，所以行为与随机数流与旧版一致。
+    def _register_actions(self):
+        A = self.actions.register
+        A(ActionSpec(key='Dragged', band=BAND_EMERGENCY,
+                    pre=self._act_dragged_pre, gate=self._act_dragged_gate, start=self._act_dragged,
+                    tags=frozenset({TAG_EMERGENCY})))
+        A(ActionSpec(key='PyroDrown', band=BAND_EMERGENCY,
+                    pre=self._act_pyrodrown_pre, gate=self._act_pyrodrown_gate, start=self._act_pyrodrown,
+                    tags=frozenset({TAG_EMERGENCY})))
+        A(ActionSpec(key='Drown', band=BAND_EMERGENCY,
+                    pre=self._act_drown_pre, gate=self._act_drown_gate, start=self._act_drown,
+                    tags=frozenset({TAG_EMERGENCY})))
+        A(ActionSpec(key='SwimEnter', band=BAND_EMERGENCY,
+                    pre=self._act_swimenter_pre, gate=self._act_swimenter_gate, start=self._act_swimenter,
+                    tags=frozenset({TAG_EMERGENCY})))
+        A(ActionSpec(key='SwimExit', band=BAND_EMERGENCY,
+                    pre=self._act_swimexit_pre, gate=self._act_swimexit_gate, start=self._act_swimexit,
+                    tags=frozenset({TAG_EMERGENCY})))
+        A(ActionSpec(key='ZeroG', band=BAND_EMERGENCY,
+                    pre=self._act_zerog_pre, gate=self._act_zerog_gate, start=self._act_zerog,
+                    tags=frozenset({TAG_EMERGENCY})))
+        A(ActionSpec(key='WaterUrgent', band=BAND_EMERGENCY,
+                    pre=self._act_waterurgent_pre, gate=self._act_waterurgent_gate, start=self._act_waterurgent,
+                    tags=frozenset({TAG_EMERGENCY})))
+        A(ActionSpec(key='ColdUrgent', band=BAND_EMERGENCY,
+                    pre=self._act_coldurgent_pre, gate=self._act_coldurgent_gate, start=self._act_coldurgent,
+                    tags=frozenset({TAG_EMERGENCY})))
+        A(ActionSpec(key='BlockReact', band=BAND_NEED,
+                    pre=self._act_blockreact_pre, gate=self._act_blockreact_gate, start=self._act_blockreact,
+                    tags=frozenset({TAG_NAV})))
+        A(ActionSpec(key='WakeOnThreat', band=BAND_NEED,
+                    pre=self._act_wakeonthreat_pre, gate=self._act_wakeonthreat_gate, start=self._act_wakeonthreat,
+                    tags=frozenset({TAG_EMERGENCY})))
+        A(ActionSpec(key='FaceThreat', band=BAND_NEED,
+                    pre=self._act_facethreat_pre, gate=self._act_facethreat_gate, start=self._act_facethreat,
+                    tags=frozenset({TAG_EMERGENCY})))
+        A(ActionSpec(key='Wants', band=BAND_NEED,
+                    pre=self._act_wants_pre, gate=self._act_wants_gate, start=self._act_wants,
+                    tags=frozenset({TAG_SOCIAL})))
+        A(ActionSpec(key='Exhaustion', band=BAND_NEED,
+                    pre=self._act_exhaustion_pre, gate=self._act_exhaustion_gate, start=self._act_exhaustion,
+                    tags=frozenset({TAG_FOOD})))
+        A(ActionSpec(key='FetchFood', band=BAND_NEED,
+                    pre=self._act_fetchfood_pre, gate=self._act_fetchfood_gate, start=self._act_fetchfood,
+                    tags=frozenset({TAG_FOOD})))
+        A(ActionSpec(key='KarmaFlower', band=BAND_NEED,
+                    pre=self._act_karmaflower_pre, gate=self._act_karmaflower_gate, start=self._act_karmaflower,
+                    tags=frozenset({TAG_FOOD})))
+        A(ActionSpec(key='PearlHoard', band=BAND_NEED,
+                    pre=self._act_pearlhoard_pre, gate=self._act_pearlhoard_gate, start=self._act_pearlhoard,
+                    tags=frozenset({TAG_FOOD})))
+        A(ActionSpec(key='EatCob', band=BAND_NEED,
+                    pre=self._act_eatcob_pre, gate=self._act_eatcob_gate, start=self._act_eatcob,
+                    tags=frozenset({TAG_FOOD})))
+        A(ActionSpec(key='HuntFly', band=BAND_NEED,
+                    pre=self._act_huntfly_pre, gate=self._act_huntfly_gate, start=self._act_huntfly,
+                    tags=frozenset({TAG_FOOD})))
+        A(ActionSpec(key='CatchFly', band=BAND_NEED,
+                    pre=self._act_catchfly_pre, gate=self._act_catchfly_gate, start=self._act_catchfly,
+                    tags=frozenset({TAG_FOOD})))
+        A(ActionSpec(key='ItemPlay', band=BAND_NEED,
+                    pre=self._act_itemplay_pre, gate=self._act_itemplay_gate, start=self._act_itemplay,
+                    tags=frozenset({TAG_PERSONALITY})))
+        A(ActionSpec(key='SaintLickPlay', band=BAND_NEED,
+                    pre=self._act_saintlickplay_pre, gate=self._act_saintlickplay_gate, start=self._act_saintlickplay,
+                    tags=frozenset({TAG_PERSONALITY})))
+        A(ActionSpec(key='ClearCorpse', band=BAND_NEED,
+                    pre=self._act_clearcorpse_pre, gate=self._act_clearcorpse_gate, start=self._act_clearcorpse,
+                    tags=frozenset({TAG_INTERACT})))
+        A(ActionSpec(key='SleepRoll', band=BAND_NEED,
+                    pre=self._act_sleeproll_pre, gate=self._act_sleeproll_gate, start=self._act_sleeproll,
+                    tags=frozenset({TAG_PERSONALITY})))
+        A(ActionSpec(key='AngryStone', band=BAND_NEED,
+                    pre=self._act_angrystone_pre, gate=self._act_angrystone_gate, start=self._act_angrystone,
+                    tags=frozenset({TAG_PERSONALITY})))
+        A(ActionSpec(key='CursorLick', band=BAND_NEED,
+                    pre=self._act_cursorlick_pre, gate=self._act_cursorlick_gate, start=self._act_cursorlick,
+                    tags=frozenset({TAG_PERSONALITY})))
+
+    def _act_dragged_pre(self, ctx):
+        self.grab.tick()
+    def _act_dragged_gate(self, ctx):
+        return (self.grab.active and self.state not in
+                ("Dragged", "Ascension", "Dead", "TongueClimb", "CeilingHang",
+                 "FetchFruit", "CursorLick", "AngryStone", "PoleClimb", "HPole",
+                 "SeekHPole"))
+    def _act_dragged(self, ctx):
+            self._transition("Dragged")
+
+    def _act_pyrodrown_pre(self, ctx):
+        if self.grab.active:
+            self.grab.drag(ctx.cursor) if ctx.cursor is not None else None
+        self._shake_drop_tick()
+    def _act_pyrodrown_gate(self, ctx):
+        return (self.body.pyro_drown and self.state != "Dead")
+    def _act_pyrodrown(self, ctx):
+            self.kill_pyro_drown()
+
+    def _act_drown_pre(self, ctx):
+        pass
+    def _act_drown_gate(self, ctx):
+        return (not self.body.pyro_drown and self.body.drown >= 1.0 and self.state != "Dead")
+    def _act_drown(self, ctx):
+            self.kill_drown()
+
+    def _act_swimenter_pre(self, ctx):
+        pass
+    def _act_swimenter_gate(self, ctx):
+        return (not self.body.pyro_drown and self.body.drown < 1.0 and self.body.swimming and self.state not in _SWIM_KEEP)
+    def _act_swimenter(self, ctx):
+                self._break_active_controllers()
+                self._transition("Swimming")
+
+    def _act_swimexit_pre(self, ctx):
+        pass
+    def _act_swimexit_gate(self, ctx):
+        return (not self.body.pyro_drown and self.body.drown < 1.0 and not self.body.swimming and self.state == "Swimming")
+    def _act_swimexit(self, ctx):
+            self.body.swim_target = None
+            self._transition("IdleStand" if self.body.on_floor() else "Airborne")
+
+    def _act_zerog_pre(self, ctx):
+        pass
+    def _act_zerog_gate(self, ctx):
+        return (self._zerog() and self.state not in _ZEROG_KEEP)
+    def _act_zerog(self, ctx):
+            self._break_active_controllers()
+            self._transition("IdleStand")
+
+    def _act_waterurgent_pre(self, ctx):
+        pass
+    def _act_waterurgent_gate(self, ctx):
+        return (self._water_urgent() and not self.grab.active and not self._zerog()
+                and self.state not in _WATER_BLOCKED)
+    def _act_waterurgent(self, ctx):
+            self._break_active_controllers()
+            self._wall_side = -1 if self.body.chunk1.x < self.WL / 2 else 1
+            self._transition("RelocateToWall")
+
+    def _act_coldurgent_pre(self, ctx):
+        pass
+    def _act_coldurgent_gate(self, ctx):
+        return (self._cold_urgent() and not self.grab.active and not self._zerog()
+                and not self._water_urgent()
+                and self.state not in _COLD_BLOCKED)
+    def _act_coldurgent(self, ctx):
+            self._break_active_controllers()
+            self._transition("SeekWarmth")
+
+    def _act_blockreact_pre(self, ctx):
+        pass
+    def _act_blockreact_gate(self, ctx):
+        return (True)
+    def _act_blockreact(self, ctx):
+        self._scan_blocking()
+
+    def _act_wakeonthreat_pre(self, ctx):
+        board_for(self.win).sync(self.win, getattr(self.win, "_pole_tick", 0))
+        self._board_loss_tick()
+        self._watch_fetch_steal()          # 同样只负责«发现被抢 + 发事件»
+        # 事件总线：消化这一 tick 别人做过的事（关系变化 + 社会反应）。
+        # 决策不写在这一层 —— 这里只把「发生了什么」翻成「我要做什么」。
+        self._event_tick()
+        if self._flee_cd > 0:
+            self._flee_cd -= 1
+    def _act_wakeonthreat_gate(self, ctx):
+        return (self.state in ("LieDown", "Sleep") and not self.grab.active
+                and self._threat_present())
+    def _act_wakeonthreat(self, ctx):
+            self._hibernating = False          # 威胁在场：睡着也要立刻醒
+            self._transition("WakeSequence")
+
+    def _act_facethreat_pre(self, ctx):
+        pass
+    def _act_facethreat_gate(self, ctx):
+        return (not self.grab.active and not self._exhausted and not self._zerog())
+    def _act_facethreat(self, ctx):
+            self._face_threat_tick(ctx.cursor)
+
+    def _act_wants_pre(self, ctx):
+        pass
+    def _act_wants_gate(self, ctx):
+        return (True)
+    def _act_wants(self, ctx):
+        self._wants_tick(ctx.cursor)
+
+    def _act_exhaustion_pre(self, ctx):
+        pass
+    def _act_exhaustion_gate(self, ctx):
+        return (not self._exhausted and not self._hibernating and not self.grab.active
+                and not self._cold_urgent() and not self._zerog()
+                and self.body.energy < tuning.EXHAUST_ENTER_ENERGY
+                and self.state not in _EXHAUST_BLOCKED)
+    def _act_exhaustion(self, ctx):
+            self._exhausted = True
+            self._enter_exhaustion()
+
+    def _act_fetchfood_pre(self, ctx):
+        if self._fetch_cooldown > 0:
+            self._fetch_cooldown -= 1
+
+        # 取果触发：门禁 + 间隔节流重算候选
+        self._fetch_check = (self._fetch_check + 1) % T_FETCH_CHECK
+        self._food_urge_tick()
+        self._social_urge_tick()
+    def _act_fetchfood_gate(self, ctx):
+        return (self._fetch_check == 0
+                and self.body.food < self.body.food_max
+                and self._food_seek_ready()
+                and not self.grab.active and not self._exhausted
+                and not self._cold_urgent() and not self._zerog()
+                and self._fetch_cooldown <= 0
+                and self.state not in _FETCH_NEVER)
+    def _act_fetchfood(self, ctx):
+            fetch_cands = fetch_ready(self.planner, self.win.fetchables(),
+                                      diet=self.pers.diet, unit=self.win)
+            if fetch_cands:
+                take = True
+                if self.state in _FETCH_PLAY:
+                    tg = self.win.tongue
+                    if tg is None:
+                        take = False
+                    else:
+                        mox, moy = self.gfx.mouth_world()
+                        take = any(math.hypot(f.x - mox, f.y - moy) <= tg.total
+                                   for f in fetch_cands)
+                if take:
+                    self._break_active_controllers()
+                    self._act_or_wake("FetchFruit")
+            else:
+                self._hpole_food_trip()
+
+    def _act_karmaflower_pre(self, ctx):
+        if self._karma_cd > 0:
+            self._karma_cd -= 1
+    def _act_karmaflower_gate(self, ctx):
+        return (self._fetch_check == 0 and self._karma_cd <= 0
+                and self.win.karmaflowers and not self.body.flower_karma
+                and not self.grab.active and not self._exhausted
+                and not self._cold_urgent() and not self._zerog()
+                and not self._hibernating and not self.body.swimming
+                and self.state in _WANTS_FROM
+                and self.rng.random() < tuning.KARMA_SEEK_P)
+    def _act_karmaflower(self, ctx):
+            if self._karma_flowers_reachable():
+                self._break_active_controllers()
+                self._fetch_karma = True
+                self._act_or_wake("FetchFruit")
+
+    def _act_pearlhoard_pre(self, ctx):
+        if self._pearl_cd > 0:
+            self._pearl_cd -= 1
+    def _act_pearlhoard_gate(self, ctx):
+        return (self._fetch_check == 0 and self._pearl_cd <= 0
+                and float(getattr(self.pers, "pearl_like", 1.0)) > 1.0
+                and self.body.carried_fruit is None and self.body.carried_spear is None
+                and self.state in ("IdleStand", "PostThrowStand", "PostThrowWander")
+                and not self.grab.active and not self._exhausted
+                and not self._cold_urgent() and not self._zerog()
+                and not self._hibernating and not self.body.swimming
+                and self.rng.random() < tuning.PEARL_HOARD_P)
+    def _act_pearlhoard(self, ctx):
+            if self._free_pearl_near() is not None:
+                self._pearl_cd = tuning.PEARL_HOARD_CD
+                self._break_active_controllers()
+                self._act_or_wake("FetchFruit")
+
+    def _act_eatcob_pre(self, ctx):
+        if self._cob_cd > 0:
+            self._cob_cd -= 1
+        if self._cob_seek_cd > 0:
+            self._cob_seek_cd -= 1
+        if self._cob_throw_cd > 0:
+            self._cob_throw_cd -= 1
+        if self._pole_throw_cd > 0:
+            self._pole_throw_cd -= 1
+        self._cob_check = (self._cob_check + 1) % tuning.COB_CHECK_TICKS
+    def _act_eatcob_gate(self, ctx):
+        return (self._cob_check == 0 and self._cob_seek_cd <= 0
+                and self.body.food < self.body.food_max
+                and self._food_seek_ready()
+                and not self.grab.active and not self._exhausted
+                and not self._cold_urgent() and not self._zerog()
+                and self.state in _WANTS_FROM)
+    def _act_eatcob(self, ctx):
+            cb = self._nearest_cob(feedable=True)
+            if cb is None and self._cob_spear_willing():
+                cb = self._nearest_cob(feedable=False)     # 没开荚：去捡矛打
+            if cb is not None:
+                self._cob = cb
+                self._break_active_controllers()
+                self._act_or_wake("EatCob")
+
+    def _act_huntfly_pre(self, ctx):
+        if self._hunt_cd > 0:
+            self._hunt_cd -= 1
+        full = self.body.food >= self.body.food_max
+        meat = self._meat_zeal()
+        hunting = (not full and meat > 0.0 and self._food_seek_ready())   # 没饱：正经狩猎（吃素的猫不猎）
+        # 饱了：捕食也算娱乐项目（空手也会先去捡石头/矛再打）
+        playing = (full and self.rng.random() < tuning.HUNT_PLAY_PROB)
+        self._fly_hunt_on = hunting or playing    # 记账结果给 gate 读（pre 无条件先跑）
+    def _act_huntfly_gate(self, ctx):
+        return (self._fetch_check == 0 and self._hunt_cd <= 0
+                and self._fly_hunt_on
+                and not self.grab.active and not self._exhausted
+                and not self._cold_urgent() and not self._zerog()
+                and not self._hibernating and not self.body.swimming
+                and self.state in ("IdleStand", "PostThrowStand", "PostThrowWander"))
+    def _act_huntfly(self, ctx):
+            from .huntfly import FlyHunter
+            probe = FlyHunter(self.win, self.rng, self)
+            if probe._flies() and (probe._ground_stones() or probe._ground_spears()
+                                   or self.body.carried_stone is not None
+                                   or self.body.carried_spear is not None):
+                self._break_active_controllers()
+                self._act_or_wake("HuntFly")
+
+    def _act_catchfly_pre(self, ctx):
+        if self._catch_cd > 0:
+            self._catch_cd -= 1
+    def _act_catchfly_gate(self, ctx):
+        return (self._catch_cd <= 0
+                and not self.grab.active and not self._exhausted
+                and not self._cold_urgent() and not self._zerog()
+                and not self._hibernating and not self.body.swimming
+                and self.state in ("IdleStand", "PostThrowStand", "PostThrowWander")
+                and self._nearest_catchable() is not None)
+    def _act_catchfly(self, ctx):
+            self._break_active_controllers()
+            self._act_or_wake("CatchFly")
+
+    def _act_itemplay_pre(self, ctx):
+        if self._itemplay_cd > 0:
+            self._itemplay_cd -= 1
+    def _act_itemplay_gate(self, ctx):
+        return (self._fetch_check == 0 and self._itemplay_cd <= 0
+                and not (self.body.food < self.body.food_max and self._food_urge >= 1.0)
+                and not self.grab.active and not self._exhausted
+                and not self._cold_urgent() and not self._zerog()
+                and not self._hibernating and not self.body.swimming
+                and self.state in ("IdleStand", "PostThrowStand", "PostThrowWander")
+                and self.rng.random() < tuning.ITEMPLY_P)
+    def _act_itemplay(self, ctx):
+            it = self._nearest_play_item()
+            if it is not None:
+                self._itemplay_target = it
+                self._break_active_controllers()
+                self._act_or_wake("ItemPlay")
+
+    def _act_saintlickplay_pre(self, ctx):
+        if self._lick_cd > 0:
+            self._lick_cd -= 1
+    def _act_saintlickplay_gate(self, ctx):
+        return (self._lick_cd <= 0 and self.win.tongue is not None
+                and not self.grab.active and not self._exhausted
+                and not self._cold_urgent() and not self._zerog()
+                and not self._hibernating and not self.body.swimming
+                and self._threat_lizard() is None
+                and self.state in ("IdleStand", "PostThrowStand", "PostThrowWander"))
+    def _act_saintlickplay(self, ctx):
+            tgt = self._lick_creature()
+            if tgt is not None and self.rng.random() < self._lick_want():
+                self.win.fire_tongue_at_obj(tgt)
+                self._lick_cd = LICK_PLAY_CD
+                self.gfx.look_at = (tgt.x, tgt.y)
+
+    def _act_clearcorpse_pre(self, ctx):
+        if self._haul_cd > 0:
+            self._haul_cd -= 1
+    def _act_clearcorpse_gate(self, ctx):
+        return (self._fetch_check == 0 and self._haul_cd <= 0
+                and not self.grab.active and not self._exhausted
+                and not self._cold_urgent() and not self._zerog()
+                and not self._hibernating and not self.body.swimming
+                and self.body.on_floor()
+                and self.state in ("IdleStand", "PostThrowStand", "PostThrowWander")
+                and self._threat_lizard() is None)
+    def _act_clearcorpse(self, ctx):
+            jc = self._junk_corpse_near()
+            # 先看有没有垃圾再掷骰：没尸体就不动随机流（随机数纪律）
+            if jc is not None and self.rng.random() < CORPSE_HAUL_P:
+                self._clear_target = jc
+                self._break_active_controllers()
+                self._act_or_wake("ClearCorpse")
+
+    def _act_sleeproll_pre(self, ctx):
+        self._back_spear_tick()
+        self._sleep_urge_tick()
+    def _act_sleeproll_gate(self, ctx):
+        return (not self._hibernating and not self.grab.active and not self._exhausted
+                and self._tongue_holding_creature() is None     # 舌头黏着生物：不许入睡
+                and not self._too_cold_to_sleep() and not self._zerog()
+                and self._sleep_roll()
+                and self.state in ("IdleStand", "LieDown"))
+    def _act_sleeproll(self, ctx):
+            self._hibernating = True
+            self._sleep_drop_hands()          # 睡觉前把手里的东西放下（原版睡着不留吃的）
+            if self.state == "IdleStand":
+                self._transition("LieDown")
+
+    def _act_angrystone_pre(self, ctx):
+        pass
+    def _act_angrystone_gate(self, ctx):
+        return (self.state in ("PostThrowWander", "PostThrowStand") and self.anger > 0
+                and not self.grab.active and self._grounded_stone_available())
+    def _act_angrystone(self, ctx):
+            self._transition("AngryStone")
+
+    def _act_cursorlick_pre(self, ctx):
+        self._lick_dwell_need = _lerpmap(self.body.temper, -1.0, 1.0,
+                                         LICK_DWELL * 1.5, LICK_DWELL * 0.5)
+    def _act_cursorlick_gate(self, ctx):
+        return ("CursorLick" in self._ext_states
+                and self.state == "IdleStand" and not self.grab.active and not self._exhausted
+                and not self._zerog()
+                and self._relick_cooldown <= 0 and self._dwell >= self._lick_dwell_need
+                and ctx.cursor is not None
+                and self.HL * LICK_BAND_LO <= ctx.cursor[1] <= self.HL * LICK_BAND_HI
+                and abs(self.body.chunk0.x - ctx.cursor[0]) < self.WL * LICK_GATE_FRAC)
+    def _act_cursorlick(self, ctx):
+            self._transition("CursorLick")
+
 
     def _transition(self, new):
         if new == self.state:
@@ -1329,8 +1516,88 @@ class BehaviorFSM:
                 and self.water_threat() > 0.5
                 and self.body.energy >= tuning.CEIL_WATER_ENERGY_GATE)
 
-    def _mood_select(self):
-        ctx = MoodContext(self.body.energy, self.body.temper,
+    # ── mood 候选表 → 注册表（personality band）──
+    def _register_mood_actions(self):
+        """把 mood 候选原样登记成性格层动作：权重＝MoodArbiter 的同一套公式。"""
+        for cand in self.mood.order:
+            self.actions.register(ActionSpec(
+                key="mood:" + cand.name, band=BAND_PERSONALITY,
+                gate=self._mood_gate(cand.name), score=_MoodWeight(cand),
+                start=self._mood_start(cand.name),
+                tags=frozenset({TAG_PERSONALITY})))
+
+    def _mood_gate(self, name):
+        def gate(ctx):
+            c = self.mood.candidates.get(name)
+            if c is None:
+                return False
+            return bool(c.gate(self._mood_ctx_v) and c.freshness >= c.start)
+        return gate
+
+    def _mood_start(self, name):
+        def start(ctx):
+            return self._mood_enter(name, ctx.cursor)
+        return start
+
+    def _pick_mood(self, ctx):
+        """加权抽一个 mood 候选（唯一真正掷骰的 band）。"""
+        self._mood_ctx_v = self._mood_ctx()
+        return self.actions.pick_weighted(ctx, tuning.MOOD_NOISE_AMP)
+
+    def _mood_enter(self, name, cursor):
+        """候选名 → 对应状态（旧 _st_idlestand 里的那条链，原样搬过来）。"""
+        if name == "seek_warmth":
+            self._transition("SeekWarmth")
+            return True
+        if name == "pole_climb":
+            self._transition("PoleClimb")
+            return True
+        if name == "hpole":
+            self._transition("SeekHPole")
+            return True
+        if name == "ceiling_play":
+            self._wall_side = -1 if self.body.chunk1.x < self.WL / 2 else 1
+            self._transition("RelocateToWall")
+            return True
+        if name == "ceiling_hang":
+            self._ceiling_enter()
+            self._transition("CeilingHang")
+            return True
+        if name == "play_cursor":
+            self._play_enter()
+            self._transition("ChaseCursor")
+            return True
+        if name == "socialize":
+            tgt = self._nearest_peer()
+            if tgt is None:
+                self._idle_hold = self._roll_idle_hold()
+                return True
+            self._social_kind = self._social_kind_for(tgt)
+            self._social_target = tgt
+            self._social_left = 0        # 随机时长交给 _social_enter 掷
+            if self._social_kind == "crouch_walk":
+                # 匍匐行走：交给现有的 CrawlAway（害怕强敌潜行）
+                self._crawl_from = None
+                self._crawl_left = tuning.CRAWL_AWAY_TICKS
+                self._crawl_cd = T_CRAWL_RETRY
+                self._break_active_controllers()
+                self._transition("CrawlAway")
+                return True
+            self._social_enter()
+            self._transition("Socialize")
+            return True
+        ext = self._ext_mood_states.get(name)
+        if ext is not None:
+            self._transition(ext)
+            return True
+        # idle 兜底：开发呆驻留再重抽
+        self._idle_hold = self._roll_idle_hold()
+        self._idle_pace()
+        return True
+
+    def _mood_ctx(self):
+        """这次的 mood 判据（注册表 gate 与旧 _mood_select 共用一份）。"""
+        return MoodContext(self.body.energy, self.body.temper,
                           self._climbable_pole_available(),
                           cold=self.body.cold,
                           has_warm_lamp=self._warm_lamp_available(),
@@ -1344,7 +1611,9 @@ class BehaviorFSM:
                           cursor_close=self._cursor_close(),
                           threat=self._threat_level(),
                           social_urge=self._social_urge)
-        return self.mood.select(ctx)
+
+    def _mood_select(self):
+        return self.mood.select(self._mood_ctx())
 
     def _look_candidates(self, cursor):
         # 键用对象本身，避免 id() 字符串撞码
@@ -1378,54 +1647,13 @@ class BehaviorFSM:
             self._idle_hold -= 1
             self._idle_pace()
             return
-        choice = self._mood_select()
-        if choice == "seek_warmth":
-            self._transition("SeekWarmth")
-            return
-        if choice == "pole_climb":
-            self._transition("PoleClimb")
-            return
-        if choice == "hpole":
-            self._transition("SeekHPole")
-            return
-        if choice == "ceiling_play":
-            self._wall_side = -1 if self.body.chunk1.x < self.WL / 2 else 1
-            self._transition("RelocateToWall")
-            return
-        if choice == "ceiling_hang":
-            self._ceiling_enter()
-            self._transition("CeilingHang")
-            return
-        if choice == "play_cursor":
-            self._play_enter()
-            self._transition("ChaseCursor")
-            return
-        if choice == "socialize":
-            tgt = self._nearest_peer()
-            if tgt is None:
-                self._idle_hold = self._roll_idle_hold()
-                return
-            self._social_kind = self._social_kind_for(tgt)
-            self._social_target = tgt
-            self._social_left = 0        # 随机时长交给 _social_enter 掷
-            if self._social_kind == "crouch_walk":
-                # 匍匐行走：交给现有的 CrawlAway（害怕强敌潜行）
-                self._crawl_from = None
-                self._crawl_left = tuning.CRAWL_AWAY_TICKS
-                self._crawl_cd = T_CRAWL_RETRY
-                self._break_active_controllers()
-                self._transition("CrawlAway")
-                return
-            self._social_enter()
-            self._transition("Socialize")
-            return
-        ext = self._ext_mood_states.get(choice)
-        if ext is not None:
-            self._transition(ext)
-            return
-        # idle 兜底：开发呆驻留再重抽
-        self._idle_hold = self._roll_idle_hold()
-        self._idle_pace()
+        # 性格层（personality band）：候选表在注册表里，这里只查询
+        mctx = ActionContext(self, cursor)
+        spec = self._pick_mood(mctx)
+        if spec is None or not self.actions.start_spec(spec, mctx):
+            # 发呆驻留再重抽（idle 候选恒合格，理论到不了这里）
+            self._idle_hold = self._roll_idle_hold()
+            self._idle_pace()
 
     def _idle_pace(self):
         if not self.body.is_moving() and self.rng.random() < tuning.PACE_PROB * self._look_fac:
@@ -1500,6 +1728,7 @@ class BehaviorFSM:
                 and not self._exhausted and not self._cold_urgent()
                 and self.body.on_floor()):
             self._transition("MakeWay")     # 被顶满时长 → 让路
+            return True
         elif (blocker is not None and self._can_ground_blockreact()
               and self._blocked_ticks >= tuning.BLOCKED_JUMP_TICKS
               and self._jump_over_cd <= 0):
@@ -1513,12 +1742,15 @@ class BehaviorFSM:
                 self._jump_tries += 1
                 self._blocked_ticks = 0
                 self._jump_over_cd = tuning.JUMP_OVER_COOLDOWN
+                return True
         elif (blocker is not None and self._can_ground_blockreact() and self._jump_tries > 0
               and self._blocked_ticks >= tuning.BLOCKED_PUSH_TICKS
               and self._jump_over_cd <= 0):
             self._push_blocker(blocker)     # 跳不过去 → 上手推他（推完可能回头指指点点）
             self._jump_tries = 0
             self._blocked_ticks = 0
+            return True
+        return False
 
     def _point_trait_fac(self) -> float:
         """指指点点倾向系数：暴躁 + 爱指的性格更容易指（中性 ≈ 1.0）。"""

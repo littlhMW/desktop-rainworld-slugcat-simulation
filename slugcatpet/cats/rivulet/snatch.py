@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 
+from ...behavior.action import BAND_PREEMPT, TAG_CHARACTER, TAG_INTERACT
 from ...cats.saint.cursorlick import (BAND_LO, BAND_HI, DWELL_TICKS, SPEED_RELEASE)
 from ...planning.ability import walk_band
 from ...planning.backflip_reach import (best_launch_hit, sweep_hit_topsafe,
@@ -106,8 +107,7 @@ def mount_snatch(fsm):
             p = plan(fsm.cursor)
             if p is not None:
                 fsm._rs_plan = p
-                fsm._rs_cooldown = COOLDOWN
-                fsm._transition("RivSnatch")
+                fsm.actions.try_action("RivSnatch", fsm.act_ctx())
 
     def enter():
         b = fsm.body
@@ -220,6 +220,15 @@ def mount_snatch(fsm):
         if d != 0:
             b.facing = 1 if d > 0 else -1
         fsm._rs_cooldown = cooldown
+
+    def rs_start(ctx):
+        fsm._rs_cooldown = COOLDOWN
+        fsm._transition("RivSnatch")
+        return True
+
+    # 夺物本体登记进统一注册表（preempt band）：驻留检测仍在 ticker 原位。
+    fsm.register_action("RivSnatch", BAND_PREEMPT, gate=lambda ctx: True,
+                        start=rs_start, tags=(TAG_CHARACTER, TAG_INTERACT))
 
     fsm.register_ticker(watch)
     fsm.register_state("RivSnatch", enter=enter, tick=st_rivsnatch,
