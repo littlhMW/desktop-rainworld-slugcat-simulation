@@ -568,6 +568,20 @@ class ItemInteractionMixin:
                 if killed:
                     self._lizard_death_fx(lz)
                 break
+            for sc in self.scavengers:
+                if sc.dead or not s.fling or s.state != ItemState.FREE:
+                    continue
+                if math.hypot(s.vx, s.vy) < STONE_STUN_SPEED:
+                    continue
+                if _seg_dist(s.last_x, s.last_y, s.x, s.y, sc.x, sc.y) >= s.rad + sc.rad:
+                    continue
+                sc.hurt(STONE_DMG)
+                if _weapon_owner(s) is not None:
+                    sc.on_attacked(0.5)
+                s.deflect(self._stun_rng)
+                s.fling = False
+                self._shake[1] += 0.3
+                break
             for small in (*self.batflies, *self.squidcadas,
                           *self.needleworms):   # 砸中就打下来
                 if small.dead or not s.fling or s.state != ItemState.FREE:
@@ -2622,6 +2636,23 @@ class ItemInteractionMixin:
                 if killed:
                     self._lizard_death_fx(lz)
                 break
+            for sc in (self.scavengers if thrown else ()):
+                if sc.dead or sc.state != ItemState.FREE:
+                    continue
+                if math.hypot(sc.x - sp.x, sc.y - sp.y) > sp.rad + sc.rad + SPEAR_HIT_PAD:
+                    continue
+                spd = math.hypot(sp.vx, sp.vy) or 1.0
+                dvec = (sp.vx / spd, sp.vy / spd)
+                sc.hurt(SPEAR_DMG)
+                if _weapon_owner(sp) is not None:
+                    sc.on_attacked(SPEAR_DMG)
+                sp.vx = sp.vy = 0.0
+                sp.stuck = True
+                sp.stuck_angle = sp.angle_deg
+                sp.stuck_to = (sc, sp.x - sc.x, sp.y - sc.y)
+                self._shake[0] += 1.0 * (1.0 if dvec[0] >= 0.0 else -1.0)
+                self._shake[1] += 0.6
+                break
             for cb in self.seedcobs:                          # 矛扎中爆米花 → 开荚 + 插住
                 if cb.opened or cb.dead:
                     continue
@@ -2764,8 +2795,13 @@ class ItemInteractionMixin:
     def can_place_scavenger(self) -> bool:
         return True
 
+    def cat_variant(self) -> str:
+        """当前窗口猫的皮（拾荒者的初始好感按 wiki 起始声望表）。"""
+        return getattr(self.pets[0], "variant", "saint") if self.pets else "saint"
+
     def place_scavenger(self, lx, ly):
-        sc = Scavenger(lx, ly, seed=self._scavenger_seed, id=self._scavenger_seed)
+        sc = Scavenger(lx, ly, seed=self._scavenger_seed, id=self._scavenger_seed,
+                       variant=self.cat_variant())
         self._scavenger_seed += 1
         self.scavengers.append(sc)
         self.world_version += 1
@@ -3306,7 +3342,7 @@ class ItemInteractionMixin:
         seed = self._scavenger_seed
         got = getattr(self, "_scavenger_preview", None)
         if got is None or got[0] != seed:
-            sc = Scavenger(0.0, 0.0, seed=seed)
+            sc = Scavenger(0.0, 0.0, seed=seed, variant=self.cat_variant())
             sc.spear = None
             got = (seed, sc)
             self._scavenger_preview = got

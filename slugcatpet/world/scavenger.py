@@ -10,6 +10,8 @@ import random as _random
 
 from ..core.units import clampf, lerp
 from ..core.gfxmath import _hsl2rgb
+from ..rendering.primitives import (SCAV_STANCE, scav_pose, scav_spear_pose,
+                                    scav_shoulder)
 from .enums import ItemState
 from .spear import Spear
 
@@ -20,7 +22,7 @@ WALL_BOUNCE = 0.1
 
 BODY_RAD = 7.0             # Scavenger.cs:1611 bodyChunks[1].rad（髋）
 HEAD_RAD = 5.0             # Scavenger.cs:1611 bodyChunks[2].rad（头）
-STAND_H = 26.0            # 站立时躯干中心离地高度
+STAND_H = 40.0            # 绘制高度：髋心往上 40（原版 髋7+链18+头22 的悬垂投影）
 SPEED_WALK = 0.85
 SPEED_RUN = 1.5
 ALERT_R = 190.0           # 察觉半径（蜥蜴/猫）
@@ -37,6 +39,18 @@ AIM_VERT_TOL = 40.0
 # 鼠标也是威胁：原版 Scavenger 对任何靠近的生物都会举矛（ScavengerAI.ThreatRequired）
 CURSOR_ALERT_R = 240.0
 CURSOR_ARM = 6                    # 连续靠近这么久才举矛，防误触
+
+# 原版 wiki 起始声望 → 对这只猫的好感（0..1；0.5 = 中立，>=0.6 = 友好不攻击）
+# Survivor/Gourmand/Saint/Inv 0、Monk +25、Hunter -35、Rivulet -21、Spearmaster -45、
+# Artificer 恒定敌对。这里只做映射，不做任何自动升降（用户要求）。
+LIKE0_BY_VARIANT = {
+    "survivor": 0.500, "gourmand": 0.500, "saint": 0.500, "inv": 0.500,
+    "monk": 0.625, "hunter": 0.325, "rivulet": 0.395, "spearmaster": 0.275,
+    "artificer": 0.000,
+}
+ATTACK_LIKE_COST = 0.25           # 被猫打一次掉的好感
+ARM_HEALTH = 0.9                  # 血量低于此值就从背上拔矛
+TRADE_LIKE = 1.0                  # 收下珍珠后的好感（wiki 珍珠价值 10 最高）
 
 PEARL_SEEK_R = 300.0              # 看到珍珠就去捡的半径（原版 CollectScore=10）
 PEARL_TAKE_PAD = 9.0
@@ -78,6 +92,13 @@ def _inverse_lerp(a, b, v):
     if b == a:
         return 0.0
     return clampf((v - a) / (b - a), 0.0, 1.0)
+
+
+def _rot_deg(v, deg):
+    """原版 Custom.RotateAroundOrigo。"""
+    a = -math.radians(deg)
+    c, sn = math.cos(a), math.sin(a)
+    return (c * v[0] - sn * v[1], sn * v[0] + c * v[1])
 
 
 def _hsl255(h, s, l):
@@ -163,9 +184,26 @@ def individual_variations(rng, elite=False):
                                                                    v["general_melanin"])
     v["wide_teeth"] = rng.random()
     v["tail_segs"] = 0 if rng.random() < 0.5 else rng.randint(1, 4)
+    v["scruffy"] = 0.0
+    if rng.random() < 0.25:
+        v["scruffy"] = math.pow(rng.random(), 0.3)
     v["elite"] = elite
     v["mask"] = rng.choice(("KrakenMask", "SpikeMask", "HornedMask", "SadMask")) if elite else None
-    v["teeth_n"] = rng.randint(2, 4) * 2   # 原版 teeth = new float[Range(2,5)*2, 2] → 4/6/8
+    # 原版 teeth = new float[Range(2,5)*2, 2]，尺寸在构造期定死（否则每帧抖动）
+    v["teeth_n"] = rng.randint(2, 4) * 2
+    nt = v["teeth_n"]
+    t_width = lerp(0.5, 1.5, math.pow(rng.random(), 1.0))
+    t_width = lerp(t_width, t_width * _lerp_map(nt, 4.0, 8.0, 1.0, 0.5), 0.3)
+    ta = lerp(t_width + 0.2, lerp(0.7, 1.2, rng.random()), rng.random())
+    ta = lerp(ta, _lerp_map(nt, 4.0, 8.0, 1.5, 0.2), 0.4)
+    ta2 = 0.3 + 0.7 * rng.random()
+    v["teeth"] = []
+    for i in range(nt):
+        u = i / float(nt - 1) if nt > 1 else 0.0
+        t0 = lerp(ta2, 1.0, math.sin(u * math.pi)) * t_width
+        if rng.random() < v["scruffy"] and rng.random() < 0.2:
+            t0 = 0.0
+        v["teeth"].append((t0, lerp(0.5, 1.0, math.sin(u * math.pi)) * ta))
     v["hands"] = 1.0 if rng.random() < 0.8 else 0.0
     return v
 
@@ -287,9 +325,14 @@ class Scavenger:
                  "_contact_floor", "_rng", "seed", "id", "body_rgb", "head_rgb", "eye_rgb",
                  "belly_rgb", "pupil_rgb", "deco_rgb", "mask_rgb", "ivar",
                  "pearl", "like", "bring_pearl_home", "gift_t", "gift_event",
-                 "goal_pearl", "_cursor_seen")
+                 "goal_pearl", "_cursor_seen", "variant", "like0", "flip",
+                 "back_spear", "look_screen", "look_up", "neutral", "eyes_open",
+                 "last_flip", "last_neutral", "last_look_up",
+                 "eyes_pop", "last_eyes_open", "last_eyes_pop", "blink",
+                 "_blink_off", "rise_body", "hurt_cd")
 
-    def __init__(self, x: float, y: float, seed: int = 0, id: int = 0):
+    def __init__(self, x: float, y: float, seed: int = 0, id: int = 0,
+                 variant: str = "saint"):
         self.x = self.last_x = float(x)
         self.y = self.last_y = float(y)
         self.vx = self.vy = 0.0
@@ -330,10 +373,30 @@ class Scavenger:
         self.throw_event = None         # (tx, ty) 窗口读走后生成飞矛
         self.spear = Spear(self.x + 6.0, self.y - 6.0, seed=seed, angle_deg=90.0)
         self.spear.held_by = self
+        self.back_spear = True          # 原版：背上还插着一支备用矛
+        self.flip = 1.0                 # 原版 flip 是连续量（0.1 插值），不只是 ±1
+        self.last_flip = 1.0
+        # 面部/视线平滑量（原版 ScavengerGraphics.Update）
+        self.look_screen = (self.x + 90.0, self.y - 26.0)
+        self.look_up = 0.0
+        self.neutral = 0.0
+        self.last_look_up = 0.0
+        self.last_neutral = 0.0
+        self.eyes_open = 1.0
+        self.eyes_pop = 0.0
+        self.last_eyes_open = 1.0
+        self.last_eyes_pop = 0.0
+        self.blink = self._rng.randint(10, 60)
+        self._blink_off = 3
+        self.rise_body = 0.0
+        self.hurt_cd = 0
         self._contact_floor = False
         # ── 珍珠交易（原版 ScavengerAI：DataPearl 价值 10，收到后好感大涨）──
         self.pearl = None               # 手上的珍珠
-        self.like = 0.35                # 对猫的好感 0..1（原版 relationship.like）
+        # 初始好感按 wiki 的起始声望定（之后只被「被攻击」和「给珍珠」改变）
+        self.variant = variant
+        self.like0 = LIKE0_BY_VARIANT.get(variant, 0.5)
+        self.like = self.like0     # 对猫的好感 0..1（原版 relationship.like）
         self.bring_pearl_home = False   # 原版 GrabObject(DataPearl) 时置位
         self.gift_t = -1                # ≥0 表示回礼倒计时
         self.gift_event = False         # 窗口读走后生成回礼的矛
@@ -372,7 +435,8 @@ class Scavenger:
 
     def _carry_pearl(self) -> None:
         pr = self.pearl
-        pr.x, pr.y = self.x - self.facing * 3.0, self.y - 5.0
+        (gx, gy), _ = scav_spear_pose(scav_pose(self))
+        pr.x, pr.y = gx, gy
         pr.last_x, pr.last_y = pr.x, pr.y
         pr.vx = pr.vy = 0.0
         pr.state = ItemState.CARRIED
@@ -417,6 +481,8 @@ class Scavenger:
         self._threat_scan(threats, cursor)
         self._integrate(WL, HL)
         self._step_legs(HL)
+        self._face_tick(cursor)
+        self._arm_needs()
         if self.throw_cd > 0:
             self.throw_cd -= 1
         if self.spear is not None:                  # 矛跟着手
@@ -429,10 +495,74 @@ class Scavenger:
                 self.gift_event = True              # 回礼：给猫一根矛
                 self.gift_t = -1
 
+    # ── 背矛 / 被攻击 / 面部平滑（原版 ScavengerGraphics.Update）──
+    def _arm_needs(self) -> None:
+        """受伤、或要打架而手里没矛时，从背上把备用矛抽到右手。"""
+        if self.hurt_cd > 0:
+            self.hurt_cd -= 1
+        if self.spear is not None or not self.back_spear:
+            return
+        if self.health > ARM_HEALTH and self.state != "aim" and self.aim is None:
+            return
+        self.back_spear = False
+        sp = Spear(self.x + self.facing * 6.0, self.y - 8.0, seed=self.seed,
+                   angle_deg=90.0)
+        sp.held_by = self
+        self.spear = sp
+
+    def on_attacked(self, dmg: float = 1.0) -> None:
+        """被猫攻击：掉好感并立刻反击（好感不会自己回升）。"""
+        self.like = clampf(self.like - ATTACK_LIKE_COST * clampf(dmg, 0.5, 2.0), 0.0, 1.0)
+        self.bring_pearl_home = False
+        self.hurt_cd = 40
+        if self.spear is None:
+            self.back_spear = True
+        if self.state != "flee":
+            self.state = "aim"
+            self.aim_t = 0
+
+    def _face_tick(self, cursor=None) -> None:
+        """原版 ScavengerGraphics.Update 的 lookUp / neutralFace / 眨眼。"""
+        self.last_flip = self.flip
+        self.last_neutral = self.neutral
+        self.last_look_up = self.look_up
+        self.flip = clampf(self.flip + (float(self.facing) - self.flip) * 0.1, -1.0, 1.0)
+        if self.state == "aim" and self.aim is not None:
+            self.look_screen = self.aim
+        elif cursor is not None and (self.friendly
+                                     or math.hypot(cursor[0] - self.x,
+                                                   cursor[1] - self.y) < 200.0):
+            self.look_screen = cursor
+        else:
+            self.look_screen = (self.x + self.facing * 90.0, self.y - 26.0)
+        pose = scav_pose(self)
+        up = _rot_deg(pose["f"], pose["body_deg"])
+        if up[1] > 0.8:
+            self.look_up = min(1.0, self.look_up + 1.0 / 12.0)
+        else:
+            self.look_up = max(0.0, self.look_up - 1.0 / 12.0)
+        lx, ly = self.look_screen
+        dist = math.hypot(lx - self.x, ly - self.y)
+        # 原版 :1496：num3 = Lerp(200, 600, shiftingNeutralFace^1.7)，中值 ≈ 323
+        num3 = 323.4
+        num4 = clampf((num3 - dist) / num3, 0.0, 1.0)
+        self.neutral = lerp(self.neutral, num4, 0.1)
+        self.last_eyes_open = self.eyes_open
+        self.last_eyes_pop = self.eyes_pop
+        self.eyes_pop *= 0.9
+        self.blink -= 1
+        if self.blink < 0:
+            self.eyes_open = max(0.0, self.eyes_open - 0.5)
+            if self.blink < -self._blink_off:
+                self.blink = self._rng.randint(4, 12)
+                self._blink_off = self._rng.randint(2, 5)
+        else:
+            self.eyes_open = min(1.0, self.eyes_open + 0.52)
+
     def _step_held(self, HL, cursor=None) -> None:
         """被拎起：跟光标垂着，矛与投掷意图都失效。"""
         if cursor is not None:
-            self.x, self.y = cursor[0], min(cursor[1], HL - BODY_RAD)
+            self.x, self.y = cursor[0], min(cursor[1], HL - SCAV_STANCE)
         self.throw_event = None
         if self.spear is not None:      # 手里仍握着矛
             self._carry_spear()
@@ -543,8 +673,8 @@ class Scavenger:
             self.x, self.vx = self.rad, 0.0
         elif self.x > WL - self.rad:
             self.x, self.vx = WL - self.rad, 0.0
-        if self.y + BODY_RAD > HL:
-            self.y = HL - BODY_RAD
+        if self.y + SCAV_STANCE > HL:
+            self.y = HL - SCAV_STANCE
             self.vy = 0.0
             self._contact_floor = True
         elif self.y - BODY_RAD < 0:
@@ -559,17 +689,19 @@ class Scavenger:
             self.walk_phase = (self.walk_phase + abs(self.vx) * 0.05) % 1.0
 
     def _carry_spear(self) -> None:
-        """矛握在手里：斜举在身前，瞄准时后仰。"""
+        """矛握在右手里：位置/朝向按原版 ScavengerGraphics.ItemPosition/WeaponDir。"""
         sp = self.spear
-        ang = 70.0 if self.state != "aim" else 55.0
-        a = math.radians(ang)
-        sp.x, sp.y = self.x + self.facing * 5.0 + math.sin(a) * 6.0, self.y - 4.0
-        sp.angle_deg = ang * self.facing
-        sp.last_x, sp.last_y = sp.x, sp.y
-        sp.last_angle = sp.angle_deg
+        for ts in (1.0, 0.0):
+            (gx, gy), ang = scav_spear_pose(scav_pose(self, ts))
+            if ts >= 1.0:
+                sp.x, sp.y, sp.angle_deg = gx, gy, ang
+            else:
+                sp.last_x, sp.last_y, sp.last_angle = gx, gy, ang
         sp.state = ItemState.CARRIED
         sp.unstuck()
 
     # ── 头/眼（绘制用）──
     def head_pos(self):
-        return (self.x + self.facing * 6.0, self.y - STAND_H + 4.0)
+        """骨架头位（原版 drawPositions[0]）。"""
+        p = scav_pose(self)
+        return (p["org"][0] + p["d"][0][0], p["org"][1] - p["d"][0][1])
