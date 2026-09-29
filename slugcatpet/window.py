@@ -739,9 +739,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                          for s in self.stones)
         snow_active = self.snow_on and self._snow.active
         shake_active = self._shake[0] != 0.0 or self._shake[1] != 0.0
+        door_moving = any(0.0 < sh.door_t < 1.0 for sh in (self.shelters or ()))
         fx_active = (pet_fx or self.sparks or self.shockwaves or self.fx or self.bubbles
                      or self.cursor_hijack is not None or self._place_mode or fast_stone
-                     or snow_active
+                     or snow_active or door_moving
                      or self.rain.active
                      or shake_active)
         # 零重力/蝙蝠已含在 _dirty_rect，不放这里
@@ -1545,6 +1546,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             if self.water_y != self.water_target or surf.energy() > tuning.WATER_STILL_EPS:
                 xs.append(0.0); xs.append(self._WL)
                 ys.append(self.water_y - 40.0); ys.append(self._HL + self._ground_inset)
+        for sh in (self.shelters or ()):
+            # 庇护所整间：门板开合 / 拖动 / 删除都得落在重绘范围里
+            bx0, by0, bx1, by1 = sh.safe_rect()
+            xs.append(bx0); ys.append(by0); xs.append(bx1); ys.append(by1)
         s = self._scale
         pad = 60
         x0 = int((min(xs) - pad) * s); y0 = int((min(ys) - pad) * s)
