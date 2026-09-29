@@ -739,7 +739,7 @@ class ItemInteractionMixin:
         self.clear_lamp()
 
     def clear_world_for_reincarnation(self):
-        """全体转生：场上所有东西一起清空（原版换雨循环＝整房间重置）。
+        """全体转生：全体复活那一瞬把场上所有东西一起清空（原版换雨循环＝整房间重置）。
 
         除了可交互实体，还要清掉「死后原地长业力花」的排期 —— 转生是新循环，
         上一轮尸体的花不该再冒出来。

@@ -134,18 +134,6 @@ class PetUnit:
         self.body.impact_cb = w._shake_impact   # 地形硬撞→窗口抖动
         self._zerog_tail_phase = 0.0
 
-    def _reincarnate_burst(self):
-        """转世落点：顶部中央炸开一圈白点（与圣徒超度同色系）。"""
-        w = self.window
-        c = self.body.chunk0
-        n = 18
-        for i in range(n):
-            a = math.tau * i / n
-            sp = 2.4 + (i % 3) * 0.5
-            w.add_spark(c.x, c.y - 8.0, math.cos(a) * sp, math.sin(a) * sp - 1.0,
-                        white=True, life=45)
-        w.add_shockwave(c.x, c.y - 8.0, 34.0)
-
     def _attach_behavior(self):
         try:
             from .behavior.fsm import BehaviorFSM
@@ -181,7 +169,6 @@ class PetUnit:
         if self._reincarnate_pending:
             self._reincarnate_pending = False
             self.respawn(preserve=True)   # 体征保留，cold 归 0
-            self._reincarnate_burst()
             return
         w = self.window
         b, g = self.body, self.gfx

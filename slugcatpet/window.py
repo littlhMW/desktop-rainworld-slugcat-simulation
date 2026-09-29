@@ -359,7 +359,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self.follow_cursor = True
         self.pets = []
         self._all_dead_t = 0        # 全员死亡守灵计时
-        self._reincarnate_fx_t = 0  # 转生灵光节流
+        self._reincarnate_cleanup_pending = False   # 转生：全体复活那一瞬才清场
         self._build_pets()
 
         self._clock = QElapsedTimer()
@@ -924,35 +924,32 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             print("[slugcatpet] spawn %s failed: %r" % (key, e), file=sys.stderr)
 
     def _all_dead_tick(self):
-        """全员死亡：守灵一段后集体转生（业力已在各自死亡时结算）。"""
+        """全员死亡：守灵一段后集体转生（业力已在各自死亡时结算）。
+
+        转生没有灵光特效；清场也从「进入倒计时」挪到「全体复活的那一瞬」——
+        倒计时期间世界照旧、尸身还躺在那儿，正是同伴最后一次扒拉救回的机会。
+        """
         pets = [p for p in self.pets if p.behavior is not None]
-        if not pets or not all(p.behavior.is_dead() for p in pets):
+        if not pets:
             self._all_dead_t = 0
             return
-        if all(p.behavior.is_reincarnating() for p in pets):
-            self._reincarnate_fx_tick(pets)
-            return
-        self._all_dead_t += 1
-        if self._all_dead_t < tuning.ALL_DEAD_GRACE_TICKS:
+        if all(p.behavior.is_dead() for p in pets):
+            if all(p.behavior.is_reincarnating() for p in pets):
+                return                      # 倒计时中：不冒白点，也不清场
+            self._all_dead_t += 1
+            if self._all_dead_t < tuning.ALL_DEAD_GRACE_TICKS:
+                return
+            self._all_dead_t = 0
+            for p in pets:
+                p.behavior.begin_reincarnation()
+            self._reincarnate_cleanup_pending = True
             return
         self._all_dead_t = 0
-        for p in pets:
-            p.behavior.begin_reincarnation()
-        # 全体转生＝换雨循环：场上所有东西（生物/物品/杆/花）一起清空
-        self.clear_world_for_reincarnation()
-        self._reincarnate_fx_tick(pets)
-
-    def _reincarnate_fx_tick(self, pets):
-        """转生倒计时灵光：尸身冒白点，顶部中央光柱汇聚（4 帧一次）。"""
-        self._reincarnate_fx_t += 1
-        if self._reincarnate_fx_t % 4:
-            return
-        for p in pets:
-            c = p.body.chunk0
-            self.add_spark(c.x + random.uniform(-7.0, 7.0), c.y - 4.0,
-                           0.0, -1.6, white=True, life=40)
-        self.add_spark(self._WL * 0.5 + random.uniform(-10.0, 10.0), self._HL,
-                       0.0, -2.4, white=True, life=50)
+        if self._reincarnate_cleanup_pending and all(not p.behavior.is_dead()
+                                                     for p in pets):
+            self._reincarnate_cleanup_pending = False
+            # 全体复活＝换雨循环：场上所有东西（生物/物品/杆/花）一起清空
+            self.clear_world_for_reincarnation()
 
     def set_zerog(self, on):
         """开/关无重力；开时摘掉所有果柄。"""
