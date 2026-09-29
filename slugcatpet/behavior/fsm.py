@@ -1374,6 +1374,15 @@ class BehaviorFSM:
         if new == self.state:
             return
         old = self.state
+        # 睡眠意图只能存在于休息态：换到别的状态就统一撤销。不变量写在这里，
+        # 以后再加「强制中断状态」（涉水 / 无重力 / 冷水 / 爆炸…）也不会漏清
+        # _hibernating，不会再卡成「闭着眼耷拉着头却还在活动」的半睡姿态。
+        # WakeSequence 例外：起床动画要靠 sleep_curl 自己渐退，不能被一刀削掉。
+        if new not in ("LieDown", "Sleep", "WakeSequence"):
+            self._hibernating = False
+            self.gfx.sleeping = False
+            self.body.sleeping = False
+            self.gfx.sleep_curl = 0.0
         self.state = new
         self.timer = 0
         self.phase = 0
