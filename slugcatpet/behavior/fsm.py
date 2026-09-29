@@ -1161,6 +1161,11 @@ class BehaviorFSM:
                 and self._fetch_cooldown <= 0
                 and self.state not in _FETCH_NEVER)
     def _act_fetchfood(self, ctx):
+            # 横杆上的食物先交给 HPole 专线：Planner 能算「可达」，
+            # 但不该由 Planner 决定怎么吃。交出去之后 SurfaceRoute 就别再抢同一个目标。
+            if self._hpole_food_trip():
+                return
+
             fetch_cands = fetch_ready(
                 self.planner,
                 self.win.fetchables(want_karma=not self.body.flower_karma),
@@ -1178,8 +1183,6 @@ class BehaviorFSM:
                 if take:
                     self._break_active_controllers()
                     self._act_or_wake("FetchFruit")
-            else:
-                self._hpole_food_trip()
 
     def _act_karmaflower_pre(self, ctx):
         if self._karma_cd > 0:
@@ -3273,7 +3276,8 @@ class BehaviorFSM:
 
     def _st_airborne(self, cursor, disturbed):
         b = self.body
-        self._hp_jump_grab()
+        if self._hp_jump_grab():         # 杆上跳起来摘到了：交回取食流程
+            return
         self._air_catch_item()           # 空中顺手摘路过的东西
         self._air_throw()                # 空中投矛
         if self._air_pole_cd > 0:
@@ -3590,6 +3594,17 @@ class BehaviorFSM:
             return
         if self._pole_reach_pickups():   # 杆上伸手：捡矛/石头、徒手抓飞虫
             return
+        # 有明确的横杆食物目标：爬到交点就 100% 换那根横杆（不再等随机换杆）
+        target_hp = self._hpole_target_for_food()
+        if target_hp is not None:
+            from ..world.pole import cross_partner
+            vp = self.poleclimb.pole
+            hp = cross_partner(vp, self.win.poles)
+            if (hp is target_hp
+                    and abs(self.body.chunk0.y - hp.ay) <= tuning.CROSS_PAD):
+                self._pole_release()
+                self._pole_handoff(("h", hp, vp.x))
+                return
         if self._pole_tip_grab():        # 杆上够得着的东西：伸手摘（同横杆）
             return
         if self._pole_leave_for_food():  # 杆上等同地面：有别的更想吃的就下杆去拿
@@ -3712,17 +3727,43 @@ class BehaviorFSM:
                 return
             self._transition("IdleStand" if self.body.on_floor() else "Airborne")
 
+    def _hpole_target_for_food(self):
+        """为了吃：目标食物摆在哪根横杆的杆面上（没有就 None）。"""
+        f = self._hp_goal_obj
+        if f is None:
+            return None
+        for p in self.win.poles:
+            if p.kind != "horizontal":
+                continue
+            lo = min(p.ax, p.bx)
+            hi = max(p.ax, p.bx)
+            if not (lo - tuning.HPOLE_GOAL_EPS <= f.x <= hi + tuning.HPOLE_GOAL_EPS):
+                continue
+            if not (p.ay - tuning.HPOLE_GOAL_R <= f.y <= p.ay + tuning.HPOLE_HAND_DOWN):
+                continue
+            return p
+        return None
+
     def _hpole_food_trip(self) -> bool:
         """地面/爬杆都够不到、但横杆杆面上够得到的食物：上杆去拿（原版 beam 上摘果）。
 
         返回 True=已切到 SeekHPole。
         """
-        if self.state not in _WANTS_FROM or self._hp_goal_x is not None:
+        if self.state not in _WANTS_FROM and self.state != "HPole":
+            return False
+        if self._hp_goal_x is not None:
             return False
         if not any(p.kind == "horizontal" for p in self.win.poles):
             return False
         b = self.body
+        # 已经站在某根横杆上：脚下这根优先处理，别的杆留作退路
+        cur = None
+        if self.state == "HPole" and self.hpole is not None:
+            cp = self.hpole.pole
+            if cp is not None and cp.kind == "horizontal":
+                cur = cp
         best = None
+        best_cur = None
         for f in self.win.fetchables():
             if getattr(f, "state", None) not in ("free", "hanging"):
                 continue
@@ -3751,16 +3792,29 @@ class BehaviorFSM:
                         break
             if g is None:
                 continue
-            if self.planner.any_touch(obj_goal(f)):
-                continue                    # 正常路就能拿，不必上杆
+            if self.state != "HPole" and self.planner.any_touch(obj_goal(f)):
+                continue                    # 正常路就能拿，不必上杆（已在杆上时不算：脚下这根优先）
             d = abs(f.x - b.chunk1.x)
             if best is None or d < best[0]:
                 best = (d, f)
+            if g is cur and (best_cur is None or d < best_cur[0]):
+                best_cur = (d, f)
         if best is None:
             return False
-        f = best[1]
+        f = (best_cur or best)[1]
         self._hp_goal_x = f.x
         self._hp_goal_obj = f
+        self._hp_goal_t = 0
+        if self.state == "HPole" and self.hpole is not None:
+            # 已经在杆上：把现有控制器直接指过去就好。
+            # 这里绝不能 _break_active_controllers —— 那会把杆一起放掉。
+            h = self.hpole
+            p = h.pole
+            if p is not None:
+                h.goal_x = max(min(p.ax, p.bx) + 2.0,
+                               min(max(p.ax, p.bx) - 2.0, f.x))
+            h.want = (float(f.x), float(f.y))
+            return True
         if self._hpole_entry() is None:      # 没有可行的上杆路线
             self._hpole_goal_clear()
             return False
@@ -4012,22 +4066,27 @@ class BehaviorFSM:
         self._transition("Airborne")
         return True
 
-    def _hp_jump_grab(self) -> None:
-        """空中伸手摘杆上跳起来够的东西。"""
+    def _hp_jump_grab(self) -> bool:
+        """空中伸手摘杆上跳起来够的东西。摘到就交回 FetchFruit（别重新选果）。"""
         f = self._hp_jump_goal
         if f is None:
-            return
+            return False
         if getattr(f, "state", None) not in ("free", "hanging"):
             self._hp_jump_goal = None
-            return
+            self._hpole_goal_clear()
+            return False
         side = self.body.pick_hand("fruit")
         if side is None:
-            return
+            return False
         self.gfx.hand_aim[side] = (f.x, f.y)
         self.gfx.hand_aim["l" if side == "r" else "r"] = None
         if self._hand_reach_dist(f) <= tuning.GRAB_REACH:
             self.body.grab_fruit(f, side)
             self._hp_jump_goal = None
+            self._hpole_goal_clear()
+            self._transition("FetchFruit")
+            return True
+        return False
 
     def _hpole_reachable_now(self) -> bool:
         """目标是否仍在那条横杆线上（或杆端外跳/走出去就到的那一小块平台上）。"""
@@ -4469,6 +4528,13 @@ class BehaviorFSM:
         self.fetch = FruitFetcher(self.win, self.planner, diet=self.pers.diet,
                                   pearl_like=getattr(self.pers, "pearl_like", 1.0),
                                   karma_only=karma)
+
+        # 杆上跳起来摘到的：手里已经有目标，别重新选果（重选会因为「已到手」
+        # 被排除在候选外而直接放弃、把果子丢掉），直接进 carry_fall / eat。
+        held = self.body.carried_fruit
+        if held is not None:
+            self.fetch.target = held
+            self.fetch.phase = "carry_fall"
 
     def _st_fetchfruit(self, cursor, disturbed):
         if self.grab.active:
