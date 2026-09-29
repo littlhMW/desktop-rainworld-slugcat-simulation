@@ -21,6 +21,7 @@
   ``TUNNEL_H`` tile（[APPROXIMATION]），并把它放在地面高度上，猫走着就能进门。
 * 任意矩形：底边 ``y + h`` 就是这间庇护所自己的地板（不再强制贴桌面地面），
   像资源管理器框选那样拉出来的矩形直接就是庇护所。
+  底边这一条也是真墙（底墙），只在入口那一列缺一块；猫进了屋就站在底墙上。
 """
 from __future__ import annotations
 
@@ -206,7 +207,7 @@ class DoorPhases:
 
 
 class Shelter:
-    """一间庇护所：``(x, y, w, h)`` 就是真矩形，底边 ``y + h`` 是它自己的地板。"""
+    """一间庇护所：``(x, y, w, h)`` 就是真矩形，底边 ``y + h`` 是它自己的地板（地板上铺一条底墙）。"""
 
     MIN_W = 60.0
     MAX_W = 760.0
@@ -278,6 +279,13 @@ class Shelter:
             self.entrance = (self.x, self.ground_y - self.tunnel_h_px,
                              self.x + wall, self.ground_y)
         self.roof = (self.x, self.y, self.x + self.w, self.y + wall)
+        # 底墙（地板）：贴底边那一条，**入口那一列留空**
+        # —— 猫 / 物件只能从入口进出，跟上面三面墙同一套碰撞。
+        fy0 = self.ground_y - wall
+        if self.door_side == "right":
+            self.floor = (self.x, fy0, self.x + self.w - wall, self.ground_y)
+        else:
+            self.floor = (self.x + wall, fy0, self.x + self.w, self.ground_y)
         # 内墙：chamber 与走廊之间、走廊上沿之上的那一段
         if self.door_side == "right":
             self.inner_wall = (cx1, self.y + wall, cx1 + wall,
@@ -327,8 +335,8 @@ class Shelter:
         return (self.chamber, self.tunnel)
 
     def wall_rects(self):
-        """碰撞墙（不含门）：左墙 / 顶 / 外墙上段 / 内墙。底边＝地面。"""
-        out = [self.left_wall, self.roof, self.outer_wall]
+        """碰撞墙（不含门）：左墙 / 顶 / 外墙上段 / 内墙 / 底墙（入口那一列留空）。"""
+        out = [self.left_wall, self.roof, self.outer_wall, self.floor]
         out.extend(self._inner_walls)
         return out
 
@@ -484,6 +492,7 @@ class Shelter:
         return {"tile": self.tile, "footprint": self.safe_rect(),
                 "chamber": self.chamber, "tunnel": self.tunnel,
                 "entrance": self.entrance, "roof": self.roof,
+                "floor": self.floor,
                 "outer_wall": self.outer_wall, "inner_wall": self.inner_wall,
                 "p_zero": self.p_zero, "dir_x": self.dir_x,
                 "door_side": self.door_side, "template": self.template.key}

@@ -185,7 +185,7 @@ _STORM_BLOCKED = frozenset(("Dragged", "Dead", "Ascension", "Stunned", "Swimming
                             "StormSeekShelter", "ShelterSleep"))
 # 取果触发不打断的态
 _FETCH_NEVER = frozenset(("FetchFruit", "Ascension", "Dragged", "Dead", "WakeSequence",
-                          "Stunned", "SeekWarmth", "Swimming",
+                          "Stunned", "SeekWarmth", "Swimming", "StormSeekShelter",
                           "LieDown", "Sleep", "ShelterSleep",   # 趴/睡时别把猫叫起来去取果
                           "PyroMaul", "RivSnatch", "CatchFly", "ItemPlay",
                           # 面敌做出的决定是锁：迎战 / 掩护同伴 / 逃跑这三个态里
@@ -580,7 +580,7 @@ class BehaviorFSM:
         self._storm_exec = None            # StormSeekShelter 的 PlanExecutor
         self._storm_goal_obj = None        # 状态面板「目标是什么」用
         self._storm_cd = 0                 # 够不到庇护所时的重试冷却
-        self._shelter_sleep_left = 0       # 番茄钟睡眠剩余 tick
+        self._shelter_sleep_left = 0       # 雨循环睡眠剩余 tick
 
         # 独占状态挂载槽：CatDef.fsm_mount 按 caps 注册
         self._ext_states = {}
@@ -912,6 +912,7 @@ class BehaviorFSM:
 
         # ── 决策：唯一入口。保命 → 该做的事（见 behavior/action.py）──
         ctx = ActionContext(self, cursor)
+        self._storm_lockdown(ctx)
         self.actions.tick()
         self.actions.decide(ctx)
 
@@ -4588,6 +4589,20 @@ class BehaviorFSM:
         self.gfx.hand_aim["r"] = None
 
     # ── 暴雨：集合 / 庇护所睡眠 / 雨前焦虑 ──
+    def _storm_lockdown(self, ctx):
+        """雨落下以后，进庇护所是**唯一**优先：该做的事整条 band 让开。
+
+        只让开 need band 的 start（``pre`` 记账照跑），所以社交账本 / 事件总线在
+        集合期不会断线；保命 band 不受影响（被拖、淹水、昏迷仍然优先）。
+        """
+        if not getattr(self.win, "storm_active", False):
+            return
+        if self.state in ("Dead", "Dragged", "Stunned", "Ascension", "ShelterSleep"):
+            return
+        sh = self._storm_shelter()
+        if sh is not None and sh.contains(self.body.chunk1.x, self.body.chunk1.y):
+            return                    # 已经进屋：等门关上就睡，不再压别的事
+        ctx.skip_from(self.actions.keys(BAND_NEED))
     def _storm_phase(self):
         st = getattr(self.win, "storm", None)
         return getattr(st, "phase", "focus") if st is not None else "focus"
@@ -4659,7 +4674,7 @@ class BehaviorFSM:
             self._transition("IdleStand" if b.on_floor() else "Airborne")
 
     def _shelter_sleep_enter(self):
-        """番茄钟睡眠：固定时长；不扣食物、不加业力、不掷睡眠长度。"""
+        """雨循环睡眠：固定时长；不扣食物、不加业力、不掷睡眠长度。"""
         b = self.body
         self._hibernating = True
         self.gfx.face(False, PRIO_FORCE)

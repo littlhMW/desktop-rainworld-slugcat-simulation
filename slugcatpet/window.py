@@ -372,7 +372,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
         self._shake = [0.0, 0.0]
 
-        # 暴雨番茄钟 + 庇护所（默认关闭；设置里开，且至少有一间庇护所才走相位）
+        # 雨循环 + 庇护所（默认关闭；设置里开，且至少有一间庇护所才走相位）
         self.rain = RainSystem(self._WL, self._HL)
         self.rain.patterns = rain_draw.make_rain_patterns()
         self.shelters = []
@@ -1574,7 +1574,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             # 庇护所整间：门板开合 / 拖动 / 删除都得落在重绘范围里
             bx0, by0, bx1, by1 = sh.safe_rect()
             xs.append(bx0); ys.append(by0); xs.append(bx1); ys.append(by1)
-        if storm_hud.visible(self):   # HUD 只跟番茄钟走，没有屋子也要重绘
+        if storm_hud.visible(self):   # HUD 只跟雨循环走，没有屋子也要重绘
             hx0, hy0, hx1, hy1 = storm_hud.hud_rect(self)
             xs.append(hx0); ys.append(hy0); xs.append(hx1); ys.append(hy1)
         s = self._scale
@@ -1911,7 +1911,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             self._end_seedcob_drag()
             self._end_karmaflower_drag()
 
-    # ── 暴雨番茄钟 + 庇护所 ──
+    # ── 雨循环 + 庇护所 ──
     def shelter_of(self, x, y):
         """这个点落在哪间庇护所的安全区里（没有就 None）。"""
         for sh in self.shelters:
@@ -1939,7 +1939,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         return 1.0 - cov
 
     def _storm_tick(self):
-        """暴雨番茄钟一 tick：门 → 相位 → 雨强 → 震屏 → 积水目标。"""
+        """雨循环一 tick：门 → 相位 → 雨强 → 震屏 → 积水目标。"""
         for sh in self.shelters:
             sh.step()
         self.storm.step(self.pets, self.shelters)
@@ -2005,7 +2005,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
     # ── 暴雨设置 / 存档 ──
     def set_storm_enabled(self, on):
-        """开/关暴雨番茄钟。**不会**自动放庇护所 —— 屋子由工具栏自己框选出来。"""
+        """开/关雨循环。**不会**自动放庇护所 —— 屋子由工具栏自己框选出来。"""
         on = bool(on)
         self.storm.enabled = on
         self._params["storm_enabled"] = on
@@ -2023,8 +2023,31 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self.storm.set_durations(focus_minutes, warning_minutes, sleep_minutes)
         self.update()
 
+    def trigger_storm(self):
+        """环境面板「暴雨」：立刻放雨 —— 一旦开始，猫的第一优先级就是进庇护所。
+
+        没屋子不放（否则猫只会淋着雨乱跑）；已经在暴雨里再点一次直接忽略。
+        """
+        if not self.shelters:
+            return False
+        if not self.storm.trigger_storm():
+            return False
+        self._prev_dirty = None
+        self.update()
+        return True
+
+    def cancel_storm(self):
+        """环境面板切走「暴雨」：收掉手动那一场（自动雨循环交给开关）。"""
+        if not self.storm.cancel_manual():
+            return False
+        for sh in self.shelters:
+            sh.start_opening()
+        self._prev_dirty = None
+        self.update()
+        return True
+
     def storm_state(self):
-        """存档用：庇护所 + 番茄钟相位（退出时写进 params）。"""
+        """存档用：庇护所 + 雨循环相位（退出时写进 params）。"""
         return {"shelters": [sh.to_dict() for sh in self.shelters],
                 "storm": self.storm.to_dict()}
 

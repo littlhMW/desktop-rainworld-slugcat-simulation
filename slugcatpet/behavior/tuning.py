@@ -729,8 +729,8 @@ SLAM_AOE_STUN = 55              # 波及眩晕 tick（随落高倍率放大）
 INTEREST_JITTER   = 0.40        # 每只猫对每件目标的个体偏好系数 1±这个值（稳定，不逐 tick 乱跳）
 INTEREST_TAKEN_MUL = 1.55       # 已经有同伴把它当目标 → 打分乘这个数（让位）
 
-# ── 暴雨番茄钟 + 庇护所（第 89 轮）──
-STORM_FOCUS_MINUTES = 40.0        # 专注时长（番茄钟主段）
+# ── 雨循环 + 庇护所（第 89 轮）──
+STORM_FOCUS_MINUTES = 40.0        # 专注时长（雨循环主段）
 STORM_WARNING_MINUTES = 5.0       # 专注最后 N 分钟开始「雨前焦虑」
 STORM_SLEEP_MINUTES = 10.0        # 躲进庇护所后的睡眠时长
 STORM_GATHER_TIMEOUT_MINUTES = 3.0  # 集合阶段兜底：这么久还没全进屋就先关门

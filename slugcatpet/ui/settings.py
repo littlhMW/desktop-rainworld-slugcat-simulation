@@ -160,7 +160,8 @@ class SettingsWindow(QWidget):
         self._env_radios = {}
         current = self._current_env()
         for key, label_key in (("none", "settings_env_none"), ("blizzard", "settings_snow"),
-                               ("zerog", "settings_zerog"), ("water", "settings_water")):
+                               ("zerog", "settings_zerog"), ("water", "settings_water"),
+                               ("storm", "settings_storm_env")):
             rb = QRadioButton(t(label_key))
             rb.setChecked(key == current)
             rb.toggled.connect(lambda checked, k=key: checked and self._on_env_selected(k))
@@ -171,6 +172,9 @@ class SettingsWindow(QWidget):
     def _current_env(self):
         """从 window 环境态推导当前单选项。"""
         w = self._window
+        st = getattr(w, "storm", None)
+        if st is not None and getattr(st, "manual", False):
+            return "storm"          # 只跟手动那一场：自动雨循环由开关负责
         if getattr(w, "blizzard_on", False):
             return "blizzard"
         if getattr(w, "zerog_on", False):
@@ -189,6 +193,8 @@ class SettingsWindow(QWidget):
             w.set_zerog(False)
         if key != "water" and getattr(w, "water_on", False):
             w.set_water(False)
+        if key != "storm":
+            w.cancel_storm()        # 切走「暴雨」= 收掉手动那一场
         if key == "blizzard" and not w.blizzard_on:
             w.blizzard_on = True
             w.blizzard_timer = 0
@@ -196,14 +202,12 @@ class SettingsWindow(QWidget):
             w.set_zerog(True)
         elif key == "water" and not w.water_on:
             w.set_water(True)
+        elif key == "storm":
+            w.trigger_storm()
 
     def _section_storm(self, v):
-        """暴雨番茄钟：开关 + 三个时长（专注 / 预警 / 睡眠）。"""
+        """雨循环：开关 + 三个时长（专注 / 预警 / 睡眠）。"""
         v.addWidget(self._header(t("settings_storm_section")))
-        hint = QLabel(t("settings_storm_hint"))
-        hint.setObjectName("dim")
-        hint.setWordWrap(True)
-        v.addWidget(hint)
         st = self._window.storm
         chk = QCheckBox(t("settings_storm_enable"))
         chk.setChecked(bool(st.enabled))

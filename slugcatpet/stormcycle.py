@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""暴雨番茄钟：FOCUS → STORM_GATHER → SHELTER_SLEEP → FOCUS。
+"""雨循环：FOCUS → STORM_GATHER → SHELTER_SLEEP → FOCUS。
 
 这一层只管相位 / 计时 / 雨强驱动 / 门的开关 / storm_pressure。渲染在
 ``rendering/rain_draw``，猫的行为在 ``behavior/fsm`` 的 StormSeekShelter 与
-ShelterSleep —— 番茄钟自己不碰任何动画。
+ShelterSleep —— 雨循环自己不碰任何动画。
 
 反编译口径：原版暴雨不是「切到下雨」，而是一段可预期的连续过程 —— 先是长时间
 的专注，最后一小段世界开始不安，接着雨落下来，所有人躲进庇护所。所以这里唯一
@@ -59,6 +59,8 @@ class StormCycle:
     def __init__(self, enabled=False, focus_minutes=None, warning_minutes=None,
                  sleep_minutes=None):
         self.enabled = bool(enabled)
+        self.manual = False          # 环境面板手动触发的一场雨（跑完自动回到原状）
+        self._manual_prev = False    # 手动触发前 enabled 的值，睡眠结束后还原
         self.focus_minutes = float(focus_minutes if focus_minutes is not None
                                    else tuning.STORM_FOCUS_MINUTES)
         self.warning_minutes = float(warning_minutes if warning_minutes is not None
@@ -93,8 +95,11 @@ class StormCycle:
 
     @property
     def active(self):
-        """暴雨进行中（猫必须躲进庇护所的那两段）。"""
-        return self.enabled and self.phase in (GATHER, SLEEP)
+        """暴雨进行中（猫必须躲进庇护所的那两段）。
+
+        手动触发的那一场不管 enabled（下完会把开关还原）。
+        """
+        return (self.enabled or self.manual) and self.phase in (GATHER, SLEEP)
 
     @property
     def remaining(self):
@@ -110,16 +115,48 @@ class StormCycle:
         self.phase_t = min(self.phase_t, self.focus_ticks)
 
     def reset(self):
+        self.manual = False
+        self._manual_prev = False
         self.phase = FOCUS
         self.phase_t = 0
         self.settle_t = 0
         self.rain_drive = 0.0
         self.pressure = 0.0
 
+    def trigger_storm(self):
+        """环境面板手动放雨：立刻进入集合相位，优先级第一就是进庇护所。
+
+        手动的这一场跑完（睡眠结束回到 FOCUS）会把 ``enabled`` 还原成触发前的值
+        —— 临时下一场雨不会顺手把整个雨循环打开。
+        """
+        if self.phase in (GATHER, SLEEP):
+            return False
+        self._manual_prev = bool(self.enabled)
+        self.manual = True
+        self.phase = GATHER
+        self.phase_t = 0
+        self.settle_t = 0
+        self.pressure = 1.0
+        self.rain_drive = max(self.rain_drive, 1.0 / self.rise_ticks)
+        self.cycle_id += 1          # 新一轮雨：window 会据此复位 first_drop_done
+        return True
+
+    def cancel_manual(self):
+        """撕掉手动放的那一场（环境面板切走「暴雨」）。自动雨循环不受影响。"""
+        if not self.manual:
+            return False
+        self.manual = False
+        self.enabled = self._manual_prev
+        self.phase = FOCUS
+        self.phase_t = 0
+        self.settle_t = 0
+        self.pressure = 0.0
+        return True
+
     # ── 推进 ──
     def step(self, pets, shelters):
         shelters = [sh for sh in (shelters or ()) if sh is not None]
-        if not self.enabled or not shelters:
+        if not (self.enabled or self.manual) or not shelters:
             # 关掉 / 还没放庇护所：雨收回、门打开，但相位不前进
             self.pressure = 0.0
             self.rain_drive = max(0.0, self.rain_drive - 1.0 / self.fade_ticks)
@@ -187,13 +224,16 @@ class StormCycle:
             self.phase_t = 0
             self.settle_t = 0
             self.pressure = 0.0
+            if self.manual:             # 手动那一场收工：还原触发前的雨循环开关
+                self.manual = False
+                self.enabled = self._manual_prev
 
     # ── 左下角 HUD 的原料（只给数据，绘制在 rendering/storm_hud.py） ──
     def hud_info(self, pets=None):
         """返回 {mode, seconds, starvation, hungry}；关掉暴雨时 None。
 
         mode: ``cycle``（Rain Cycle M:SS）/ ``rain``（预警 Rain M:SS）/
-        ``hibernation``（暴雨期 Hibernation + 睡眠剩余）。
+        ``hibernation``（暴雨期 雨眠 + 睡眠剩余）。
         """
         if not self.enabled:
             return None
@@ -225,7 +265,7 @@ class StormCycle:
 
     # ── 存档 ──
     def to_dict(self):
-        return {"enabled": bool(self.enabled),
+        return {"enabled": bool(self.enabled), "manual": bool(self.manual),
                 "phase": self.phase, "phase_t": int(self.phase_t),
                 "settle_t": int(self.settle_t),
                 "rain_drive": float(self.rain_drive),
@@ -237,6 +277,7 @@ class StormCycle:
         if not isinstance(d, dict):
             return
         self.enabled = bool(d.get("enabled", self.enabled))
+        self.manual = bool(d.get("manual", False))
         if d.get("phase") in (FOCUS, GATHER, SLEEP):
             self.phase = d["phase"]
         try:

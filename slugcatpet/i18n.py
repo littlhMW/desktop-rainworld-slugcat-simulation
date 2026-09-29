@@ -61,7 +61,7 @@ _STR = {
     # —— 左下角暴雨 HUD ——
     "hud_rain_cycle":  {"zh": "雨循环", "en": "Rain Cycle"},
     "hud_rain":        {"zh": "降雨", "en": "Rain"},
-    "hud_hibernation": {"zh": "冬眠", "en": "Hibernation"},
+    "hud_hibernation": {"zh": "雨眠", "en": "Rain sleep"},
     "hud_starvation":  {"zh": "饥饿", "en": "Starvation"},
 
 
@@ -136,12 +136,11 @@ _STR = {
     "settings_snow":         {"zh": "暴风雪", "en": "Blizzard"},
     "settings_zerog":        {"zh": "无重力", "en": "Zero gravity"},
     "settings_water":        {"zh": "涨水", "en": "Flood"},
+    "settings_storm_env":    {"zh": "暴雨", "en": "Storm"},
 
-    # —— settings：暴雨番茄钟 ——
-    "settings_storm_section":   {"zh": "暴雨番茄钟", "en": "Rain timer"},
-    "settings_storm_hint":      {"zh": "专注 40 分钟 → 最后 5 分钟猫开始不安 → 暴雨 → 全部躲进庇护所睡 10 分钟 → 醒来重来（没庇护所时会自动放一间）",
-                                 "en": "Focus 40 min -> cats grow restless in the last 5 min -> storm -> everyone shelters and sleeps 10 min -> wake and repeat (a shelter is placed for you if there is none)"},
-    "settings_storm_enable":    {"zh": "开启暴雨番茄钟", "en": "Enable rain timer"},
+    # —— settings：雨循环 ——
+    "settings_storm_section":   {"zh": "雨循环", "en": "Rain cycle"},
+    "settings_storm_enable":    {"zh": "开启雨循环", "en": "Enable rain cycle"},
     "settings_storm_focus_minutes":   {"zh": "专注（分钟）", "en": "Focus (minutes)"},
     "settings_storm_warning_minutes": {"zh": "预警（分钟）", "en": "Warning (minutes)"},
     "settings_storm_sleep_minutes":   {"zh": "睡眠（分钟）", "en": "Sleep (minutes)"},

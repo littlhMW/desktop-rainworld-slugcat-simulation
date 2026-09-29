@@ -23,7 +23,7 @@ _CJK_FAMS = ("Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "SimSun",
              "PingFang SC", "WenQuanYi Micro Hei")
 # 没有汉字字体时的 ASCII 兜底（画方框比英文更糟）
 _ASCII = {"hud_rain_cycle": "Rain Cycle", "hud_rain": "Rain",
-          "hud_hibernation": "Hibernation", "hud_starvation": "Starving"}
+          "hud_hibernation": "Rain Sleep", "hud_starvation": "Starving"}
 _FONT_OK = None      # None = 还没探过
 
 
