@@ -11,6 +11,8 @@
 - Player.cs:11276-11308  animation == BellySlide 且 8 < rollCounter < 15 → 抛物增距
 - Player.cs:11310-11320  收尾 c0.vel += throwDir * 8 / c1.vel -= throwDir * 4
                          （ClimbOnBeam 且开启爬杆抓握时是 +2 / -8，见 THROW_RECOIL_BEAM）
+- Player.cs:11577-11713  TossObject（圣徒投矛轻抛）：input 选档，见 weaponphys.toss_num / toss_num2；
+                         Flip && y<0 && x==0 → 后空翻下掷（180° / 8）
 """
 from __future__ import annotations
 import math
@@ -100,24 +102,28 @@ def ctl_pick_or_drop(body) -> None:
 
 
 def ctl_throw(body, inp0) -> None:
-    """原版 Player.ThrowObject：右手（grasps[0]）优先，空着用左手。"""
+    """原版 Player.ThrowObject / TossObject：右手（grasps[0]）优先，空着用左手。"""
     if not body.item_ready():
         return                                # 上手冷却没走完：先攥着不扔
     kind = body.held_kind("r") or body.held_kind("l")
     if kind not in ("spear", "stone"):
         return
     fdir = 1.0 if body.facing >= 0 else -1.0
+    ix, iy = int(inp0.x), int(inp0.y)
+    flip = body.animation == "Flip"
     dir_x, dir_y = fdir, 0.0
-    if body.animation == "Flip" and inp0.y != 0 and inp0.x == 0:
+    if flip and iy != 0 and ix == 0:
         # Player.cs:11243：Flip 中按上/下（原版只认 y<0，MMF 开「向上掷矛」后为 (0, y)）
-        dir_x, dir_y = 0.0, float(inp0.y)
+        dir_x, dir_y = 0.0, float(iy)
     weak, toss = weaponphys.player_throw_mode(
         getattr(body, "_ctrl_variant", ""), False, kind == "spear", False)
     frc = weaponphys.frc(weak=weak)
     tossed = False
     if kind == "spear":
-        if toss and dir_y == 0.0:             # 圣徒轻抛（TossObject）只有水平分支
-            obj = body.throw_spear(dir_x, frc, toss=True)
+        if toss:
+            # 圣徒轻抛（TossObject）：朝向仍用 ThrowDirection，方向档由 input 决定
+            obj = body.throw_spear(fdir, frc, toss=True,
+                                   input_x=ix, input_y=iy, flip=flip)
             tossed = True                     # 轻抛自带它那一份反冲
         else:
             obj = body.throw_spear(dir_x, frc, dir_y=dir_y, recoil=0.0)

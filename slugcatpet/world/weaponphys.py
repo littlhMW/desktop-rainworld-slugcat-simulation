@@ -126,16 +126,29 @@ def vel_angle(vx: float, vy: float) -> float:
 
 
 # ── Player.TossObject（轻抛：圣徒投矛、非武器投掷）──
-# Player.cs:11577-11707，input.x != 0 && y == 0 分支：
-#   num  = LerpMap(mass, 0.2, 0.3, 60, 50)        → mass < 0.2 时夹到 60
-#   num2 = LerpMap(mass, 0.2, 0.3, 12.5, 8, exp 2) → mass < 0.2 时夹到 12.5
-#   Grabability == OneHand → num2 *= 2、num = 70（矛是 BigOneHand，不翻倍）
+# Player.cs:11577-11713：num/num2 先取 45/4，再按 input[0] 选档：
+#   x != 0 && y == 0 → num/num2 = LerpMap(mass, 0.2, 0.3, 60, 50) / LerpMap(mass, 0.2, 0.3, 12.5, 8, exp 2)
+#                      → mass < 0.2 时分别夹到 60 / 12.5
+#   x != 0 && y == 1 → 25 / 9   （斜上抛）
+#   x == 0 && y == 1 → 5  / 8   （纯上抛）
+#   Grabability == OneHand → num2 *= 2，且仅平抛档 num = 70（矛是 BigOneHand，不翻倍）
+#   PlayerCarryableItem → num2 *= ThrowPowerFactor（carry_factor）
+#   animation == Flip && input.y < 0 && input.x == 0 → num = 180 / num2 = 8（后空翻下掷，
+#     原版同时把 bodyChunks[].goThroughFloors 打开；本项目没有穿地概念，只取方向与力度）
 #   vel = Lerp(vel * 0.35, owner.mainBodyChunk.vel, LerpMap(mass, 0.2, 0.5, 0.6, 0.3))
 #   vel += Custom.DegToVec(num * ThrowDirection) * Clamp(num2 / (Lerp(mass, 0.4, 0.2) * chunks), 4, 14)
 # 轻抛不进 Mode.Thrown（不插墙、无退出阈值），只是 Free + 速度。
+TOSS_NUM_BASE = 45.0         # 无方向输入时的角度（Player.cs:11592）
+TOSS_NUM2_BASE = 4.0
 TOSS_NUM_H = 60.0            # 水平轻抛角度（DegToVec 的角，0 = 正上，顺时针为正）
 TOSS_NUM2_H = 12.5           # 轻抛力度基数
-TOSS_NUM_ONE_HAND = 70.0     # Grabability.OneHand 时的角度
+TOSS_NUM_UP_SIDE = 25.0      # x != 0 && y == 1（斜上抛）
+TOSS_NUM2_UP_SIDE = 9.0
+TOSS_NUM_UP = 5.0            # x == 0 && y == 1（纯上抛）
+TOSS_NUM2_UP = 8.0
+TOSS_NUM_FLIP_DOWN = 180.0   # 后空翻下掷（正下）
+TOSS_NUM2_FLIP_DOWN = 8.0
+TOSS_NUM_ONE_HAND = 70.0     # Grabability.OneHand 时的平抛角度
 TOSS_ADD_MIN, TOSS_ADD_MAX = 4.0, 14.0
 TOSS_VEL_LERP = (0.2, 0.5, 0.6, 0.3)   # LerpMap(mass, 0.2, 0.5, 0.6, 0.3)
 TOSS_MASS_LERP = (0.4, 0.2)            # Lerp(mass, 0.4, 0.2)
@@ -156,15 +169,66 @@ def _lerpmap(v: float, a: float, b: float, ra: float, rb: float) -> float:
     return _lerp(ra, rb, _clampf((v - a) / (b - a), 0.0, 1.0))
 
 
-def toss_velocity(c0, dir_x: float, mass: float, chunk_count: int = 1,
-                  carry_factor: float = 1.0, one_hand: bool = False):
-    """Player.TossObject 的水平轻抛初速 (vx, vy)（屏幕 y↓）。"""
-    num = TOSS_NUM_H
-    num2 = TOSS_NUM2_H
+def toss_num(input_x: int = 1, input_y: int = 0, flip: bool = False,
+             one_hand: bool = False) -> float:
+    """Player.TossObject 的轻抛角度档（Player.cs:11592-11625）。"""
+    num = TOSS_NUM_BASE
+    if input_x != 0 and input_y == 0:
+        num = TOSS_NUM_H
+    elif input_x != 0 and input_y == 1:
+        num = TOSS_NUM_UP_SIDE
+    elif input_x == 0 and input_y == 1:
+        num = TOSS_NUM_UP
+    if one_hand and input_x != 0 and input_y == 0:
+        num = TOSS_NUM_ONE_HAND
+    if flip and input_y < 0 and input_x == 0:
+        num = TOSS_NUM_FLIP_DOWN
+    return num
+
+
+def toss_num2(mass: float, chunk_count: int = 1, carry_factor: float = 1.0,
+              input_x: int = 1, input_y: int = 0, flip: bool = False,
+              one_hand: bool = False) -> float:
+    """Player.TossObject 的轻抛力度档（同上，含 OneHand 翻倍与 Flip 覆盖）。"""
+    num2 = TOSS_NUM2_BASE
+    if input_x != 0 and input_y == 0:
+        num2 = TOSS_NUM2_H
+    elif input_x != 0 and input_y == 1:
+        num2 = TOSS_NUM2_UP_SIDE
+    elif input_x == 0 and input_y == 1:
+        num2 = TOSS_NUM2_UP
     if one_hand:
         num2 *= 2.0
-        num = TOSS_NUM_ONE_HAND
     num2 *= carry_factor
+    if flip and input_y < 0 and input_x == 0:
+        num2 = TOSS_NUM2_FLIP_DOWN
+    return num2
+
+
+def toss_angle(dir_x: float, input_x: int = 1, input_y: int = 0,
+               flip: bool = False, one_hand: bool = False) -> float:
+    """轻抛朝向（0=上、顺时针为正，同 vel_angle）。
+
+    平抛沿用原水平朝向 90/270（原版轻抛不设 setRotation，
+    矛保持被举起时的横放角度）；斜上抛 / 纯上抛 / 后空翻下掷按掷出角画。
+    """
+    sign = 1.0 if float(dir_x) >= 0.0 else -1.0
+    num = toss_num(input_x, input_y, flip, one_hand)
+    if num in (TOSS_NUM_H, TOSS_NUM_ONE_HAND):
+        return 90.0 if sign > 0.0 else 270.0
+    return (num * sign) % 360.0
+
+
+def toss_velocity(c0, dir_x: float, mass: float, chunk_count: int = 1,
+                  carry_factor: float = 1.0, one_hand: bool = False,
+                  input_x: int = 1, input_y: int = 0, flip: bool = False):
+    """Player.TossObject 的轻抛初速 (vx, vy)（屏幕 y↓）。
+
+    input_x/input_y 是原版 input[0] 的 x/y（y：1 上 / 0 平 / -1 下），
+    flip 表示 animation == Flip；缺省 (1, 0) = 平抛档。
+    """
+    num = toss_num(input_x, input_y, flip, one_hand)
+    num2 = toss_num2(mass, chunk_count, carry_factor, input_x, input_y, flip, one_hand)
     k = _lerpmap(mass, *TOSS_VEL_LERP)
     vx0 = c0.vx
     vy0 = min(c0.vy, 0.0)          # 游戏系 vel.y < 0（下落）先夹到 0

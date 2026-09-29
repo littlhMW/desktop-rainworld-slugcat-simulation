@@ -1830,12 +1830,13 @@ class SlugcatBody:
         return _ang_from_up(fdir, -up_frac) + fdir * wob
 
     def throw_spear(self, dir_x, frc=1.0, up=1.5, recoil=1.0, vel=None, toss=False,
-                    dir_y=0.0):
+                    dir_y=0.0, input_x=1, input_y=0, flip=False):
         """Throw carried spear; return spear (free + velocity) or None.
 
         初速走原版 Weapon.Thrown：vx = c0.vx*0.2 + dir*40*frc；vy = c0.vy*0.5 - 1.5（矛上抬少）。
         dir_y != 0 且 dir_x == 0 时走垂直分支（Weapon.cs:481-489）：矛尖顺着掷出方向。
-        toss=True 改走 Player.TossObject 轻抛（圣徒投矛）：不进 Thrown、不插墙。
+        toss=True 改走 Player.TossObject 轻抛（圣徒投矛）：不进 Thrown、不插墙；
+        input_x/input_y/flip 是原版 input[0] 与 animation == Flip，选平抛/斜上抛/纯上抛/后空翻下掷档。
         """
         sp = self.carried_spear
         if sp is None:
@@ -1850,9 +1851,11 @@ class SlugcatBody:
         if toss:
             sp.vx, sp.vy = weaponphys.toss_velocity(
                 c0, dir_x, float(getattr(sp, "mass", 0.07)), 1, 1.0,
-                one_hand=False)   # 矛是 BigOneHand
+                one_hand=False,   # 矛是 BigOneHand
+                input_x=int(input_x), input_y=int(input_y), flip=bool(flip))
             sp.spin = float(dir_x) * 3.0
-            sp.angle_deg = sp.last_angle = 90.0 if float(dir_x) >= 0.0 else 270.0
+            sp.angle_deg = sp.last_angle = weaponphys.toss_angle(
+                dir_x, int(input_x), int(input_y), bool(flip))
             sp.stuck = False
             sp.stuck_to = None
             sp.toss_t = TOSS_COB_T       # 轻抛期内可以敲开爆米花（原版打不开，用户要求）
