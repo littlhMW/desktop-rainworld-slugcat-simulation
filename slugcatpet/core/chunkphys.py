@@ -347,6 +347,91 @@ def aabb_wall_collide(obj, WL, HL, impact=None, open_sides=False):
         obj._contact_floor = True
 
 
+def _aabb_of(chunks):
+    """实体所有 chunk 的包围盒（已含各自半径）；没有可碰 chunk 返回 None。"""
+    x0 = y0 = float("inf")
+    x1 = y1 = float("-inf")
+    for c in chunks:
+        r = c.rad
+        cx, cy = c.x, c.y
+        if cx - r < x0:
+            x0 = cx - r
+        if cy - r < y0:
+            y0 = cy - r
+        if cx + r > x1:
+            x1 = cx + r
+        if cy + r > y1:
+            y1 = cy + r
+    if x0 > x1:
+        return None
+    return (x0, y0, x1, y1)
+
+
+_GRID_BRUTE_LIMIT = 8          # 实体少到这个数：建网格比两两枚举还贵
+_GRID_MIN_CELL = 24.0
+_GRID_MAX_INSERTS = 4096       # 个别超大实体（长绳）会让格子数爆掉：直接退回暴力
+
+
+def _broadphase_pairs(objs, groups):
+    """返回需要精算的 (i, j)，**按 (i, j) 升序**；返回 None 表示「直接两两暴力」。
+
+    顺序必须与两两暴力枚举一致 —— 位置修正是逐对顺序施加的，顺序换了结果就变。
+    网格只用来剔除「包围盒都不相交」的实体对：两个 chunk 圆相交 ⇒ 两个包围盒
+    相交 ⇒ 一定落在同一个格子里，所以被剔除的那些对原本也是空转。
+
+    实体少、或者挤得太密（候选对几乎等于暴力对数）时，建网格纯属白付开销，
+    这两种情况都返回 None 交给调用方跑朴素的 i<j 双重循环。
+    """
+    n = len(objs)
+    if n <= _GRID_BRUTE_LIMIT:
+        return None
+    boxes = [_aabb_of(g) for g in groups]
+    spans = sorted(max(b[2] - b[0], b[3] - b[1]) for b in boxes if b is not None)
+    if not spans:
+        return []
+    cell = max(_GRID_MIN_CELL, spans[len(spans) // 2])
+    grid: dict[tuple, list] = {}
+    inserted = 0
+    for i, b in enumerate(boxes):
+        if b is None:
+            continue
+        gx0 = int(b[0] // cell)
+        gy0 = int(b[1] // cell)
+        gx1 = int(b[2] // cell)
+        gy1 = int(b[3] // cell)
+        inserted += (gx1 - gx0 + 1) * (gy1 - gy0 + 1)
+        if inserted > _GRID_MAX_INSERTS:
+            return None
+        for gx in range(gx0, gx1 + 1):
+            for gy in range(gy0, gy1 + 1):
+                grid.setdefault((gx, gy), []).append(i)
+    cand = 0
+    for cellobjs in grid.values():
+        m = len(cellobjs)
+        if m > 1:
+            cand += m * (m - 1) // 2
+    if cand * 2 >= n * (n - 1):      # 剔不掉一半：网格收益抵不过建网格+排序
+        return None
+    seen = set()
+    out = []
+    for cellobjs in grid.values():
+        m = len(cellobjs)
+        if m < 2:
+            continue
+        for a in range(m):
+            ia = cellobjs[a]
+            for c in range(a + 1, m):
+                ib = cellobjs[c]
+                i, j = (ia, ib) if ia < ib else (ib, ia)
+                key = i * n + j
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append((i, j))
+    out.sort()
+    return out
+
+
 def collide_objects(entities) -> None:
     """通用 chunk 碰撞 pass，层 0 不自碰。"""
     buckets: dict[int, list] = {}
@@ -360,9 +445,16 @@ def collide_objects(entities) -> None:
         if n < 2:
             continue
         groups = [o.collision_chunks() for o in objs]   # 每实体取一次，含本 tick 豁免
-        for i in range(n):
-            for j in range(i + 1, n):
-                _collide_pair(objs[i], objs[j], groups[i], groups[j])
+        pairs = _broadphase_pairs(objs, groups)
+        if pairs is None:                                # 朴素两两枚举
+            for i in range(n):
+                gi = groups[i]
+                oi = objs[i]
+                for j in range(i + 1, n):
+                    _collide_pair(oi, objs[j], gi, groups[j])
+            continue
+        for i, j in pairs:
+            _collide_pair(objs[i], objs[j], groups[i], groups[j])
 
 
 PEN_SLOP = 0.4          # 允许的浅重叠：贴在一起的两只猫不再抖

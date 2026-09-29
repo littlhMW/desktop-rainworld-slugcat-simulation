@@ -176,28 +176,44 @@ class _Seg:
         self.dist = dist
 
 
+_CHUNK_RAD_CACHE = {}
+_CHUNK_MASS_CACHE = {}
+
+
 def _chunk_rads(age):
-    """躯干各 chunk 半径：NeedleWorm.cs:81-87 的 Lerp(2,5,t)*num 逐项照抄。"""
-    n = CHUNKS[age]
-    num = 0.7 if age == AGE_SMALL else 1.0
-    out = []
-    for i in range(n):
-        t0 = inv_lerp(0.0, n - 1.0, i)
-        t = lerp(0.6, clampf(math.sin(math.sqrt(t0) * math.pi), 0.0, 1.0), 0.5 + 0.5 * t0)
-        out.append(lerp(CHUNK_RAD_MIN, CHUNK_RAD_MAX, t) * num)
-    return out
+    """躯干各 chunk 半径：NeedleWorm.cs:81-87 的 Lerp(2,5,t)*num 逐项照抄。
+
+    只跟 age 有关（纯函数），按 age 记忆化 —— 渲染时每个体节都要问一次，
+    以前每问一次就重建列表并重跑一遍 sqrt/sin。
+    """
+    hit = _CHUNK_RAD_CACHE.get(age)
+    if hit is None:
+        n = CHUNKS[age]
+        num = 0.7 if age == AGE_SMALL else 1.0
+        out = []
+        for i in range(n):
+            t0 = inv_lerp(0.0, n - 1.0, i)
+            t = lerp(0.6, clampf(math.sin(math.sqrt(t0) * math.pi), 0.0, 1.0),
+                     0.5 + 0.5 * t0)
+            out.append(lerp(CHUNK_RAD_MIN, CHUNK_RAD_MAX, t) * num)
+        hit = _CHUNK_RAD_CACHE[age] = tuple(out)
+    return hit
 
 
 def _chunk_masses(age):
-    """躯干各 chunk 质量：同上 Lerp(0.05,0.15,t)*num。"""
-    n = CHUNKS[age]
-    num = 0.7 if age == AGE_SMALL else 1.0
-    out = []
-    for i in range(n):
-        t0 = inv_lerp(0.0, n - 1.0, i)
-        t = lerp(0.6, clampf(math.sin(math.sqrt(t0) * math.pi), 0.0, 1.0), 0.5 + 0.5 * t0)
-        out.append(lerp(CHUNK_MASS_MIN, CHUNK_MASS_MAX, t) * num)
-    return out
+    """躯干各 chunk 质量：同上 Lerp(0.05,0.15,t)*num。同样按 age 记忆化。"""
+    hit = _CHUNK_MASS_CACHE.get(age)
+    if hit is None:
+        n = CHUNKS[age]
+        num = 0.7 if age == AGE_SMALL else 1.0
+        out = []
+        for i in range(n):
+            t0 = inv_lerp(0.0, n - 1.0, i)
+            t = lerp(0.6, clampf(math.sin(math.sqrt(t0) * math.pi), 0.0, 1.0),
+                     0.5 + 0.5 * t0)
+            out.append(lerp(CHUNK_MASS_MIN, CHUNK_MASS_MAX, t) * num)
+        hit = _CHUNK_MASS_CACHE[age] = tuple(out)
+    return hit
 
 
 def _rope_rad(age, i):

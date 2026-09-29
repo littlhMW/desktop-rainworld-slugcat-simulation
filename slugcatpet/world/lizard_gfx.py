@@ -23,6 +23,7 @@ from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath
 from ..core.units import clampf, lerp, inv_lerp
 from .lizard import BODY_SCALE, BLACK_RGB, _ang_from_up, _ang_lerp
 from ..rendering.pixelmode import aa_hint
+from ..rendering.primitives import _qcolor
 
 HEAD_KEY = "base"
 
@@ -135,7 +136,7 @@ def _blit(p, atlas, frame, tint, x, y, rot, sx, sy, ax, ay, key=HEAD_KEY,
     at = atlas.get(key)
     if not at.has(frame):
         return
-    pm = at.sprite(frame, QColor(*tint))
+    pm = at.sprite(frame, _qcolor(tint))
     w, h = float(pm.width()), float(pm.height())
     p.save()
     p.setOpacity(opacity)

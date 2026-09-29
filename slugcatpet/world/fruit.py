@@ -228,9 +228,10 @@ class Stalk:
         while 0 <= idx < n:
             s = segs[idx]
             if idx == 0:
-                d = _dist(s[0], s[1], sx, sy)
+                dx, dy = sx - s[0], sy - s[1]
+                d = math.hypot(dx, dy)
                 if not d < cr:
-                    ux, uy = _dirvec(s[0], s[1], sx, sy)
+                    ux, uy = ((dx / d, dy / d) if d >= 1e-9 else (0.0, 0.0))
                     over = d - cr
                     s[0] += ux * over
                     s[1] += uy * over
@@ -238,9 +239,10 @@ class Stalk:
                     s[5] += uy * over
             else:
                 prev = segs[idx - 1]
-                d = _dist(s[0], s[1], prev[0], prev[1])
+                dx, dy = prev[0] - s[0], prev[1] - s[1]
+                d = math.hypot(dx, dy)
                 if not d < cr:
-                    ux, uy = _dirvec(s[0], s[1], prev[0], prev[1])
+                    ux, uy = ((dx / d, dy / d) if d >= 1e-9 else (0.0, 0.0))
                     over = d - cr
                     vx, vy = ux * over, uy * over
                     s[0] += vx * 0.5
@@ -253,9 +255,10 @@ class Stalk:
                     prev[5] -= vy * 0.5
                 # 末段兼拉住 fruit
                 if idx == n - 1 and fruit is not None:
-                    df = _dist(s[0], s[1], fruit.x, fruit.y)
+                    fx, fy = fruit.x - s[0], fruit.y - s[1]
+                    df = math.hypot(fx, fy)
                     if not df < cr:
-                        ux, uy = _dirvec(s[0], s[1], fruit.x, fruit.y)
+                        ux, uy = ((fx / df, fy / df) if df >= 1e-9 else (0.0, 0.0))
                         over = df - cr
                         vx, vy = ux * over, uy * over
                         s[0] += vx * 0.75

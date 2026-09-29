@@ -34,6 +34,18 @@ class Atlas:
             raise FileNotFoundError(f"atlas image not found: {name}.png")
         with open(base / name, "r", encoding="utf-8") as f:
             self.frames = json.load(f)["frames"]
+        # 帧表是只读的，把每帧要用的字段一次性摊平：sprite()/source_size() 在
+        # 绘制热路径上（每帧上百次），省掉逐次翻 dict 取嵌套字段。
+        # 元组序：(x, y, w, h, srcW, srcH, rotated, trimmed, spriteSourceSize)
+        meta = {}
+        for fname, e in self.frames.items():
+            fr = e["frame"]
+            ss = e.get("sourceSize", fr)
+            meta[fname] = (fr["x"], fr["y"], fr["w"], fr["h"],
+                           ss["w"], ss["h"],
+                           bool(e.get("rotated")), bool(e.get("trimmed")),
+                           e.get("spriteSourceSize"))
+        self._meta = meta
         self._cache: "OrderedDict[tuple, QPixmap]" = OrderedDict()
 
     def has(self, frame_name: str) -> bool:
@@ -50,18 +62,17 @@ class Atlas:
         if ck in self._cache:
             self._cache.move_to_end(ck)
             return self._cache[ck]
-        e = self.frames[self._key(frame_name)]
-        fr = e["frame"]
-        sub = self.image.copy(fr["x"], fr["y"], fr["w"], fr["h"])
-        if e.get("rotated"):
+        m = self._meta[self._key(frame_name)]
+        sub = self.image.copy(m[0], m[1], m[2], m[3])
+        if m[6]:
             from PySide6.QtGui import QTransform
             sub = sub.transformed(QTransform().rotate(-90))
         if tint is not None:
             sub = self._apply_tint(sub, tint)
-        if padded and e.get("trimmed"):
-            ss = e["sourceSize"]
-            off = e["spriteSourceSize"]
-            canvas = QImage(ss["w"], ss["h"], QImage.Format.Format_ARGB32_Premultiplied)
+        if padded and m[7]:
+            ss_w, ss_h = m[4], m[5]
+            off = m[8]
+            canvas = QImage(ss_w, ss_h, QImage.Format.Format_ARGB32_Premultiplied)
             canvas.fill(QColor(0, 0, 0, 0))
             p = QPainter(canvas)
             p.drawImage(off["x"], off["y"], sub)
@@ -75,9 +86,8 @@ class Atlas:
 
     def source_size(self, frame_name: str) -> tuple[int, int]:
         """原始画布尺寸 = 注册坐标系大小。"""
-        e = self.frames[self._key(frame_name)]
-        ss = e.get("sourceSize", e["frame"])
-        return ss["w"], ss["h"]
+        m = self._meta[self._key(frame_name)]
+        return m[4], m[5]
 
     @staticmethod
     def _apply_tint(img: QImage, color: QColor) -> QImage:

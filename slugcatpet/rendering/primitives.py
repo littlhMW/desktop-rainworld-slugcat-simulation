@@ -10,44 +10,69 @@ from ..core.units import clampf, lerp
 from .pixelmode import aa_hint, pen_width
 
 
+_QCOLOR_CACHE = {}
+
+
+def _qcolor(c):
+    """元组色 → QColor，按元组记忆化。
+
+    每帧有上万次 blit/画带，每次都新建 QColor 纯属小对象开销；颜色元组来自
+    有限的混合组合，缓存后命中率极高。传进来的 QColor 原样返回（不改动它）。
+    """
+    if isinstance(c, QColor):
+        return c
+    try:
+        col = _QCOLOR_CACHE.get(c)
+    except TypeError:                      # 列表等不可哈希：老实新建
+        return QColor(*c)
+    if col is None:
+        if len(_QCOLOR_CACHE) > 2048:      # 兜底：不让缓存无限长
+            _QCOLOR_CACHE.clear()
+        col = _QCOLOR_CACHE[c] = QColor(*c)
+    return col
+
+
+def _ring(points, halfs) -> QPolygonF:
+    """沿中心线挤出闭合环：左缘正序 + 右缘逆序（原 ribbon/draw_rope 的同一几何）。
+
+    内联原来的 normal(i) 闭包，并用下标条件代替 max/min 内建调用 —— 这两样在
+    每帧几千次的调用下都是实打实的开销，几何结果一模一样。
+    """
+    n = len(points)
+    n1 = n - 1
+    left, right = [], []
+    for i in range(n):
+        ax, ay = points[i - 1] if i else points[0]
+        bx, by = points[i + 1] if i < n1 else points[n1]
+        dx, dy = bx - ax, by - ay
+        L = math.hypot(dx, dy) or 1.0
+        nx, ny = -dy / L, dx / L
+        cx, cy = points[i]
+        hw = halfs[i]
+        left.append(QPointF(cx + nx * hw, cy + ny * hw))
+        right.append(QPointF(cx - nx * hw, cy - ny * hw))
+    left.extend(reversed(right))
+    return QPolygonF(left)          # 一次构造，省掉逐点 append
+
+
 def draw_rope(painter, points, widths, color) -> None:
     """沿点链画锥形软绳（尾巴/舌头）；points 根→尖，widths 各点全宽。"""
     n = len(points)
     if n < 2:
         return
-    half = [w * 0.5 for w in widths]
-
-    def normal(i):
-        ax, ay = points[max(0, i - 1)]
-        bx, by = points[min(n - 1, i + 1)]
-        dx, dy = bx - ax, by - ay
-        L = math.hypot(dx, dy) or 1.0
-        return -dy / L, dx / L
-
-    left, right = [], []
-    for i, (cx, cy) in enumerate(points):
-        nx, ny = normal(i)
-        hw = half[i]
-        left.append(QPointF(cx + nx * hw, cy + ny * hw))
-        right.append(QPointF(cx - nx * hw, cy - ny * hw))
-
     path = QPainterPath()
-    path.moveTo(left[0])
-    for q in left[1:]:
-        path.lineTo(q)
-    for q in reversed(right):
-        path.lineTo(q)
-    path.closeSubpath()
+    path.addPolygon(_ring(points, [w * 0.5 for w in widths]))
     path.setFillRule(Qt.FillRule.WindingFill)            # 防自交留洞
 
     painter.save()
     aa_hint(painter)
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor(*color) if not isinstance(color, QColor) else color)
+    painter.setBrush(_qcolor(color))
     painter.drawPath(path)
     # 尖端圆帽
     tx, ty = points[-1]
-    painter.drawEllipse(QPointF(tx, ty), half[-1], half[-1])
+    hw = widths[-1] * 0.5
+    painter.drawEllipse(QPointF(tx, ty), hw, hw)
     painter.restore()
 
 
@@ -57,7 +82,7 @@ def blit(painter, atlas, element, x, y, rotation, scale_x, scale_y, color,
     key = atlas.find_atlas(element)
     if key is None:                                # 缺帧静默跳过
         return
-    col = color if isinstance(color, QColor) else QColor(*color)
+    col = _qcolor(color)
     pm = atlas.sprite(key, element, col)
     sw, sh = atlas.source_size(key, element)
     apx, apy = ax * sw, ay * sh
@@ -109,33 +134,14 @@ def ribbon(painter, points, halfwidths, colors) -> None:
     if n < 2:
         return
 
-    def normal(i):
-        ax, ay = points[max(0, i - 1)]
-        bx, by = points[min(n - 1, i + 1)]
-        dx, dy = bx - ax, by - ay
-        L = math.hypot(dx, dy) or 1.0
-        return -dy / L, dx / L
-
-    left, right = [], []
-    for i, (cx, cy) in enumerate(points):
-        nx, ny = normal(i)
-        hw = halfwidths[i]
-        left.append(QPointF(cx + nx * hw, cy + ny * hw))
-        right.append(QPointF(cx - nx * hw, cy - ny * hw))
-
     path = QPainterPath()
-    path.moveTo(left[0])
-    for q in left[1:]:
-        path.lineTo(q)
-    for q in reversed(right):
-        path.lineTo(q)
-    path.closeSubpath()
+    path.addPolygon(_ring(points, halfwidths))
     path.setFillRule(Qt.FillRule.WindingFill)        # 防自交留洞
 
     grad = QLinearGradient(QPointF(points[0][0], points[0][1]),
                            QPointF(points[-1][0], points[-1][1]))
     for i, c in enumerate(colors):
-        grad.setColorAt(i / (n - 1), QColor(*c))
+        grad.setColorAt(i / (n - 1), _qcolor(c))
 
     painter.save()
     aa_hint(painter)

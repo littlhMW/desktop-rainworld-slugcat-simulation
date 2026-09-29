@@ -1497,7 +1497,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             if buf is None or buf.width() != bw or buf.height() != bh:
                 buf = QImage(bw, bh, QImage.Format.Format_ARGB32_Premultiplied)
                 self._pixbuf = buf
-            buf.fill(Qt.GlobalColor.transparent)
+            # 清屏挪到算出脏区之后：只擦要重画的那块（整窗刷新时才擦整张）
 
         p = QPainter(self)
         try:
@@ -1517,7 +1517,17 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                         ly0 = max(0, int(cr.y()) // s)
                         lx1 = min(bw, -(-int(cr.right()) // s) + 1)
                         ly1 = min(bh, -(-int(cr.bottom()) // s) + 1)
-                        bp.setClipRect(QRectF(lx0, ly0, max(0, lx1 - lx0), max(0, ly1 - ly0)))
+                        clear = QRectF(lx0, ly0, max(0, lx1 - lx0), max(0, ly1 - ly0))
+                        bp.setClipRect(clear)
+                        # 只在脏区里擦：CompositionMode_Source 覆盖写透明＝清空，
+                        # 脏区外的像素保持上一帧内容不动。
+                        bp.setCompositionMode(
+                            QPainter.CompositionMode.CompositionMode_Source)
+                        bp.fillRect(clear, QColor(0, 0, 0, 0))
+                        bp.setCompositionMode(
+                            QPainter.CompositionMode.CompositionMode_SourceOver)
+                    else:
+                        buf.fill(Qt.GlobalColor.transparent)
                     self._paint_world(bp, 1.0)
                 finally:
                     bp.end()

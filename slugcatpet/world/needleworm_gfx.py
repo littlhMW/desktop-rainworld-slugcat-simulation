@@ -160,6 +160,14 @@ def _draw_wings(painter, atlas, nw, ts, pts, seg_dir, l: int, layer: int,
     zx = lerp(nw.lzrot[0], nw.zrot[0], ts)
     sn = nw.snout_n
     sign = -1.0 if l == 0 else 1.0
+    # 下面这四组都跟 m（第几对翅）无关，提出来一次算好；配色本来逐翅重算
+    prof = ((0.0, 0.25), (0.2, 0.5), (0.5, 0.75), (0.78, 1.0),
+            (0.93, 0.75), (1.0, 0.25))
+    prof_t = [t for t, _ in prof]
+    prof_w = [k * 2.0 * nw.wings_size for _, k in prof]
+    root_col = _mix(FOG_RGB, det, 0.5)
+    tip_col = _mix(eye if cb[1] else FOG_RGB, (255, 255, 255), 0.35 if cb[1] else 0.5)
+    prof_c = [_mix(root_col, tip_col, t) for t in prof_t]
     for m, off in enumerate(WING_SEG[nw.age]):
         ci = sn + off
         if ci >= len(pts):
@@ -175,20 +183,15 @@ def _draw_wings(painter, atlas, nw, ts, pts, seg_dir, l: int, layer: int,
         p = (p[0], p[1] - (18.0 + 18.0 * math.sin(phase * math.tau)) * flying * nw.wings_size)
         d = _dir(base[0], base[1], p[0], p[1])
         ln = lerp(40.0, 60.0, flying) * nw.wings_size
-        root_col = _mix(FOG_RGB, det, 0.5)
-        tip_col = _mix(eye if cb[1] else FOG_RGB, (255, 255, 255), 0.35 if cb[1] else 0.5)
         # 原版翅是 CustomFSprite("CentipedeWing")：8×52 的白色叶片贴图。CustomFSprite
         # 的 uv 序是 0=左上 1=右上 2=右下 3=左下，而翅顶点 0/1 在尖、2/3 在根
         # （:566-569）→ 贴图上缘 = 翅尖、下缘 = 翅根。半宽一律 2*wingsSize（:565），
         # 贴图逐行宽 2,4,6,6,8×20,6×8,4×9,2×11（行 0 在翅尖、行 51 在翅根）换成
         # 「根→尖」的半宽比 = 0.25,0.5,0.75,1.0,0.75,0.25（翅尖外半段最宽，像蝉翅）。
         # 之前画成 2.4→1.2 的锥条，所以翅又细又小。
-        prof = ((0.0, 0.25), (0.2, 0.5), (0.5, 0.75), (0.78, 1.0),
-                (0.93, 0.75), (1.0, 0.25))
         ribbon(painter,
-               [(base[0] + d[0] * ln * t, base[1] + d[1] * ln * t) for t, _ in prof],
-               [k * 2.0 * nw.wings_size for _, k in prof],
-               [_mix(root_col, tip_col, t) for t, _ in prof])
+               [(base[0] + d[0] * ln * t, base[1] + d[1] * ln * t) for t in prof_t],
+               prof_w, prof_c)
         if not nw.small:
             blit(painter, atlas, "JetFishEyeB", base[0], base[1],
                  _aim(bdir[0], bdir[1]), 0.9, 1.2,
