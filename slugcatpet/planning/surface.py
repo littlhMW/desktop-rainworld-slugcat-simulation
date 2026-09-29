@@ -116,6 +116,56 @@ def _hop_controller(pet, leg):
     return HopReachController(pet, leg.goal(), (k, hold, md, launch_x, land_x, ticks))
 
 
+def _point_in_solids(x, y, shrink=1.0):
+    """点是不是落在庇护所墙体 / 关上的门里面（各边向内收，避免贴着面误判）。"""
+    for (a0, b0, a1, b1) in chunkphys.cat_solids():
+        if a0 + shrink < x < a1 - shrink and b0 + shrink < y < b1 - shrink:
+            return True
+    return False
+
+
+def _walk_blocked(x0, x1, y):
+    """同一块面上从一个锚点走到另一个：中间会不会被庇护所墙体挡住。
+
+    把猫看成 [x0..x1] × [y-WALK_BODY_H, y] 一条扫掠带：高过脚面一步以上的
+    实心块算墙，矮的（庇护所底墙 5.6px）只是台阶，底边高过猫头的（门口上方
+    那段外墙 / 走廊层的缺口）也放行 —— 于是「屋外 → 门洞 → 屋内」这一条正通。
+    """
+    lo, hi = (x0, x1) if x0 <= x1 else (x1, x0)
+    for (a0, b0, a1, b1) in chunkphys.cat_solids():
+        if a1 <= a0 or b1 <= b0:
+            continue
+        if a1 <= lo or a0 >= hi:
+            continue
+        if b1 <= y - tuning.WALK_BODY_H:
+            continue
+        if b0 >= y - tuning.WALK_STEP_UP:
+            continue
+        return True
+    return False
+
+
+def _merge_spans(spans):
+    """把 x 区间合并成互不相邻的几段（走带切分用）。"""
+    out = []
+    for a, b in sorted(spans):
+        if a > b:
+            a, b = b, a
+        if out and a <= out[-1][1] + 0.5:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
+
+
+def _roof_under(pet, x, y):
+    """(x,y) 站在哪间庇护所的屋顶上；不是则 None。返回 (x0, x1)。"""
+    for sh in getattr(pet, "shelters", ()) or ():
+        if abs(y - sh.y) <= 3.0 and sh.x <= x <= sh.x + sh.w:
+            return (sh.x, sh.x + sh.w)
+    return None
+
+
 def _reach_from_surface(stats, y0, lo, hi, start_x, gx, gy):
     """站在支撑面 y0（可走区间 [lo,hi]）的锚点 start_x 上能不能够到 (gx,gy)。
 
@@ -265,6 +315,36 @@ class SurfaceGraph:
                                idx=idxs)
         return idxs
 
+    def _add_shelter(self, k, sh, start_node, WL):
+        """庇护所 = 矩形障碍 + 一个门洞（不给它塞 chamber / tunnel）。
+
+        - 屋顶（deck）：跳上去、横穿、再从另一侧落下 —— 多段路里的「绕」；
+        - 屋里地面（shelter）：底墙顶边，只能**从门洞走进来**（jump 落点不给它）；
+        - 屋外两侧的走带（floor）：只有这间屋子确实挡住猫脚下这条走道时才加，
+          于是「屋外 → 门洞 → 屋内」由 _link_gaps 的避墙检查连成一条 walk 链。
+        """
+        lo, hi = sh.interior_span()
+        if hi - lo >= 2.0:
+            self._add_surface("shell:%d" % k, "shelter", sh.interior_floor_y(),
+                              lo, hi)
+        rx0, rx1 = sh.roof_span()
+        if rx1 - rx0 >= 2.0 and sh.y > 4.0:
+            self._add_surface("sroof:%d" % k, "deck", sh.y, rx0, rx1)
+        gy = start_node.y
+        cuts = _merge_spans(sh.cut_span(gy))
+        if not cuts:
+            return                        # 猫脚下这条走道没被挡：屋里屋外本来就通
+        seg, cur = [], 0.0
+        for a, b in cuts:
+            if a - cur >= 4.0:
+                seg.append((cur, a))
+            cur = max(cur, b)
+        if WL - cur >= 4.0:
+            seg.append((cur, WL))
+        for j, (a, b) in enumerate(seg):
+            self._add_surface("sground:%d:%d" % (k, j), "floor", gy,
+                              max(a, 0.0), min(b, WL))
+
     def start_at(self, x):
         """把「起点」指向猫脚下这块面上离它最近的锚点。
 
@@ -301,6 +381,9 @@ class SurfaceGraph:
                 continue                  # 就是猫脚下那块面，已经在图里了
             g._add_surface("deck:%d" % k, "deck", y0, lo, hi)
 
+        for k, sh in enumerate(getattr(pet, "shelters", ()) or ()):
+            g._add_shelter(k, sh, start_node, WL)
+
         for k, p in enumerate(getattr(pet, "poles", ())):
             if getattr(p, "virtual", False):
                 continue                  # 光标虚杆不进表面图（它自己一套）
@@ -326,7 +409,7 @@ class SurfaceGraph:
 
     def _link_gaps(self):
         """两块面同高、缝 ≤ STEP_X：走过去（旧版要求真重叠，8px 小缝直接判不连通）。"""
-        flat = ("floor", "deck", "pole_h")
+        flat = ("floor", "deck", "pole_h", "shelter")
         sids = list(self._surf)
         for ii, sa in enumerate(sids):
             a = self._surf[sa]
@@ -342,8 +425,7 @@ class SurfaceGraph:
                 elif b["hi"] < a["lo"]:
                     if a["lo"] - b["hi"] > STEP_X:
                         continue
-                else:
-                    continue              # 已经重叠：同面锚点链在管
+                # 重叠也算同一块面（屋外走带 / 屋里地面会叠在一起）
                 best = None
                 for ka in a["idx"]:
                     for kb in b["idx"]:
@@ -353,6 +435,9 @@ class SurfaceGraph:
                 if best is None:
                     continue
                 d, ka, kb = best
+                if _walk_blocked(self.nodes[ka].anchor, self.nodes[kb].anchor,
+                                 a["y"]):
+                    continue              # 中间隔着庇护所墙 / 关上的门：走不过去
                 t = d / tuning.PLAN_WALK_SPEED
                 self.add_edge(ka, SurfaceEdge("walk", self.nodes[ka], self.nodes[kb], t,
                                               t * tuning.PLAN_EN_RATE_LIGHT,
@@ -594,10 +679,16 @@ class SurfaceRoute:
         pet = self.pet
         y = pet.stand_h()
         lo, hi = walk_band(pet)
-        s = surface_under(pet.body.chunk1.x, y)
+        bx = pet.body.chunk1.x
+        s = surface_under(bx, y)
         if s is not None:                     # 站在窗口顶边上：只能在这块面的范围内走
             lo = max(lo, min(s[1], s[2]))
             hi = min(hi, max(s[1], s[2]))
+        else:
+            r = _roof_under(pet, bx, y)       # 站在庇护所屋顶上：同理
+            if r is not None:
+                lo = max(lo, r[0])
+                hi = min(hi, r[1])
         return (y, lo, hi)
 
     def _pers(self):
@@ -621,7 +712,8 @@ class SurfaceRoute:
             return None                       # 目标就在某块顶边上：HopReach 直连即可
         if _reach_from_surface(stats, hy, hlo, hhi, body.chunk1.x, gx, gy) is not None:
             return None                       # 此刻就够得到：交给直连能力，别绕
-        if not chunkphys.platforms() and not getattr(pet, "poles", ()):
+        if (not chunkphys.platforms() and not getattr(pet, "poles", ())
+                and not getattr(pet, "shelters", ())):
             return None                       # 世界只有一块地板：没有别的面可去
 
         # 缓存必须含**起点 x**：同一几何下从不同位置问同一目标，路线并不一样。

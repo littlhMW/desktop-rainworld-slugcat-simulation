@@ -209,6 +209,13 @@ FOLLOW_GAP = 46.0              # 驯服后与朋友保持的距离
 
 BLACK_RGB = (27, 11, 33)       # 近似 RoomPalette.blackColor：绝大多数蜥蜴的体色
 WHITE_RGB = (255, 255, 255)    # 白蜥体色走纯白分支
+# 白蜥迷彩：低频抓一次「身后实时背景」的主色，体色按缓慢呼吸在白色 ↔ 它之间换。
+# 反编译对照：原版白蜥体色就是**房间背景色**（LizardGraphics 的 camo 分支），
+# 头色在它和白色之间随叫声闪 —— 桌宠里「房间背景」＝蜥蜴背后的真实桌面。
+CAMO_SAMPLE_TICKS = 100        # 每 ~2.5 s 采一次（低频率）
+CAMO_BREATH_TICKS = 260        # 呼吸周期 ~6.5 s
+CAMO_SAMPLE_UP = 60.0          # 取样块放在身体上方这么多像素（免得抓到蜥蜴自己）
+CAMO_MIX_MIN = 0.0             # 换气到最白那一瞬也留一点迷彩
 SALAMANDER_RGB = (232, 232, 244)
 HUE_DEV_K = 0.6                # 原版体色色相偏差的 SCurve 参数（所有品种都是 0.6）
 WHITE_PALE_SAT = 0.45          # 白蜥随机色版本：低饱和 + 高亮度 = 淡彩色
@@ -728,7 +735,8 @@ class Lizard:
                  "_blockers", "_tick",
                  "depth", "last_depth", "head_depth", "last_head_depth", "turn_lift",
                  "head_driven", "anim", "_last_vx",
-                 "depth_in", "rel")
+                 "depth_in", "rel",
+                 "camo_bg", "camo_mix")
 
     def __init__(self, x: float, y: float, breed: LizardBreed | None = None,
                  seed: int = 0, id: int = 0):
@@ -789,6 +797,9 @@ class Lizard:
         self.bob = [0.0, 0.0, 0.0]
         self.bob_front = 0.0
         self.bob_hind = 0.0
+        # 白蜥迷彩：camo_bg = 身后背景主色（低频采样，None = 还没采到 / 采不到）
+        self.camo_bg = None
+        self.camo_mix = 0.0      # 体色在白色 ↔ 迷彩色之间的呼吸比例
         # 叼着死猫/昏迷猫回巢穴：carry_obj 是那只猫（PetUnit），carry_body 是
         # 它的身体（被钉住跟着嘴走）。carry_den 是**开始搬运时锁定的那个巢穴**
         # （原版 ReturnPrey 的 den：定了就不换），carry_corner 只是它的左右符号。
@@ -851,7 +862,12 @@ class Lizard:
         total_len = body_len + tail_len
         self.cosmetics = lizard_cos.roll_cosmetics(
             crng, b.key, total_len, (body_len / total_len) if total_len > 0 else 0.5)
-        self.cosmetic_pts = None      # 渲染缓存（首次绘制时按几何算好）
+        # 花纹物理状态（原版 LizardScale 摆锤）：每条实例 [x, y, vx, vy, lx, ly]；
+        # None = 该族不用物理（背刺/条纹/翅鳞等是刚性贴图）。
+        self.cosmetic_pts = [
+            ([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0] for _ in c.insts]
+             if c.kind in lizard_cos.PHYS_KINDS else None)
+            for c in self.cosmetics]
 
         # 攀爬（原版 LizardPather 的 Climb/Wall tile）：贴在竖杆或背景墙竖边上
         self.climb_x = None           # 抓住的那条竖线的 x；None＝没在爬
@@ -934,6 +950,23 @@ class Lizard:
         基准 900 = 粉蜥，保持与旧常量 NOTICE_R 同量级。
         """
         return clampf(NOTICE_R * self.breed.visual_radius / 900.0, 52.0, NOTICE_R * 2.2)
+
+    def camo_tick(self, win, tick: int) -> None:
+        """白蜥：低频吸一次身后背景主色，体色按缓慢呼吸在白色 ↔ 它之间换。
+
+        只有 `breed.camo` 的品种（白蜥）跑；采样失败就保持白色（camo_bg 不动）。
+        """
+        if not getattr(self.breed, "camo", False):
+            return
+        if tick % CAMO_SAMPLE_TICKS == self.id % CAMO_SAMPLE_TICKS:
+            from ..platform.bgcolor import dominant_behind
+            col = dominant_behind(win, self.x, self.y - CAMO_SAMPLE_UP,
+                                  self.body_rad * 6.0, self.body_rad * 3.0)
+            if col is not None:
+                self.camo_bg = col
+        ph = tick / float(CAMO_BREATH_TICKS) + self.seed * 0.13
+        breath = 0.5 + 0.5 * math.sin(ph * math.tau)
+        self.camo_mix = CAMO_MIX_MIN + (1.0 - CAMO_MIX_MIN) * breath
 
     def bounding_pad(self):
         """脏矩形外扩半径。"""
@@ -1146,6 +1179,7 @@ class Lizard:
         self._step_legs(HL)
         self._step_head()
         self._step_depth()
+        self._step_cosmetics()
 
         if self.bite_hold > 0:
             self.bite_hold -= 1
@@ -2393,6 +2427,130 @@ class Lizard:
         lift += self.anim.body_raise * BODY_RAISE_LIFT
         lift -= self.anim.body_compress * BODY_COMPRESS_DIP
         self.turn_lift = max(0.0, lift)
+
+    def _head_dir(self):
+        """颈→头的单位方向（原版 HeadRotation，花纹前段用）。"""
+        s0 = self.seg[0]
+        dx, dy = self.x - s0.x, self.y - s0.y
+        d = math.hypot(dx, dy)
+        if d < 1e-6:
+            return (1.0, 0.0)
+        return (dx / d, dy / d)
+
+    def _cosmetic_spine(self):
+        """渲染用的脊柱折线（与 lizard_gfx.draw_lizard 同一套几何）。"""
+        hx = self.x + (self.seg[0].x - self.x) * 0.2
+        hy = self.y + (self.seg[0].y - self.y) * 0.2
+        spine = [(hx, hy)]
+        rads = [self.body_rad * lizard_cos.NECK_RAD_K]
+        n_body = sum(1 for s in self.seg if not s.tail)
+        n_tail = len(self.seg) - n_body
+        for k, s in enumerate(self.seg):
+            bob = self.bob[k] if k < len(self.bob) else 0.0
+            spine.append((s.x, s.y + bob))
+            r = s.rad
+            if not s.tail:
+                r *= (0.94, 1.06, 1.00)[min(k, 2)]
+            elif n_tail:
+                t = (k - n_body + 1) / float(n_tail)
+                r *= 1.0 - 0.30 * t * t
+            rads.append(r)
+        return spine, rads
+
+    def _step_cosmetics(self) -> None:
+        """花纹物理（原版 LizardCosmetics.LongBodyScales.Update 的移植）。
+
+        每片鳞是一根挂在体表的摆锤：角度弹簧把它拉向「体表外法线 ↔ 体轴后掠」的
+        混合方向，`ConnectToPoint(push=True)` 再把鳞尖钉在距附着点 length 的圆上，
+        于是转身/急停/落地时鳞片会滞后摆一下，而不是硬贴在身上。
+        """
+        if not self.cosmetic_pts:
+            return
+        spine, rads = self._cosmetic_spine()
+        depth = self.depth
+        sgn = 1.0 if depth >= 0.0 else -1.0
+        hdx, hdy = self._head_dir()
+        for ci, c in enumerate(self.cosmetics):
+            st = self.cosmetic_pts[ci]
+            if not st:
+                continue
+            rigor = c.rigor
+            stiff = 1.0 / lerp(5.0, 1.5, rigor)
+            damp = lerp(1.0, 0.8, rigor)
+            for ii, inst in enumerate(c.insts):
+                x, y, length = inst[0], inst[1], inst[2]
+                back = inst[5] if len(inst) > 5 else 0.5
+                pos, (nx, ny), rad, (tx, ty) = lizard_cos.spine_at(
+                    spine, rads, y, True)
+                f = lizard_cos.depth_f(y, depth)
+                k = clampf(abs(f) - sgn * x, -1.0, 1.0)
+                ox = pos[0] + nx * (k * rad)
+                oy = pos[1] + ny * (k * rad)
+                # a = Lerp(体轴, 体表外法线, |f|) + 前段往头侧压 + 后掠混合
+                off = k * rad
+                if abs(off) > 1e-6:
+                    ux, uy = nx * (1.0 if off >= 0.0 else -1.0),                              ny * (1.0 if off >= 0.0 else -1.0)
+                else:
+                    ux, uy = nx, ny
+                ax = lerp(tx, ux, abs(f))
+                ay = lerp(ty, uy, abs(f))
+                if y < 0.2:
+                    kk = 2.0 * (1.0 - y / 0.2) ** 2
+                    ax -= hdx * kk
+                    ay -= hdy * kk
+                ax = lerp(ax, tx, back)
+                ay = lerp(ay, ty, back)
+                n = math.hypot(ax, ay) or 1.0
+                tgx = ox + (ax / n) * length
+                tgy = oy + (ay / n) * length
+                s = st[ii]
+                d = math.hypot(tgx - s[0], tgy - s[1])
+                if s[4] == 0.0 and s[5] == 0.0 and d > length * 0.5:
+                    s[0], s[1] = tgx, tgy          # 第一次定位：直接摆到目标
+                    s[2] = s[3] = 0.0
+                    s[4], s[5] = tgx, tgy
+                    continue
+                dx, dy = tgx - s[0], tgy - s[1]
+                d = math.hypot(dx, dy)
+                if d > length * 0.5:               # 目标太远：先追一半（原版 DistLess）
+                    pull = d - length * 0.5
+                    ux2, uy2 = dx / d, dy / d
+                    s[0] += ux2 * pull
+                    s[1] += uy2 * pull
+                    s[2] += ux2 * pull
+                    s[3] += uy2 * pull
+                    dx, dy = tgx - s[0], tgy - s[1]
+                    d = math.hypot(dx, dy)
+                if d > 10.0:                       # ClampMagnitude(target-pos, 10)
+                    dx *= 10.0 / d
+                    dy *= 10.0 / d
+                s[2] += dx * stiff
+                s[3] += dy * stiff
+                s[2] *= damp
+                s[3] *= damp
+                # 速度限幅：原版靠「身体不会瞬移」隐含成立；桌宠有生成/传送/被拖拽，
+                # 不限制会让鳞尖以几十 px/tick 甩出去（方向瞬间翻转）。
+                vmax = 4.0 if length < 4.0 else length
+                vm = math.hypot(s[2], s[3])
+                if vm > vmax:
+                    s[2] *= vmax / vm
+                    s[3] *= vmax / vm
+                s[4], s[5] = s[0], s[1]             # lastPos（渲染插值用）
+                s[0] += s[2] * 0.9                  # LizardScale.Update：空气阻尼 + 积分
+                s[1] += s[3] * 0.9
+                s[2] *= 0.9
+                s[3] *= 0.9
+                # ConnectToPoint(outer, length, push: true)：把鳞尖钉在距附着点 length
+                # 的圆上（原版 vector = DirVec(pos, outer) * (length - rd)，pos -= vector），
+                # 同时扣掉速度的径向分量 —— 摆锤只剩切向摆动，方向不会跳变。
+                rx, ry = s[0] - ox, s[1] - oy
+                rd = math.hypot(rx, ry) or 1.0
+                cx = rx / rd * (length - rd)
+                cy = ry / rd * (length - rd)
+                s[0] += cx
+                s[1] += cy
+                s[2] += cx
+                s[3] += cy
 
     def _step_chain(self, HL) -> None:
         """躯干+尾：逐行移植 BodyChunk.Update + BodyChunkConnection.Update。

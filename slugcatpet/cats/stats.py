@@ -11,6 +11,11 @@ class SlugStats:
     runspeed_fac: float = 1.0        # 不乘加速度
     pole_fac: float = 1.0
     weight_fac: float = 1.0          # 不进跳跃公式
+    # 躯体尺寸：两个 bodyChunk 的间距倍率。
+    # 原版 Player.setPupStatus（Player.cs:4114-4131）：成年 17、幼崾 12。
+    conn_fac: float = 1.0
+    # 体块质量倍率：同上函数，成年 0.75、幼崾 0.7（再乘 weight_fac）。
+    mass_fac: float = 1.0
     # 隧道爬速因子留白：无对应玩法，趴行恒 2.5 不分种族
 
     # 饱食：上限/冬眠阈（整数格）

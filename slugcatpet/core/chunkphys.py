@@ -182,7 +182,7 @@ class BodyChunk:
             self.cy = 1
         # 实心墙体（庇护所）：真碰撞（猫用开放门洞带那一张表）
         _solid_blocks(self, r, CAT_SOLIDS, impact, self.lcy < 1, self.lcy > -1,
-                      self.lcx)
+                      self.lcx, step_up=STEP_UP)
 
 
 def _fire_impact(c: BodyChunk, direction, speed: float, first_contact: bool, impact) -> None:
@@ -252,9 +252,9 @@ def solve_conn(a: BodyChunk, b: BodyChunk, rest: float = DIST_STAND,
 
 # ── 其它窗口顶边＝单向平台（窗口本体不挡路，只能从上方落上去）──
 PLATFORMS: list = []          # [(x0, y0, x1)] 逻辑坐标，y0＝顶边
+STEP_UP = 8.0                 # 比脚面高不过这么多的实心块算台阶（撑庇护所底墙 5.6px）
 SOLIDS: list = []             # [(x0, y0, x1, y1)] 实心 AABB（庇护所真墙体）
-CAT_SOLIDS: list = []         # 同 SOLIDS（文档口径：猫只能走入口）
-CAT_PASS_SHELTER = False      # 暴雨集合期临时放行：桌宠猫不会绕到入口那一侧
+CAT_SOLIDS: list = []         # 同 SOLIDS（猫与生物/物品同一套墙，只能从门洞进出）
 
 
 def set_platforms(rects) -> None:
@@ -271,8 +271,8 @@ def set_solids(rects, cat_rects=None) -> None:
     """由 window 每 tick 刷新：庇护所的墙（左墙/顶/外墙/内墙/关上的门）。
 
     ``rects`` 给生物 / 物品 / 尸体（真房间）；``cat_rects`` 给蛞蝓猫 ——
-    ``cat_rects`` 现在与它同表（真四壁 + 入口缺口）；单独留着是为了以后按角色改
-        （例如暴雨集合期的放行开关 ``set_cat_shelter_pass``）。
+    现在与它同表（四面墙 + 走廊层缺口 + 关上的门）；单独留一张表是为了以后按角色分。
+    墙不会为了让寻路成功而关掉碰撞 —— 猫考「走廊层」进出，寻路层同步认得这些墙。
     """
     global SOLIDS, CAT_SOLIDS
     SOLIDS = list(rects or ())
@@ -287,32 +287,15 @@ def cat_solids() -> list:
     return CAT_SOLIDS
 
 
-def set_cat_shelter_pass(on) -> None:
-    """暴雨集合期允许猫穿过庇护所墙体。
-
-    原版猫从入口（ShelterDoor.cs:1170-1200 提取出的方位）走进屋；桌宠里猫
-    只会在水平面上朝目标直走，绕不到入口那一侧，会一直顶在背面的墙上，
-    雨循环就卡在集合阶段。所以只在「暴雨真的落下、猫在赶路」这段放行，
-    平时四壁对猫完全实心（文档要求）。
-    """
-    global CAT_PASS_SHELTER
-    CAT_PASS_SHELTER = bool(on)
-
-
-def cat_shelter_pass() -> bool:
-    return CAT_PASS_SHELTER
-
-
 def _solid_blocks(obj, r: float, table, impact=None, prev_floor: bool = False,
-                  prev_ceil: bool = False, prev_x: float = 0.0) -> bool:
+                  prev_ceil: bool = False, prev_x: float = 0.0,
+                  step_up: float = 0.0) -> bool:
     """圆 vs 实心 AABB：取最小穿透轴推出（竖直优先）。
 
     这是庇护所墙体的真碰撞。``BodyChunk`` 用 ``cx/cy/support_y`` 记接触，
     物品用 ``_contact_floor`` / ``_contact_x`` / ``_contact_ceil``：两套都写。
     """
     if not table:
-        return False
-    if table is CAT_SOLIDS and CAT_PASS_SHELTER:
         return False
     hit = False
     bounce = getattr(obj, "bounce", BOUNCE)
@@ -330,6 +313,16 @@ def _solid_blocks(obj, r: float, table, impact=None, prev_floor: bool = False,
         p_bot = y1 - (obj.y - r)
         m = min(p_left, p_right, p_top, p_bot)
         if m <= 0.0:
+            continue
+        # 台阶：横向被挡，但障碍的顶边离脚面不到一步 → 直接踩上去
+        # （庇护所底墙：里面的地板比外面高 5.6px，猫进门就踩这一步）
+        if (step_up > 0.0 and m in (p_left, p_right)
+                and 0.0 <= (obj.y + r) - y0 <= step_up):
+            obj.y = y0 - r
+            if obj.vy > 0.0:
+                obj.vy = 0.0
+            _set_floor(obj, y0)
+            hit = True
             continue
         hit = True
         if m == p_top:

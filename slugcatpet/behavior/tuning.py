@@ -425,10 +425,12 @@ SLEEP_URGE_RATE = 1.0 / 36000.0  # 每 tick 累积（约 600s 到满）
 SLEEP_URGE_DECAY = 1.0 / 12000.0 # 没吃饱时回落（也很慢）
 SLEEP_CHECK_TICKS = 20           # 每隔这么久掷一次骰
 
-# 觅食欲望：吃完一口归 0，再慢慢涨回 100 才想再去找吃的（饱了也涨，只是更慢）
+# 觅食：**饥饿需求**（离够冬眠还差几格）和**觅食欲望**（多久主动重查一次）分开。
+# 差得多就直接找；只差一点才按欲望闸 + 概率掷。
 FOOD_URGE_RATE      = 1.0 / 2400.0    # 没吃饱：约 60s 攒满
-FOOD_URGE_RATE_FULL = 1.0 / 14400.0   # 吃饱了：约 360s（频率更低）
+FOOD_URGE_RATE_FULL = 1.0 / 14400.0   # 已经够冬眠：约 360s（频率更低）
 FOOD_SEEK_P         = 0.75            # 攒满也只是这个命中率 → 找食频率整体略降
+FOOD_DEFICIT_URGENT = 2.0             # 离够冬眠差这么多格＝饿：直接找，不等欲望
 # 业力花（KarmaAction）：独立于「吃」的目标链 —— 业力花只填隐藏花条、不填饱食度
 KARMA_SEEK_P        = 0.30            # 每次检查起意去拔业力花的概率
 KARMA_SEEK_CD       = 600             # 一次之后多久不再惦记（15s）
@@ -557,6 +559,8 @@ POLE_COYOTE_TICKS = 1            # 杆上 canJump=1：松手后剩 1 tick
 ITEM_CD_KEEP = 120               # 非食物道具：0-120 tick（3s）
 ITEM_CD_FOOD = 60                # 食物：每格饱食度 +60 tick（1.5s）
 
+WALK_BODY_H = 14.0       # 走带切分 / 避墙时把猫看成这么高的一条带（px）
+WALK_STEP_UP = 8.0       # 比脚面高不过这个值的实心块算台阶（庇护所底墙 5.6px），能踩上去
 PLAN_WALK_SPEED = 4.2
 PLAN_TONGUE_SPEED = 3.0
 PLAN_CLIMB_SPEED = 1.6
@@ -707,6 +711,7 @@ PEARL_CARRY_TICKS   = 240       # 把玩珍珠多久才放下（放下后进 PEA
 SAINT_LICK_HOLD_DRAIN = 1.0 / 200.0   # 每 tick；满体力约 200 tick（≈3.3 s）拉空
 
 # ── 矛大师：尾巴长针（原版 SpearMaster 用尾针；桌宠里给一个间隔，别无限刷）──
+SPEARMASTER_NEEDLE_HOLD = 2     # 矛大师尽量保持「手握 + 背背」两根活针
 TAIL_NEEDLE_CD = 150            # 长出下一根尾针的间隔 tick（≈3.75 s）
 
 # ── 饕餮：体重坠落攻击（原版 Gourmand 的砸击；把跳跃动能压在目标身上）──

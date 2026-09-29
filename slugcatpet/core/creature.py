@@ -100,10 +100,16 @@ class SlugcatBody:
         hx, hy = hip_xy
         self.W = float(world_w)
         self.H = float(world_h)
-        chunk_mass = cp.MASS * stats.weight_fac
-        self.chunk0 = BodyChunk(0, hx, hy - CONN_STAND, cp.RAD0, chunk_mass)
+        # 躯体尺寸：Player.setPupStatus（Player.cs:4114-4131），幼崾 12 / 成年 17。
+        # 轻量种族（幼崾）不只是数值小，骨架真的短一截。
+        self._conn_fac = float(getattr(stats, "conn_fac", 1.0) or 1.0)
+        self._conn_stand = CONN_STAND * self._conn_fac
+        self._conn_crawl = CONN_CRAWL * self._conn_fac
+        chunk_mass = (cp.MASS * stats.weight_fac
+                      * float(getattr(stats, "mass_fac", 1.0) or 1.0))
+        self.chunk0 = BodyChunk(0, hx, hy - self._conn_stand, cp.RAD0, chunk_mass)
         self.chunk1 = BodyChunk(1, hx, hy, cp.RAD1, chunk_mass)
-        self.conn_rest = float(CONN_STAND)
+        self.conn_rest = float(self._conn_stand)
         self.conn_type = "Normal"
 
         self.standing = True            # True=直立 / False=趴
@@ -135,9 +141,9 @@ class SlugcatBody:
         self.pole_y = 0.0
 
         self.facing = 1                 # +1 右 / -1 左
-        self.stance = 0.42 * CONN_STAND
+        self.stance = 0.42 * self._conn_stand
         self.foot_lift = 4.0
-        self.step_threshold = 0.5 * CONN_STAND
+        self.step_threshold = 0.5 * self._conn_stand
         self.step_speed = 0.18
         self.step_predict = 0.5
         self.lfoot = [hx - self.stance, self.H]
@@ -583,7 +589,7 @@ class SlugcatBody:
         c0.vx = c0.vy = 0.0
         c1.pinned = False
         c1.x = self.ceil_x
-        c1.y = self.ceil_y + CONN_STAND
+        c1.y = self.ceil_y + self._conn_stand
         c1.vx = c1.vy = 0.0
         return True
 
@@ -709,7 +715,7 @@ class SlugcatBody:
             c.update(self.W, self._floor_h, impact=self.impact_cb,
                      room_gravity=self.room_gravity, water_y=wy,
                      buoyancy=self.stats.buoyancy, water_friction=WATER_FRICTION)
-        self.conn_rest = CONN_STAND if self.standing else CONN_CRAWL
+        self.conn_rest = self._conn_stand if self.standing else self._conn_crawl
         # 控制态滚/滑期连接距=10
         rest = 10.0 if (self._ctrl_on and self._ctrl_roll_direction != 0) else self.conn_rest
         solve_conn(self.chunk0, self.chunk1, rest, ctype=self.conn_type)
@@ -894,7 +900,7 @@ class SlugcatBody:
                      room_gravity=self.room_gravity,
                      water_y=wy if c.x == wx else ws.level_at(c.x),
                      buoyancy=self.stats.buoyancy, water_friction=wf)
-        self.conn_rest = CONN_STAND
+        self.conn_rest = self._conn_stand
         solve_conn(c0, c1, self.conn_rest, ctype="Normal")
         c0.clamp_inside(self.W, self._floor_h)
         c1.clamp_inside(self.W, self._floor_h)
@@ -1064,7 +1070,7 @@ class SlugcatBody:
                     self._do_zerog_kick()
                 self.canJump -= 1
         self._zerog_kick = False
-        self.conn_rest = CONN_STAND
+        self.conn_rest = self._conn_stand
         solve_conn(c0, c1, self.conn_rest, ctype="Normal")
         c0.clamp_inside(self.W, self.H)
         c1.clamp_inside(self.W, self.H)
@@ -1191,7 +1197,7 @@ class SlugcatBody:
         self.feet_stuck = None
         self.crawl_anchor = None
         self._settle_ragdoll_integrate()
-        self.conn_rest = CONN_STAND if self.standing else CONN_CRAWL
+        self.conn_rest = self._conn_stand if self.standing else self._conn_crawl
         solve_conn(self.chunk0, self.chunk1, self.conn_rest, ctype="Normal")
         self.chunk0.clamp_inside(self.W, self._floor_h)
         self.chunk1.clamp_inside(self.W, self._floor_h)
@@ -1509,6 +1515,16 @@ class SlugcatBody:
     def food_satisfied(self) -> bool:
         """吃饱（含零头），到冬眠阈以上。"""
         return (self.food * 4 + self.food_quarter) >= self.food_hibernate * 4
+
+    @property
+    def hunger_need(self) -> float:
+        """离「够冬眠」还差几格（0 = 够了）。
+
+        ``food`` 是库存，这个才是**饥饿需求** —— 觅食闸按它判「饿不饿」，
+        ``_food_urge`` 只管「多久主动重查一次」，两件事不再混成一件。
+        """
+        need = self.food_hibernate * 4 - (self.food * 4 + self.food_quarter)
+        return max(0, need) / 4.0
 
     def karma_gain(self):
         self.karma = min(self.karma_max, self.karma + 1)

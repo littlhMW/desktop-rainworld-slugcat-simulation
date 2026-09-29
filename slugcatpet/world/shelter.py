@@ -259,24 +259,24 @@ class Shelter:
         self.chamber_w_px = cw
         # 纵向：roof 占 wall tile，chamber 高由 h 决定，走廊从地面往上 tunnel_h tile
         self.tunnel_h_px = min(tpl.tunnel_h * t, self.h - self.wall_px)
-        # 从左到右：左墙 | chamber | 走廊 | 外墙上段（入口缺口在它下面）
-        self.left_wall = (self.x, self.y, self.x + wall, self.ground_y)
-        cx0 = self.x + wall
-        cx1 = cx0 + cw
-        self.chamber = (cx0, self.ground_y - tpl.chamber_h * t, cx1, self.ground_y)
+        # 走廊层：最下面那一条。**只有门那一侧**在这一层留空（就是
+        # 门洞），另一侧是一整面墙。原版的“四面墙 + 1 个小缺口”就是这个意思：
+        # 猫只能从门那一侧走进去，不能从背面越过屋子。
+        self.corridor_top = self.ground_y - self.tunnel_h_px
+        # 四面墙：左 / 右 / 顶 / 底。非门侧一直落到地面，门侧到走廊层为止。
         if self.door_side == "right":
-            self.tunnel = (cx1, self.ground_y - self.tunnel_h_px,
-                           self.x + self.w - wall, self.ground_y)
-            self.outer_wall = (self.x + self.w - wall, self.y,
-                               self.x + self.w, self.ground_y - self.tunnel_h_px)
-            self.entrance = (self.x + self.w - wall, self.ground_y - self.tunnel_h_px,
+            self.left_wall = (self.x, self.y, self.x + wall, self.ground_y)
+            self.right_wall = (self.x + self.w - wall, self.y, self.x + self.w,
+                               self.corridor_top)
+            self.outer_wall = self.right_wall
+            self.entrance = (self.x + self.w - wall, self.corridor_top,
                              self.x + self.w, self.ground_y)
         else:
-            self.tunnel = (self.x + wall, self.ground_y - self.tunnel_h_px,
-                           cx0, self.ground_y)
-            self.outer_wall = (self.x, self.y, self.x + wall,
-                               self.ground_y - self.tunnel_h_px)
-            self.entrance = (self.x, self.ground_y - self.tunnel_h_px,
+            self.left_wall = (self.x, self.y, self.x + wall, self.corridor_top)
+            self.right_wall = (self.x + self.w - wall, self.y, self.x + self.w,
+                               self.ground_y)
+            self.outer_wall = self.left_wall
+            self.entrance = (self.x, self.corridor_top,
                              self.x + wall, self.ground_y)
         self.roof = (self.x, self.y, self.x + self.w, self.y + wall)
         # 底墙（地板）：贴底边那一条，**入口那一列留空**
@@ -286,15 +286,10 @@ class Shelter:
             self.floor = (self.x, fy0, self.x + self.w - wall, self.ground_y)
         else:
             self.floor = (self.x + wall, fy0, self.x + self.w, self.ground_y)
-        # 内墙：chamber 与走廊之间、走廊上沿之上的那一段
-        if self.door_side == "right":
-            self.inner_wall = (cx1, self.y + wall, cx1 + wall,
-                               self.ground_y - self.tunnel_h_px)
-        else:
-            self.inner_wall = (cx0 - wall, self.y + wall, cx0,
-                               self.ground_y - self.tunnel_h_px)
-        self._inner_walls = [self.inner_wall] if \
-            self.inner_wall[3] - self.inner_wall[1] > 1.0 else []
+        # 内腔 = 四面墙以内。原来的 chamber / tunnel / 内墙分隔层都去掉了：
+        # 庇护所就是「一个矩形 + 四面墙 + 一个门洞」，里面不再切小房间。
+        self.interior = (self.x + wall, self.y + wall,
+                         self.x + self.w - wall, self.ground_y)
         # 门面中心（原版 pZero）：入口 tile 中点 + dir * 60
         ex0, ey0, ex1, ey1 = self.entrance
         ecx = (ex0 + ex1) * 0.5
@@ -331,30 +326,64 @@ class Shelter:
         return (self.x, self.y, self.x + self.w, self.ground_y)
 
     def interior_rects(self):
-        """可站人的内腔：chamber + 走廊（门关上时走廊也算屋里）。"""
-        return (self.chamber, self.tunnel)
+        """可站人的内腔：整间庇护所去掉四面墙（不再切 chamber / tunnel）。"""
+        return (self.interior,)
 
     def wall_rects(self):
-        """碰撞墙（不含门）：左墙 / 顶 / 外墙上段 / 内墙 / 底墙（入口那一列留空）。"""
-        out = [self.left_wall, self.roof, self.outer_wall, self.floor]
-        out.extend(self._inner_walls)
+        """碰撞墙（不含门）：左 / 右 / 顶 / 底四面，去重。
+
+        两侧墙都停在走廊层（``ground_y - tunnel_h_px``）之上：猫走在地面上，
+        走廊那一条是通路；门那一侧的走廊格由门机构负责开合，底墙只在入口
+        那一列留缺口。
+        """
+        out = []
+        for r in (self.left_wall, self.right_wall, self.roof, self.floor):
+            if r not in out:
+                out.append(r)
         return out
 
     def solid_rects(self):
-        """墙 + （门关到一定程度后）入口缺口。给生物 / 物品 / 尸体用。"""
+        """四面墙 + 门**完全关上**时的入口格（开门 / 关门途中都还能过）。"""
         out = list(self.wall_rects())
-        if self.close_fac > 0.5:
+        if self.door_state == CLOSED:
             out.append(self.entrance)
         return out
 
     def cat_solid_rects(self):
-        """蛞蝓猫用的实心墙体 —— 与生物 / 物品**完全一致**。
+        """蛞蝓猫用的实心墙体 —— 与生物 / 物品完全一致（没有暴雨放行开关）。
 
-        文档口径：入口处底墙 ``███████      ███████``，猫只能从入口进出，
-        不能穿其它三面墙。所以这里不再给猫开地面旁路，直接复用 ``solid_rects()``
-        （门关到位后入口那一块也变实心）。
+        猫从「走廊层」缺口走进屋（两侧都通），走廊层以上四面墙完全实心，
+        门完全关上时入口那一格也变实心。
         """
         return self.solid_rects()
+
+    # ── 导航层查询（planning/surface.py 与走带切分用；只读几何） ──
+    def interior_floor_y(self):
+        """屋里可站的那条地面（底墙顶边）—— 猫进了门就站在它上面。"""
+        return self.ground_y - self.wall_px
+
+    def interior_span(self):
+        """屋里地面的 x 区间：两道侧墙之间（= 底墙铺开的那一段）。"""
+        return (self.x + self.wall_px, self.x + self.w - self.wall_px)
+
+    def roof_span(self):
+        return (self.x, self.x + self.w)
+
+    def cut_span(self, y, body_h=14.0, step_up=8.0):
+        """在高度 y 这条走道上被墙挡住的 x 区间；没挡住就空表。
+
+        口径与 planning 的走带切分一致：底边高过猫头（能从下面走过）的不算墙，
+        顶边离脚面不到一步的也不算（那是底墙台阶，一步就踩上去）。于是「地面
+        那条走带」是通的（走廊层），屋子中段那条走带会被两侧墙切断。
+        """
+        out = []
+        for (x0, y0, x1, y1) in self.solid_rects():
+            if x1 <= x0 or y1 <= y0:
+                continue
+            if y1 <= y - body_h or y0 >= y - step_up:
+                continue
+            out.append((x0, x1))
+        return out
 
     def roof_edge(self):
         """顶边＝单向平台（(x0, y0, x1)）。"""
@@ -364,10 +393,16 @@ class Shelter:
         return self.entrance
 
     def entry_x(self):
-        """入口内侧那一点（走廊中点，朝里收一点）。"""
-        tx0, ty0, tx1, ty1 = self.tunnel
-        mid = (tx0 + tx1) * 0.5
-        return mid
+        """入口那一点：门洞往屋里收 广度，落在内腔地板上。
+
+        旧版取“走廊中点”（深入屋内），现在没有走廊了，但目标点仍然不能落在
+        门洞那一列：门关上时那一列会变成实心，猫会被挤出去。所以往屋里让 6px，
+        落在内腔地板的边缘上。
+        """
+        lo, hi = self.interior_span()
+        mid = (lo + hi) * 0.5
+        # 往门那一侧偏一点（进门就到），但保证在内腔里。
+        return mid + (1.0 if self.door_side == "left" else -1.0) * (hi - lo) * 0.15
 
     def entry_goal(self, radius=26.0):
         return point_goal(self.entry_x(), self.ground_y, radius=radius,
@@ -459,8 +494,8 @@ class Shelter:
         p.setBrush(QColor(0, 0, 0, 255))
         for (a, b, c, d) in self.wall_rects():
             p.drawRect(QRectF(a, b, c - a, d - b))
-        # 门关到一半以上：入口也封成黑的（挡住里面的猫）
-        if self.close_fac > 0.5:
+        # 门**完全关上**才把入口封成黑的（跟碰撞口径一致：关门途中还能过）
+        if self.door_state == CLOSED:
             dx0, dy0, dx1, dy1 = self.entrance
             p.drawRect(QRectF(dx0, dy0, dx1 - dx0, dy1 - dy0))
 
@@ -490,10 +525,11 @@ class Shelter:
     def dump_geometry(self):
         """调试/测试用：这间庇护所的真实几何快照。"""
         return {"tile": self.tile, "footprint": self.safe_rect(),
-                "chamber": self.chamber, "tunnel": self.tunnel,
+                "interior": self.interior,
                 "entrance": self.entrance, "roof": self.roof,
-                "floor": self.floor,
-                "outer_wall": self.outer_wall, "inner_wall": self.inner_wall,
+                "floor": self.floor, "corridor_top": self.corridor_top,
+                "left_wall": self.left_wall, "right_wall": self.right_wall,
+                "outer_wall": self.outer_wall,
                 "p_zero": self.p_zero, "dir_x": self.dir_x,
                 "door_side": self.door_side, "template": self.template.key}
 

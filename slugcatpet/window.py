@@ -1951,8 +1951,6 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._refresh_shelter_solids()
         self.storm_active = self.storm.active
         self.storm_pressure = self.storm.pressure
-        # 集合期放行（见 chunkphys.set_cat_shelter_pass）：平时四壁对猫实心
-        chunkphys.set_cat_shelter_pass(bool(self.storm.active))
         self.rain.step(self.storm.rain_drive, 1.0)
         # 震屏：雨势折算成抖动，仍旧并入既有 self._shake（不另起一套）
         if self.rain.shake > 0.0:
@@ -2077,8 +2075,9 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
     def _refresh_shelter_solids(self):
         """把庇护所的真墙体同步给物理层（门关到位后入口也变实心）。
 
-        两张表：``solids`` 给生物 / 物品 / 尸体（真房间）；``cat_solids`` 给蛞蝓猫 ——
-        墙体靠近地面那一段对猫开放，否则沿地面行走 / 闲逛会一直顶在墙上。
+        两张表：``solids`` 给生物 / 物品 / 尸体；``cat_solids`` 给蛞蝓猫。
+        墙真变了（新建 / 拆掉 / 门关上）就把 geometry_version +1，
+        让寻路缓存知道「前提变了」。
         """
         rects, crows = [], []
         for sh in (getattr(self, "shelters", None) or ()):
@@ -2090,6 +2089,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if (list(rects) != list(chunkphys.solids())
                 or list(crows) != list(chunkphys.cat_solids())):
             chunkphys.set_solids(rects, crows)
+            self.geometry_version = getattr(self, "geometry_version", 0) + 1
 
     # ── 摆放庇护所：按下起点 → 拖出矩形 → 松开生成 ──
     def enter_place_shelter_mode(self):

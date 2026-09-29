@@ -66,12 +66,56 @@ class PointTarget:
 
 
 def walk_band(pet):
-    """可行走 x 区间 [xmin, xmax]。"""
+    """可行走 x 区间 [xmin, xmax] —— 只留**猫自己脚下这一段**。
+
+    庇护所墙体是物理上的真障碍，规划层必须认得：旧版直接给整条世界走带，
+    于是「往右直走就到」被当成可行，实际是顶着墙走、重规划还是同一条。
+    这里按猫的站立高度把「这一步跨不过去的墙」挖掉，返回含猫的那一段；
+    走廊层（庇护所底下那条通路）天然是通的，所以进门不受影响。
+    """
     body = pet.body
     xmin = getattr(body, "walk_min", None)
     xmax = getattr(body, "walk_max", None)
-    return (0.0 if xmin is None else xmin,
-            pet._WL if xmax is None else xmax)
+    lo = 0.0 if xmin is None else xmin
+    hi = pet._WL if xmax is None else xmax
+    return walk_span(lo, hi, body.chunk1.x, pet.stand_h())
+
+
+def walk_span(lo, hi, x, y, solids=None):
+    """[lo,hi] 里挖掉高度 y 上的庇护所墙体，返回**含 x** 的那一段。"""
+    from ..core import chunkphys
+    if hi < lo:
+        lo, hi = hi, lo
+    rows = chunkphys.cat_solids() if solids is None else solids
+    cuts = []
+    for (a0, b0, a1, b1) in rows:
+        if a1 <= a0 or b1 <= b0:
+            continue
+        if b1 <= y - tuning.WALK_BODY_H:      # 底边高过猫头：从下面走过去
+            continue
+        if b0 >= y - tuning.WALK_STEP_UP:     # 顶边离脚面不到一步：是台阶
+            continue
+        cuts.append((min(a0, a1), max(a0, a1)))
+    if not cuts:
+        return (lo, hi)
+    cuts.sort()
+    merged = []
+    for a, b in cuts:
+        if merged and a <= merged[-1][1] + 0.5:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    cur = lo
+    for a, b in merged:
+        if x < a:
+            return (cur, min(a, hi))
+        if x <= b:                            # 猫正卡在墙里（被拖进去）：挑近的一侧
+            if x - a <= b - x and a > cur:
+                return (cur, a)
+            cur = b
+            continue
+        cur = max(cur, b)
+    return (cur, hi)
 
 
 def reach_assist(pet, goal, gx, gy):

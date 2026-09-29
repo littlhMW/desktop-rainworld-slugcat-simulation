@@ -20,6 +20,79 @@ import math
 
 LIZ_SCALE = 1.0          # 桌宠与游戏像素 1:1
 
+# ── 层级 / 物理开关（原版 Template.SpritesOverlap + LizardGraphics.AddToContainer）
+# 原版挂载顺序：Behind → 远侧腿 → 体+尾 → BodySurface → 近侧腿 → BehindHead →
+# 头 0/1 → 口腔 → 头 2/3/4 → InFront → HUD。花纹不是一个整体贴在最上面：
+# 背刺/体鳞/尾羽夹在躯干与头之间，头冠/翅鳞/胡须在头之上。
+Z_BEHIND_HEAD = "behind_head"
+Z_FRONT = "front"
+SPRITE_Z = {
+    "SpineSpikes": Z_BEHIND_HEAD,
+    "BumpHawk": Z_BEHIND_HEAD,
+    "BodyStripes": Z_BEHIND_HEAD,
+    "TailGeckoScales": Z_BEHIND_HEAD,
+    "TailFin": Z_BEHIND_HEAD,
+    "ShortBodyScales": Z_BEHIND_HEAD,
+    "TailTuft": Z_BEHIND_HEAD,
+    "AxolotlGills": Z_BEHIND_HEAD,
+    "LongShoulderScales": Z_BEHIND_HEAD,
+    "LongHeadScales": Z_FRONT,
+    "WingScales": Z_FRONT,
+    "Whiskers": Z_FRONT,
+    "Antennae": Z_FRONT,
+    "JumpRings": Z_FRONT,
+}
+# 用 LizardScale 摆锤物理的族（原版 LongBodyScales.Update：角度弹簧 + ConnectToPoint）
+PHYS_KINDS = frozenset(("TailTuft", "AxolotlGills", "LongShoulderScales",
+                        "LongHeadScales"))
+NECK_RAD_K = 0.82        # 颈根半径系数（相对躯干半径，渲染与花纹共用）
+
+
+def spine_at(spine, rads, s, with_dir=False):
+    """按归一化体长 s∈[0,1] 在脊柱折线上取样：返点、背侧法线（屏幕系）、该处半径。"""
+    segs = []
+    total = 0.0
+    for k in range(len(spine) - 1):
+        d = math.hypot(spine[k + 1][0] - spine[k][0], spine[k + 1][1] - spine[k][1])
+        segs.append(d)
+        total += d
+    if total <= 0.0:
+        if with_dir:
+            return spine[0], (0.0, -1.0), rads[0], (1.0, 0.0)
+        return spine[0], (0.0, -1.0), rads[0]
+    want = _clamp01(s) * total
+    for k, d in enumerate(segs):
+        if want <= d or k == len(segs) - 1:
+            t = (want / d) if d > 0 else 0.0
+            t = _clamp01(t)
+            ax, ay = spine[k]
+            bx, by = spine[k + 1]
+            px, py = ax + (bx - ax) * t, ay + (by - ay) * t
+            tx, ty = bx - ax, by - ay
+            L = math.hypot(tx, ty) or 1.0
+            tx, ty = tx / L, ty / L
+            nx, ny = -ty, tx
+            if ny > 0.0:                    # 法线取背侧（屏幕上方）
+                nx, ny = -nx, -ny
+            r = _lerp(rads[k], rads[k + 1], t)
+            if with_dir:
+                return (px, py), (nx, ny), r, (tx, ty)
+            return (px, py), (nx, ny), r
+        want -= d
+    if with_dir:
+        return spine[-1], (0.0, -1.0), rads[-1], (1.0, 0.0)
+    return spine[-1], (0.0, -1.0), rads[-1]
+
+
+def depth_f(y, depth):
+    """原版 SpinePosition 的 f = Pow(|depth|, Lerp(1.2, 0.3, Pow(s, 0.5))) * Sign(depth)。"""
+    f = abs(depth) ** _lerp(1.2, 0.3, math.sqrt(max(0.0, _clamp01(y))))
+    return f if depth >= 0.0 else -f
+
+
+def _clamp01(v):
+    return 0.0 if v < 0.0 else (1.0 if v > 1.0 else v)
+
 # 滚动生成时的上下文（原版从 LizardGraphics 上取 bodyLength / BodyAndTailLength）
 _TOTAL = 100.0
 _BODY_FRAC = 0.5
@@ -39,10 +112,10 @@ class Cos:
     """一族花纹。``insts`` 是 (x, y, length, width, row) 实例表。"""
 
     __slots__ = ("kind", "graphic", "colored", "colored_mode", "scale_x",
-                 "insts", "a_head", "gradient")
+                 "insts", "a_head", "gradient", "rigor")
 
     def __init__(self, kind, graphic, colored=False, colored_mode=1,
-                 scale_x=1.0, a_head=False, gradient=False):
+                 scale_x=1.0, a_head=False, gradient=False, rigor=0.0):
         self.kind = kind
         self.graphic = int(graphic)
         self.colored = bool(colored)
@@ -51,10 +124,13 @@ class Cos:
         self.scale_x = float(scale_x)
         self.a_head = bool(a_head)        # A 片用 HeadColor 而不是 BodyColor
         self.gradient = bool(gradient)    # A 片颜色沿体长渐变（尾斑）
+        self.rigor = float(rigor)         # LizardScale 硬度（0 软摆 / 1 硬）
         self.insts = []
 
-    def add(self, x, y, length, width, row=0):
-        self.insts.append((float(x), float(y), float(length), float(width), int(row)))
+    def add(self, x, y, length, width, row=0, backwards=0.5):
+        """``backwards`` = 原版 backwardsFactors：鳞片顺体轴后掠的比例（0=朝外）。"""
+        self.insts.append((float(x), float(y), float(length), float(width),
+                           int(row), float(backwards)))
 
     def __repr__(self):
         return "<Cos %s x%d g%d%s>" % (self.kind, len(self.insts), self.graphic,
@@ -269,7 +345,8 @@ def _tail_tuft(R, key, prev_graphic):
     for (x, y) in pos:
         t = _inv(ymin, ymax, y)
         length = _lerp(a, b, t)
-        c.add(x, y, length * LIZ_SCALE, 1.0)
+        back = 0.3 + 0.7 * _clamp01(_inv(0.75, 1.0, y))
+        c.add(x, y, length * LIZ_SCALE, 1.0, backwards=back)
     return c
 
 
@@ -308,7 +385,7 @@ def _tail_fin(R, key, prev_graphic):
 
 def _axolotl_gills(R, key):
     c = Cos("AxolotlGills", 0, colored=True, a_head=True)
-    R.value()                       # rigor
+    c.rigor = R.value()
     num = (R.value() ** 0.7) * 1.0
     g = R.rng_i(0, 6)
     if g == 2:
@@ -321,17 +398,17 @@ def _axolotl_gills(R, key):
         y = _lerp(0.0, 0.07, R.value() ** 1.3)
         x = _lerp(0.5, 1.5, R.value())
         num5 = _lerp(0.2, 1.0, R.value() ** 0.5)
-        R.value()                    # num6
+        back = num3 * (R.value() ** 0.5)          # num6
         length = _lerp(5.0, 35.0, num * num5)
         width = _lerp(0.65, 1.2, value * num)
-        c.add(x, y, length * LIZ_SCALE, width)
-        c.add(-x, y, length * LIZ_SCALE, width)
+        c.add(x, y, length * LIZ_SCALE, width, backwards=back)
+        c.add(-x, y, length * LIZ_SCALE, width, backwards=back)
     return c
 
 
 def _long_head_scales(R, key):
     c = Cos("LongHeadScales", 0, a_head=True)
-    R.value()                       # rigor
+    c.rigor = R.value()
     y = _lerp(0.0, 0.07, R.value())
     x = _lerp(0.5, 1.5, R.value())
     num = (R.value() ** 0.7) * 1.0
@@ -349,7 +426,8 @@ def _long_head_scales(R, key):
     value = R.value()
     back = R.value() ** 0.85
     for sx in (-x, x):
-        c.add(sx, y, _lerp(5.0, 35.0, num) * LIZ_SCALE, _lerp(0.65, 1.2, value * num))
+        c.add(sx, y, _lerp(5.0, 35.0, num) * LIZ_SCALE,
+              _lerp(0.65, 1.2, value * num), backwards=back)
     return c
 
 
@@ -397,7 +475,8 @@ def _long_shoulder_scales(R, key):
         t = _inv(ymin, ymax, y) ** p_exp if ymax > ymin else 0.0
         arc = math.sin(t * math.pi)
         k = _lerp(arc, 1.0, 0.5 if t < 0.5 else 0.0)
-        c.add(x, y, _lerp(num3, b, k) * LIZ_SCALE, _lerp(0.8, 1.2, k) * num2)
+        c.add(x, y, _lerp(num3, b, k) * LIZ_SCALE, _lerp(0.8, 1.2, k) * num2,
+              backwards=y * 0.7)
     _ = n
     return c
 

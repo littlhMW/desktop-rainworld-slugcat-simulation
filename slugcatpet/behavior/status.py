@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 # 主状态 → i18n key
+# 猎杀类（飞虫 / 蜥蜴 / 爆米花 / 备好家伙的 FightThreat）统一显示成「猎杀」，
+# 「猎杀的是什么」交给下面的 _STATE_TARGET / _STATE_CTRL 第二段。
 _STATES = {
     "IdleStand": "st_idle",
     "PostThrowWander": "st_wander",
@@ -16,7 +18,7 @@ _STATES = {
     "ScoldBlocker": "st_scold",
     "ChaseCursor": "st_chase_cursor",
     "FetchFruit": "st_fetch",
-    "CatchFly": "st_catch_fly",
+    "CatchFly": "st_hunt_live",
     "ItemPlay": "st_item_play",
     "HelpFeed": "st_help_feed",
     "CoverAlly": "st_cover",
@@ -30,15 +32,15 @@ _STATES = {
     "RelocateToWall": "st_to_wall",
     "TongueClimb": "st_tongue",
     "CursorLick": "st_lick_cursor",
-    "HuntFly": "st_hunt_fly",
+    "HuntFly": "st_hunt_live",
     "Ascension": "st_ascend",
     "AngryStone": "st_angry_stone",
     "PyroMaul": "st_maul",
     "PyroRomp": "st_romp",
     "RivSnatch": "st_snatch",
     "RivFlip": "st_flip",
-    "EatCob": "st_cob",
-    "SeedCob": "st_cob",
+    "EatCob": "st_hunt_live",
+    "SeedCob": "st_hunt_live",
     "ClearCorpse": "st_clear_corpse",
     "Sleep": "st_sleep",
     "LieDown": "st_lie",
@@ -80,7 +82,7 @@ def status_key(beh) -> str:
     """行为对象 → i18n key。"""
     st = getattr(beh, "state", None)
     if st == "FightThreat":
-        return "st_hunt" if _armed(beh) else "st_seek_spear"
+        return "st_hunt_live" if _armed(beh) else "st_seek_spear"
     if st == "Socialize":
         k = _SOCIAL.get(getattr(beh, "_social_kind", None))
         if k is not None:

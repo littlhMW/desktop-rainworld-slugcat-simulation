@@ -1217,7 +1217,7 @@ class BehaviorFSM:
         self._social_urge_tick()
     def _act_fetchfood_gate(self, ctx):
         return (self._fetch_check == 0
-                and self.body.food < self.body.food_max
+                and not self.body.food_satisfied()
                 and self._food_seek_ready()
                 and not self.grab.active and not self._exhausted
                 and not self._cold_urgent() and not self._zerog()
@@ -1294,7 +1294,7 @@ class BehaviorFSM:
         self._cob_check = (self._cob_check + 1) % tuning.COB_CHECK_TICKS
     def _act_eatcob_gate(self, ctx):
         return (self._cob_check == 0 and self._cob_seek_cd <= 0
-                and self.body.food < self.body.food_max
+                and not self.body.food_satisfied()
                 and self._food_seek_ready()
                 and not self.grab.active and not self._exhausted
                 and not self._cold_urgent() and not self._zerog()
@@ -1311,12 +1311,13 @@ class BehaviorFSM:
     def _act_huntfly_pre(self, ctx):
         if self._hunt_cd > 0:
             self._hunt_cd -= 1
+        fed = self.body.food_satisfied()
         full = self.body.food >= self.body.food_max
         meat = self._meat_zeal()
         rage = self._spear_rage()
-        hunting = ((not full and (meat > 0.0 or rage)
-                    and self._food_seek_ready()))   # 没饱：正经狩猎（吃素的猫不猎；矛大师狂暴时必猎）
-        # 饱了：捕食也算娱乐项目（空手也会先去捡石头/矛再打）
+        hunting = ((not fed and (meat > 0.0 or rage)
+                    and self._food_seek_ready()))   # 没到冬眠阈：正经狩猎（吃素的猫不猎；矛大师狂暴时必猎）
+        # 吃到顶格：捕食也算娱乐项目（空手也会先去捡石头/矛再打）
         playing = (full and self.rng.random() < tuning.HUNT_PLAY_PROB)
         self._fly_hunt_on = hunting or playing    # 记账结果给 gate 读（pre 无条件先跑）
     def _act_huntfly_gate(self, ctx):
@@ -1355,7 +1356,7 @@ class BehaviorFSM:
             self._itemplay_cd -= 1
     def _act_itemplay_gate(self, ctx):
         return (self._fetch_check == 0 and self._itemplay_cd <= 0
-                and not (self.body.food < self.body.food_max and self._food_urge >= 1.0)
+                and (self.body.food_satisfied() or self._food_urge < 1.0)
                 and not self.grab.active and not self._exhausted
                 and not self._cold_urgent() and not self._zerog()
                 and not self._hibernating and not self.body.swimming
@@ -2649,7 +2650,7 @@ class BehaviorFSM:
         self.gfx.look_at = self._ambient_look(cursor)
         if self._zerog_pole_cd > 0:
             self._zerog_pole_cd -= 1
-        if b.food < b.food_max and self._fetch_cooldown <= 0:
+        if not b.food_satisfied() and self._fetch_cooldown <= 0:
             e = self._nearest_zerog_edible()
             if e is not None:
                 self._zerog_chase(b, e)
@@ -2894,7 +2895,7 @@ class BehaviorFSM:
         if b.carried_fruit is not None:
             self._swim_eat()
             return
-        if b.food < b.food_max and self._fetch_cooldown <= 0:
+        if not b.food_satisfied() and self._fetch_cooldown <= 0:
             e = self._nearest_swim_edible()
             if e is not None:
                 b.swim_target = (e.x, e.y)
@@ -3956,7 +3957,7 @@ class BehaviorFSM:
             return False                 # 正沿着杆挪到下杆位置：别被「走地面」抢走
         if self.state == "HPole" and self._hp_goal_x is not None:
             return False                 # 上杆本来就是为了够那个东西
-        if not (b.food < b.food_max and self._food_seek_ready()):
+        if not (not b.food_satisfied() and self._food_seek_ready()):
             return False
         if not fetch_ready(self.planner,
                            self.win.fetchables(want_karma=not b.flower_karma),
@@ -4062,7 +4063,7 @@ class BehaviorFSM:
             if best is None:
                 return False                 # 杆上没有「摆在窗口顶边上」的目标：
                                              # 不掷 _food_seek_ready 的骰子（别白吃随机流）
-            if not (b.food < b.food_max and self._food_seek_ready()):
+            if not (not b.food_satisfied() and self._food_seek_ready()):
                 return False
             _, f, _surf = best
             self._hp_step_obj = f
@@ -7261,9 +7262,9 @@ class BehaviorFSM:
                     return o
         return None
 
-    # ── 觅食欲望：吃完一口归 0，再慢慢涨回 1（饱了也涨，只是更慢）──
+    # ── 觅食欲望：吃完一口归 0，再慢慢涨回 1（够冬眠了也涨，只是更慢）──
     def _food_urge_tick(self):
-        rate = (tuning.FOOD_URGE_RATE_FULL if self.body.food >= self.body.food_max
+        rate = (tuning.FOOD_URGE_RATE_FULL if self.body.hunger_need <= 0.0
                 else tuning.FOOD_URGE_RATE)
         self._food_urge = min(1.0, self._food_urge + rate)
 
@@ -7338,7 +7339,18 @@ class BehaviorFSM:
         self._apology_t = tuning.APOLOGY_TICKS
 
     def _food_seek_ready(self) -> bool:
-        """觅食闸：攒满 100 再掷一次骰，整体找食频率略降。"""
+        """觅食闸：**饥饿需求**与**觅食欲望**分开判。
+
+        - 离够冬眠还差 FOOD_DEFICIT_URGENT 格以上：饿了就找，不等欲望攒满
+          （旧版刚吃一口就把欲望清零，于是「明明没吃饱却一分钟不找食」）；
+        - 只差一点：按欲望闸（吃完归零、慢慢攒回）+ 概率再掷；
+        - 已经够冬眠：不再主动找（口径与 food_satisfied() 一致）。
+        """
+        need = self.body.hunger_need
+        if need <= 0.0:
+            return False
+        if need >= tuning.FOOD_DEFICIT_URGENT:
+            return True
         return self._food_urge >= 1.0 and self.rng.random() < tuning.FOOD_SEEK_P
 
     # ── 叼着活的蝉乌贼：扑翅带起一点，下落被拖住 ──
@@ -7430,8 +7442,8 @@ class BehaviorFSM:
         if self.gfx.tail_needle_prog > 0.0:      # 正在长：先推进动画
             self._tail_needle_grow()
             return
-        if b.carried_spear is not None or b.back_spear is not None:
-            return
+        if self._own_needle_count() >= tuning.SPEARMASTER_NEEDLE_HOLD:
+            return                       # 双手都有白针了：先不长下一根
         if self._tail_needle_cd > 0:
             self._tail_needle_cd -= 1
             return
@@ -7486,7 +7498,7 @@ class BehaviorFSM:
         """尾针生长的每 tick 推进（Player.cs:10000-10036）：到 1 才把矛交到手上。"""
         b, g = self.body, self.gfx
         if (self.grab.active or self._hibernating or b.swimming or self._zerog()
-                or b.carried_spear is not None or b.back_spear is not None):
+                or self._own_needle_count() >= tuning.SPEARMASTER_NEEDLE_HOLD):
             # 原版 Player.cs:4191：中途被打断按 0.05 缩回，< 0.025 归零
             g.tail_needle_prog *= 0.95
             if g.tail_needle_prog < 0.025:
@@ -7520,7 +7532,13 @@ class BehaviorFSM:
         win._spear_seed += 1
         win.spears.append(sp)
         win.world_version += 1
-        if not b.grab_spear(sp):
+        if b.carried_spear is None:
+            if not b.grab_spear(sp):
+                sp.state = "free"
+                return
+        elif b.back_spear is None:
+            b.put_spear_on_back(sp)      # 手上已经有针：第二根背到背上
+        else:
             sp.state = "free"
             return
         self._tail_needle_cd = tuning.TAIL_NEEDLE_CD
@@ -7623,6 +7641,12 @@ class BehaviorFSM:
         return (bool(getattr(sp, "needle", False))
                 and bool(getattr(sp, "needle_live", False))
                 and bool(self.win.cat.tuning.get("tail_needle")))
+
+    def _own_needle_count(self) -> int:
+        """手握 + 背背「还连着的白针」有几根（矛大师尽量保持双手各一根）。"""
+        b = self.body
+        return sum(1 for sp in (b.carried_spear, b.back_spear)
+                   if self._own_needle(sp))
 
     def _itemplay_fling(self):
         """玩够了顺手甩出去（暴躁的猫）：走原版水平投掷，石头能砸晕同伴。"""

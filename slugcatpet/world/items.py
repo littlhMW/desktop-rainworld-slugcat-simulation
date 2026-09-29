@@ -1564,6 +1564,8 @@ class ItemInteractionMixin:
             # 蜥蜴的猎物也上认领板（Lizard.intent）：全场只有一份「谁在追什么」
             obj_i, kind_i = lz.intent()
             board_for(self).register_actor(lz, obj_i, kind_i)
+        for lz in self.lizards:
+            lz.camo_tick(self, tick)          # 白蜥迷彩：低频采背后背景色
         self._cull_flung_corpses()
         self.lizards = [lz for lz in self.lizards if lz.state != ItemState.GONE]
 
@@ -2023,6 +2025,9 @@ class ItemInteractionMixin:
 
     def _draw_place_hint(self, p):
         from PySide6.QtGui import QPen
+
+        if self._place_kind == "shelter":
+            return                        # 只留光标：拖出来的矩形不预览
 
         if self._place_kind == "erase":
             self._draw_erase_hint(p)

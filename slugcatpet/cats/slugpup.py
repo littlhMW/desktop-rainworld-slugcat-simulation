@@ -6,6 +6,7 @@
   SlugcatStats.cs:258-266  bodyWeightFac 0.65 / runspeedFac 0.8 /
                            poleClimbSpeedFac 0.8 / throwingSkill 0 / lungsFac 0.8
   PlayerGraphics.cs:3870   默认白
+  Player.cs:4114-4131     setPupStatus：躯体间距 12（成年 17）、体块质量 0.7/2（成年 0.75/2）
 """
 from __future__ import annotations
 
@@ -32,7 +33,9 @@ SLUGPUP_DEF = CatDef(
     atlas_keys=("base", "msc"),
     caps=CatCaps(tongue=False, ascension=False),
     stats=replace(DEFAULT_STATS, runspeed_fac=0.8, weight_fac=0.65, pole_fac=0.8,
-                  max_food=3, food_hibernate=2, throwing_skill=0, lungs_fac=0.8),
+                  max_food=3, food_hibernate=2, throwing_skill=0, lungs_fac=0.8,
+                  # Player.setPupStatus：幼崾躯体真的短（12 vs 17）、轻（0.7 vs 0.75）
+                  conn_fac=12.0 / 17.0, mass_fac=0.7 / 0.75),
     # 幼崽：性格直接套用白猫（求生者）的基准，但每只的个体振幅很大
     # （PetUnit 用 WIDE_SIGMA）；另外幼崽不能救人、也不被救。
     personality=SURVIVOR_DEF.personality,

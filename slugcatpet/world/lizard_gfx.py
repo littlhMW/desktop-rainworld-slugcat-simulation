@@ -22,6 +22,7 @@ from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath
 
 from ..core.units import clampf, lerp, inv_lerp
 from .lizard import BODY_SCALE, BLACK_RGB, _ang_from_up, _ang_lerp
+from . import lizard_cos as _cos
 from ..rendering.pixelmode import aa_hint
 from ..rendering.primitives import _qcolor
 
@@ -50,7 +51,7 @@ LIMB_NEAR_A = 1.0              # 近侧腿色层不透明度
 LIMB_FAR_A = 0.30              # 远侧腿色层压暗（原版 Lerp(1, 0.3, |depthRotation|)）
 BODY_TINT = 0.30               # 体色里掺入的品种色比例（见 body_color）
 BODY_EDGE_K = 0.55
-NECK_K = 0.82                  # 颈根半径系数（相对躯干半径）
+NECK_K = _cos.NECK_RAD_K       # 颈根半径系数（相对躯干半径）
 
 
 def _shade(rgb, k):
@@ -73,6 +74,9 @@ def body_color(lz):
     于是「深色区域」被染成了深绿/深粉；按反编译改成纯黑。
     """
     rgb = lz.body_rgb or lz.breed.body_rgb      # 白蜥随机色版：整只走个体色
+    camo = getattr(lz, "camo_bg", None)
+    if camo is not None and getattr(lz, "camo_mix", 0.0) > 0.0:
+        rgb = _mix(rgb, camo, lz.camo_mix)      # 白蜥：体色按呼吸在白色 ↔ 背景迷彩色之间换
     if lz.hurt_flash > 0:                 # 受击白闪（同游戏被创瞬间整体发白）
         rgb = _mix(rgb, (255, 255, 255), 0.45 * lz.hurt_flash / 8.0)
     return rgb
@@ -195,8 +199,10 @@ def draw_lizard(p, atlas, lz, ts: float) -> None:
     n_leg = len(lz.legs)
     for i in list(range(0, n_leg, 2)) + list(range(1, n_leg, 2)):
         _draw_leg(p, atlas, lz, i, ts)
+    # 原版挂载序：BehindHead 花纹夹在躯干与头之间，InFront 花纹压在头之上
+    _draw_cosmetics(p, atlas, lz, spine, rads, ts, _cos.Z_BEHIND_HEAD)
     _draw_head(p, atlas, lz, hx, hy, s0x, s0y, rot, jaw, head_color(lz, ts), ts)
-    _draw_cosmetics(p, atlas, lz, spine, rads, hx, hy, rot)
+    _draw_cosmetics(p, atlas, lz, spine, rads, ts, _cos.Z_FRONT)
     p.restore()
 
 
@@ -254,31 +260,8 @@ def _leg_anchor(lz, lg, ts):
 
 
 def _spine_at(spine, rads, s):
-    """按归一化体长 s∈[0,1] 在脊柱折线上取样：返点、背侧法线（屏幕系）、该处半径。"""
-    segs = []
-    total = 0.0
-    for k in range(len(spine) - 1):
-        d = math.hypot(spine[k + 1][0] - spine[k][0], spine[k + 1][1] - spine[k][1])
-        segs.append(d)
-        total += d
-    if total <= 0.0:
-        return spine[0], (0.0, -1.0), rads[0]
-    want = clampf(s, 0.0, 1.0) * total
-    for k, d in enumerate(segs):
-        if want <= d or k == len(segs) - 1:
-            t = (want / d) if d > 0 else 0.0
-            t = clampf(t, 0.0, 1.0)
-            ax, ay = spine[k]
-            bx, by = spine[k + 1]
-            px, py = ax + (bx - ax) * t, ay + (by - ay) * t
-            nx, ny = -(by - ay), (bx - ax)
-            L = math.hypot(nx, ny) or 1.0
-            nx, ny = nx / L, ny / L
-            if ny > 0.0:                    # 法线取背侧（屏幕上方）
-                nx, ny = -nx, -ny
-            return (px, py), (nx, ny), lerp(rads[k], rads[k + 1], t)
-        want -= d
-    return spine[-1], (0.0, -1.0), rads[-1]
+    """按归一化体长 s∈[0,1] 在脊柱折线上取样（几何在 lizard_cos.spine_at）。"""
+    return _cos.spine_at(spine, rads, s)
 
 
 def _frame_h(atlas, frame):
@@ -289,43 +272,76 @@ def _frame_h(atlas, frame):
         return 1.0
 
 
-def _draw_cosmetics(p, atlas, lz, spine, rads, hx, hy, rot):
+def _cos_ay(kind):
+    """各族 anchorY（游戏自底部量）→ 本工程 ay（自顶部量）。"""
+    if kind in _cos.PHYS_KINDS:
+        return 1.0 - 0.10                    # LongBodyScales: anchorY = 0.1
+    if kind in ("SpineSpikes", "TailFin"):
+        return 1.0 - 0.15
+    if kind == "WingScales":
+        return 1.0                           # anchorY = 0
+    return 0.95
+
+
+def _draw_cosmetics(p, atlas, lz, spine, rads, ts, layer):
     """品种花纹（world/lizard_cos.py 的生成结果）。
 
-    各族在游戏里都是「沿脊取样 → 沿法线偏 x*rad 落到体表 → 贴图朝法线外」，只是
-    长度/宽度/贴图号/上色不同（LizardCosmetics/*.cs 的 InitiateSprites +
-    DrawSprites + ApplyPalette）：
+    层级：原版 LizardGraphics.AddToContainer 按各族 spritesOverlap 分三次挂载 ——
+    BehindHead（背刺/体鳞/尾羽/鳃/条纹/尾鳍）夹在躯干与头之间，InFront（头冠/
+    翅鳞/胡须/触须/跳环）在头之上。以前一股脑画在最后，背刺会盖住头。
 
-      SpineSpikes/TailTuft/TailFin/LongShoulderScales/ShortBodyScales/
-      AxolotlGills/LongHeadScales/BodyStripes/WingScales/TailGeckoScales
-        两片：A = 体色（头部的几族用 HeadColor），B = 品种色；
-      SpineSpikes 的 colored==2 是「品种色 → 体色」的渐变。
+    物理：LongBodyScales 族的鳞尖是 LizardScale 摆锤（``Lizard._step_cosmetics``
+    每 tick 算好，这里只按 ts 读），贴图从附着点指向鳞尖 ⇒ 转身/急停时鳞片滞后
+    摆动；其余族按 GetBackPos 的法线刚性摆放（背刺还要随 |depth| 收短）。
+
+    贴图朝向：原版所有鳞片都沿「体表外法线 ↔ 体轴后掠」方向画，不随 x 正负翻转；
+    这里的 180° 翻转只用于我们这套「法线恒朝背侧」的近似（x 压到腹侧时）。
     """
     cos = getattr(lz, "cosmetics", None)
     if not cos:
         return
+    pts = getattr(lz, "cosmetic_pts", None)
     body = body_color(lz)
     head = head_color(lz, 1.0)
     eff = lz.color
-    for c in cos:
+    depth = clampf(lerp(lz.last_depth, lz.depth, ts), -1.0, 1.0)
+    sgn = 1.0 if depth >= 0.0 else -1.0
+    for ci, c in enumerate(cos):
+        if _cos.SPRITE_Z.get(c.kind, _cos.Z_BEHIND_HEAD) != layer:
+            continue
         insts = getattr(c, "insts", None)
         if not insts:
             continue
+        st = pts[ci] if pts is not None and ci < len(pts) else None
         frame = "LizardScaleA%d" % c.graphic
         frame_b = "LizardScaleB%d" % c.graphic
         gh = _frame_h(atlas, frame)
         base_col = head if c.a_head else body
-        for (x, y, length, width, row) in insts:
+        ay = _cos_ay(c.kind)
+        for ii, inst in enumerate(insts):
+            x, y, length, width = inst[0], inst[1], inst[2], inst[3]
             pt, (nx, ny), rad = _spine_at(spine, rads, y)
-            off = clampf(x, -1.0, 1.0) * rad
-            px = pt[0] + nx * off
-            py = pt[1] + ny * off
-            ang = math.degrees(math.atan2(nx, -ny))
-            if x < 0.0:                       # 腹侧：贴图翻 180°，朝体表外
-                ang += 180.0
+            # 原版 GetBackPos: outerPos = pos + perp * Clamp(x + f)；本工程法线恒朝背侧，
+            # 折叠成 k = Clamp(|f| - Sign(depth)*x)（|depth|=1 时鳞片全贴到背脊一条线上）。
+            k = clampf(abs(_cos.depth_f(y, depth)) - sgn * x, -1.0, 1.0)
+            ox = pt[0] + nx * (k * rad)
+            oy = pt[1] + ny * (k * rad)
             sy = max(0.12, length / gh)
-            sx = c.scale_x * width
-            _blit(p, atlas, frame, base_col, px, py, ang, sx, sy, 0.5, 0.95)
+            sx = c.scale_x * width * (1.0 if k >= 0.0 else -1.0)
+            spin = st[ii] if st is not None else None
+            dx = dy = 0.0
+            if spin is not None:
+                dx = lerp(spin[4], spin[0], ts) - ox
+                dy = lerp(spin[5], spin[1], ts) - oy
+            if abs(dx) + abs(dy) > 1e-6:
+                ang = math.degrees(math.atan2(dx, -dy))
+            else:
+                ang = math.degrees(math.atan2(nx, -ny))
+                if c.kind == "SpineSpikes":
+                    sy *= max(0.2, inv_lerp(0.0, 0.5, abs(depth)))
+                if k < 0.0:
+                    ang += 180.0
+            _blit(p, atlas, frame, base_col, ox, oy, ang, sx, sy, 0.5, ay)
             if c.colored:
                 if c.gradient:
                     t = clampf(inv_lerp(0.42, 1.0, y), 0.0, 1.0)
@@ -334,7 +350,7 @@ def _draw_cosmetics(p, atlas, lz, spine, rads, hx, hy, rot):
                     bcol = _mix(eff, base_col, clampf(y ** 0.5, 0.0, 1.0))
                 else:
                     bcol = eff
-                _blit(p, atlas, frame_b, bcol, px, py, ang, sx, sy, 0.5, 0.95)
+                _blit(p, atlas, frame_b, bcol, ox, oy, ang, sx, sy, 0.5, ay)
 
 
 def _draw_leg(p, atlas, lz, i, ts):
