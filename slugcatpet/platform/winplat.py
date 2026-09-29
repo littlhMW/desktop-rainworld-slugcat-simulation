@@ -122,11 +122,11 @@ def _cloaked(hwnd) -> bool:
         return False
 
 
-def enumerate_tops(own_hwnds, screen_x: float, screen_y: float, scale: float):
-    """返回其它可见窗口顶边 [(x0, y0, x1)]，逻辑坐标（y0＝顶边 y）。
+def _collect_rects(own_hwnds, screen_x: float, screen_y: float, scale: float):
+    """按 Z 序（前→后）收集其它可见窗口的矩形：[(x0, y0, x1, y1, zoomed)]。
 
-    被前面窗口挡住的顶边不算地面：只保留「露出来的」那几段
-    （桌宠永远画在最上层，挡住的段不能走，否则猫会悬在别人窗口上走）。
+    桌宠自身进程的窗口、不可见 / 无像素 / 壳类窗口都已滤掉。平台（顶边）与
+    背景墙（竖边）是同一份收集结果的两个视图，别再各扫一遍 EnumWindows。
     """
     if scale <= 0 or not enabled():
         return []
@@ -185,7 +185,39 @@ def enumerate_tops(own_hwnds, screen_x: float, screen_y: float, scale: float):
     except Exception:
         return []
 
-    return clip_tops(rects)
+    return rects
+
+
+def enumerate_tops(own_hwnds, screen_x: float, screen_y: float, scale: float):
+    """返回其它可见窗口顶边 [(x0, y0, x1)]，逻辑坐标（y0＝顶边 y）。
+
+    被前面窗口挡住的顶边不算地面：只保留「露出来的」那几段
+    （桌宠永远画在最上层，挡住的段不能走，否则猫会悬在别人窗口上走）。
+    """
+    return clip_tops(_collect_rects(own_hwnds, screen_x, screen_y, scale))
+
+
+_FULL_EPS = 6.0      # 与工作区左右边差这么点以内，就当「横向铺满整屏」
+
+
+def enumerate_walls(own_hwnds, screen_x: float, screen_y: float, scale: float,
+                    screen_w: float):
+    """非全屏、也没铺满整屏的窗口 → 它的左右竖边就是一块「背景墙」。
+
+    最大化窗口、顶边贴屏幕顶的窗口、横向铺满整个工作区的窗口都不算：那已经
+    是「屏幕」本身，不是立在桌面上的一块墙。返回 [(x0, y0, x1, y1)]（逻辑坐标）。
+    """
+    out = []
+    for r in _collect_rects(own_hwnds, screen_x, screen_y, scale):
+        x0, y0, x1, y1 = r[0], r[1], r[2], r[3]
+        if len(r) > 4 and r[4]:
+            continue                       # 最大化
+        if y0 <= _TOP_EPS:
+            continue                       # 顶边贴屏幕顶：整块全高面板
+        if x0 <= _FULL_EPS and x1 >= screen_w - _FULL_EPS:
+            continue                       # 横向铺满：整屏
+        out.append((x0, y0, x1, y1))
+    return out
 
 
 def clip_tops(rects):

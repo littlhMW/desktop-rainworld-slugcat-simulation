@@ -78,6 +78,9 @@ TARGET_HOLD_OBJ = 90          # 对象目标失联后的宽限帧数（原版 fo
 TARGET_HOLD_POINT = 10 ** 9   # 纯坐标目标（光标）仍按距离判定
 LUNGE_ACCEL = 0.20            # 扑咬时朝目标的加速度比例
 CLIMB_HOP = -6.4              # 目标在上方时的蹬地（y↓ 取负）
+CLIMB_SPEED = 2.6             # 贴着竖杆 / 背景墙往上爬的速度（原版 Climb tile 的爬速）
+CLIMB_GRIP_R = 15.0           # 离竖线这么近才抓得住
+CLIMB_MIN_DY = 26.0           # 目标至少要比自己高/低这么多才值得爬
 # 青蜥蓄力弹射（wiki：爬墙 + 蓄力弹射）：扑击整段的顶速与加速都上调一档
 CHARGE_LEAP_SPD = 1.9
 CHARGE_LEAP_ACC = 0.55
@@ -302,7 +305,7 @@ class LizardBreed:
                  "limb_quickness", "smooth_legs", "leg_pair_disp", "walk_bob",
                  "lounge_tendency",
                  # 品种差异（见文件末 BREED_TRAITS）
-                 "spawn_weight", "can_climb", "camo", "charge_leap",
+                 "spawn_weight", "cosmetics", "can_climb", "camo", "charge_leap",
                  # DLC 品种（LizardBreeds.cs：SpitLizard / ZoopLizard / EelLizard）
                  "spit", "swim_speed", "leg_pairs", "lizard_spit_immune")
 
@@ -388,6 +391,7 @@ class LizardBreed:
         self.lounge_tendency = lounge_tendency
         # 品种差异：默认值在这里，具体每个品种在 BREED_TRAITS 里覆写
         self.spawn_weight = 1.0
+        self.cosmetics = ()            # 品种花纹（BREED_COSMETICS，见文件末）
         self.can_climb = True
         self.camo = False
         self.charge_leap = False
@@ -469,7 +473,7 @@ BREEDS = (
                 size=1.00, base_speed=4.1, tail_segs=5, tail_len_fac=1.2,
                 bite_damage=1.0, bite_damage_chance=1.0 / 3.0, bite_chance=0.5, attempt_bite_radius=80.0,
                 taming_difficulty=1.0, danger=0.45, visual_radius=900.0,
-                body_mass=2.1, spikes=(0, 0, 0.5)),
+                body_mass=2.1, spikes=None),
     LizardBreed("green", "绿蜥", "Green lizard", 0.32, 0.50, (1, 1, 1, 1, 1),
                 size=1.20, base_speed=6.7, tail_segs=7, tail_len_fac=0.9, limb_size=1.4,
                 jaw_open_angle=50.0, jaw_lower_fac=0.5, jaw_apart=14.0, neck_stiffness=1.0,
@@ -593,6 +597,33 @@ BREED_BY_KEY = {b.key: b for b in BREEDS}
 #                （LizardBreeds.cs GreenLizard 段只登记 Floor/Corridor）→ 不能爬。
 # camo         = 环境伪装。白蜥（wiki：环境伪装 + 长舌伏击）：蛞蝓猫更晚注意到它。
 # charge_leap  = 蓄力弹射。青蜥（wiki：爬墙 + 蓄力弹射跳跃）：扑击瞬间更快更猛。
+# cosmetics    = LizardCosmetics/* 的品种花纹（反编译 LizardGraphics.cs:440-620）。
+#                全部落在 LizardScaleA<g> 一套贴图上，只是族的摆放/数量不同：
+#                shoulder=LongShoulderScales/WingScales、head=LongHeadScales、
+#                whisker=Whiskers（黑蜥固有）、antenna=Antennae（黄蜥固有）、
+#                gill=AxolotlGills（蝾螈/鳗鱼蜥）、fin=TailFin（尾鳍）。
+BREED_COSMETICS = {
+    # 粉蜥：LizardGraphics.cs:497 是 LongShoulderScales（<0.5），不是背刺
+    "pink":       (("shoulder", 0.5),),
+    # 绿蜥：SpineSpikes 0.8 已在 spikes 里；num8>0 → LongHeadScales 只有 1/10
+    "green":      (("head", 0.1),),
+    # 黄蜥：Antennae 恒定（:565-570），且被排除在 LongHeadScales 之外
+    "yellow":     (("antenna", 1.0),),
+    # 红蜥：LongShoulderScales + SpineSpikes 都必有（:587-595）
+    "red":        (("shoulder", 1.0),),
+    # 黑蜥：Whiskers 固有（:577）
+    "black":      (("whisker", 1.0),),
+    # 蝾螈：AxolotlGills + TailFin 固有（:571-574）
+    "salamander": (("gill", 1.0), ("fin", 1.0)),
+    # 青蜥：WingScales 0.75（:466-469）
+    "cyan":       (("shoulder", 0.75),),
+    # 鳗鱼蜥：AxolotlGills + TailGeckoScales 必有，LongShoulderScales/TailFin 0.75
+    "eel":        (("gill", 1.0), ("shoulder", 0.75), ("fin", 0.75)),
+    # 草莓蜥：SpineSpikes 0.825 之外补 WingScales（:458）
+    "zoop":       (("shoulder", 0.175),),
+}
+for _b in BREEDS:
+    _b.cosmetics = BREED_COSMETICS.get(_b.key, ())
 BREED_TRAITS = {
     "pink":       dict(spawn_weight=1.00),
     "green":      dict(spawn_weight=0.90, can_climb=False),
@@ -693,7 +724,8 @@ class Lizard:
                  "walk_phase", "idle_timer", "goal_x", "hop_cd", "blink", "last_blink",
                  "chain_dir", "_ax_c",
                  "held_by_hand", "water_y", "room_gravity", "_contact_floor",
-                 "dead", "spacing", "spikes", "like", "tamed", "friend_id",
+                 "dead", "spacing", "spikes", "cosmetics", "cosmetic_pts", "like", "tamed", "friend_id",
+                 "climb_x", "climb_dir", "climb_surfaces", "hauler",
                  "max_health", "health", "stun", "hurt_flash", "dead_t",
                  "rock_push", "rock_push_dir",
                  "hauled", "haul_thrown", "is_meat", "wall_dir",
@@ -835,6 +867,24 @@ class Lizard:
                     pts.append((0.05 + (end - 0.05) * t,
                                 lo + (hi - lo) * math.sin((t ** skew) * math.pi)))
                 self.spikes = (graphic, colored, pts)
+
+        # 品种花纹（LizardCosmetics/*）：每个族按概率掷一次，定了就不变。
+        # 走独立随机流，免得扰动 this.rng（步态/咬合/眨眼都吃这条流，
+        # 加一次掷点会让同一只蜥蜴的整条行为序列错位）。
+        self.cosmetics = []
+        crng = _random.Random(self.seed * 104729 + 7)
+        for kind, chance in getattr(b, "cosmetics", ()):
+            if chance >= 1.0 or crng.random() < chance:
+                g = 0 if kind == "antenna" else crng.choice((3, 4, 5, 6))
+                self.cosmetics.append((kind, g))
+        self.cosmetic_pts = None      # 渲染缓存（首次绘制时按几何算好）
+
+        # 攀爬（原版 LizardPather 的 Climb/Wall tile）：贴在竖杆或背景墙竖边上
+        self.climb_x = None           # 抓住的那条竖线的 x；None＝没在爬
+        self.climb_dir = 0            # +1 向上、-1 向下
+        self.climb_surfaces = ()      # 这一帧可攀爬的面 [(x, y_top, y_bot, kind)]
+        # 清场认领：哪只猫认领了这具尸体（尸体搬运只允许一只猫执行）
+        self.hauler = None
 
         self.state = ItemState.FREE
         self.facing = 1
@@ -1058,7 +1108,7 @@ class Lizard:
 
     # ── 主循环 ──
     def step(self, WL: float, HL: float, targets=(), cursor=None,
-             prey=(), cats=(), threats=(), others=(), pack=(), rivals=(),
+             prey=(), cats=(), threats=(), others=(), pack=(), rivals=(), surfaces=(),
              lizards=(), blockers=(), tick=None) -> None:
         """推进一 tick。
 
@@ -1077,7 +1127,7 @@ class Lizard:
         others = tuple(others) + tuple(rivals)
         self.perceive(WL, HL, targets=targets, prey=prey, threats=threats,
                       others=others, pack=pack, lizards=lizards,
-                      blockers=blockers, tick=tick)
+                      blockers=blockers, surfaces=surfaces, tick=tick)
         self.decide(WL, HL)
         self.act(WL, HL, cursor=cursor)
         self.step_physics(WL, HL, cursor=cursor)
@@ -1144,7 +1194,26 @@ class Lizard:
         self.vy = clampf(dy, -MAX_SEG_SPEED, MAX_SEG_SPEED)
 
     def _integrate(self, WL, HL) -> None:
-        """自由态：重力积分 + 地面 / 侧墙。"""
+        """自由态：重力积分 + 地面 / 侧墙（攀爬中则关掉重力、钉在竖线上）。"""
+        if self.climb_x is not None and not self.dead:
+            # 原版贴墙 / 爬杆：水平速度清零、x 钉在竖线上、vy 变成爬速
+            self.x = self.climb_x
+            self.vx = 0.0
+            self.vy = -CLIMB_SPEED * self.climb_dir
+            self.y += self.vy
+            self._contact_floor = False
+            self.wall_dir = 0
+            r = self.head_rad
+            floor = HL - self.body_rad * HEAD_STAND_FAC - self.turn_lift
+            if self.y < r:
+                self.y, self.vy = r, 0.0
+            elif self.y > floor:                # 爬到底：落地并松手
+                self.y = floor
+                self.vy = 0.0
+                self._contact_floor = True
+                self.climb_x = None
+                self.climb_dir = 0
+            return
         self.vx *= AIR_FRICTION
         self.vy = (self.vy + GRAVITY * self.room_gravity) * AIR_FRICTION
         if self.water_y is not None and self.y + self.head_rad > self.water_y:
@@ -1184,7 +1253,7 @@ class Lizard:
     # ── AI ──
     # ══ 第一层：感知（同一份世界快照，不做任何决策）══
     def perceive(self, WL, HL, targets=(), prey=(), threats=(), others=(), pack=(),
-                 lizards=(), blockers=(), tick=None) -> dict:
+                 lizards=(), blockers=(), surfaces=(), tick=None) -> dict:
         """这一 tick 看见 / 听见什么。
 
         每条记录都带上距离、关系权重、视野锥得分、**可见性**（锥内且没被挡）、
@@ -1194,6 +1263,7 @@ class Lizard:
         if tick is not None:
             self._tick = int(tick)
         self._blockers = blockers or ()
+        self.climb_surfaces = tuple(surfaces or ())   # 这一帧可攀爬的竖线
         self.peers = tuple(lizards)
         cats, preys, thrs, rivs, pk = [], [], [], [], []
         for row in targets:
@@ -1345,6 +1415,11 @@ class Lizard:
     def act(self, WL, HL, cursor=None) -> None:
         st = self.stage
         o = self.stage_obj
+        # 攀爬：够得着的竖杆 / 背景墙竖边就贴上去（原版 Climb / Wall tile）。
+        # 每 tick 重算一次，所以「追猎以外」的状态自然松手。
+        self._climb_plan(o if st in ("Attack", "HuntPrey", "ApproachPrey",
+                                     "InvestigatePos", "InvestigateSound",
+                                     "PackCoordination") else None, HL)
         if st in ("", "Stunned", "CasualBite"):
             return
         if st == "FollowFriend":
@@ -1414,6 +1489,39 @@ class Lizard:
         self.look_at = (o.x, o.y)
         want = clampf((o.x - self.x) * 0.06, -2.2, 2.2)
         self.vx += (want - self.vx) * WALK_TURN
+
+    def _climb_plan(self, o, HL) -> None:
+        """要不要贴着一条竖线爬（原版 LizardPather 的 Climb / Wall 通行能力）。
+
+        竖线＝竖直杆的轴，或一块非全屏窗口的左右竖边。判定很直接：自己能贴到
+        这条线上（x 差在 CLIMB_GRIP_R 内、当前高度落在线的范围内），而且目标
+        在线够得到的另一端（比我高 / 比我低 CLIMB_MIN_DY 以上）。命中就写
+        climb_x / climb_dir，真正的位移交给 _integrate（那一段关掉重力）。
+        """
+        self.climb_x = None
+        self.climb_dir = 0
+        if not self.breed.can_climb or o is None or self.dead:
+            return
+        up = o.y < self.y - CLIMB_MIN_DY
+        down = o.y > self.y + CLIMB_MIN_DY
+        if not (up or down):
+            return
+        best = None
+        for surf in self.climb_surfaces:
+            sx, top, bot = surf[0], surf[1], surf[2]
+            if abs(self.x - sx) > CLIMB_GRIP_R:
+                continue
+            if self.y < top - 12.0 or self.y > bot + 12.0:
+                continue                        # 线不在我这一层
+            if up and top > o.y + 10.0:
+                continue                        # 线不够高，爬上去也够不着
+            if down and bot < o.y - 10.0:
+                continue                        # 线不够低
+            d = abs(self.x - sx)
+            if best is None or d < best[0]:
+                best = (d, sx, 1 if up else -1)
+        if best is not None:
+            self.climb_x, self.climb_dir = best[1], best[2]
 
     def _hop_vy(self) -> float:
         """蹬地起跳初速：不会爬的品种（绿蜥）压根不往上蹿。焦糖蜥跳跃也靠它。"""

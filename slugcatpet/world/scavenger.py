@@ -374,7 +374,8 @@ class Scavenger:
                  "last_flip", "last_neutral", "last_look_up",
                  "eyes_pop", "last_eyes_open", "last_eyes_pop", "blink",
                  "_blink_off", "rise_body", "hurt_cd",
-                 "pers", "alert_r", "speed_walk", "aim_ticks", "flee_ticks", "rel")
+                 "pers", "alert_r", "speed_walk", "aim_ticks", "flee_ticks", "rel",
+                 "hauler")                     # 清场认领：哪只猫认领了这具尸体
 
     @property
     def haul_chunk_mass(self):

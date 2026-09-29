@@ -17,6 +17,7 @@ CRAWL_SPEED = 2.5 * K_VEL
 CRAWL_SLOW = 1.0 * K_VEL
 H_ACCEL = (2.4 * 0.5) * K_IMP
 SKID_DAMP = 0.354      # 接地滑停回收率
+CRAWL_BACK_DAMP = 0.45  # 匍匐时反向残余动量的额外回收率（别边爬边倒退）
 
 STAND_HEAD = -(1.5 * K_IMP)
 STAND_FEET = +(4.5 * K_IMP)
@@ -1313,6 +1314,10 @@ class SlugcatBody:
             if grounded:
                 target = max(-dyn, min(dyn, c.vx)) if move_x != 0 else 0.0
                 c.vx += (target - c.vx) * SKID_DAMP
+            if self.bodyMode == "Crawl":
+                opp = 1.0 if self.facing >= 0 else -1.0
+                if c.vx * opp < 0.0:
+                    c.vx *= CRAWL_BACK_DAMP
         if self._jump_pending is not None and (on_ground or self.coyote > 0):
             self._do_jump(self._jump_pending, move_x, self._jump_hold)
             self._jump_pending = None

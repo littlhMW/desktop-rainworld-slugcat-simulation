@@ -67,13 +67,12 @@ def _mix(a, b, t):
 
 
 def body_color(lz):
-    """体色：原版取 palette.blackColor（明亮来自头/尾/刺）。
+    """体色：LizardGraphics.cs:2141-2143 —— 除白蜥/蝾螈/焦糖/草莓外全是 palette.blackColor。
 
-    宠物没有房间调色板，纯紫黑会读成一团黑；这里掺一点品种色当「暗染」，
-    才像游戏里那种深绿 / 深粉的躯干。
+    原版不往体色里掺品种色（亮色只出现在头、尾梢、刺上）。旧版掺了 BODY_TINT，
+    于是「深色区域」被染成了深绿/深粉；按反编译改成纯黑。
     """
     rgb = lz.body_rgb or lz.breed.body_rgb      # 白蜥随机色版：整只走个体色
-    rgb = _mix(rgb, lz.color, BODY_TINT) if rgb == BLACK_RGB else rgb
     if lz.hurt_flash > 0:                 # 受击白闪（同游戏被创瞬间整体发白）
         rgb = _mix(rgb, (255, 255, 255), 0.45 * lz.hurt_flash / 8.0)
     return rgb
@@ -198,6 +197,7 @@ def draw_lizard(p, atlas, lz, ts: float) -> None:
     for i in list(range(0, n_leg, 2)) + list(range(1, n_leg, 2)):
         _draw_leg(p, atlas, lz, i, ts)
     _draw_head(p, atlas, lz, hx, hy, s0x, s0y, rot, jaw, head_color(lz, ts), ts)
+    _draw_cosmetics(p, atlas, lz, spine, rads, hx, hy, rot)
     p.restore()
 
 
@@ -303,6 +303,71 @@ def _draw_spikes(p, atlas, lz, spine, rads):
                 lz.breed.head_rgb or lz.color, tint, t ** 0.5)
             _blit(p, atlas, "LizardScaleB%d" % graphic, rgb, x, y, rot,
                   size, size, 0.5, 0.85)
+
+
+def _draw_cosmetics(p, atlas, lz, spine, rads, hx, hy, rot):
+    """品种花纹（LizardCosmetics/*）：全部落在 LizardScaleA<g> 一套贴图上。
+
+    反编译出处 LizardGraphics.cs:440-620 决定「哪一族、概率多少」，各族的摆放
+    由 LizardCosmetics/<族>.cs 的 scalesPositions 决定；桌宠按族给出对应的
+    一小撮位置，不逐像素复刻（贴图本身是原版的）。
+
+      shoulder = LongShoulderScales / WingScales：躯干前段（肩）沿脊一排
+      head     = LongHeadScales：头顶 3 片
+      whisker  = Whiskers（黑蜥固有）：吻侧各一撮
+      antenna  = Antennae（黄蜥固有）：头前两根长触须
+      gill     = AxolotlGills（蝾螈 / 鳗鱼蜥）：颈侧每边 3 片
+      fin      = TailFin：尾梢一片
+    """
+    cos = getattr(lz, "cosmetics", None)
+    if not cos:
+        return
+    tint = body_color(lz)
+    col = lz.color
+    r = math.radians(rot)
+    fwd = (math.sin(r), -math.cos(r))          # 头朝前（屏幕系，y↓）
+    side = (math.cos(r), math.sin(r))          # 头右侧法线
+    for kind, g in cos:
+        frame = "LizardScaleA%d" % g
+        if kind in ("shoulder", "wing"):
+            for k in range(4):
+                s = 0.06 + 0.09 * k
+                pt, (nx, ny), rad = _spine_at(spine, rads, s)
+                a = math.degrees(math.atan2(nx, -ny))
+                size = (1.05 if kind == "shoulder" else 0.8) * (1.25 - 0.16 * k)
+                _blit(p, atlas, frame, tint, pt[0] + nx * rad * 0.85,
+                      pt[1] + ny * rad * 0.85, a, size, size, 0.5, 0.85)
+        elif kind == "head":
+            for k in range(3):
+                off = (k - 1.0) * 5.0
+                x = hx - fwd[0] * 1.5 + side[0] * off
+                y = hy - fwd[1] * 1.5 + side[1] * off
+                _blit(p, atlas, frame, tint, x, y, rot, 0.85, 0.85, 0.5, 0.9)
+        elif kind == "whisker":
+            for sgn in (-1.0, 1.0):
+                x = hx + fwd[0] * 3.0 + side[0] * 3.5 * sgn
+                y = hy + fwd[1] * 3.0 + side[1] * 3.5 * sgn
+                _blit(p, atlas, frame, tint, x, y, rot + 34.0 * sgn,
+                      0.75, 0.75, 0.5, 1.0)
+        elif kind == "antenna":
+            for sgn in (-1.0, 1.0):
+                x = hx + fwd[0] * 2.5 + side[0] * 2.0 * sgn
+                y = hy + fwd[1] * 2.5 + side[1] * 2.0 * sgn
+                _blit(p, atlas, frame, col, x, y, rot + 22.0 * sgn,
+                      0.9, 0.9, 0.5, 0.95)
+        elif kind == "gill":
+            for sgn in (-1.0, 1.0):
+                for k in range(3):
+                    t = k / 2.0
+                    x = hx + fwd[0] * (1.0 + 3.0 * t) + side[0] * (3.0 + 1.5 * t) * sgn
+                    y = hy + fwd[1] * (1.0 + 3.0 * t) + side[1] * (3.0 + 1.5 * t) * sgn
+                    _blit(p, atlas, frame, tint, x, y,
+                          rot + (72.0 + 10.0 * t) * sgn, 0.7, 0.7, 0.5, 0.9)
+        elif kind == "fin":
+            pt, (nx, ny), rad = _spine_at(spine, rads, 0.98)
+            a = math.degrees(math.atan2(nx, -ny))
+            _blit(p, atlas, frame, col, pt[0] + nx * rad * 0.7,
+                  pt[1] + ny * rad * 0.7, a, 1.3, 1.3, 0.5, 0.9)
 
 
 def _draw_leg(p, atlas, lz, i, ts):

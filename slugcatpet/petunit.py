@@ -124,9 +124,11 @@ class PetUnit:
         margin = self.layout_data.canvas_w / 2.0
         self.body.walk_min = margin
         self.body.walk_max = w._WL - margin
-        # 原版 npcStats.Wideness：个体固定，驱动幼崽的体/臀/头宽度
+        # 原版 npcStats.Wideness / Size：个体固定，驱动幼崽的体/臀/头宽度与尾粗
         self.body.wideness = ((_pers_seed(self.id, self.index, self.variant) % 997)
                               / 996.0)
+        self.body.size = ((_pers_seed(self.id, self.index, self.variant) // 997 % 997)
+                          / 996.0)
         self.gfx = SlugcatGraphics(self.body, self.layout_data, w.atlas, cat=self.cat)
         # 让站姿先收敛
         for _ in range(40):

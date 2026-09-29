@@ -739,7 +739,14 @@ STORM_RAIN_RISE_TICKS = 1200      # 暴雨起势：雨强 0→1 的连续爬升�
 STORM_RAIN_FADE_TICKS = 80        # 暴雨收尾：雨强归零耗时（2s）
 STORM_DOOR_TICKS = 40             # 庇护所门 0→1 开合耗时（1s）
 SHELTER_ENTRY_RADIUS = 26.0       # entry_goal 到位容差
-STORM_FLOOD_MAX_HEIGHT_FRAC = 0.22   # 峰值积水高度占 HL 的比例
+STORM_FLOOD_MAX_HEIGHT_FRAC = 1.0    # 峰值积水高度占 HL 的比例：1.0＝淹到整个屏幕
+
+# ── 矛大师「饥饿狂暴」────────────────────────────────────────────────
+# 原版矛大师没有嘴，攻击就是进食手段；桌宠把「饿到一半以下」当作进入狂暴。
+# 狂暴时：识别半径拉到整屏、不再按食性过滤猎物、看见任何非蛞蝓猫生物都用
+# 自己尾巴长的针去戳。
+SPEAR_RAGE_FRAC = 0.5        # 饱食度低于这个比例就狂暴
+SPEAR_RAGE_R    = 1400.0     # 狂暴时的识别半径
 STORM_ANXIETY_LOOK_P = 0.12       # 焦虑时每次发呆「抬头看庇护所」的概率上限
 STORM_ANXIETY_HOLD_MULT = 0.45    # 焦虑顶点时 idle 停留时长的倍率（越焦虑越不站定）
 STORM_ANXIETY_WANDER_BIAS = 0.55  # 焦虑时闲逛目标偏向庇护所附近的概率

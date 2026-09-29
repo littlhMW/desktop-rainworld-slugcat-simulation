@@ -31,6 +31,7 @@ from .lizard_gfx import draw_lizard
 from .squidcada import Squidcada
 from .squidcada_gfx import draw_squidcada
 from .needleworm import NeedleWorm, AGE_EGG, AGE_SMALL, AGE_BIG
+from .needlethread import NeedleThread
 from .needleworm_gfx import draw_needleworm, draw_needle_egg
 from .pearl import Pearl
 from . import weaponphys
@@ -1528,6 +1529,7 @@ class ItemInteractionMixin:
             targets.append((pet, pet.body.chunk0.x, pet.body.chunk0.y,
                             beh.is_dead(), beh.state == "Stunned"))
         blockers = self._lizard_blockers()
+        surfaces = self._climb_surfaces()
         live = [lz for lz in self.lizards
                 if not lz.dead and lz.state == ItemState.FREE]
         # ① 感知：所有蜥蜴看同一份世界快照
@@ -1535,7 +1537,8 @@ class ItemInteractionMixin:
             prey, threats, others, pack = self._lizard_relations(lz)
             lz.perceive(self._WL, self._HL, targets=targets, prey=prey,
                         threats=threats, others=others, pack=pack,
-                        lizards=live, blockers=blockers, tick=tick)
+                        lizards=live, blockers=blockers,
+                        surfaces=surfaces, tick=tick)
         # ② 决策；黄蜥在这一步之后广播猎物情报，同伴按自己的序号去包夹
         for lz in self.lizards:
             lz.decide(self._WL, self._HL)
@@ -1555,6 +1558,27 @@ class ItemInteractionMixin:
             board_for(self).register_actor(lz, obj_i, kind_i)
         self._cull_flung_corpses()
         self.lizards = [lz for lz in self.lizards if lz.state != ItemState.GONE]
+
+    def _climb_surfaces(self):
+        """这一帧可以攀爬的竖线：竖直杆 + 背景墙（非全屏窗口）的左右竖边。
+
+        原版蜥蜴靠 Climb / Wall tile 上下移动；桌宠里这两种 tile 的替身就是
+        「立着的杆」和「别人窗口的侧边」。每 tick 建一次，整场蜥蜴共用同一份。
+        返回 [(x, y_top, y_bot, kind)]（y_top < y_bot）。
+        """
+        out = []
+        for pl in self.poles:
+            if getattr(pl, "state", None) != ItemState.FREE:
+                continue
+            if getattr(pl, "virtual", False):
+                continue              # 鼠标那截虚杆：不算攀爬面
+            out.append((float(pl.x), min(pl.ay, pl.by), max(pl.ay, pl.by), "pole"))
+        for rect in getattr(self, "walls", ()):
+            x0, y0, x1, y1 = rect[0], rect[1], rect[2], rect[3]
+            top, bot = min(y0, y1), max(y0, y1)
+            out.append((float(x0), top, bot, "wall"))
+            out.append((float(x1), top, bot, "wall"))
+        return tuple(out)
 
     def _lizard_blockers(self):
         """蜥蜴的视线遮挡物：杆子（线段）与体型够大的生物（圆）。
@@ -2663,6 +2687,8 @@ class ItemInteractionMixin:
             self.world_version += 1
         self._dragged_spear = None
         self._spear_drag_last = None
+        if self.needle_threads:
+            self.needle_threads = []
 
     def enter_place_spear_mode(self):
         self._place_mode = True
@@ -2926,6 +2952,7 @@ class ItemInteractionMixin:
 
     def _tick_spears(self):
         self._step_spear_drag()
+        self._needle_thread_tick()
         if self.spears:
             for sp in self.spears:
                 sp.needle_tick()                 # 骨针断线后每 tick 褪一点
@@ -2982,6 +3009,56 @@ class ItemInteractionMixin:
         sp._seg_x, sp._seg_y = sp.x, sp.y
         sp._seg_new = False
         return True
+
+    # ── 矛大师的有机细线（Spear.Umbilical，Spear.cs:714）──
+    def _thrower_tail_pos(self, sp):
+        """掷出者尾巴根的世界坐标（原版 tail[0].pos）；找不到返回 None。"""
+        pet = self._thrower_pet(getattr(sp, "thrower", None))
+        if pet is None:
+            return None
+        segs = getattr(getattr(pet, "tail", None), "segs", None)
+        if not segs:
+            return None
+        s = segs[0]
+        return (s.x, s.y)
+
+    def _needle_thread_tick(self):
+        """活针出手时从尾巴根拉出一条细有机线；断线/针没了/寿命尽即消失。"""
+        ths = self.needle_threads
+        live = {id(sp) for sp in self.spears}
+        for th in ths:
+            sp = th.spear
+            if (sp is None or id(sp) not in live
+                    or not getattr(sp, "needle_live", False)):
+                th.dead = True
+        ths[:] = [t for t in ths if not t.dead]
+        have = {id(t.spear) for t in ths}
+        for sp in self.spears:                       # 新掷出的活针补一条
+            if not (getattr(sp, "needle", False)
+                    and getattr(sp, "needle_live", False)):
+                continue
+            if not (sp._thrown or sp.stuck_to is not None) or id(sp) in have:
+                continue
+            tail = self._thrower_tail_pos(sp)
+            if tail is None:
+                continue
+            # 每根针一条独立的确定性随机流，不去扰动矛自己的 spin 随机数
+            th = NeedleThread(tail, sp.vx, sp.vy,
+                              random.Random(int(sp._id) * 7919 + 13))
+            th.spear = sp
+            ths.append(th)
+        for th in ths:                               # 端点每 tick 钉到尾巴根 / 针尾
+            head = self._thrower_tail_pos(th.spear)
+            if head is None:
+                th.dead = True
+                continue
+            th.update(head, th.spear.butt())
+        ths[:] = [t for t in ths if not t.dead]
+
+    def _draw_needle_threads(self, p):
+        """画在猫与生物之前：细线永远压在它们下面。"""
+        for th in self.needle_threads:
+            th.draw(p)
 
     def _cursor_pin_try(self, sp) -> bool:
         """这一 tick 飞过的那一段有没有穿过光标：有就钉上去。"""

@@ -48,7 +48,7 @@ _STR = {
     "tip_spear":   {"zh": "放矛", "en": "Place spear"},
     "tip_seedcob": {"zh": "放爆米花", "en": "Place popcorn plant"},
     "tip_karmaflower": {"zh": "放业力花", "en": "Place karma flower"},
-    "tip_slugpup": {"zh": "放幼崽", "en": "Place slugpup"},
+    "tip_slugpup": {"zh": "放猫崽", "en": "Place slugpup"},
     "tip_clear":   {"zh": "清除可交互实体", "en": "Clear placed items"},
     "tip_shelter": {"zh": "放庇护所", "en": "Place shelter"},
 
@@ -82,7 +82,7 @@ _STR = {
     "hud_karma":    {"zh": "业力", "en": "Karma"},
     "hud_stamina":  {"zh": "体力", "en": "Stamina"},
     "hud_satiety":  {"zh": "饱食", "en": "Satiety"},
-    "hud_affection":{"zh": "好感", "en": "Affection"},
+    "hud_affection":{"zh": "心情", "en": "Mood"},
     "hud_cold":     {"zh": "寒冷", "en": "Cold"},
     "hud_op_hint":  {"zh": "右键蛞蝓猫或点击此行可操作",
                      "en": "Right-click the slugcat or click this row to operate"},
@@ -99,7 +99,7 @@ _STR = {
     "variant_artificer":  {"zh": "工匠", "en": "Artificer"},
     "variant_spearmaster": {"zh": "矛大师", "en": "Spearmaster"},
     "variant_saint":      {"zh": "圣徒", "en": "Saint"},
-    "variant_slugpup":    {"zh": "幼崽", "en": "Slugpup"},
+    "variant_slugpup":    {"zh": "猫崽", "en": "Slugpup"},
     "variant_wip_note": {"zh": "（外观差异待后续）", "en": "(appearance differences TBD)"},
 
     # —— 猫菜单 ——

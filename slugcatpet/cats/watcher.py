@@ -5,6 +5,11 @@
   SlugcatStats.cs:115-166  SlugcatFoodMeter → (7, 4)
   SlugcatStats.cs:268-273  throwingSkill 1 / lungsFac 0.8
   PlayerGraphics.cs:3830   DefaultSlugcatColor = HSL2RGB(0.63055557, 0.54, 0.2)
+  PlayerGraphics.cs:3600-3602  ApplyPalette 里守望者/夜猫还有一层压黑：
+                           color2 = Lerp(palette.blackColor,
+                                         HSL2RGB(0.63055557, 0.54, 0.5),
+                                         Lerp(0.08, 0.04, palette.darkness))
+                           取 darkness=0 → 黑底掺 8% 紫 → RGB(5,7,16)（几乎黑的深紫）
   PlayerGraphics.cs:3873   DefaultBodyPartColorHex → [body, "FFFFFF"]（眼=白=不染色）
   PlayerGraphics.cs:2672   InitializeLongerWatcherTail：尾段连接 6 / 10.5 / 10.5 / 10.5
                            （普通猫 4 / 7 / 7 / 7）—— 尾巴更长
@@ -17,6 +22,8 @@
              电量按原版 1600 tick 上限，耗尽强制解除并进入数秒疲劳
 """
 from __future__ import annotations
+
+import math
 
 from dataclasses import replace
 
@@ -32,6 +39,8 @@ CAMO_EXIT = 40           # exitOutOfCamoDuration：退出伪装的渐显 tick
 CAMO_REGEN = 3           # 没隐身时每 3 tick 回 1 点（桌宠简化）
 CAMO_FATIGUE = 240       # 电量耗尽后的疲劳（≈6 s 内不能再伪装）
 CAMO_NEAR_THREAT = 260.0  # 这个距离内有威胁就不进入伪装
+CAMO_SHAKE_MAX = 2.2     # 被鼠标抓着时：光标位移超过这个幅度就藏不住（剧烈摇晃）
+CAMO_SHAKE_DECAY = 0.72  # 晃动幅度的衰减（松开鼠标后 ~10 tick 回落）
 
 
 def _fsm_mount(fsm):
@@ -40,6 +49,7 @@ def _fsm_mount(fsm):
     fsm._camo_level = 0.0
     fsm._camo_fatigue = 0
     fsm._camo_regen = 0
+    fsm._camo_shake = 0.0
 
     def camo_tick():
         g, b = fsm.gfx, fsm.body
@@ -47,9 +57,18 @@ def _fsm_mount(fsm):
             fsm._camo_fatigue -= 1
         th = fsm._threat_lizard()
         near = th is not None and abs(th.x - b.chunk1.x) < CAMO_NEAR_THREAT
+        # 被鼠标抓着也会试着隐身；但 GrabController.drag 把光标位移写进被抓那
+        # 一节的 vx/vy，甩得越猛这个值越大 —— 剧烈摇晃就藏不住（原版被甩的猫
+        # 同样维持不了伪装）。
+        held = fsm.grab.active
+        cur = 0.0
+        if held and fsm.grab.chunk is not None:
+            c = fsm.grab.chunk
+            cur = math.hypot(float(getattr(c, "vx", 0.0)), float(getattr(c, "vy", 0.0)))
+        fsm._camo_shake = max(cur, fsm._camo_shake * CAMO_SHAKE_DECAY)
+        idle = (fsm.state == "IdleStand" and b.on_floor() and not b.is_moving())
         can = (fsm._camo_fatigue <= 0 and fsm._camo_charge > 0
-               and fsm.state == "IdleStand" and b.on_floor()
-               and not b.is_moving() and not fsm.grab.active
+               and (held or idle) and fsm._camo_shake < CAMO_SHAKE_MAX
                and not b.swimming and not fsm._zerog() and not near)
         if can:
             fsm._camo_charge -= 1
@@ -71,8 +90,9 @@ def _fsm_mount(fsm):
 
 WATCHER_DEF = CatDef(
     key="watcher",
-    # DefaultSlugcatColor（PlayerGraphics.cs:3830）HSL2RGB(0.63055557, 0.54, 0.2)
-    body_color=(23, 35, 78),
+    # ApplyPalette（PlayerGraphics.cs:3600-3602）压黑后的守望者体色：
+    # Lerp(black, HSL2RGB(0.63055557, 0.54, 0.5), 0.08) → (5, 7, 16)　几乎黑的深紫
+    body_color=(5, 7, 16),
     eye_color=(255, 255, 255),    # DefaultBodyPartColorHex → FFFFFF（白＝不染色）
     frames={
         "head": ("base", "HeadA"),

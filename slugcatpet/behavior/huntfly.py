@@ -69,14 +69,20 @@ class FlyHunter:
 
     def _flies(self):
         diet = self._diet()
+        # 矛大师饿疯了：整屏的生物都是猎物，食性过滤直接跳过（原版矛大师靠
+        # 尾针进食，没有「吃素」这一说）。
+        rage = bool(getattr(self.fsm, "_spear_rage", lambda: False)())
+        seek_r = tuning.SPEAR_RAGE_R if rage else SEEK_R
         out = []
         for f in (*self.win.batflies, *self.win.squidcadas,
                   *self.win.needleworms):
-            if not _edible(f, diet):
+            if not rage and not _edible(f, diet):
+                continue
+            if rage and (f.dead or f.state != "free"):
                 continue
             c0 = self._c0()
             dx, dy = f.x - c0.x, f.y - c0.y
-            if math.hypot(dx, dy) > SEEK_R:
+            if math.hypot(dx, dy) > seek_r:
                 continue
             if -dy > CIEL_ABOVE_MAX:            # y↓：-dy>0 表示在上方
                 continue

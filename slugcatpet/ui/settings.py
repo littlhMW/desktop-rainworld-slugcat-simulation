@@ -60,6 +60,8 @@ class SettingsWindow(QWidget):
         self._rebuild()
 
     def open(self):
+        if self._dlg is not None and not self._dlg.isVisible():
+            self._dlg = None             # 残留句柄：不清理会永久卡住增删
         self._rebuild()
         self.show()
         self.raise_()
@@ -239,6 +241,8 @@ class SettingsWindow(QWidget):
             sleep_minutes=spins["sleep"].value())
 
     def _section_hud(self, v):
+        if self._hud is None:
+            return                        # 没有 HUD 就别读它的可见性
         chk = QCheckBox(t("settings_show_hud"))
         chk.setChecked(self._hud.isVisible())
         chk.toggled.connect(self._on_hud_toggled)
@@ -247,6 +251,9 @@ class SettingsWindow(QWidget):
     # 增删走卡片弹窗（open()=WindowModal，不 exec）
     def _on_add(self):
         if self._dlg is not None:
+            return
+        if self._window.cat_slots_used() >= MAX_PETS:
+            self._rebuild()               # 名额满了：刷新出置灰的按钮
             return
         labels = []
         for variant in _VARIANTS:
@@ -265,8 +272,17 @@ class SettingsWindow(QWidget):
         self._dlg = None
         dlg.deleteLater()
         if result == QDialog.DialogCode.Accepted:
-            self._window.add_pet(_VARIANTS[dlg.selected_index()])   # 内部刷 HUD+写盘
-            self._rebuild()
+            idx = dlg.selected_index()
+            ok = False
+            if 0 <= idx < len(_VARIANTS):
+                try:
+                    ok = self._window.add_pet(_VARIANTS[idx]) is not None
+                except Exception as exc:      # 单只猫建不起来也不能让按钮永远失灵
+                    print("add_pet failed:", _VARIANTS[idx], exc)
+            if not ok:
+                print("add_pet rejected: slots=%d/%d"
+                      % (self._window.cat_slots_used(), MAX_PETS))
+            self._rebuild()               # 无论成败都同步按钮的可用状态
 
     def _on_remove(self, pet):
         if self._dlg is not None:
@@ -286,6 +302,8 @@ class SettingsWindow(QWidget):
             self._rebuild()
 
     def _on_hud_toggled(self, checked):
+        if self._hud is None:
+            return
         if checked != self._hud.isVisible():
             self._hud.toggle_visible()
 

@@ -35,11 +35,13 @@ class GraphicsDrawMixin:
         self._draw_arms(p, atlas, ts)
         # 鳃画在脸之下、头臂之上
         self._draw_gills(p, atlas, ts)
+        # 伪装只作用在身体上（PlayerGraphics.cs:3471 把 body color 向白插值），
+        # 表情 / 舌头 / 自发光不在其中 —— 隐身时脸照样看得见。
+        if camo > 0.01:
+            p.restore()
         self._draw_face(p, atlas, ts)
         self._draw_tongue(p)
         self._draw_glow(p)
-        if camo > 0.01:
-            p.restore()
 
     def _draw_glow(self, p):
         """守望者自身发光（wiki：首遇陀螺后开始发光）。"""

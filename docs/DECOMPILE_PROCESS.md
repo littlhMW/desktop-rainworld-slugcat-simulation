@@ -160,3 +160,25 @@ README 只留最终结果。
 低于 0.025 归零；`spearProg` 到 1 才真正生成矛并入手，随后进 `TAIL_NEEDLE_CD` 冷却。
 斑点绘制用 `SpinePosition(s)` 沿尾段取样（`PlayerGraphics.cs:4429`），
 落点那一格与四邻随 `spearProg` 放大，针精灵长度 = `spearProg * 0.5`。
+
+## 12. 矛大师的有机细线（`Spear.Umbilical`）
+
+wiki 的说法是「掷出白色的矛针后可以看到一条长的有机线连接矛和矛大师，前提是矛命中了活物」。
+反编译里这不是贴图，而是一个独立的房间对象，所以不看 `PlayerGraphics`，看 `Spear.cs`：
+
+| 事实 | 出处 |
+| --- | --- |
+| 出手：`Weapon.Thrown` 时 `if (Spear_NeedleCanFeed()) room.AddObject(new Umbilical(room, this, thrownBy as Player, firstChunk.vel))` | `Spear.cs:714` |
+| 形状：`points` 是 10~19 个自由点，相邻点最小间距 6，末端跟随 `maggot.bodyChunks[0].pos - maggot.rotation * 25` | `Umbilical` 构造 |
+| 两端：`points[0]` 每 tick 重新钉到 `PlayerGraphics.tail[0].pos`，末点钉在针尾 | `Umbilical.Update` |
+| 寿命：`(2, Lerp(150, 200, rand^0.3))`，重力 `vy -= Lerp(0.1, 0.6, life)`，宽度 `0.5 * InverseLerp(0, 0.3, life)`，颜色 `Lerp((0.95,0.8,0.55), fog, 0.2)`；寿命尽 `Destroy()` | `Umbilical.Update` |
+| 断开：`Mode.Free`(:464)、`Mode.StuckInWall`(:668)、真的喂成功(:1081)、戳到异物(:1145) 全部 `Spear_NeedleDisconnect()` | `Spear.cs` |
+
+桌宠里的对应实现（`world/needlethread.py` + `world/items.py`）：
+
+- `NeedleThread.__init__(tail_xy, vx, vy, rng)` 用与 `Umbilical` 同分布的 10~19 点起步，速度按出手速度铺开。
+- `update(head_xy, tail_xy)` 每 tick：首点重钉到尾根、末点钉到 `spear.butt()`、其余点受 `Lerp(0.1, 0.6, life)` 的等效重力与最小间距 6 约束；`life` 到 1 即 `dead`。
+- `_needle_thread_tick()` 在 `_tick_spears()` 里跑：针没了 / `needle_live` 变假（喂过、扎墙、落地）就置 `dead`；新掷出的活针补一条，随机流用 `random.Random(id(spear) * 7919 + 13)`，**不去扰动矛自己的 spin 随机数**。
+- 绘制：`window._paint_world` 在 `_draw_back_spears` / `_draw_low_spears` 之后、`pet.gfx.draw_sprites` 之前调用，所以细线永远压在猫与生物之下；`QPen` 圆头逐段连，半径随 `life` 收缩。
+
+验收：`work/scratch/e2e_r91.py` 断言点数落在 10~19、首末点分别钉在尾根与针尾、`needle_live` 变假时线消失、没掷针时不冒线、绘制顺序在源码里的位置。

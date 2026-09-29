@@ -1308,7 +1308,9 @@ class BehaviorFSM:
             self._hunt_cd -= 1
         full = self.body.food >= self.body.food_max
         meat = self._meat_zeal()
-        hunting = (not full and meat > 0.0 and self._food_seek_ready())   # 没饱：正经狩猎（吃素的猫不猎）
+        rage = self._spear_rage()
+        hunting = ((not full and (meat > 0.0 or rage)
+                    and self._food_seek_ready()))   # 没饱：正经狩猎（吃素的猫不猎；矛大师狂暴时必猎）
         # 饱了：捕食也算娱乐项目（空手也会先去捡石头/矛再打）
         playing = (full and self.rng.random() < tuning.HUNT_PLAY_PROB)
         self._fly_hunt_on = hunting or playing    # 记账结果给 gate 读（pre 无条件先跑）
@@ -1322,7 +1324,8 @@ class BehaviorFSM:
     def _act_huntfly(self, ctx):
             from .huntfly import FlyHunter
             probe = FlyHunter(self.win, self.rng, self)
-            if probe._flies() and (probe._ground_stones() or probe._ground_spears()
+            if probe._flies() and (self._spear_rage()
+                                   or probe._ground_stones() or probe._ground_spears()
                                    or self.body.carried_stone is not None
                                    or self.body.carried_spear is not None):
                 self._break_active_controllers()
@@ -1393,6 +1396,7 @@ class BehaviorFSM:
             # 先看有没有垃圾再掷骰：没尸体就不动随机流（随机数纪律）
             if jc is not None and self.rng.random() < CORPSE_HAUL_P:
                 self._clear_target = jc
+                jc.hauler = self                 # 认领：这具尸体只由我来搬
                 self._break_active_controllers()
                 self._act_or_wake("ClearCorpse")
 
@@ -4866,6 +4870,8 @@ class BehaviorFSM:
         """
         self.body.walk_speed_target = None       # 松爪＝解除拖拽限速
         tgt = self._clear_target
+        if tgt is not None and getattr(tgt, "hauler", None) is self:
+            tgt.hauler = None                    # 交还认领：尸体重新可被搬运
         if tgt is not None and getattr(tgt, "hauled", False):
             if vx == 0.0:
                 cx = getattr(tgt, "x", self.body.chunk1.x)
@@ -5015,6 +5021,32 @@ class BehaviorFSM:
             return False
         c0 = self.body.chunk0
         return math.hypot(cur[0] - c0.x, cur[1] - c0.y) <= tuning.PLAYCUR_R
+
+    def _spear_rage(self) -> bool:
+        """矛大师饿到一半以下：攻击性 + 识别范围拉满（会拿自己的尾针戳一切非猫生物）。"""
+        if not self.win.cat.tuning.get("tail_needle"):
+            return False
+        b = self.body
+        return b.food <= b.food_max * tuning.SPEAR_RAGE_FRAC
+
+    def _rage_target(self, r):
+        """狂暴时的目标：半径内最近的非蛞蝓猫活物（蜥蜴 / 蝙蝠 / 禅乌贼 / 面条蝇 / 拾荒者）。"""
+        best, bd = None, float(r)
+        c1 = self.body.chunk1
+        cand = list(getattr(self.win, "lizards", ()))
+        cand += list(getattr(self.win, "squidcadas", ()))
+        cand += list(getattr(self.win, "batflies", ()))
+        cand += list(getattr(self.win, "needleworms", ()))
+        cand += list(getattr(self.win, "scavengers", ()))
+        for o in cand:
+            if getattr(o, "dead", False):
+                continue
+            if getattr(o, "state", None) not in (None, ItemState.FREE):
+                continue
+            d = math.hypot(o.x - c1.x, o.y - c1.y)
+            if d < bd:
+                best, bd = o, d
+        return best
 
     def _nearest_lizard(self, r):
         best, bd = None, float(r)
@@ -5368,7 +5400,11 @@ class BehaviorFSM:
             # _fight_end，于是反复「冲上去 → 结束」——就是「飞快上去挤着送死」。
             r = tuning.FIGHT_R if ranged else (
                 tuning.FIGHT_ARM_R * (0.55 + 0.90 * brave) if armed else 0.0)
-            lz = self._nearest_throw_target(r) if r > 0.0 else None
+            if self._spear_rage():                 # 矛大师狂暴：整屏找目标
+                r = max(r, tuning.SPEAR_RAGE_R)
+                lz = self._rage_target(r)
+            else:
+                lz = self._nearest_throw_target(r) if r > 0.0 else None
             can_rip = (brave >= tuning.RIP_SPEAR_BRAVE and lz is not None
                        and self._nearest_rip_spear(lz) is not None)
             if lz is not None and (ranged or armed or can_rip):
@@ -7293,7 +7329,8 @@ class BehaviorFSM:
     # ── 徒手抓飞虫（蝙蝠/蝉乌贼）──
     def _nearest_catchable(self):
         """半径内可徒手抓的飞虫（蝙蝠/蝉乌贼/面条蝇，含飞行中）。"""
-        if not _diet.hunts_meat(self.pers.diet):
+        rage = self._spear_rage()
+        if not _diet.hunts_meat(self.pers.diet) and not rage:
             return None
         c0 = self.body.chunk0
         b = self.body
@@ -7305,7 +7342,9 @@ class BehaviorFSM:
             if not getattr(f, "catchable", False):
                 continue
             d = math.hypot(f.x - c0.x, f.y - c0.y)
-            if hungry and self._is_infant(f):
+            if rage and d <= tuning.SPEAR_RAGE_R:
+                ok = True
+            elif hungry and self._is_infant(f):
                 ok = d <= tuning.CATCH_HUNGRY_R
             else:
                 ok = in_reach(self.win, f)      # 一跳够得到就追过去（像抓果子）

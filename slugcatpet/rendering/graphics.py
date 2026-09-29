@@ -296,6 +296,13 @@ class SlugcatGraphics(GraphicsDrawMixin):
             # 幼崽：0.9 + 0.2*Lerp(Wideness, 0.5, 0.5)，体/臀/头三处同式
             wide = 0.95 + 0.10 * float(getattr(body, "wideness", 0.5))
             self._body_sx_fac = self._hips_sx_fac = self._head_sx_fac = wide
+            # 尾巴（PlayerGraphics.cs:1721-1728）：isPup → Lerp(Wideness,0.5,0.5)、
+            # num = 0.85 + 0.3*那个值，num2 = (0.75 + 0.5*Size) * 0.5；
+            # 节距 6/4/2.5/1 × num，半径 4/7/7/7 × num2
+            num = 0.85 + 0.3 * (0.5 * (float(getattr(body, "wideness", 0.5)) + 0.5))
+            num2 = (0.75 + 0.5 * float(getattr(body, "size", 1.0))) * 0.5
+            self.tail_rad = (6.0 * num, 4.0 * num, 2.5 * num, 1.0 * num)
+            self.tail_conn = (4.0 * num2, 7.0 * num2, 7.0 * num2, 7.0 * num2)
         # 矛大师尾针（PlayerGraphics.TailSpeckles，947-1113）：尾上 5×3 斑点 + 1 根针
         self.TAIL_SPECK_ROWS = 5
         self.TAIL_SPECK_LINES = 3

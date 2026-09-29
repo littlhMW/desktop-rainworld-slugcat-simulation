@@ -235,6 +235,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._hotkey_filter = None
         self._control_hud = None         # 非 None 即有受控会话
 
+        self.walls = []                        # 非全屏窗口的矩形＝可攀爬背景墙
         self.world_version = 0                 # 放/清道具、环境变化时 +1
         self.geometry_version = 0              # 路径前提变更（杆/灯/工作区）时 +1
 
@@ -298,6 +299,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # 放矛
         self.spears = []
         self._spear_seed = 0
+        self.needle_threads = []      # 矛大师活针的有机细线（Spear.Umbilical）
         self._dragged_spear = None
         self._spear_drag_last = None
 
@@ -689,6 +691,9 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
         能吃的尸体（蝙蝠/蝉乌贼/面条蝇是肉）不进这张表 —— 那是食物不是垃圾；
         正被某只猫拖着的那具也不算（免得两只猫抢同一具）。
+        已经被某只猫**认领**（_clear_target 指向它）的那具同样不算：
+        尸体搬运只允许一只猫执行，别人一看到就该另找目标。认领是自愈的：
+        认领者死了/换目标了，这里顺手把认领作废。
         """
         out = []
         for e in (*self.lizards, *self.squidcadas, *self.batflies,
@@ -699,6 +704,11 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 continue
             if getattr(e, "hauled", False):
                 continue
+            owner = getattr(e, "hauler", None)
+            if owner is not None:
+                if getattr(owner, "_clear_target", None) is e:
+                    continue
+                e.hauler = None              # 认领者不在了：作废，尸体重新可被搬运
             out.append(e)
         return out
 
@@ -850,6 +860,15 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             chunkphys.set_platforms(new_tops)
             # 平台集合真变了：寻路缓存 / 急停判据失效（首次调用早于 __init__ 的赋值）
             self.geometry_version = getattr(self, "geometry_version", 0) + 1
+        # 背景墙（非全屏窗口的竖边）：会爬墙的蜥蜴靠它上下移动
+        from .platform.winplat import enumerate_walls
+        try:
+            walls = enumerate_walls(own, self._area.x(), self._area.y(),
+                                    self._scale, getattr(self, "_WL", 0.0))
+        except Exception:
+            walls = []
+        if walls != getattr(self, "walls", None):
+            self.walls = walls
 
     def _cursor_half_len(self) -> float:
         """光标虚杆半长（逻辑单位）＝系统光标高度折算成世界坐标的一半。
@@ -1700,6 +1719,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if self.spears:
             self._draw_back_spears(p)
             self._draw_low_spears(p)
+        if self.needle_threads:          # 活针的细线压在猫与生物之下
+            self._draw_needle_threads(p)
 
         for pet in self.pets:
             fx = pet.behavior.exclusive_fx() if pet.behavior is not None else None
