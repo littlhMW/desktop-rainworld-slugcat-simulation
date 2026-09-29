@@ -70,6 +70,8 @@ FAMILIES = [
     ("蛞蝓猫手 PlayerArm0..12", r"PlayerArm\d+$"),
     ("蝙蝠 4 片", r"Fly(Body|Wing|Eyes)$"),
     ("拾荒者手 A/B", r"ScavengerHand[AB]$"),
+    ("矛大师尾针 BioSpear1..3", r"BioSpear[123]$"),
+    ("矛大师尾上斑点", r"tinyStar$"),
 ]
 
 
@@ -78,7 +80,8 @@ def main() -> int:
     instrument()
     from slugcatpet.window import PetWindow, spawnable_kinds
 
-    variants = ("survivor", "monk", "hunter", "rivulet", "saint", "artificer")
+    from slugcatpet.cats import REGISTRY
+    variants = tuple(REGISTRY)
     win = PetWindow(params={"pets": [{"variant": v} for v in variants]}, debug=True)
     win.resize(760, 520)
     win.show()
@@ -113,6 +116,9 @@ def main() -> int:
         for sc in win.squidcadas:
             sc.lzx = sc.zx = math.sin(r)
             sc.lzy = sc.zy = -math.cos(r)
+        for pt in win.pets:                       # 矛大师：把尾针顶到半长，逼出针精灵
+            if pt.gfx.tail_needle_prog <= 0.0:
+                pt.gfx.tail_needle_prog = 0.5
         win._do_tick()
         if t % 3 == 0:
             paint()

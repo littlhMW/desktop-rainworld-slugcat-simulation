@@ -19,6 +19,7 @@ class GraphicsDrawMixin:
         ts = timeStacker
         self._draw_body_hips(p, atlas, ts)
         self._draw_tail(p, ts)
+        self._draw_tail_speckles(p, atlas, ts)   # 矛大师尾上斑点 + 尾针（尾之上、头之下）
         self._draw_head(p, atlas, ts)
         # 腿裁到**当前**脚下那块地为止：趴在窗口顶边上时腿不该垂到下面被看见
         floor = self.body.support_y()
@@ -165,6 +166,97 @@ class GraphicsDrawMixin:
         p.drawPath(path)
         p.restore()
 
+    def _speck_spine(self, s, ts):
+        """尾脊取点：反编译 PlayerGraphics.cs:4429 SpinePosition。
+
+        沿尾段（0=近臀 → 末段=尾梢）按参数 s 取一点，返回
+        (pos, dir, perp, rad)；尾段不足两节时给 None。
+        """
+        segs = self.tail_segs or []
+        n = len(segs)
+        if n < 2:
+            return None
+        num = clampf(s, 0.0, 1.0)
+        i2 = min(max(int(math.floor(num * n - 1.0)), 0), n - 1)
+        i3 = min(max(int(math.floor(num * n)), 0), n - 1)
+        i4 = min(i3 + 1, n - 1)
+        a, c, d = segs[i2], segs[i3], segs[i4]
+        ax = _lerp(a.lx, a.x, ts)
+        ay = _lerp(a.ly, a.y, ts)
+        cx = _lerp(c.lx, c.x, ts)
+        cy = _lerp(c.ly, c.y, ts)
+        dx = _lerp(d.lx, d.x, ts)
+        dy = _lerp(d.ly, d.y, ts)
+        t = clampf((num * n - (i2 + 1.0)) / max(1.0, float(i3 - i2)), 0.0, 1.0)
+        px, py = ax + (cx - ax) * t, ay + (cy - ay) * t
+        ux = (cx - ax) + ((dx - cx) - (cx - ax)) * t
+        uy = (cy - ay) + ((dy - cy) - (cy - ay)) * t
+        L = math.hypot(ux, uy) or 1.0
+        ux, uy = ux / L, uy / L
+        rad = a.srad + (c.srad - a.srad) * t
+        return (px, py), (ux, uy), (-uy, ux), rad
+
+    def _draw_tail_speckles(self, p, atlas, ts=1.0):
+        """矛大师的尾巴斑点与尾针（反编译 PlayerGraphics.cs:985-1074）。
+
+        5 行 × 3 列 tinyStar 沿尾脊铺开，颜色比体色更亮；尾针生长时，
+        落点那一格与其四邻一起放大，并在该格沿尾巴方向长出 BioSpear 精灵。
+        """
+        if not self.vis.get("tail_speckles"):
+            return
+        rows, lines = self.TAIL_SPECK_ROWS, self.TAIL_SPECK_LINES
+        prog = self.tail_needle_prog
+        base = self.BODY
+        light = (_lerp(255.0, base[0], 0.3), _lerp(255.0, base[1], 0.3),
+                 _lerp(255.0, base[2], 0.3))
+        for i in range(rows):
+            f = i / (rows - 1.0)
+            sp = self._speck_spine(0.4 + 0.55 * (f ** 0.8), ts)
+            if sp is None:
+                return
+            pos, dirv, perp, rad = sp
+            num = 0.8 * (f ** 0.5)
+            t = clampf(0.2 + num + (0.8 - num) * prog, 0.0, 1.0)
+            col = (_lerp(base[0], light[0], t), _lerp(base[1], light[1], t),
+                   _lerp(base[2], light[2], t))
+            for j in range(lines):
+                n3 = (j + (0.0 if i % 2 else 0.5)) / (lines - 1.0)
+                n3 = -1.0 + 2.0 * n3
+                if n3 < -1.0:
+                    n3 += 2.0
+                elif n3 > 1.0:
+                    n3 -= 2.0
+                n3 = math.copysign(abs(n3) ** 0.6, n3)
+                off = (rad + 0.5) * n3
+                sx = clampf((1.0 - abs(n3)) / 0.6, 0.0, 1.0)
+                sy = 1.0
+                if prog > 0.0:
+                    if i == self.tail_needle_row and j == self.tail_needle_line:
+                        sx *= 1.0 + prog * 2.0
+                        sy *= 1.0 + prog * 2.0
+                    elif ((abs(i - self.tail_needle_row) == 1
+                           and j == self.tail_needle_line)
+                          or (i == self.tail_needle_row
+                              and abs(j - self.tail_needle_line) == 1)):
+                        sx *= 1.0 + prog
+                        sy *= 1.0 + prog
+                rot = math.degrees(math.atan2(dirv[1], dirv[0]))
+                blit(p, atlas, "tinyStar", pos[0] + perp[0] * off,
+                     pos[1] + perp[1] * off, rot, sx, sy, col, ax=0.5, ay=0.5)
+                if (prog > 0.0 and i == self.tail_needle_row
+                        and j == self.tail_needle_line):
+                    self._draw_tail_needle(p, atlas, pos, perp, off, dirv, prog)
+
+    def _draw_tail_needle(self, p, atlas, pos, perp, off, dirv, prog):
+        """尾针精灵：从斑点处沿尾巴方向长出来（PlayerGraphics.cs:1069-1073）。
+
+        锚点在针根，长度随 spearProg 长到一半（原版 scaleY = -prog*0.5）。
+        """
+        blit(p, atlas, "BioSpear%d" % (self.tail_needle_type % 3 + 1),
+             pos[0] + perp[0] * off, pos[1] + perp[1] * off,
+             math.degrees(math.atan2(dirv[0], -dirv[1])), 1.0, prog * 0.5,
+             (255, 255, 255), ax=0.5, ay=1.0)
+
     def _draw_arms(self, p, atlas, ts=1.0):
         d0x = _lerp(self._last_draw0[0], self.draw0[0], ts)
         d0y = _lerp(self._last_draw0[1], self.draw0[1], ts)
@@ -190,7 +282,7 @@ class GraphicsDrawMixin:
             sh_spread = 4.5 / (hand.retract_counter + 1.0)
             sh_spread *= cos_axis
 
-            lx = (-1.0 + 2.0 * j) * sh_spread
+            lx = (-1.0 + 2.0 * j) * sh_spread * self._arm_off_fac
             ly = SHOULDER_OFF_Y
             ox, oy = _rot(lx, ly, body_axis)
             sx, sy = d0x + ox, d0y + oy
@@ -262,7 +354,8 @@ class GraphicsDrawMixin:
         body_rot = body_axis
         body_sx = 1.0 + _lerp(_lerp(-0.05, 0.05, breath) * upright, 0.15, sleep)
         body_sy = 1.0                                # 竖直呼吸走 body_y，不缩 Y
-        blit(p, atlas, "BodyA", body_x, body_y, body_rot, body_sx, body_sy, self.BODY,
+        blit(p, atlas, "BodyA", body_x, body_y, body_rot,
+             body_sx * self._body_sx_fac, body_sy, self.BODY,
              ax=0.5, ay=0.2105263)
 
         hip_x = (draw1[0] * 2.0 + chest_x) / 3.0
@@ -274,7 +367,7 @@ class GraphicsDrawMixin:
             hip_rot = _ang_from_up(t0x - chest_x, t0y - chest_y)
         else:
             hip_rot = body_axis
-        hip_sx = 1.0 + sleep * 0.2 + 0.05 * breath
+        hip_sx = (1.0 + sleep * 0.2 + 0.05 * breath) * self._hips_sx_fac
         hip_sy = 1.0 + sleep * 0.2
         blit(p, atlas, "HipsA", hip_x, hip_y, hip_rot, hip_sx, hip_sy, self.BODY,
              ax=0.5, ay=0.5)
@@ -338,7 +431,7 @@ class GraphicsDrawMixin:
         frame_idx = min(max(frame_idx, 0), len(frames) - 1)
         element = frames[frame_idx]
 
-        scale_x = -1.0 if head_ang < 0.0 else 1.0
+        scale_x = (-1.0 if head_ang < 0.0 else 1.0) * self._head_sx_fac
 
         hx_r = _lerp(head.lx, head.x, ts)
         hy_r = _lerp(head.ly, head.y, ts)

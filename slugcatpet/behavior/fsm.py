@@ -514,6 +514,11 @@ class BehaviorFSM:
         self._itemplay_cd = 0
         self._back_spear_cd = 0
         self._tail_needle_cd = 0      # 矛大师：尾巴长针的间隔
+        # 饕餮：体重坠落攻击（cats/gourmand_slam.py 的独占记账字段）
+        self._slam_cd = 0             # 砸击冷却
+        self._slam_target = None      # 本次要压的目标
+        self._slam_phase = "rise"     # rise → drop
+        self._slam_t = 0              # 本次砸击已进行 tick
         self._pearl_cd = 0            # 喜欢珍珠的猫：两颗珍珠之间的间隔
         self._haul_cd = 0             # 清场（拖走无用尸体）的冷却
         self._clear_target = None     # 正在拖的那具无用尸体
@@ -7139,12 +7144,16 @@ class BehaviorFSM:
     def _tail_needle_tick(self):
         """矛大师：尾巴自己长针（原版 SpearMaster 的独占能力）。
 
-        针从尾梢长出来直接入手；手里/背上已有矛、正抓着东西、睡着、游泳、
-        无重力时不长。长针有间隔，避免无限刷矛。
+        反编译出处 Player.cs:9995-10036 / PlayerGraphics.cs:947-1113：针先在尾巴里
+        长出来（spearProg 0→1，尾上斑点与针精灵一起变大），到 1 才真正成矛入手；
+        手里/背上已有矛、正抓着东西、睡着、游泳、无重力时不长。长针有间隔。
         """
         if not self.win.cat.tuning.get("tail_needle"):
             return
         b = self.body
+        if self.gfx.tail_needle_prog > 0.0:      # 正在长：先推进动画
+            self._tail_needle_grow()
+            return
         if b.carried_spear is not None or b.back_spear is not None:
             return
         if self._tail_needle_cd > 0:
@@ -7154,14 +7163,43 @@ class BehaviorFSM:
             return
         if self.state not in ("IdleStand", "PostThrowStand", "PostThrowWander"):
             return
-        from ..world.spear import Spear
+        # 原版 newSpearSlot()：这一针从尾上哪一格冒出来（行/列/针型）
+        g = self.gfx
+        g.tail_needle_row = self.rng.randint(0, g.TAIL_SPECK_ROWS - 1)
+        g.tail_needle_line = self.rng.randint(0, g.TAIL_SPECK_LINES - 1)
+        g.tail_needle_type = self.rng.randint(0, 2)
+        g.tail_needle_prog = 0.011
+        self._tail_needle_grow()
+
+    def _tail_needle_grow(self):
+        """尾针生长的每 tick 推进（Player.cs:10000-10036）：到 1 才把矛交到手上。"""
+        b, g = self.body, self.gfx
+        if (self.grab.active or self._hibernating or b.swimming or self._zerog()
+                or b.carried_spear is not None or b.back_spear is not None):
+            # 原版 Player.cs:4191：中途被打断按 0.05 缩回，< 0.025 归零
+            g.tail_needle_prog *= 0.95
+            if g.tail_needle_prog < 0.025:
+                g.tail_needle_prog = 0.0
+            return
+        prog = g.tail_needle_prog
+        if prog < 0.1:
+            g.tail_needle_prog = prog + (0.11 - prog) * 0.1
+        else:
+            g.tail_needle_prog = prog + (1.0 - prog) * 0.05
+            if g.tail_needle_prog > 0.6:         # 越接近拔出来，头抖得越厉害
+                k = (g.tail_needle_prog - 0.6) / 0.4 * 2.0
+                g.head.vx += (self.rng.random() * 2.0 - 1.0) * k
+                g.head.vy += (self.rng.random() * 2.0 - 1.0) * k
+        if g.tail_needle_prog > 0.95:
+            g.tail_needle_prog = 1.0
+        if g.tail_needle_prog < 1.0:
+            return
+        g.tail_needle_prog = 0.0
         tx, ty = b.chunk1.x, b.chunk1.y
-        try:
-            segs = self.win.tail.segs
-            if segs:
-                tx, ty = segs[-1].x, segs[-1].y
-        except Exception:
-            pass
+        segs = getattr(getattr(self.win, "tail", None), "segs", None)
+        if segs:
+            tx, ty = segs[-1].x, segs[-1].y
+        from ..world.spear import Spear
         win = self.win.window
         sp = Spear(tx, ty, seed=win._spear_seed, angle_deg=180.0)
         win._spear_seed += 1

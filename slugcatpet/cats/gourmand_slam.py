@@ -14,8 +14,14 @@ MAX_TICKS = 150          # 一次砸击的最长时间（卡住也能收尾）
 
 def mount_slam(fsm):
     """挂载 Slam：动作（何时起手）+ 独占状态（怎么砸）。"""
-    if not fsm.win.cat.tuning.get("slam"):
+    cat = getattr(fsm.win, "cat", None)
+    if cat is None or not cat.tuning.get("slam"):
         return
+    # 本模块独占的记账字段：挂载即就位（pre 每 tick 都会跑）
+    fsm._slam_cd = 0
+    fsm._slam_target = None
+    fsm._slam_phase = "rise"
+    fsm._slam_t = 0
 
     def enter():
         b = fsm.body
@@ -68,7 +74,8 @@ def mount_slam(fsm):
                         knock_k=0.5)
             except Exception:
                 pass
-            fsm.window._shake_impact(b.chunk1, 0.0, -6.0, 0.6, b.chunk1.x, b.chunk1.y)
+            fsm.win.window._shake_impact(b.chunk1, 0.0, -6.0, 0.6,
+                                         b.chunk1.x, b.chunk1.y)
             finish()
 
     def brk():

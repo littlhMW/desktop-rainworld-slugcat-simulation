@@ -111,3 +111,35 @@ D:\spenv\Scripts\python.exe -X utf8 tools/sprite_variants.py          # 多变�
 
 新核对的结论追加到 `docs/PARTS_REFERENCE.md`（机械表）与 `docs/PARTS_AUDIT.md`（不一致清单），
 README 只留最终结果。
+
+## 11. 蛞蝓猫外观参数（`CatDef.visual`）
+
+`PlayerGraphics.DrawSprites` 里按种族写死的缩放/偏移，一律落到 `CatDef.visual` 的键上，
+由 `rendering/graphics.py` 读取、`rendering/graphics_draw.py` 乘进对应的 `blit`，
+不要在绘制函数里写 `if cat == ...`。
+
+| 键 | 含义 | 反编译出处 |
+| --- | --- | --- |
+| `body_sx` | 体 sprite（`BodyA`）的 scaleX 倍率 | `PlayerGraphics.cs:2872/2876/2884` |
+| `hips_sx` | 臀 sprite（`HipsA`）的 scaleX 倍率 | `PlayerGraphics.cs:2892/2896/2904` |
+| `head_sx` | 头 sprite 的 scaleX 倍率 | `PlayerGraphics.cs:3037/3041` |
+| `arm_offset_fac` | 手肩点横向偏移倍率 | `PlayerGraphics.cs:3143` |
+| `tail_speckles` | 画尾上 5×3 斑点 + 尾针精灵 | `PlayerGraphics.cs:947-1113` |
+| `pup_wide` | 幼崽：`0.95 + 0.1*Wideness` 同一个倍率给体/臀/头 | `PlayerGraphics.cs:2880/2900/3041` |
+
+各族当前取值（数值全部来自上表行号，不许凭感觉调）：
+
+| 种族 | 取值 |
+| --- | --- |
+| 饕餮 Gourmand | `body_sx=1.4, hips_sx=1.6`（更圆） |
+| 矛大师 Spearmaster | `body_sx=0.76, hips_sx=0.76, head_sx=0.85, arm_offset_fac=0.6, tail_speckles=True` |
+| 幼崽 Slugpup | `pup_wide=True`（体/臀/头同倍率，个体 Wideness 固定） |
+| 圣徒 Saint | 头族 `HeadB`（`PlayerGraphics.cs:3027`）、常态闭眼族 `FaceB` |
+| 工匠 Artificer | 脸族 `FaceC`/`FaceD`（`PlayerGraphics.cs:4293`） |
+| 其余 | 默认 `HeadA` + `FaceA`/`FaceB`，倍率全 1.0 |
+
+尾针的动画流程也照抄原版，拆成两段（`Player.cs:9995-10036`）：
+`spearProg` 先从 0 长到 0.11 → 每 tick `lerp(prog, 1, 0.05)`；中途被打断按 0.05 缩回，
+低于 0.025 归零；`spearProg` 到 1 才真正生成矛并入手，随后进 `TAIL_NEEDLE_CD` 冷却。
+斑点绘制用 `SpinePosition(s)` 沿尾段取样（`PlayerGraphics.cs:4429`），
+落点那一格与四邻随 `spearProg` 放大，针精灵长度 = `spearProg * 0.5`。

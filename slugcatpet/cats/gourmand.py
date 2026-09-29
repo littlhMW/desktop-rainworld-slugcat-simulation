@@ -48,6 +48,8 @@ GOURMAND_DEF = CatDef(
                         risk_tolerance=0.45, patience=0.9),
     # 体重坠落攻击（原版饕餮的独占能力）
     tuning={"slam": True},
+    # 外观反编译 PlayerGraphics.cs:2872/2892：体 scaleX 1.4、臀 scaleX 1.6 —— 更圆
+    visual={"body_sx": 1.4, "hips_sx": 1.6},
     fsm_mount=_fsm_mount,
     wip=False,
 )

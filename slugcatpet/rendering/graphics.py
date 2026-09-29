@@ -278,6 +278,25 @@ class SlugcatGraphics(GraphicsDrawMixin):
         self._rope_pull_pos = 0.4
 
         self._legs_scale_x = 1.0
+        # 外观反编译参数（PlayerGraphics.cs:2872-2904 体/臀、3035-3041 头、3143 手）：
+        # 各族按种族写死的 scaleX / 横向偏移倍率，画的时候乘上去。
+        vis = getattr(self.cat, "visual", None) or {}
+        self.vis = vis
+        self._body_sx_fac = float(vis.get("body_sx", 1.0))
+        self._hips_sx_fac = float(vis.get("hips_sx", 1.0))
+        self._head_sx_fac = float(vis.get("head_sx", 1.0))
+        self._arm_off_fac = float(vis.get("arm_offset_fac", 1.0))
+        if vis.get("pup_wide"):
+            # 幼崽：0.9 + 0.2*Lerp(Wideness, 0.5, 0.5)，体/臀/头三处同式
+            wide = 0.95 + 0.10 * float(getattr(body, "wideness", 0.5))
+            self._body_sx_fac = self._hips_sx_fac = self._head_sx_fac = wide
+        # 矛大师尾针（PlayerGraphics.TailSpeckles，947-1113）：尾上 5×3 斑点 + 1 根针
+        self.TAIL_SPECK_ROWS = 5
+        self.TAIL_SPECK_LINES = 3
+        self.tail_needle_prog = 0.0     # 0→1：针从尾巴长出来的进度
+        self.tail_needle_row = 0        # 这一针长在哪一行斑点
+        self.tail_needle_line = 0
+        self.tail_needle_type = 0       # BioSpear1..3
     @property
     def facing(self):
         return self.body.facing

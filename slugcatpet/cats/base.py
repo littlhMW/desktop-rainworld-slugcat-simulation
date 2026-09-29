@@ -39,6 +39,8 @@ class CatDef:
     stats: SlugStats = DEFAULT_STATS
     personality: CatPersonality = DEFAULT_PERSONALITY
     tuning: dict = field(default_factory=dict)
+    # 外观反编译参数（体/臀/头 scaleX、手偏移、尾针…；见 rendering/graphics.py）
+    visual: dict = field(default_factory=dict)
     fsm_mount: Callable | None = None              # FSM 构造时调用，注册独占状态
     wip: bool = True                               # 未完成占位，做完显式设 False
 

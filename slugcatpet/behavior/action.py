@@ -215,7 +215,10 @@ class ActionArbiter:
                  else self._order_all(band))
         for spec in order:
             if spec.pre is not None:
-                spec.pre(ctx)
+                try:
+                    spec.pre(ctx)       # 记账抛异常：记下，别拖垮整只猫
+                except Exception as e:
+                    self.errors.append((spec.key + ":pre", repr(e)))
             if not self._eligible(spec, ctx):
                 continue
             try:

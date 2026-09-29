@@ -42,6 +42,10 @@ SPEARMASTER_DEF = CatDef(
                         risk_tolerance=0.55, patience=0.95),
     # 尾巴自己长针（原版 SpearMaster 的独占能力：新鲜的针从尾巴长出来）
     tuning={"tail_needle": True},
+    # 外观反编译：PlayerGraphics.cs:2876/2896 体臀 scaleX 0.76、3037 头 scaleX 0.85、
+    # 3143 手横向偏移 ×0.6、947-1113 TailSpeckles 尾上 5×3 斑点 + 尾针精灵
+    visual={"body_sx": 0.76, "hips_sx": 0.76, "head_sx": 0.85,
+            "arm_offset_fac": 0.6, "tail_speckles": True},
     fsm_mount=None,
     wip=False,
 )

@@ -20,15 +20,16 @@ SLUGPUP_DEF = CatDef(
     body_color=(255, 255, 255),
     eye_color=(22, 30, 16),
     frames={
-        "head": ("base", "HeadA"),
-        "face": ("base", "FaceA"),
-        "face_blink": ("base", "FaceB"),
+        # 外观反编译 PlayerGraphics.cs:3025/4291：幼崽头用 HeadC 族、脸用 PFace 族
+        "head": ("msc", "HeadC"),
+        "face": ("msc", "PFaceA"),
+        "face_blink": ("msc", "PFaceB"),
         "legs_walk": ("base", "LegsA"),
         "legs_crawl": ("base", "LegsACrawling"),
         "legs_air": ("base", "LegsAAir0"),
     },
     layout_file="slugpup.json",
-    atlas_keys=("base",),
+    atlas_keys=("base", "msc"),
     caps=CatCaps(tongue=False, ascension=False),
     stats=replace(DEFAULT_STATS, runspeed_fac=0.8, weight_fac=0.65, pole_fac=0.8,
                   max_food=3, food_hibernate=2, throwing_skill=0, lungs_fac=0.8),
@@ -36,6 +37,8 @@ SLUGPUP_DEF = CatDef(
     # （PetUnit 用 WIDE_SIGMA）；另外幼崽不能救人、也不被救。
     personality=SURVIVOR_DEF.personality,
     tuning={},
+    # 外观反编译 PlayerGraphics.cs:2880/2900/3041：0.9 + 0.2*Lerp(Wideness,0.5,0.5)
+    visual={"pup_wide": True},
     fsm_mount=None,
     wip=False,
 )
