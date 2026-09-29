@@ -30,6 +30,7 @@ _STATES = {
     "RelocateToWall": "st_to_wall",
     "TongueClimb": "st_tongue",
     "CursorLick": "st_lick_cursor",
+    "HuntFly": "st_hunt_fly",
     "Ascension": "st_ascend",
     "AngryStone": "st_angry_stone",
     "PyroMaul": "st_maul",
@@ -89,3 +90,135 @@ def status_text(beh) -> str:
     """行为对象 → 当前状态的中/英文案。"""
     from ..i18n import t
     return t(status_key(beh))
+
+
+# ── 状态面板第二段：目标是什么 ──
+# 字段名一律取自 fsm.__init__ 里真实存在的那些（别手写没声明的名字）。
+# 状态 → 这个态真正在用的目标字段（按优先级）
+_STATE_TARGET = {
+    "MakeWay": ("_makeway_of", "_blocker_target"),
+    "ScoldBlocker": ("_blocker_target", "_pole_blocker"),
+    "Socialize": ("_social_target",),
+    "ItemPlay": ("_itemplay_target",),
+    "HelpFeed": ("_help_target",),
+    "CoverAlly": ("_help_target", "_cover_ally"),
+    "FleeLizard": ("_flee_from",),
+    "CrawlAway": ("_crawl_from",),
+    "FightThreat": ("_fight_target",),
+    "AngryStone": ("_fight_target",),
+    "PyroMaul": ("_slam_target",),
+    "PyroRomp": ("_fight_target",),
+    "RivSnatch": ("_fight_target",),
+    "ClearCorpse": ("_clear_target",),
+    "SeekWarmth": ("_warm_goal_obj",),
+    "Swimming": ("_swim_goal",),
+    "HPole": ("_hp_goal_obj", "_hp_step_obj"),
+    "SeekHPole": ("_hp_goal_obj",),
+    "PoleClimb": ("_hp_goal_obj", "_poleclimb_pole"),
+    "CeilingHang": ("_air_pole_target",),
+    "RelocateToWall": ("_air_pole_target",),
+    "Airborne": ("_air_pole_target",),
+    "EatCob": ("_cob",),
+    "SeedCob": ("_cob",),
+    "TongueClimb": (),
+}
+
+# 状态 → 该态挂在控制器对象上的目标（取食器 / 抓虫器 / 猎虫器）
+_STATE_CTRL = {
+    "FetchFruit": "fetch",
+    "CatchFly": "flycatch",
+    "HuntFly": "flyhunt",
+}
+
+# 光标类：目标不是实体，直接给词
+_CURSOR_STATES = ("ChaseCursor", "CursorLick")
+
+
+def _target_obj(beh):
+    """行为对象 → 当前目标（拿不到就 None）。"""
+    st = getattr(beh, "state", None)
+    if st in _CURSOR_STATES:
+        return "cursor"
+    for name in _STATE_TARGET.get(st, ()):
+        o = getattr(beh, name, None)
+        if o is not None:
+            return o
+    holder = _STATE_CTRL.get(st)
+    if holder:
+        h = getattr(beh, holder, None)
+        v = getattr(h, "target", None) if h is not None else None
+        if v is not None:
+            return v
+    # 不扫兜底：别的态留下的残留目标会被当成现在追的东西，比空着更误导。
+    return None
+
+
+def _peer_name(pet, peers):
+    try:
+        from ..ui.catmenu import pet_label
+        return pet_label(pet, peers) if peers else pet_label(pet, [pet])
+    except Exception:
+        return str(getattr(pet, "variant", "") or "")
+
+
+def _describe(obj, beh, peers):
+    """目标对象 → 中文/英文短词。认不出来就给空串（宁可不写，别瞎写）。"""
+    from ..i18n import t
+    if obj is None:
+        return ""
+    if obj == "cursor" or isinstance(obj, (tuple, list)):
+        return t("tg_cursor")
+    if isinstance(obj, (int, float)):
+        return t("tg_place")
+    if obj is getattr(beh, "body", None) or obj is getattr(beh, "win", None):
+        return ""                                   # 指向自己不算目标
+    # 同伴（猫 / 幼崽）：PetUnit 有 .variant + .body
+    if (hasattr(obj, "variant") and getattr(obj, "body", None) is not None
+            and getattr(obj, "behavior", None) is not None):
+        dead = bool(getattr(obj.body, "dead", False))
+        name = _peer_name(obj, peers)
+        key = "tg_peer_dead" if dead else "tg_peer"
+        return t(key) + ((" · " + name) if name else "")
+    from ..world.lizard import Lizard
+    from ..world.batfly import BatFly
+    from ..world.squidcada import Squidcada
+    from ..world.needleworm import NeedleWorm
+    from ..world.scavenger import Scavenger
+    from ..world.seedcob import Seed, SeedCob
+    from ..world.slimemold import SlimeMold
+    from ..world.karmaflower import KarmaFlower
+    from ..world.fruit import Fruit
+    from ..world.spear import Spear
+    from ..world.stone import Stone
+    from ..world.pearl import Pearl
+    from ..world.lamp import Lamp
+    from ..world.pole import Pole
+    from ..world.hpole import HPoleController
+    dead_suffix = t("tg_corpse") if getattr(obj, "dead", False) else ""
+    for cls, key in ((Lizard, "tg_lizard"), (Scavenger, "tg_scavenger"),
+                     (NeedleWorm, "tg_needleworm"), (Squidcada, "tg_squidcada"),
+                     (BatFly, "tg_batfly"), (SeedCob, "tg_cob"), (Seed, "tg_cob"),
+                     (KarmaFlower, "tg_flower"), (Fruit, "tg_fruit"),
+                     (SlimeMold, "tg_slimemold"), (Lamp, "tg_lamp"),
+                     (Pearl, "tg_pearl"), (Spear, "tg_spear"), (Stone, "tg_stone"),
+                     (Pole, "tg_pole"), (HPoleController, "tg_hpole")):
+        if isinstance(obj, cls):
+            return t(key) + dead_suffix
+    return ""
+
+
+def target_text(beh, peers=None) -> str:
+    """行为对象 → 「目标是什么」的中/英文案；没有目标返回空串。"""
+    if beh is None:
+        return ""
+    try:
+        return _describe(_target_obj(beh), beh, list(peers) if peers else None)
+    except Exception:
+        return ""
+
+
+def status_pair(beh, peers=None):
+    """状态面板一次给两段：(正在干嘛, 目标是什么)。"""
+    if beh is None:
+        return "", ""
+    return status_text(beh), target_text(beh, peers)

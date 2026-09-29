@@ -200,6 +200,27 @@ def _pet_bite_death_mult(pet) -> float:
                                    PET_BITE_DEATH_MULT_DEFAULT)
 
 
+# ── 矛大师骨矛吸食（Spear.cs:1041-1087 + Wiki Spearmaster「进食」表）──
+# 每口默认 1 格；小生物按表给 0.25 / 0.5。尸体不给（命中前就死了 → flag3）。
+NEEDLE_FEED_DEFAULT = 1.0
+NEEDLE_FEED_SMALL = 0.5
+NEEDLE_FEED_TINY = 0.25
+
+
+def _needle_feed_amount(obj) -> float:
+    """这一口回多少格饱食度（Wiki Spearmaster 表）。
+
+    蝠蝇 0.25；蝉乌贼 / 幼年面条蝇 0.5；其余（蜥蜴 / 拾荒者 / 成体面条蝇 / 同伴）1。
+    """
+    if isinstance(obj, BatFly):
+        return NEEDLE_FEED_TINY
+    if isinstance(obj, Squidcada):
+        return NEEDLE_FEED_SMALL
+    if isinstance(obj, NeedleWorm) and getattr(obj, "age", None) == AGE_SMALL:
+        return NEEDLE_FEED_SMALL
+    return NEEDLE_FEED_DEFAULT
+
+
 def _weapon_owner(w):
     """投掷物的掷出者 uid（原版 Weapon.thrownBy；成体面条蝇的 tempLike 记账用）。"""
     owner = getattr(w, "thrower", None)
@@ -2732,6 +2753,28 @@ class ItemInteractionMixin:
             return
         tp.behavior.apologize(victim)
 
+    def _spear_needle_feed(self, sp, obj, was_dead: bool = False) -> bool:
+        """矛大师的新鲜骨矛扎中活物 → 掷出者回饱食度，然后断开连接。
+
+        反编译 Spear.cs:1041-1087（Spear_NeedleCanFeed + flag && !flag3）：
+        必须「尾巴长出来、还连着的针」+ 掷出者是矛大师；尸体不给。
+        was_dead 必须是**命中前**的死亡状态（原版 flag3 在 Violence 之前取，
+        不然这一矛打死的那只就永远吃不到）。
+        一根针只喂一口（喂完 Spear_NeedleDisconnect）。
+        """
+        if not (getattr(sp, "needle", False) and getattr(sp, "needle_live", False)):
+            return False
+        if was_dead:                                   # flag3：命中前就是尸体
+            return False
+        tp = self._thrower_pet(getattr(sp, "thrower", None))
+        if tp is None or getattr(tp, "body", None) is None:
+            return False
+        if not getattr(getattr(tp, "cat", None), "tuning", {}).get("tail_needle"):
+            return False                         # 不是矛大师掷的针
+        sp.needle_disconnect()
+        tp.body.food_eat(_needle_feed_amount(obj))
+        return True
+
     def _step_spear_hit(self):
         """飞矛扎到猫：眩晕 + 震动；扎到蜥蜴：受伤并插在身上跟着走。"""
         for pet in self.pets:
@@ -2756,6 +2799,7 @@ class ItemInteractionMixin:
                         self._friendly_fire(getattr(sp, "thrower", None), pet)
                         died, stun = _pet_stun_death(dmg, SPEAR_STUN_BONUS)
                         stun = int(stun * STUN_SCALE)
+                        self._spear_needle_feed(sp, pet, bool(b.dead))   # 骨矛吸食活物
                         if died:
                             pet.behavior.kill()
                         else:
@@ -2788,11 +2832,13 @@ class ItemInteractionMixin:
                                  stun_bonus=SPEAR_STUN_BONUS, hit_head=head,
                                  knock_k=KNOCK_K_PER_MASS * sp.mass)
                 if shielded and not lz.dead:
+                    sp.needle_disconnect()       # 头甲弹开：原版这条也走 Mode.Free
                     # 头甲弹开：矛不插入，原速 45% 弹回（原版 directionAndMomentum / 3）
                     sp.vx, sp.vy = -sp.vx * 0.45, -sp.vy * 0.45
                     self._shake[0] += 0.6 * (1.0 if sp.vx >= 0.0 else -1.0)
                     self._shake[1] += 0.4
                     break
+                self._spear_needle_feed(sp, lz)          # 骨矛吸食活物
                 sp.vx = sp.vy = 0.0
                 sp.stuck = True
                 # 矛尖对齐到真实接触点：矛中心沿杆回退 LEN/2（tip() 的同一套几何）
@@ -2819,6 +2865,7 @@ class ItemInteractionMixin:
                 spd = math.hypot(sp.vx, sp.vy) or 1.0
                 dvec = (sp.vx / spd, sp.vy / spd)
                 _sc_died = sc.hurt(SPEAR_DMG)
+                self._spear_needle_feed(sp, sc)          # 骨矛吸食活物
                 if _weapon_owner(sp) is not None:
                     sc.on_attacked(SPEAR_DMG)
                 EV.emit_for(self,
@@ -2856,6 +2903,7 @@ class ItemInteractionMixin:
                 kx = sp.vx * 0.10
                 ky = min(sp.vy * 0.10 - 1.2, -1.0)
                 small.hurt(SPEAR_DMG, kx=kx, ky=ky, by=_weapon_owner(sp), lethal=True)
+                self._spear_needle_feed(sp, small)       # 骨矛吸食活物
                 sp.vx *= 0.55
                 self._shake[0] += 0.5 * (1.0 if kx >= 0.0 else -1.0)
                 break

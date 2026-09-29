@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication, QColor, QPainter
 
 from ..behavior import tuning
-from ..behavior.status import status_text
+from ..behavior.status import status_pair
 from ..i18n import t
 from .catmenu import pet_label
 from .tips import install as install_tip
@@ -148,7 +148,8 @@ class PetRow(QFrame):
         install_tip(self, self._tip_text)
 
     def _tip_text(self):
-        parts = [t("hud_karma"), t("hud_stamina"), t("hud_satiety"), t("hud_affection")]
+        parts = [t("hud_karma"), t("hud_stamina"), t("hud_satiety"),
+                 t("hud_affection"), t("hud_target")]
         if self._cold_visible:
             parts.append(t("hud_cold"))
         return " · ".join(parts) + "\n" + t("hud_op_hint")
@@ -158,8 +159,13 @@ class PetRow(QFrame):
         pets = list(getattr(self.pet.window, "pets", [self.pet]))
         beh = getattr(self.pet, "behavior", None)
         label = pet_label(self.pet, pets)
-        status = status_text(beh) if beh is not None else ""
-        self.name.setText(f"{label}  ·  {status}" if status and status != "—" else label)
+        doing, target = status_pair(beh, pets) if beh is not None else ("", "")
+        text = label
+        if doing and doing != "—":                 # 正在干嘛
+            text = f"{label}  ·  {doing}"
+            if target:                             # 目标是什么
+                text = f"{text}  →  {target}"
+        self.name.setText(text)
         body = self.pet.body
 
         k = int(body.karma)

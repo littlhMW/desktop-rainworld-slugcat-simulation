@@ -54,7 +54,7 @@ class Spear:
                   "always_stick",
                  "collide_with_objects", "held_by", "embedded", "stuck_to", "stuck_local", "_still",
                  "thrower", "no_self_t", "pinned", "pole", "toss_t",
-                 "aim_cursor", "cursor_pin")
+                 "aim_cursor", "cursor_pin", "needle", "needle_live")
 
     def __init__(self, x: float, y: float, seed: int = 0, angle_deg: float = 90.0):
         self.x = self.last_x = float(x)
@@ -102,6 +102,11 @@ class Spear:
         # 甩鼠标（光标一 tick 位移够大）会被甩下来，自由落体。
         self.aim_cursor = False
         self.cursor_pin = None
+        # 矛大师的骨矛（Spear.spearmasterNeedle / spearmasterNeedle_hasConnection）：
+        # needle=这根是尾巴长出来的针；needle_live=还连着尾巴（活性在）。
+        # 只有还活着的针扎中活物才回饱食度；落地/插墙/扎中东西就断开。
+        self.needle = False
+        self.needle_live = False
 
     @property
     def pos(self):
@@ -128,12 +133,17 @@ class Spear:
         a = math.radians(self.stuck_angle if self.stuck else self.angle_deg)
         return (self.x - math.sin(a) * LEN * 0.5, self.y + math.cos(a) * LEN * 0.5)
 
+    def needle_disconnect(self) -> None:
+        """Spear_NeedleDisconnect：活性没了（针褪成黑色，不能再吸食）。"""
+        self.needle_live = False
+
     def stick(self, WL: float, wall: int) -> None:
         """掷进左右墙（wall=±1）：杆横着插住、杆尖埋进墙里，成为一截同长的横杆。
 
         地面插矛不走这里（原版 ContactPoint.y 分支标 verticalBeam），见
         rest_on_ground（斜插，可拾取）与 embed_vertical（垂直、成竖杆、不可拾取）。
         """
+        self.needle_disconnect()                   # 原版 Mode.StuckInWall 也断连接
         self.stuck = True
         self.pinned = True                         # 原版：stuckInWall 的格子标成 beam
         self._thrown = False
@@ -153,6 +163,7 @@ class Spear:
 
     def _enter_free(self) -> None:
         """Weapon.Update 退出 Thrown：SetRandomSpin + ChangeMode(Free)。"""
+        self.needle_disconnect()                   # 原版 Mode.Free → 断连接
         self._thrown = False
         self._exit_spd = 0.0
         self.spinning = True
@@ -165,6 +176,7 @@ class Spear:
         原版：rotation = DegToVec(Lerp(-50,50,rand)+180) —— 杆尖向地，杆身斜插出地面。
         位置不跳变（只在杆尖越到地面线以下时把整根杆抬回来），所以落地不抖也不穿地。
         """
+        self.needle_disconnect()
         self.spinning = False
         self._still = 0
         self.spin = 0.0
@@ -207,6 +219,7 @@ class Spear:
         原版把这种矛所在的格子标成 verticalBeam —— 即「对应长度的竖杆」，
         所以这里把杆摆正、扎进地里，由 items 层注册成一截竖杆；钉住后不再能拾取。
         """
+        self.needle_disconnect()
         self.stuck = True
         self._thrown = False
         self.vx = self.vy = 0.0

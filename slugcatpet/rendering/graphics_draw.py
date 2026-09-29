@@ -505,9 +505,7 @@ class GraphicsDrawMixin:
         hx_i = _lerp(self.head.lx, self.head.x, ts)
         hy_i = _lerp(self.head.ly, self.head.y, ts)
         if self.sleep_curl > 0.0:
-            d0x = _lerp(self._last_draw0[0], self.draw0[0], ts)
-            d1x = _lerp(self._last_draw1[0], self.draw1[0], ts)
-            side = 1.0 if d0x >= d1x else -1.0
+            side = 1.0 if self.facing >= 0 else -1.0   # 同 graphics：躺下时别用几何差推朝向
             hx_i += side * 2.0 * self.sleep_curl
             hy_i -= 1.0 * self.sleep_curl
         hox, hoy = getattr(self, "_breath_head_off", (0.0, 0.0))

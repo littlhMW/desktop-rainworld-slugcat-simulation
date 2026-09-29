@@ -219,6 +219,7 @@ _FACE_PANIC_FROM = frozenset((
     "Socialize", "FetchFruit", "CatchFly", "ItemPlay", "HelpFeed", "PoleClimb",
     "ScoldBlocker", "LieDown"))
 CRAWL_AWAY_STEP = 60.0     # 匍匐潜行每 tick 朝反方向重取的「一步」长度
+CRAWL_CORNER_EPS = 1.0     # 夹进可走范围后离原地的余量 ≤ 此值 = 贴边（不再推）
 REVIVE_SAFE_PAD = 1.6      # 倒地同伴离威胁小于「我离威胁的距离×此值」＝在刀口上，不去
 
 
@@ -6964,8 +6965,18 @@ class BehaviorFSM:
         # 不再出现「顶着屏幕两侧的墙一直跑」（旧版 move_dir 一旦设上就没人清，
         # 离场后还会带着它一路撞墙）。
         away = 1.0 if lz.x < b.chunk1.x else -1.0
-        b.walk_to(b.chunk1.x + away * CRAWL_AWAY_STEP)
-        b.facing = 1 if away > 0 else -1
+        goal = b.chunk1.x + away * CRAWL_AWAY_STEP
+        if b.walk_min is not None:
+            goal = min(max(goal, b.walk_min), b.walk_max)
+        if (goal - b.chunk1.x) * away <= CRAWL_CORNER_EPS:
+            # 已经贴到那一侧的边：夹完的落点还在原地/反方向。再 walk_to 就会被
+            # 夹到身体另一侧，朝一边、身体往另一边挪（用户报的「面向正面却后退」）。
+            # 贴边就别推了，就地蹲下、转过去面朝威胁。
+            b.stop_walk()
+            b.facing = 1 if away < 0 else -1
+        else:
+            b.walk_to(goal)
+            b.facing = 1 if away > 0 else -1
         self.gfx.look_at = (lz.x, lz.y)
 
 
@@ -7202,6 +7213,8 @@ class BehaviorFSM:
         from ..world.spear import Spear
         win = self.win.window
         sp = Spear(tx, ty, seed=win._spear_seed, angle_deg=180.0)
+        sp.needle = True                 # 尾巴长的针（Spear.spearmasterNeedle）
+        sp.needle_live = True            # 还连着尾巴：扎中活物能吸食
         win._spear_seed += 1
         win.spears.append(sp)
         win.world_version += 1

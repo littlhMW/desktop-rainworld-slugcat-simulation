@@ -1870,6 +1870,7 @@ class SlugcatBody:
             sp.held_by = None
             if to_free:
                 sp.state = ItemState.FREE
+                sp.needle_disconnect()     # 放下/丢掉＝原版 Mode.Free：骨矛失活
         if side is not None:
             self.arm_aim[side] = None
         return side

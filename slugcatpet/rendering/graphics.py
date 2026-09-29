@@ -588,7 +588,8 @@ class SlugcatGraphics(GraphicsDrawMixin):
         look_y = (self.last_look_dir[1] + self.look_dir[1]) * 0.5 * 3.0 * (1.0 - self.sleep_curl)
         if self.sleep_curl > 0.0:
             self.head_frame_override = None
-            side = 1.0 if body_x >= hip_x else -1.0
+            # 躺下时两节身体几乎叠在一起，横向差是噪声（画出来会随机翻面）
+            side = 1.0 if b.facing >= 0 else -1.0
             self.head_angle = _lerp(head_ang, 45.0 * side, self.sleep_curl)
             self.face_angle = head_ang * (1.0 - self.sleep_curl)
             self.face_scale_x = side
@@ -604,7 +605,10 @@ class SlugcatGraphics(GraphicsDrawMixin):
             self.head_frame_override = 7
             self.head_angle = head_ang
             self.face_angle = 0.0
-            self.face_scale_x = 1.0 if body_x >= hip_x else -1.0
+            # 匍匐时 chunk0 与 chunk1 基本竖直叠着（dx≈0），再叠加摇摆偏移，
+            # 用 draw0/draw1 的横向差当朝向会随摆幅翻面 —— 表现就是
+            # 「脸朝前、身体却在倒退」。匍匐朝向一律取 body.facing（与腿同口径）。
+            self.face_scale_x = 1.0 if b.facing >= 0 else -1.0
             look_x = 0.0
         elif b.bodyMode == "ZeroG":
             self.head_frame_override = None
