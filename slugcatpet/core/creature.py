@@ -109,6 +109,7 @@ class SlugcatBody:
         self.walk_speed_target = None
         self.dead = False
         self.coyote = 0                 # 土狼窗口剩余 tick（离地后仍可跳）
+        self.item_cd = 0                # 上手冷却：拿到东西后还要等几个 tick 才用
         self._jump_pending = None       # None/"stand"/"protest"
         self._jump_hold = None          # 下次跳持跳时长（None=到衰减完）
         self._jump_hold_left = None     # 本次腾空剩余持跳（None=不截断）
@@ -605,6 +606,8 @@ class SlugcatBody:
 
     def step(self):
         self._temper_update()
+        if self.item_cd > 0:                 # 上手冷却照常走钟（晕/死/杆上也算）
+            self.item_cd -= 1
         if self._input_provider is not None:
             # 晕/死改推零包，防晕醒瞬间吃到晕期边沿
             pkg = self._input_provider()
@@ -1562,6 +1565,21 @@ class SlugcatBody:
         """Aim hand at fruit; clear opposite side (only one hand reaches)."""
         self._aim_hand(side, fruit.x, fruit.y)
 
+    def arm_item_cd(self, food: bool = False) -> None:
+        """拿到东西后压一个「上手冷却」，冷却期里不会立刻吃/立刻投。
+
+        非食物（矛/石头/珍珠）：0-3s 随机。
+        食物：按饱食度决定上限，每格 +1.5s（0 格 0-1.5s、2 格 0-3s），越饱越久。
+        1s = 40 tick（原版定步长 1/40s，见 window._PHYS_DT）。
+        """
+        span = (tuning.ITEM_CD_FOOD * max(1, int(self.food)) if food
+                else tuning.ITEM_CD_KEEP)
+        self.item_cd = random.randrange(span + 1) if span > 0 else 0
+
+    def item_ready(self) -> bool:
+        """上手冷却是否走完（走完才会用手里那件东西）。"""
+        return self.item_cd <= 0
+
     def grab_fruit(self, fruit, side=None, snap_stalk=True):
         """Grab fruit with one hand; convert to carried (kinematic).
 
@@ -1578,6 +1596,7 @@ class SlugcatBody:
         self.eat_raise = 0.0
         if fruit.stalk is not None and snap_stalk:   # 抓取瞬即脆断果柄
             fruit.stalk.release_counter = 2
+        self.arm_item_cd(bool(getattr(fruit, "is_edible", True)))
         return True
 
     def release_fruit(self):
@@ -1599,7 +1618,7 @@ class SlugcatBody:
 
     def consume_carried(self):
         """啃一口，吃完则结算并释放，返回是否吃完。"""
-        if self.carried_fruit is None:
+        if self.carried_fruit is None or not self.item_ready():
             return False
         if self.bite_carried():
             f = self.carried_fruit
@@ -1638,6 +1657,7 @@ class SlugcatBody:
         self.hand_of["stone"] = side
         stone.state = "carried"
         self.eat_raise = 0.0
+        self.arm_item_cd(False)
         return True
 
     def release_stone(self, to_free=False):
@@ -1700,10 +1720,11 @@ class SlugcatBody:
         self._aim_hand(side, cx if aimed else None, cy if aimed else None)
 
     # ── 矛（原版 Spear：玩家持矛时杆斜指前上方，掷出后走弹道）──
-    def grab_spear(self, spear, side=None):
+    def grab_spear(self, spear, side=None, arm=True):
         """Grab a spear with one hand; convert to carried (kinematic).
 
         钉进墙/地变成杆子的矛（spear.pinned）拔不动，拾取直接失败。
+        arm=False 用于「背上那把换到手上」——同一根矛不算重新上手，不重压冷却。
         """
         if getattr(spear, "pinned", False):
             return False
@@ -1717,6 +1738,8 @@ class SlugcatBody:
         spear.stuck_to = None
         spear.held_by = self
         self.eat_raise = 0.0
+        if arm:
+            self.arm_item_cd(False)
         return True
 
     def release_spear(self, to_free=False):
@@ -1808,7 +1831,7 @@ class SlugcatBody:
         if self.back_spear is not None:      # 原版掷出后背上的矛立刻补到手上
             bs = self.back_spear
             self.back_spear = None
-            self.grab_spear(bs)
+            self.grab_spear(bs, arm=False)
         c0.vx += float(dir_x) * 8.0 * recoil
         c1.vx -= float(dir_x) * 4.0 * recoil
         return sp

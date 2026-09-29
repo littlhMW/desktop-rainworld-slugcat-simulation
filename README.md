@@ -273,6 +273,21 @@ python run_slugcatpet.py
 - 因为「世界里永远有一根杆」成了新常态，5 个老用例的**前提**改成关掉扩展（`mouse_pole=False`）：`e2e_creatures.py`（送礼→驯服链路）、`e2e_r10.py`（顶端吊不住）、`e2e_r28.py` / `e2e_r52.py`（「植株不是杆、场上没有可攀竖杆」）、`e2e_r47.py`（「没有竖杆时不乱爬」）；`e2e_r25.py` 那处「横杆还是横杆」改成只数真杆。
 - Verification: `work/scratch/e2e_r54.py`（38 项全 PASS）；`run_all19.ps1` 现为 45 个脚本 `fails=0`。
 
+**业力花整体带茎拔起 / 上手冷却（第 55 轮）**：
+
+- **花是「连根拔起」的**：手/鼠标一碰就 `detach_root()`（原版 `KarmaFlower.cs:539-546` `DetatchStalk()` = `Consume() + growPos = null`），6 节茎整条跟着花走，**地上不留残茎**；松手后茎仍有自己的物理（重力下垂 + 段长 5 的逐节约束）。原来只清 `grow_pos` 却留着 6 节茎钉在地上，看起来就是「拔了一半」。
+- **花瓣朝向修正（根因）**：`_blit_petal` 原来走 `blit(..., ay=0.0)`。`ay=0` 的语义是「贴图顶边贴锚点、朝 +local-y 生长」，而 `ang=0` 在本项目的 y↓ 坐标里是正上方 ⇒ **每片花瓣都朝 180° 反方向长**，表现出来就是「花瓣位置错、大小忽大忽小、末端接不到花环」。改成 `ay=1.0` 后花瓣从花心长向花瓣质点（等价反编译 `KarmaFlower.cs:359-360` 的 `FSprite("KarmaPetal")` + `anchorY = 0`），`:189-195` 的 `DistLess 13.5` 上限也才真正生效。
+- **花环退化保护**：某片花瓣被啃掉时原版把它的环顶点并到花心（`:399` `array[i] = body`），4 个顶点出现重合 ⇒ `QTransform.quadToQuad` 解出奇异矩阵，会把整张 32×32 花环拉成横贯屏幕的「拉丝」。现在 `_draw_ring` 对四边形面积 `< 4.0` 直接跳过。
+- **瞬移拖拽不炸**：一 tick 被拉开几十像素（鼠标甩飞）时，新增 `_carry_shift()` 把「花心位移」按段长上限摊给茎节，花瓣/茎最远分别夹在 13.5 / 60px 内，不再被拉成一条线。
+- **光斑画在重心上**：`:408-410` 的光斑中心是 `(花心 + 各花瓣) / n` 而不是花心；照抄后光斑比花心高约 4px（花瓣把重心顶上去了）。
+- **「4 片花瓣」是原版事实**：`KarmaFlower.cs:120` `petals = new Part[4]`。你说的「五朵花瓣」其实是花环网格的分辨率（`:362/405` `MakeGridMesh("EndGameCircle", 5)` + `QuadGridMesh(array, mesh, 5)`）。我们保留 4 瓣 + 5 段网格，照原版来。
+- **大小核对（量你给的三张原版截图）**：`codex-clipboard-9ff22071` 与 `65709251` 是 1:1（茎 6 段 × 5px = 30px 对得上），`004a09dd` 是 ≈7× 放大（排除）。1:1 图里花头亮金 bbox 15×15px、茎竖直跨度 31px、茎到花心 ≈16px、花心到瓣尖 ≈11px —— 与我们的 `PETAL_MAX 13.5` / 茎 6×5 = 30 完全一致，**所以这轮改的是朝向和物理，不是尺寸**。自检图 `work/scratch/r55_flower_1x.png` / `_8x.png` / `_13x.png`。
+- **上手冷却（新交互规则）**：蛞蝓猫拿到**非食物**（矛/石头/珍珠/…）后压 **0~3s 随机**冷却（`tuning.ITEM_CD_KEEP = 120`）才会「用」（投/丢/玩）；拿到**食物**按饱食度放大上限 —— **每格 +1.5s**（`ITEM_CD_FOOD = 60`，`SlugcatBody.arm_item_cd`），0 格 0~1.5s、2 格 0~3s、4 格 0~6s。冷却期里 `_launch_weapon()` / `consume_carried()` / 猎飞瞄准一律早退；**把玩珍珠不算「用」，不受挡**；从背上把矛换到手上（`grab_spear(..., arm=False)`）不重压；冷却在晕/死/杆上照常走钟（`creature.step` 开头每 tick −1）。
+- **5 个老用例的前提变更**：`e2e_creatures.py` / `e2e_r23.py` / `e2e_r34.py` / `e2e_r39.py` / `e2e_r49.py` 都要求「一两 tick 内就投出去 / 吃下去」，与本轮冷却冲突 ⇒ 在开头把 `SlugcatBody.arm_item_cd` 打成空实现（只改用例前提，源码不动）。
+- **三处假失败（用例写法问题，不是源码）**：①「反方向不再有整片花瓣」原来采样花心的水平镜像点，而花近似左右对称 ⇒ 别的花瓣会合法盖到那里；改成「花瓣尖外 1.8 倍处必须无金像素」。②「食物 2/3 格」的 `max(vals) == cap` 是采样噪声（400 次里抽不到端点 cap 的概率 3.6% / 11%）⇒ 采样提到 4000 次。
+- Verification: `work/scratch/e2e_r55.py`（28 项全 PASS）；`run_all19.ps1` 现为 46 个脚本 `fails=0`。
+
+
 ## 素材与版权说明
 
 - 本仓库不包含任何 Rain World 游戏素材。全部游戏图像在你本机、从你自己的正版安装中提取。
@@ -500,6 +515,21 @@ The same vocabulary also drives **everyday** gestures (when the social urge has 
 - Jump numbers re-checked (`Player.cs:12836-13230` `Jump()`, `:12188-12196` jumpBoost, `:9172-9245` `Stand`, `:8995-9040` `Default`): take-off vertical 4/3, `dynamicRunSpeed 4.2/4.0`, boost adding `vel += (boost+1)*0.3` per tick - all identical to what we already had, so the numbers stay; a measured flat jump at hold=6 goes 43.7px up / 82.5px across with 21 ticks of air time (the continuous-integration ideal is ~49.9px; the gap is per-tick discretisation plus ground damping). What this round adds is the coyote jump (an explicit wiki move) plus the drop-off fetch above.
 - Because "there is always a pole in the world" is now the norm, five older suites had their **premise** changed to turn the extension off (`mouse_pole=False`): `e2e_creatures.py` (gift->tame chain), `e2e_r10.py` (cannot hang at the top), `e2e_r28.py` / `e2e_r52.py` ("the plant is not a pole, there is no climbable beam"), `e2e_r47.py` ("no pole means no climbing"); `e2e_r25.py`'s "the beam is still the beam" check now counts real poles only.
 - Verification: `work/scratch/e2e_r54.py` (38 checks); `run_all19.ps1` now runs 45 scripts with `fails=0`.
+
+**Karma flowers uprooted whole / item hand-off cooldown (round 55)**:
+
+- **The flower comes up by the root**: the moment a hand or the mouse touches it, `detach_root()` fires (the original's `KarmaFlower.cs:539-546` `DetatchStalk()` = `Consume() + growPos = null`), all 6 stalk segments travel with the flower, and **no stalk stub is left in the ground**; after release the stalk keeps its own physics (gravity sag plus the per-segment length-5 constraint). Before this we only cleared `grow_pos` and left 6 segments pinned to the ground, which read as "half pulled".
+- **Petal orientation fixed (root cause)**: `_blit_petal` used `blit(..., ay=0.0)`. `ay=0` means "sprite top edge at the anchor, growing toward +local-y", and `ang=0` is straight up in this project's y-down space, so **every petal grew 180 degrees backwards** - which showed up as "petals in the wrong place, sizes flickering, tips not meeting the ring". With `ay=1.0` petals grow from the centre out toward the petal mass (the same semantics as the decompiled `KarmaFlower.cs:359-360` `FSprite("KarmaPetal")` + `anchorY = 0`), and the `DistLess 13.5` clamp at `:189-195` finally applies.
+- **Ring degenerate-quad guard**: when a petal is eaten the original folds its ring vertex onto the centre (`:399` `array[i] = body`), so two of the four vertices coincide; `QTransform.quadToQuad` then solves a singular matrix and smears the whole 32x32 ring across the screen. `_draw_ring` now bails out whenever the quad area is `< 4.0`.
+- **Teleport-drag no longer explodes**: when the flower is yanked tens of pixels in one tick (mouse flung across the screen) the new `_carry_shift()` spreads the centre displacement across the stalk segments within the length limit; petals and stalk stay inside 13.5 / 60px and are no longer stretched into a line.
+- **The glow is drawn on the centroid**: at `:408-410` the glow centre is `(body + petals) / n`, not the body; copied as-is the glow sits about 4px above the body (the petals pull the centroid up).
+- **"4 petals" is the original's fact**: `KarmaFlower.cs:120` `petals = new Part[4]`. The "five petals" you described is actually the ring mesh resolution (`:362/405` `MakeGridMesh("EndGameCircle", 5)` + `QuadGridMesh(array, mesh, 5)`). We keep 4 petals plus the 5-segment mesh, matching vanilla.
+- **Size audit (measured off your three vanilla screenshots)**: `codex-clipboard-9ff22071` and `65709251` are 1:1 (stalk 6 segments x 5px = 30px checks out) while `004a09dd` is about 7x zoomed (excluded). In the 1:1 shots the bright-gold flower head bbox is 15x15px, the stalk spans 31px vertically, stalk-to-centre is about 16px and centre-to-petal-tip about 11px - exactly what our `PETAL_MAX 13.5` and 6x5 = 30 stalk give, so **this round changes orientation and physics, not size**. Self-check renders: `work/scratch/r55_flower_1x.png` / `_8x.png` / `_13x.png`.
+- **Hand-off cooldown (new interaction rule)**: after picking up a **non-food** item (spear/rock/pearl/...) a slugcat rolls a **0-3s** cooldown (`tuning.ITEM_CD_KEEP = 120`) before it will "use" it (throw/drop/play with); for **food** the cap scales with hunger - **+1.5s per pip** (`ITEM_CD_FOOD = 60`, `SlugcatBody.arm_item_cd`), so 0 pips is 0-1.5s, 2 pips 0-3s, 4 pips 0-6s. During the cooldown `_launch_weapon()` / `consume_carried()` / the noodlefly-hunt aim all bail out early; **fiddling with a pearl is not "using" it and is not blocked**; moving a spear from the back to the hand (`grab_spear(..., arm=False)`) does not re-roll the cooldown; the timer keeps ticking while stunned, dead or on a pole (`creature.step` decrements it by one each tick).
+- **Five older suites had their premise changed**: `e2e_creatures.py` / `e2e_r23.py` / `e2e_r34.py` / `e2e_r39.py` / `e2e_r49.py` all expect "throw/eat within a tick or two", which conflicts with this cooldown, so they now stub `SlugcatBody.arm_item_cd` to a no-op up front (test premise only; the source is untouched).
+- **Three false failures (test-authoring issues, not source bugs)**: (1) "no whole petal in the opposite direction" sampled the horizontal mirror of the centre, but the flower is nearly symmetric so other petals legitimately cover it - it now asserts "no gold pixel at 1.8x beyond the petal tip". (2) The `max(vals) == cap` checks for "2 / 3 food pips" were sampling noise (the chance of missing endpoint `cap` in 400 draws is 3.6% / 11%), so the sample count is now 4000.
+- Verification: `work/scratch/e2e_r55.py` (28 checks); `run_all19.ps1` now runs 46 scripts with `fails=0`.
+
 
 ## Origin
 

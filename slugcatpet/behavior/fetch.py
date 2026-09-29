@@ -230,8 +230,11 @@ class FruitFetcher:
         if f is None:
             self.phase = "select"
             return False
+        # 上手冷却（用户第 55 轮）：刚拿到手先揣一会儿，冷却走完才「用」。
+        # 用 = 吃 / 送礼 / 交易；单纯叼着把玩珍珠不算用，不挡。
+        ready = self.body.item_ready()
         # 蝉乌贼：叼去喂给还没驯服的蜥蜴（原版送礼驯服），没有人要则当食物吃掉
-        if getattr(f, "is_tame_food", False):
+        if ready and getattr(f, "is_tame_food", False):
             lz = self.win.nearest_untamed_lizard(self.body.chunk0.x)
             if lz is not None:
                 self._deliver = lz
@@ -240,6 +243,8 @@ class FruitFetcher:
                 return False
         # 不能吃的东西（珍珠）：叼去跟拾荒者交易（原版：手里的珍珠换东西）
         if not getattr(f, "is_edible", True):
+            if not ready:
+                return False                 # 冷却期：先攥着，别急着交易/撒手
             sc = self.win.nearest_scavenger(self.body.chunk0.x)
             if sc is not None:
                 self._trade_to = sc
@@ -258,7 +263,7 @@ class FruitFetcher:
         # 悬空卡死兜底超时
         if self.timer > CARRY_FALL_TIMEOUT and f.stalk is not None:
             f.stalk = None
-        if self.body.on_floor() or self.body.on_pole:
+        if ready and (self.body.on_floor() or self.body.on_pole):
             self.phase = "eat"
             self.timer = 0
             self.eat_counter = 0

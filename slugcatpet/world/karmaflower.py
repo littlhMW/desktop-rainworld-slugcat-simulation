@@ -52,6 +52,7 @@ HOVER_DX = 7.0
 ROOT_DX = 9.0
 ROOT_MAX_DROP = 64.0          # TryRoot 只往下找 4 格（4x16px）
 DAMP_AIR = 0.95               # Part.Update：vel *= 0.95
+TELEPORT_JUMP = 24.0          # 单 tick 位移超过它按「瞬移」处理：部件整块跟着走
 DAMP_WATER = 0.7
 DROOP = 0.4                   # 悬空时茎端下垂力
 STIFF = 2.3                   # n=2..5 的 ±dir*2.3 拉直
@@ -179,9 +180,35 @@ class KarmaFlower(Fruit):
         """断根（原版被抓住 / 被武器命中时 growPos = null）。"""
         self.grow_pos = None
 
+    def _carry_shift(self) -> None:
+        """被手/鼠标瞬移搬动（一 tick 跨几十像素）时，把花瓣和茎整块平移。
+
+        否则弹簧项吃到的「体速度」= 一整帧的位移，部件会被甩到几屏外，
+        渲染出来就是拉丝/爆炸。
+        """
+        dx, dy = self.x - self.last_x, self.y - self.last_y
+        if dx * dx + dy * dy <= TELEPORT_JUMP * TELEPORT_JUMP:
+            return
+        for pt in self.petals:
+            pt[0] += dx
+            pt[1] += dy
+            pt[2] += dx
+            pt[3] += dy
+        for sp in self.stalk_pts:
+            sp[0] += dx
+            sp[1] += dy
+            sp[2] += dx
+            sp[3] += dy
+        self.last_x, self.last_y = self.x, self.y
+
     # ── 物理 ──
     def step(self, WL: float, HL: float) -> None:
         if self.state in (ItemState.CARRIED, ItemState.MOUSE):
+            if self.grow_pos is not None:
+                # 被手/鼠标拿起的瞬间连根拔起（原版 DetatchStalk）：整株连茎一起走，
+                # 地上不留残茎；之后茎靠自己的弹簧/重力继续甩
+                self.detach_root()
+            self._carry_shift()
             self._contact_floor = False
             self._parts_step()          # 花体被手/鼠标搬，只有花瓣与茎在跟
             return
@@ -346,12 +373,30 @@ class KarmaFlower(Fruit):
 
 # ── 绘制 ──
 def _blit_petal(painter, atlas, spr, x, y, ang, d) -> None:
+    """花瓣贴图：锚在花心、朝花瓣质点伸出（等价原版 FSprite.anchorY = 0）。
+
+    blit 的 ay=0 是「贴图顶边贴锚点、朝 +local-y 生长」，而 ang=0 在我们的 y↓
+    坐标里是正上方 —— 用 ay=0 每片花瓣都会朝 180° 反向长（花瓣位置全错、
+    末端接不到花环、花看起来忽大忽小）。ay=1 才是「底边贴锚点、朝 -local-y
+    生长」，和 Unity 的 anchorY=0 同向。
+    """
     blit(painter, atlas, spr, x, y, ang, PETAL_SCALE_X, d / PETAL_ART_LEN,
-         GOLD_RGB, ax=0.5, ay=0.0)
+         GOLD_RGB, ax=0.5, ay=1.0)
 
 
 def _draw_ring(painter, atlas, quad) -> None:
-    """原版 TriangleMesh.QuadGridMesh 把 EndGameCircle 铺在 4 个花瓣尖之间。"""
+    """原版 TriangleMesh.QuadGridMesh 把 EndGameCircle 铺在 4 个花瓣尖之间。
+
+    quadToQuad 对退化四边形（花瓣被啃光、或被弹簧挤成一条线）会解出奇异矩阵，
+    把 32x32 的花环贴图整块拉爆 —— 先按面积判据挡掉。
+    """
+    area = 0.0
+    for i in range(4):
+        ax, ay = quad[i]
+        bx, by = quad[(i + 1) % 4]
+        area += ax * by - bx * ay
+    if abs(area) < 4.0:
+        return
     key = atlas.find_atlas(RING_SPRITE)
     if key is None:
         return
@@ -428,6 +473,7 @@ def draw_karmaflower(painter, atlas, kf, ts: float = 1.0) -> None:
     y = kf.last_y + (kf.y - kf.last_y) * ts
     _draw_stalk(painter, atlas, kf, ts)
     quad = []
+    gx, gy, gn = x, y, 1.0
     for i in range(PETAL_N):
         pt = kf.petals[i]
         px = pt[2] + (pt[0] - pt[2]) * ts
@@ -437,7 +483,11 @@ def draw_karmaflower(painter, atlas, kf, ts: float = 1.0) -> None:
             _blit_petal(painter, atlas, PETAL_SPRITE, x, y, _aim(x, y, px, py), d)
             ux, uy = _dir(x, y, px, py)
             quad.append((px + ux * 2.0, py + uy * 2.0))
+            gx += px
+            gy += py
+            gn += 1.0
         else:
             quad.append((x, y))
     _draw_ring(painter, atlas, quad)
-    _draw_glow(painter, x, y, kf.movement, kf.bites)
+    # 原版：光斑中心 = (花心 + 各花瓣) 的重心
+    _draw_glow(painter, gx / gn, gy / gn, kf.movement, kf.bites)

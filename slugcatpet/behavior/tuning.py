@@ -512,6 +512,11 @@ REACH_GATE_K = 2.0
 COYOTE_TICKS = 5                 # 接地授权（跑出边缘仍可跳）
 POLE_COYOTE_TICKS = 1            # 杆上 canJump=1：松手后剩 1 tick
 
+# 上手冷却（用户第 55 轮）：拿到东西后先揣一会儿才会「用」（吃/投/送/交易）。
+# 非食物：0-3s 随机；食物：按饱食度，每格 +1.5s 上限（0 格 0-1.5s、2 格 0-3s）。
+ITEM_CD_KEEP = 120               # 非食物道具：0-120 tick（3s）
+ITEM_CD_FOOD = 60                # 食物：每格饱食度 +60 tick（1.5s）
+
 PLAN_WALK_SPEED = 4.2
 PLAN_TONGUE_SPEED = 3.0
 PLAN_CLIMB_SPEED = 1.6

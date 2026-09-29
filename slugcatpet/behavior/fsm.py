@@ -5728,6 +5728,8 @@ class BehaviorFSM:
     def _launch_weapon(self, dir_x, tgt=None) -> bool:
         """按原版水平掷出手里的矛/石头（不做高度判断，由调用方负责对准）。"""
         b = self.body
+        if not b.item_ready():
+            return False                 # 上手冷却没走完：先攥着不扔
         if self._throw_line_blocked(dir_x, tgt):
             return False                     # 同伴挡在掷出线上：不出手
         spear = b.carried_spear
@@ -6062,6 +6064,8 @@ class BehaviorFSM:
     def _itemplay_fling(self):
         """玩够了顺手甩出去（暴躁的猫）：走原版水平投掷，石头能砸晕同伴。"""
         b = self.body
+        if not b.item_ready():
+            return                       # 上手冷却没走完：先接着玩
         dir_x = 1 if b.facing >= 0 else -1
         if b.carried_spear is not None:
             b.throw_spear(dir_x, weaponphys.frc(weak=self._exhausted), recoil=0.3)

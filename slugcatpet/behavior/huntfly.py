@@ -222,6 +222,8 @@ class FlyHunter:
         if abs(dx) < GRAB_REACH:
             self.body.walk_to(c0.x - self.throw_dir * 60.0)
             return "running"
+        if not self.body.item_ready():
+            return "running"                           # 上手冷却没走完：举着等
         self._vel = None                               # 走原版水平初速
         self.phase = "throw"
         self.throw_t = 0
