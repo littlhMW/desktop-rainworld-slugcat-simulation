@@ -23,8 +23,13 @@ def cross_point(pa, pb, tol=CROSS_TOL):
 
     原版 Room.Tile 上 verticalBeam / horizontalBeam 可同格共存，
     该格即「交叉杆」；这里用线段相交等价表达。
+
+    虚拟杆（鼠标那一小截）不参与交叉：原版杆子是固定 tile，鼠标会到处跑，
+    交叉换杆会让猫在光标处反复换手。
     """
     if pa.kind == pb.kind:
+        return None
+    if getattr(pa, "virtual", False) or getattr(pb, "virtual", False):
         return None
     v, h = (pa, pb) if pa.kind == VERTICAL else (pb, pa)
     if not _within(v.ay, v.by, h.ay, tol):
@@ -48,7 +53,7 @@ class Pole:
     """单根杆子：端点+攀爬标记（ax/ay=锚边端，bx/by=光标端）。"""
 
     __slots__ = ("kind", "ax", "ay", "bx", "by", "state", "has_been_climbed", "_id",
-                 "from_spear")
+                 "from_spear", "virtual")
 
     def __init__(self, kind, ax, ay, bx, by, seed=0):
         self.kind = kind
@@ -60,6 +65,7 @@ class Pole:
         self.has_been_climbed = False
         self._id = int(seed)
         self.from_spear = None      # 由插进墙/地的矛变成的杆（非 None 时指向那枝矛）
+        self.virtual = False        # 鼠标那截「随光标移动的竖杆」：不渲染、不换代
 
     # ── 竖杆便捷访问 ──
     @property

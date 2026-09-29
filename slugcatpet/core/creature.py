@@ -108,6 +108,7 @@ class SlugcatBody:
         self.walk_target_x = None
         self.walk_speed_target = None
         self.dead = False
+        self.coyote = 0                 # 土狼窗口剩余 tick（离地后仍可跳）
         self._jump_pending = None       # None/"stand"/"protest"
         self._jump_hold = None          # 下次跳持跳时长（None=到衰减完）
         self._jump_hold_left = None     # 本次腾空剩余持跳（None=不截断）
@@ -1200,6 +1201,10 @@ class SlugcatBody:
                 c1.y = self.feet_stuck[1]
 
         on_ground = self.on_floor()
+        if on_ground:
+            self.coyote = tuning.COYOTE_TICKS    # 踩地就续窗口（原版 canJump = 5）
+        elif self.coyote > 0:
+            self.coyote -= 1
         if not on_ground:
             self.bodyMode = "Default"
         elif self.standing:
@@ -1249,10 +1254,11 @@ class SlugcatBody:
             if grounded:
                 target = max(-dyn, min(dyn, c.vx)) if move_x != 0 else 0.0
                 c.vx += (target - c.vx) * SKID_DAMP
-        if self._jump_pending is not None and on_ground:
+        if self._jump_pending is not None and (on_ground or self.coyote > 0):
             self._do_jump(self._jump_pending, move_x, self._jump_hold)
             self._jump_pending = None
             self._jump_hold = None
+            self.coyote = 0                 # 窗口一次性
 
         # 持跳可变跳高：原版 Player.cs:12188 只要求 jumpBoost>0 且按住跳键
         if self.jump_boost > 0:
@@ -1339,6 +1345,7 @@ class SlugcatBody:
 
     def _do_jump(self, kind, move_x, hold_ticks=None):
         c0, c1 = self.chunk0, self.chunk1
+        self.coyote = 0
         self.feet_stuck = None
         self.crawl_anchor = None
         self.crawl_pose = 0.0

@@ -389,6 +389,8 @@ class BehaviorFSM:
         self._hp_goal_x = None        # 上横杆去够的东西的 x（横杆可达食物）
         self._hp_goal_obj = None
         self._hp_goal_t = 0           # 杆上够这个目标已经等了多久（超时放弃）
+        self._hp_step_cd = 0          # 横杆下杆捡东西的冷却
+        self._hp_step_obj = None     # 正在为它沿杆挪到下杆位置的窗口顶边目标
         self._hp_jump_goal = None     # 杆上起跳后空中要摘的东西      # 上次挡我路的人（跳过去后可能回头指他）
         self._scold_left = 0
         self._scold_cd = 0
@@ -2637,9 +2639,41 @@ class BehaviorFSM:
             return True
         return False
 
+    def _air_catch_item(self) -> bool:
+        """空中伸手摘路过的东西（果子/珍珠/种子…）——原仓库版那种空中互动。
+
+        原版蛞蝓猫在空中本来就能上手抓（Player.cs 抓住判据不看是否踩地），
+        杆上跳起来摘我们已经有；这里补上「下落途中路过就顺手摘」。
+        """
+        b = self.body
+        if b.carried_fruit is not None or self.grab.active:
+            return False
+        side = b.pick_hand("fruit")
+        if side is None:
+            return False
+        hx, hy = b._carry_pos(side)
+        items = [*self.win.fruits, *self.win.seeds, *self.win.slimemolds]
+        if self.win.pearls:
+            items += self.win.pearls
+        if not b.flower_karma and self.win.karmaflowers:
+            items += self.win.karmaflowers
+        for f in items:
+            if getattr(f, "state", None) not in ("free", "hanging"):
+                continue
+            if getattr(f, "is_meat", False) and self.pers.diet in (DIET_VEGETARIAN, DIET_SPECIAL):
+                continue
+            if math.hypot(f.x - hx, f.y - hy) > tuning.GRAB_REACH:
+                continue
+            if getattr(f, "stuck_pos", None) is not None:
+                continue                     # 还粘在黏菌/植株上：空中顺手摘不到
+            b.grab_fruit(f, side)
+            return True
+        return False
+
     def _st_airborne(self, cursor, disturbed):
         b = self.body
         self._hp_jump_grab()
+        self._air_catch_item()           # 空中顺手摘路过的东西
         self._air_throw()                # 空中投矛
         if self._air_pole_cd > 0:
             self._air_pole_cd -= 1
@@ -3041,6 +3075,9 @@ class BehaviorFSM:
             return
         if self._pole_reach_pickups():   # 杆上伸手：捡矛/石头、徒手抓飞虫
             return
+        if self._hpole_step_off():       # 杆面够不到、落到窗口顶边才够得到 → 沿着杆挪到位再下去
+            return                       # （必须排在 _pole_leave_for_food 前面：那条是「走地面
+                                         #   路线」，对摆在窗口顶边上的东西会走空）
         if self._pole_leave_for_food():  # 杆上等同地面：有别的更想吃的就下杆去拿
             return
         if self._hpole_goal_grab():      # 上杆来够的东西：够到就摘下来
@@ -3079,7 +3116,10 @@ class BehaviorFSM:
             for p in self.win.poles:
                 if p.kind != "horizontal" or not self._hpole_spans(p, x=f.x, r=tuning.HPOLE_GOAL_EPS):
                     continue
-                if abs(f.y - p.ay) > tuning.HPOLE_GOAL_R:
+                # 杆面能拿到的高度带：杆上跳得到（上方 HPOLE_GOAL_R）或贴杆探得到（下方
+                # HPOLE_HAND_DOWN）。再低的就是摆在窗口顶边上的，得下杆去捡（见 _hpole_step_off）
+                if not (p.ay - tuning.HPOLE_GOAL_R <= f.y
+                        <= p.ay + tuning.HPOLE_HAND_DOWN):
                     continue
                 g = p
                 break
@@ -3154,6 +3194,8 @@ class BehaviorFSM:
             return False
         if self.timer < tuning.POLE_LEAVE_MIN_TICKS:
             return False                 # 刚上杆先待一会儿，别上去就下来
+        if self._hp_step_obj is not None:
+            return False                 # 正沿着杆挪到下杆位置：别被「走地面」抢走
         if self.state == "HPole" and self._hp_goal_x is not None:
             return False                 # 上杆本来就是为了够那个东西
         if not (b.food < b.food_max and self._food_seek_ready()):
@@ -3185,10 +3227,104 @@ class BehaviorFSM:
         self._hp_goal_obj = None
         self._hp_goal_t = 0
         self._hp_jump_goal = None
+        self._hp_step_obj = None
         h = getattr(self, "hpole", None)
         if h is not None:                # 控制器还留着停位 → 它会原地站到天荒地老
             h.goal_x = None
             h.goal_eps = None
+
+    def _platform_under(self, o):
+        """o 摆在哪块「别人窗口顶边」上；不是平台就 None。返回 (y, x0, x1)。"""
+        from ..core import chunkphys
+        for x0, y0, x1 in chunkphys.platforms():
+            if x0 <= o.x <= x1 and abs(o.y - y0) <= tuning.HPOLE_STEP_SURF_EPS:
+                return (y0, x0, x1)
+        return None
+
+    def _hpole_step_off(self) -> bool:
+        """横杆上：杆面够不到、但落到下面那块窗口顶边才够得到的东西 → 沿杆挪到位再下杆。
+
+        原版横杆只是脚下的地面（够不到就下杆）；用户口径要求补上
+        「从横杆跳到窗口地面捡东西」：别人窗口顶边是单向平台，
+        先沿杆面走到那块平台上方，再松杆落上去，落地后由普通取物流程接手
+        （那时脚下地面＝平台，规划层 stand_h() 会认它）。
+
+        返回 True 只在「已经松杆、切到 Airborne」那一帧 —— 还在沿杆挪的时候
+        必须返回 False，否则调用方会直接 return 掉、hpole.update() 永远跑不到，猫卡在原地。
+        """
+        b = self.body
+        if self._hp_step_cd > 0:
+            self._hp_step_cd -= 1
+        h = self.hpole
+        if h is None or self.state != "HPole":
+            self._hp_step_obj = None
+            return False
+        if self._hp_goal_x is not None:      # 正在为别的目标走位
+            return False
+        if b.carried_fruit is not None or self.grab.active or self._exhausted:
+            self._hp_step_obj = None
+            return False
+        p = h.pole
+        c0, c1 = b.chunk0, b.chunk1
+        f = self._hp_step_obj
+        if f is not None:                    # 已经瞄上了：中途失效就作废
+            surf = self._platform_under(f)
+            if (getattr(f, "state", None) not in ("free", "hanging")
+                    or surf is None or b.food >= b.food_max
+                    or not self._hpole_spans(p, x=f.x)
+                    or not (surf[0] > p.ay + tuning.HPOLE_STEP_MIN_DROP)):
+                f = self._hp_step_obj = None
+        if f is None:
+            if self._hp_step_cd > 0:
+                return False
+            best = None
+            for cand in self.win.fetchables(want_karma=not b.flower_karma):
+                if getattr(cand, "state", None) not in ("free", "hanging"):
+                    continue
+                if not getattr(cand, "fetch_ready", True):
+                    continue
+                if getattr(cand, "is_meat", False) and self.pers.diet in (DIET_VEGETARIAN, DIET_SPECIAL):
+                    continue
+                if (self._hpole_spans(p, x=cand.x)
+                        and cand.y <= p.ay + tuning.HPOLE_HAND_DOWN):
+                    continue                 # 杆面（贴杆伸手/杆上跳）够得到：交给普通杆上流程
+                surf = self._platform_under(cand)
+                if surf is None:
+                    continue                 # 地板上的东西由 _pole_leave_for_food 负责
+                if not (surf[0] > p.ay + tuning.HPOLE_STEP_MIN_DROP):
+                    continue                 # 那块面不比杆面低：不是「跳下去」能解决的
+                d = abs(cand.x - c0.x)
+                if best is None or d < best[0]:
+                    best = (d, cand, surf)
+            if best is None:
+                return False                 # 杆上没有「摆在窗口顶边上」的目标：
+                                             # 不掷 _food_seek_ready 的骰子（别白吃随机流）
+            if not (b.food < b.food_max and self._food_seek_ready()):
+                return False
+            _, f, _surf = best
+            self._hp_step_obj = f
+        sy, sx0, sx1 = self._platform_under(f)
+        # 先沿杆面挪到那块平台上方（平台窄就走到最近处）
+        # 落点留一步：正对着目标落下去 = 直接踩在果子上，会把果子顺着单向平台压穿
+        step = tuning.HPOLE_STEP_STANDOFF * (-1.0 if f.x >= c0.x else 1.0)
+        tx = f.x + step
+        if sx1 - sx0 > 36.0:
+            tx = min(max(tx, sx0 + 8.0), sx1 - 8.0)
+        lo, hi = (p.ax, p.bx) if p.ax <= p.bx else (p.bx, p.ax)
+        tx = min(max(tx, lo + 2.0), hi - 2.0)
+        if abs(c0.x - tx) > tuning.HPOLE_GOAL_EPS:
+            h.goal_x = tx
+            h.goal_eps = tuning.HPOLE_GOAL_EPS
+            return False                     # 让 hpole.update() 接着沿杆挪
+        # 到位：松杆落向那块面，落地后普通取物流程接手
+        self._hp_step_obj = None
+        self._hp_step_cd = tuning.HPOLE_STEP_CD
+        d = 1 if f.x >= c0.x else -1
+        b.facing = d
+        self._hpole_release()
+        b.release_to_air(move_dir=d)
+        self._transition("Airborne")
+        return True
 
     def _hpole_goal_grab(self) -> bool:
         """在杆上够到目标物就抓进手里（原版 beam 上伸手摘）。"""

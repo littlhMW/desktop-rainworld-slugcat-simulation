@@ -506,6 +506,12 @@ GRAB_REACH = 18.0
 REACH_GATE_K = 2.0
 
 # 运动规划层：覆盖几何、粗线性代价、执行器失败语义
+# 土狼跳（Controls「土狼跳」/「杆上土狼跳」）：原版 Player.cs:7798 StandOnBeam
+# 给 canJump=5、7840 ClimbOnBeam 给 canJump=1；Player.cs:5512 每 tick 减 1，
+# 于是跑出边缘/松杆后这几帧内仍然跳得起来。AI 路径原本要求「此刻正踩地」。
+COYOTE_TICKS = 5                 # 接地授权（跑出边缘仍可跳）
+POLE_COYOTE_TICKS = 1            # 杆上 canJump=1：松手后剩 1 tick
+
 PLAN_WALK_SPEED = 4.2
 PLAN_TONGUE_SPEED = 3.0
 PLAN_CLIMB_SPEED = 1.6
@@ -564,6 +570,13 @@ HPOLE_GOAL_EPS = 10.0          # 上横杆后离目标 x 多近算走到位
 HPOLE_GOAL_R   = 84.0          # 横杆线上离食物多近算「够得着」（上杆去拿）
 HPOLE_GOAL_TIGHT_EPS = 2.0     # 杆上伸手够东西时用的收紧停位（10 的余量够不到目标）
 HPOLE_GOAL_TIMEOUT   = 150     # 杆上够不到的目标最多再等这么久就放弃（别原地发呆/掉下杆）
+# 横杆 → 窗口地面（别人窗口顶边＝单向平台）：杆面够不到、落到那块面上才够得到就下杆
+HPOLE_HAND_DOWN      = 12.0    # 贴杆伸手能探到杆面之下多少（实测悬挂偏移 c0.y-p.ay=-11,
+                               #   GRAB_REACH=18 → 手最远探到杆面下 ~7px；取 12 留点余量）
+HPOLE_STEP_MIN_DROP  = 14.0    # 目标的面比杆面低这么多才算「跳下去」够得到
+HPOLE_STEP_SURF_EPS  = 18.0    # 目标离面这么近才认为它是摆在那块面上的
+HPOLE_STEP_CD        = 200     # 下杆捡东西的冷却（防上上下下抽风）
+HPOLE_STEP_STANDOFF  = 20.0    # 落点离目标留一步：正对着目标落下去会把果子顺着单向平台压穿
 
 BLOCKED_POINT_PROB  = 0.55      # 推完回头指指点点的概率（再乘性格系数）
 BLOCKED_POINT_FIRST_MAX = 0.45  # 暴躁/爱指的猫被挡时「先指指点点不跳」的最大概率

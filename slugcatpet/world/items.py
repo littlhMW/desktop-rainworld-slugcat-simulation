@@ -656,6 +656,8 @@ class ItemInteractionMixin:
     def _draw_poles(self, p):
         p.save()
         for pl in self.poles:
+            if getattr(pl, "virtual", False):
+                continue        # 光标那截：看不见，只是给猫爬的
             if getattr(pl, "mimic", None) is not None:
                 continue
             self._draw_pole_rod(p, pl.ax, pl.ay, pl.bx, pl.by, POLE_RAD)

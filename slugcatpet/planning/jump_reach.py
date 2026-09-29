@@ -30,7 +30,7 @@ class JumpReach(Ability):
         gx, gy = goal.pos()
         xmin, xmax = walk_band(pet)
         stats = pet.cat.stats
-        floor = pet._HL
+        floor = pet.stand_h()
         hipx = pet.body.chunk1.x
         best = None
         best_t = None

@@ -299,6 +299,8 @@ class PoleClimber:
         self.gfx.disbalance = 0.0
 
     def release(self):
+        self.body.coyote = max(getattr(self.body, "coyote", 0),
+                               tuning.POLE_COYOTE_TICKS)
         self.body.chunk0.pinned = False
         self.body.chunk1.pinned = False
         self.body.on_pole = False

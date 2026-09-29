@@ -33,6 +33,11 @@ GROUND_INSET = 16.0
 # 其它窗口顶边＝单向平台：多久重新枚举一次
 PLATFORM_REFRESH_TICKS = 30
 
+# 光标＝一小节竖杆（用户指定的桌宠扩展；原版没有这根杆）：
+# 半长 + 上边留白，杆心跟着光标跑，猫能爬/站在光标上。
+MOUSE_POLE_HALF = 17.0
+MOUSE_POLE_TOP_PAD = 2.0
+
 # 窗口抖动
 SHAKE_DECAY = 0.8
 SHAKE_MAX = 6.0
@@ -239,6 +244,9 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # 放杆子
         self.poles = []
         self._pole_seed = 0
+        # 光标那一小截竖杆（不渲染、不换代、不存档）
+        self._mouse_pole = None
+        self._mouse_pole_on = bool(self._params.get("mouse_pole", True))
 
         # 寒冷系统
         self.blizzard_on = not tuning.COLD_BLIZZARD_DEFAULT_OFF
@@ -637,6 +645,50 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         chunkphys.set_platforms(enumerate_tops(own, self._area.x(), self._area.y(),
                                                self._scale))
 
+    def _mouse_pole_tick(self, cur) -> None:
+        """光标＝一小节竖杆（用户指定的桌宠扩展）。
+
+        原版杆子是房间 tile，没有「跟着鼠标跑的杆」；这里把它做成一段短竖杆
+        塞进 poles，规划层（PoleJumpReach / hop_plan / PoleClimber）与真杆完全同源，
+        于是猫会把光标当成可爬、可站、可跳过去抓的杆。
+        虚拟杆不渲染、不参与交叉换杆（见 Pole.virtual / cross_point）。
+        """
+        pl = self._mouse_pole
+        cx, cy = (cur if cur is not None else (None, None))
+        # 拖着猫的时候光标压在猫身上，这根杆会和猫完全重合（猫会去抓自己脚下那根杆），
+        # 拖拽期间不生成；松手之后光标还在窗口内就照旧出现。
+        busy = any(getattr(getattr(pet, "behavior", None), "grab", None) is not None
+                   and pet.behavior.grab.active for pet in getattr(self, "pets", ()))
+        on = (self._mouse_pole_on and not busy and cx is not None
+              and 0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL)
+        if not on:
+            if pl is not None:
+                pl.state = ItemState.GONE
+                if pl in self.poles:
+                    self.poles.remove(pl)
+                self._mouse_pole = None
+                self.geometry_version += 1
+                self.world_version += 1
+            return
+        top = max(MOUSE_POLE_TOP_PAD, cy - MOUSE_POLE_HALF)
+        bot = min(self._HL, cy + MOUSE_POLE_HALF)
+        if pl is None:
+            from .world.pole import Pole, VERTICAL
+            pl = Pole(VERTICAL, cx, bot, cx, top)
+            pl.virtual = True
+            self._mouse_pole = pl
+            self.poles.append(pl)
+            self.geometry_version += 1
+            self.world_version += 1
+            return
+        # 跟着光标移动：端点每 tick 重写（PoleClimber 每 tick 重读，于是被带着走）
+        pl.ax, pl.ay, pl.bx, pl.by = cx, bot, cx, top
+        pl.state = ItemState.FREE     # clear_poles 会把它打成 GONE：又出现在场上了就复活
+        if pl not in self.poles:      # clear_poles 之类清空过
+            self.poles.append(pl)
+            self.geometry_version += 1
+            self.world_version += 1
+
     def _do_tick(self):
         """推进一个物理 tick。"""
         self._pole_tick += 1
@@ -650,6 +702,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if abs(self._shake[0]) + abs(self._shake[1]) < SHAKE_EPS:
             self._shake[0] = self._shake[1] = 0.0
         cur = self.cursor_logical()
+        self._mouse_pole_tick(cur)
 
         # 躲杀期间周期性抬窗到弹窗之上
         if self._any_kill_dialog():
@@ -1215,6 +1268,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             put(sd.x - r, sd.y - r, sd.last_x - r, sd.last_y - r)
             put(sd.x + r, sd.y + r, sd.last_x + r, sd.last_y + r)
         for pl in self.poles:
+            if getattr(pl, "virtual", False):
+                continue        # 光标杆每帧乱跑，不该撑大脏矩形
             xs.append(pl.ax); xs.append(pl.bx)
             ys.append(pl.ay); ys.append(pl.by)
         lamp = self.lamp

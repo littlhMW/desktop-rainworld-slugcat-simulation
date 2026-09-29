@@ -14,7 +14,7 @@ class WalkReach(Ability):
         # 地面带内且高度不超限才可走
         pet = self.pet
         gx, gy = goal.pos()
-        floor = pet._HL
+        floor = pet.stand_h()
         if gy < floor - max_h or gy > floor + tuning.PLAN_FLOOR_TOL:
             return None
         xmin, xmax = walk_band(pet)
@@ -38,7 +38,7 @@ class WalkReach(Ability):
         # 地面带上找落在 radius 圆内的落脚点
         pet = self.pet
         gx, gy = goal.pos()
-        dy = abs(gy - pet._HL)
+        dy = abs(gy - pet.stand_h())
         if dy > r:
             return None
         half = math.sqrt(r * r - dy * dy)

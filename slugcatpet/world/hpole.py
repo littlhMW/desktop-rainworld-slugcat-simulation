@@ -467,6 +467,7 @@ class HPoleController:
     # 打断清理
     def release(self):
         b = self.body
+        b.coyote = max(getattr(b, "coyote", 0), tuning.POLE_COYOTE_TICKS)
         b.chunk0.pinned = False
         b.chunk1.pinned = False
         b.on_pole = False

@@ -58,6 +58,19 @@ class PetUnit:
         return getattr(self.window, name)
 
     # ── 构建 ──
+    def stand_h(self) -> float:
+        """当前站立面高度：窗口地板 or 别人窗口顶边（单向平台）。
+
+        规划层原本一律按窗口地板算起跳/落脚高度，于是站在窗口顶边上的猫
+        「旁边那块果子」都算不出够得到（用户口径：被遮挡的窗口段不算地面，
+        露出来的顶边就是一块平地）。落地后 chunk1.support_y 就是那块面的 y。
+
+        没有 support_y 时回窗口地板线 body.H（**不是** body._floor_h：那个是
+        当前姿势的地板线，匍匐/下滑时会比 H 低几像素，规划层跟着抖）。
+        """
+        s = self.body.chunk1.support_y
+        return self.body.H if s is None else s
+
     def _build(self, init_state: dict, spawn_x: float | None = None):
         w = self.window
         self.layout_data = Layout.for_cat(self.cat)   # 部件摆位
