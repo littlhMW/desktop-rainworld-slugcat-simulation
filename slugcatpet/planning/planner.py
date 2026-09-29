@@ -69,18 +69,20 @@ class Planner:
     }
 
     def _route_cost(self, c) -> float:
-        fac = 1.15 - 0.9 * self._bravery()           # 谨慎 ←→ 莽
+        # 只有一个轴管「路上敢不敢冒险」：risk_tolerance。bravery 管的是面对
+        # 敌人敢不敢上（见 fsm），两者不重复计。
+        fac = 1.15 - 1.2 * self._axis("risk_tolerance")      # 谨慎 ←→ 莽
         risk = self._ROUTE_RISK.get(c.ability_key, 0.3)
         return c.time_est * (1.0 + tuning.ROUTE_RISK_W * risk * fac)
 
-    def _bravery(self) -> float:
-        """本猫的勇敢度：优先取行为层当前的人格（运行期可能被替换）。"""
+    def _axis(self, name: str) -> float:
+        """取性格轴（0..1）：优先行为层当前人格（运行期可能被替换），再回落种族原型。"""
         beh = getattr(self.pet, "behavior", None)
         pers = getattr(beh, "pers", None)
         if pers is None:
             pers = getattr(getattr(self.pet, "cat", None), "personality", None)
         try:
-            return min(1.0, max(0.0, float(getattr(pers, "bravery", 0.5))))
+            return min(1.0, max(0.0, float(getattr(pers, name, 0.5))))
         except (TypeError, ValueError):
             return 0.5
 

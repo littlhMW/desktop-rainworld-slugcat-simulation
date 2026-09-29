@@ -5,6 +5,7 @@ import random
 
 from .behavior import tuning
 from .cats import get as get_cat_def
+from .cats.personality import individualize
 from .cats.saint.tongue import Tongue
 from .control.vmath import dirvec
 from .core.creature import SlugcatBody
@@ -20,6 +21,14 @@ TONGUE_ROOT_W = 1.8
 TONGUE_TIP_W = 0.3
 
 ZEROG_ROOM_GRAVITY = 0.5     # 判为零重力的阈值
+
+
+def _pers_seed(pet_id: str, index: int, variant: str) -> int:
+    """个体性格种子：由 (族, id, index) 稳定散列（不用内置 hash，它带随盐）。"""
+    h = 0x811C9DC5
+    for ch in "%s:%s:%d" % (variant, pet_id, index):
+        h = ((h ^ ord(ch)) * 0x01000193) & 0xFFFFFFFF
+    return h
 # 零重力甩尾
 ZEROG_TAIL_RATE = 0.08
 ZEROG_TAIL_AMP0 = 0.4
@@ -40,6 +49,10 @@ class PetUnit:
         self.id = pet_id
         self.variant = variant
         self.cat = get_cat_def(variant)     # 种族定义
+        # 个体性格：在原型的连续轴上做小幅偏移（原版 IndividualVariation）。
+        # 种子只取自 (族, id, index) → 同一只猫每次启动都一样，可复现。
+        self.personality = individualize(self.cat.personality,
+                                         _pers_seed(pet_id, index, variant))
         self._reincarnate_pending = False
         self._cramp_delay = -1                              # <0 才可再抽
         self._cold_rng = random.Random(0xC01D + index)      # 确定性
@@ -247,7 +260,7 @@ class PetUnit:
             cg *= inv_lerp(50.0, -10.0, b.total_mass)
             if b.cold > 0.8:
                 cg *= 0.5
-            cg *= self.cat.personality.cold_gain_fac    # 低=更耐寒
+            cg *= self.personality.cold_gain_fac        # 低=更耐寒
             cg = clampf(cg, -1.0, tuning.COLD_GAIN_CLAMP_HI)             # 勿改
             cold_gain = cg
             b.cold += cg

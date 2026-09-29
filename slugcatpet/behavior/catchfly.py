@@ -89,7 +89,8 @@ class FlyCatcher:
             c0 = self._c0()
             self.target = min(cands, key=lambda o: _goal_key(
                 self.win, o, math.hypot(c0.x - o.x, c0.y - o.y),
-                tuning.INTEREST_JITTER, tuning.INTEREST_TAKEN_MUL))
+                tuning.INTEREST_JITTER, tuning.INTEREST_TAKEN_MUL,
+                kind="catch"))
             f = self.target
             self.timer = 0
         if not getattr(f, "catchable", False):

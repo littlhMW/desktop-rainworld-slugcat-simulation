@@ -145,7 +145,8 @@ class FlyHunter:
         c0 = self._c0()
         self.target = min(flies, key=lambda f: goal_key(
             self.win, f, math.hypot(c0.x - f.x, c0.y - f.y),
-            tuning.INTEREST_JITTER, tuning.INTEREST_TAKEN_MUL))
+            tuning.INTEREST_JITTER, tuning.INTEREST_TAKEN_MUL,
+            kind="hunt"))
         # 已有武器直接用
         if self.body.carried_stone is not None or self.body.carried_spear is not None:
             self.weapon = self.body.carried_spear or self.body.carried_stone

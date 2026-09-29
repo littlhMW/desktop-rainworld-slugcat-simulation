@@ -30,6 +30,7 @@ PANIC_R = 150.0
 AIM_TICKS = 34            # 瞄准时长
 THROW_CD = 90
 IDLE_TICKS = (90, 260)
+SPACE_R = 34.0             # 同族之间的站位间距（wiki：支配度低的会给高的让位）
 FLEE_TICKS = 260
 
 # 原版 ScavengerAI.CheckThrow：在目标体节里挑 |DirVec.x| 最大的那一节下手；
@@ -133,6 +134,47 @@ def _lerp_map(v, a, b, A, B, e=1.0):
     if e != 1.0:
         t = t ** e
     return A + (B - A) * t
+
+
+PERS_AXES = ("aggression", "bravery", "dominance", "energy",
+             "nervousness", "sympathy")
+
+
+def individual_personality(rng, elite=False):
+    """拾荒者的六个个体属性（wiki「拾荒者」页的个体差异表）。
+
+    原版这些量来自 AbstractCreature.personality，桌宠没有那一层，于是按个体
+    抽样：精英（带队的那只）侵略性和支配欲更高，一眼就能看出谁说话算数。
+    """
+    p = {}
+    for ax in PERS_AXES:
+        p[ax] = clampf(0.5 + (rng.random() - 0.5) * 0.9, 0.05, 0.95)
+    if elite:                       # 精英：更凶、更横、更有底气
+        p["aggression"] = clampf(p["aggression"] + 0.25, 0.05, 0.95)
+        p["dominance"] = clampf(p["dominance"] + 0.30, 0.05, 0.95)
+        p["bravery"] = clampf(p["bravery"] + 0.20, 0.05, 0.95)
+        p["nervousness"] = clampf(p["nervousness"] - 0.15, 0.05, 0.95)
+    return p
+
+
+def separate(scavengers, WL: float) -> None:
+    """支配度决定站位：低支配的个体从高支配的个体旁边挪开。
+
+    原版拾荒者成群时会互相保持距离，谁站中间由 dominance 决定。桌宠里一放
+    好几只就会叠在一起，所以这里按个体属性把他们摊开（只动 x，不碰状态机）。
+    """
+    live = [sc for sc in scavengers
+            if sc.state == ItemState.FREE and not sc.dead]
+    for i, a in enumerate(live):
+        for b in live[i + 1:]:
+            d = abs(a.x - b.x)
+            if d >= SPACE_R or d < 1e-6:
+                continue
+            lo, hi = ((a, b) if a.pers["dominance"] < b.pers["dominance"] else (b, a))
+            if lo.state != ItemState.FREE:
+                continue
+            away = 1.0 if lo.x <= hi.x else -1.0
+            lo.x = clampf(lo.x - away * (SPACE_R - d) * 0.5, lo.rad, WL - lo.rad)
 
 
 def individual_variations(rng, elite=False):
@@ -329,7 +371,8 @@ class Scavenger:
                  "back_spear", "look_screen", "look_up", "neutral", "eyes_open",
                  "last_flip", "last_neutral", "last_look_up",
                  "eyes_pop", "last_eyes_open", "last_eyes_pop", "blink",
-                 "_blink_off", "rise_body", "hurt_cd")
+                 "_blink_off", "rise_body", "hurt_cd",
+                 "pers", "alert_r", "speed_walk", "aim_ticks", "flee_ticks")
 
     @property
     def haul_chunk_mass(self):
@@ -368,6 +411,16 @@ class Scavenger:
         self.seed = int(seed)
         self.id = int(id)
         self._rng = _random.Random(seed * 3571 + 11)
+        self.pers = individual_personality(self._rng, elite=bool(seed % 7 == 0))
+        # 个体属性 → 已有 AI 常量（只改幅度，不加分支）：
+        #   警觉半径 ← nervousness / 走路速度 ← energy /
+        #   瞄准时长 ← aggression（越凶瞄得越快）/ 逃跑时长 ← bravery
+        self.alert_r = ALERT_R * (0.90 + 0.20 * self.pers["nervousness"])
+        self.speed_walk = SPEED_WALK * (0.92 + 0.16 * self.pers["energy"])
+        self.aim_ticks = max(6, int(round(AIM_TICKS
+                                          * (1.15 - 0.35 * self.pers["aggression"]))))
+        self.flee_ticks = max(40, int(round(FLEE_TICKS
+                                            * (1.40 - 0.70 * self.pers["bravery"]))))
         self.ivar = individual_variations(self._rng)
         (self.body_rgb, self.head_rgb, self.eye_rgb, self.belly_rgb,
          self.pupil_rgb, self.deco_rgb) = body_colors(self._rng, self.ivar)
@@ -423,8 +476,13 @@ class Scavenger:
 
     @property
     def friendly(self) -> bool:
-        """给过珍珠 → 不再把猫当猎物（原版关系值高了就不敌对）。"""
-        return self.like >= 0.6 or self.bring_pearl_home
+        """给过珍珠 → 不再把猫当猎物（原版关系值高了就不敌对）。
+
+        门槛按 sympathy 浮动：心软的个体（sympathy 高）更早把猫当自己人；
+        中性个体刚好还是原来的 0.6。
+        """
+        return (self.like >= 0.72 - 0.24 * self.pers["sympathy"]
+                or self.bring_pearl_home)
 
     def receive_pearl(self, pearl=None) -> None:
         """收到珍珠：原版 GrabObject → bringPearlHome，且 InfluenceTempLike(2f)。
@@ -612,7 +670,7 @@ class Scavenger:
 
     def _threat_scan(self, threats, cursor=None) -> None:
         """按威胁距离切态：瞄准→投矛→逃跑。"""
-        best, bd = None, ALERT_R
+        best, bd = None, self.alert_r
         for obj, pts, is_pet in threats:
             if is_pet and self.friendly:            # 交易过的拾荒者不攻击猫
                 continue
@@ -645,15 +703,15 @@ class Scavenger:
                     self.aim_t = 0
             elif self.state != "flee":
                 self.state = "flee"
-                self.state_t = FLEE_TICKS
+                self.state_t = self.flee_ticks
         if self.state == "aim":
             self.aim_t += 1
-            if self.aim_t >= AIM_TICKS and self.spear is not None:
+            if self.aim_t >= self.aim_ticks and self.spear is not None:
                 self.throw_event = (self.aim[0], self.aim[1])
                 self.spear = None
                 self.throw_cd = THROW_CD
                 self.state = "flee"
-                self.state_t = FLEE_TICKS
+                self.state_t = self.flee_ticks
         elif self.state == "flee":
             self.state_t -= 1
             if self.state_t <= 0:
@@ -669,7 +727,7 @@ class Scavenger:
         elif self.goal_pearl is not None and self.goal_pearl.state == ItemState.FREE:
             gp = self.goal_pearl                # 原版：去捡珍珠（beeline）
             self.facing = 1 if gp.x >= self.x else -1
-            self.vx += (SPEED_WALK * self.facing - self.vx) * 0.10
+            self.vx += (self.speed_walk * self.facing - self.vx) * 0.10
         else:
             self.state_t += 1
             self.idle_timer -= 1
@@ -679,7 +737,7 @@ class Scavenger:
                 self.goal_x = clampf(self._rng.uniform(60.0, WL - 60.0), 20.0, WL - 20.0)
             if abs(self.x - self.goal_x) > 10.0:
                 self.facing = 1 if self.goal_x > self.x else -1
-                self.vx += (SPEED_WALK * self.facing - self.vx) * 0.08
+                self.vx += (self.speed_walk * self.facing - self.vx) * 0.08
 
         self.x += self.vx
         self.y += self.vy

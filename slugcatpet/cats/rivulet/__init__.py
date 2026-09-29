@@ -58,6 +58,7 @@ RIVULET_DEF = CatDef(
                         temper=0.45, crawl_like=0.5, point_like=0.75,
                         bravery=0.55, kindness=0.60, play_style="hop",
                         hurry=0.6, wake_like=1.0, pearl_like=1.6,
+                        risk_tolerance=0.85, patience=0.45,   # 撒欢：爱冒险
                         toy_pref={"pole_climb": 1.2, "hpole": 1.2, "riv_flip": 1.4}),
     tuning={},
     fsm_mount=_fsm_mount,

@@ -7,6 +7,7 @@ from ..core.units import K_VEL, K_IMP, damp60, clampf, inv_lerp
 from ..core.gfxmath import (_hsl2rgb, _ang_from_up, _rot, _lerp, _catmull,
                            SHOULDER_OFF_X, SHOULDER_OFF_Y, ARM_DIV, ARM_MAX,
                            TAIL_RAD, TONGUE_WIDTH_SCALE)
+from ..behavior.anim_intent import AnimationController, PRIO_ACTION, point_of
 
 # head 骨参数
 HEAD_AIR = damp60(0.99)
@@ -218,6 +219,12 @@ class SlugcatGraphics(GraphicsDrawMixin):
         self._last_draw0 = list(self.draw0)
         self._last_draw1 = list(self.draw1)
 
+        # 动画意图：look / face 的优先级合成（behavior/anim_intent.py）。
+        # 直接 `gfx.look_at = v` 等价于按 PRIO_ACTION 提交；同优先级后写的赢，
+        # 所以旧代码的语义没变，只有显式写成高优先级的写法才真的不可被覆盖。
+        self.intent = AnimationController()
+        self._look_at = None
+        self._face_special = False
         self.look_at = None
         self.look_dir = (0.0, 0.0)
         self.sleeping = False
@@ -278,6 +285,34 @@ class SlugcatGraphics(GraphicsDrawMixin):
     def bodyMode(self):
         return self.body.bodyMode
 
+    # ── 动画意图：look / face 的优先级写入 ──
+    @property
+    def look_at(self):
+        return self._look_at
+
+    @look_at.setter
+    def look_at(self, value):
+        self.look(value, PRIO_ACTION)
+
+    @property
+    def face_special(self):
+        return self._face_special
+
+    @face_special.setter
+    def face_special(self, value):
+        self.face(value, PRIO_ACTION)
+
+    def look(self, value, prio: int = PRIO_ACTION, src: str = "") -> None:
+        # 视线目标：点 / 生物 / None；优先级高者赢，同级后写的赢。
+        value = point_of(value)      # 点 / 生物 / PetUnit 都归一到 (x, y) 或 None
+        self.intent.look(value, prio, src)
+        self._look_at = self.intent.intent.look
+
+    def face(self, value, prio: int = PRIO_ACTION, src: str = "") -> None:
+        # 特殊表情开关（救同伴 / 超度 / 指指点点时的表情）
+        self.intent.face(value, prio, src)
+        self._face_special = self.intent.intent.face
+
     def is_moving(self):
         b = self.body
         return b.is_moving() or b.move_dir != 0
@@ -288,6 +323,7 @@ class SlugcatGraphics(GraphicsDrawMixin):
 
     def update(self):
         """每帧推进，在 body.step() 之后调用。"""
+        self.intent.reset()      # 新一 tick：清优先级，值仍由写入方自己管
         b = self.body
         c0, c1 = b.chunk0, b.chunk1
 

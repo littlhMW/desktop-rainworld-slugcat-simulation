@@ -1238,6 +1238,18 @@ class Lizard:
         self.vx += (want - self.vx) * WALK_TURN
         return True
 
+    def intent(self):
+        """这只蜥蜴此刻盯上的东西 → (对象, 类型)；没有则 (None, "")。
+
+        原版每只蜥蜴有自己的 PreyTracker，桌宠的猫得让开它盯上的猎物 —— 所以
+        把它挂到和猫同一张认领板上（behavior/board.py 的 register_actor），
+        「谁在追什么」全场只有一个说法。
+        """
+        if self.dead or self.state != ItemState.FREE:
+            return (None, "")
+        obj = self.target_obj
+        return (obj, "hunt") if obj is not None else (None, "")
+
     def _pick_target(self, targets, prey=(), fight=None) -> None:
         """按「关系强度 / 距离」选目标（原版 Creature.Relationship + 猎物追踪器）。
 

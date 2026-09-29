@@ -668,6 +668,7 @@ PROTEST_WITNESS_R = 200.0   # 看见同伴被抢的半径（会跟着起哄的�
 PROTEST_WITNESS_P = 0.5     # 目击者跟着一起指指点点的概率
 ROUTE_RISK_W = 0.25         # 路线风险权重（越谨慎的猫越不愿为省时间去跳）
 GRUDGE_TICKS = 2400         # 被抢的记忆保留多久（≈60 秒）
+LOSS_SCOLD_BASE = 0.35      # 抢位形槽抢输了 → 去指指点点的基准概率
 GRUDGE_SCOLD_MUL = 3.0      # 被抢过的人靠近时，「指指点点」权重放大倍数
 PEARL_HOARD_P       = 0.25      # 每次重算的概率
 PEARL_HOARD_CD      = 900       # 放下之后这么久才会再去叼

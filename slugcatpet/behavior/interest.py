@@ -11,7 +11,7 @@
 """
 from __future__ import annotations
 
-from .board import BLACKLIST_MUL, CROWD_W, board_for
+from .board import BLACKLIST_MUL, CROWD_W, SLOT_FULL_MUL, board_for
 
 
 def _cat_id(unit) -> int:
@@ -80,12 +80,20 @@ def _others(unit):
 
 
 def goal_key(unit, obj, score: float, amp: float, taken_mul: float,
-             crowd_w: float = CROWD_W) -> float:
-    """把「耗时/距离」打分加上个体抖动、让位惩罚、拥挤成本与黑名单，供排序。"""
+             crowd_w: float = CROWD_W, kind: str | None = None) -> float:
+    """把「耗时/距离」打分加上个体抖动、让位惩罚、拥挤成本、位形槽与黑名单。
+
+    `kind` 给出目标类型（eat / hunt / catch / play / help…）时再看它的位形槽
+    还空不空：满了就乘 SLOT_FULL_MUL。**是成本不是禁止** —— 没别的选择时
+    照样会去，所以不会因为「大家都满了」而僵住。
+    """
     k = score * interest_noise(unit, obj, amp)
     if taken_by_peer(unit, obj):
         k *= taken_mul
     k *= 1.0 + crowd_w * crowd_cost(unit, obj)
-    if board_for(unit).blacklisted(unit, obj):
+    bd = board_for(unit)
+    if kind is not None and bd.full(obj, kind, skip=unit):
+        k *= SLOT_FULL_MUL
+    if bd.blacklisted(unit, obj):
         k *= BLACKLIST_MUL
     return k

@@ -13,6 +13,7 @@ from .blocking import (blocks_path, yield_target_x, on_same_pole,
                         pole_in_the_way, pole_push_role)
 from . import social
 from .board import board_for
+from .anim_intent import PRIO_FORCE, PRIO_URGENT
 from .desire import build_arbiter, MoodContext
 from .interest import goal_key as _interest_key
 from .fetch import (fetch_ready, BITE_HEAD_NUDGE, EAT_APPROACH, EAT_CHOMP_POSE,
@@ -277,7 +278,8 @@ def pick_social_wander_x(lo, hi, self_x, others_x, sociability, rng, sigma, samp
 class BehaviorFSM:
     def __init__(self, window, seed: int | None = None):
         self.win = window
-        self.pers = window.cat.personality
+        # 个体性格：PetUnit 每只猫一份「原型 + 个体偏移」；没有就回落种族原型
+        self.pers = getattr(window, "personality", None) or window.cat.personality
         self._drain_fac = 1.0 / max(0.01, self.pers.stamina)
         self._look_fac = max(0.0, 1.0 + tuning.PERS_ACT_SPREAD * (self.pers.activity - 0.5))
         self.body = window.body
@@ -872,6 +874,7 @@ class BehaviorFSM:
         # 失败黑名单都从这里来，见 board.py）。放在仲裁之前，本 tick 的
         # 选择就能看到同伴们此刻盯上了什么。
         board_for(self.win).sync(self.win, getattr(self.win, "_pole_tick", 0))
+        self._board_loss_tick()
 
         # 面敌逻辑（合并旧「躲蜥蜴」+「恐惧」两套）：威胁的唯一入口。
         # 恐慌区（FEAR_TOO_CLOSE_R 内）不管手头有没有正事一律接管；中距离只在
@@ -1095,7 +1098,7 @@ class BehaviorFSM:
         self.gfx.sleeping = lying
         self.body.sleeping = lying
         if self.state in ("LieDown", "Sleep"):
-            self.gfx.face_special = False    # 睡姿不许挂醒着的表情
+            self.gfx.face(False, PRIO_FORCE)   # 睡姿不许挂醒着的表情（不可被顶掉）
         self.gfx.dead = (self.state == "Dead")
         self.gfx.stunned = (self.state == "Stunned")
 
@@ -1177,12 +1180,12 @@ class BehaviorFSM:
             b.stop_walk()
             self._haul_left = CORPSE_HAUL_TICKS       # 拖尸总时长预算
         elif st == "LieDown":
-            self.gfx.face_special = False     # 趴下睡觉：醒着的表情收掉
+            self.gfx.face(False, PRIO_FORCE)   # 趴下睡觉：醒着的表情收掉
             b.set_posture(False)
             b.stop_walk()
             self._settle_to_rest()
         elif st == "Sleep":
-            self.gfx.face_special = False
+            self.gfx.face(False, PRIO_FORCE)
             b.set_posture(False)
             b.stop_walk()
             self._settle_to_rest()
@@ -2949,7 +2952,7 @@ class BehaviorFSM:
 
     def _st_dead(self, cursor, disturbed):
         self._clear_hands()
-        self.gfx.face_special = False
+        self.gfx.face(False, PRIO_FORCE)    # 尸体不挂表情
         # 死亡不再自行复活：只有同伴用特殊表情扒拉（_nuzzle 触碰累计）或
         # 环境致死转世（_reincarnate）才会回来。
         if self._revive_timer > 0:
@@ -4499,7 +4502,7 @@ class BehaviorFSM:
                 continue
             d = math.hypot(f.x - c1.x, f.y - c1.y)
             d = _interest_key(self.win, f, d, tuning.INTEREST_JITTER,
-                              tuning.INTEREST_TAKEN_MUL)
+                              tuning.INTEREST_TAKEN_MUL, kind="help")
             if d < bd:
                 best, bd = f, d
         return best
@@ -4742,6 +4745,39 @@ class BehaviorFSM:
         self._transition("Socialize")
         self._witness_protest(thief)
 
+    def _board_loss_tick(self):
+        """抢位形槽抢输了：看向 / 指一指 / 指指点点那个抢先的人。
+
+        位形槽满了不是「不能去」，是「去了要排队」——排队这件事在社会层要有个
+        反应（原版拾荒者、蛞蝓猫都会对「被抢先」做出动作）。太远、手里正忙、
+        正在做别的社交动作时就算了（社交动作一律不强制）。
+        """
+        if self.state not in _WANTS_FROM or self.grab.active or self._zerog():
+            return
+        loss = board_for(self.win).consume_loss(self.win)
+        if loss is None:
+            return
+        obj, winner = loss
+        if winner is None or winner is self.win or self._social_left > 0:
+            return
+        wb = getattr(winner, "body", None)
+        if wb is None or getattr(wb, "dead", False):
+            return
+        if self._protest_cd > 0:
+            return
+        d = math.hypot(wb.chunk1.x - self.body.chunk1.x,
+                       wb.chunk1.y - self.body.chunk1.y)
+        if d > tuning.PROTEST_R:          # 太远就算了：社交动作不强制
+            return
+        # 这笔账记上（下次它靠近我的东西，社交动作会偏向指指点点）
+        self._remember_grievance(winner)
+        p = clampf(tuning.LOSS_SCOLD_BASE
+                   * (0.4 + 1.2 * float(getattr(self.pers, "point_like", 0.5)))
+                   * (0.5 + 1.0 * float(getattr(self.pers, "temper", 0.5))), 0.0, 1.0)
+        if self.rng.random() < p:
+            self._protest_target = winner      # 排队到下一个空档去指指点点
+        self.gfx.look(winner, PRIO_URGENT)     # 至少先看它一眼
+
     def _witness_protest(self, thief):
         """目击同伴被抢：闲着又看得见的猫有概率跟着一起指指点点。
 
@@ -4795,10 +4831,12 @@ class BehaviorFSM:
             if p.body.carried_fruit is f or p.body.carried_stone is f:
                 return p
         holder = board_for(self.win).owner(f)
-        if (holder is not None and holder is not self.win
-                and not getattr(holder.body, "dead", False)):
-            return holder
-        return None
+        # 认领板上可能有世界生物（蜥蜴 / 拾荒者）占的位：它们不是猫，不能当小偷
+        if (holder is None or holder is self.win
+                or getattr(holder, "body", None) is None
+                or getattr(holder.body, "dead", False)):
+            return None
+        return holder
 
     # ── 被抢的记忆：下次它再靠近我的东西，这笔账还在 ──
     def _remember_grievance(self, other) -> None:
@@ -4941,7 +4979,7 @@ class BehaviorFSM:
         elif st == "HelpFeed":
             self._help_cd = T_HELP_RETRY
             self._help_target = None
-            self.gfx.face_special = False
+            self.gfx.face(False, PRIO_URGENT)
         elif st == "FightThreat":
             self._fight_cd = T_FIGHT_RETRY
             self._fight_target = None
@@ -4963,7 +5001,7 @@ class BehaviorFSM:
         elif st == "CoverAlly":
             self._cover_cd = T_COVER_RETRY
             self._cover_ally = None
-            self.gfx.face_special = False
+            self.gfx.face(False, PRIO_URGENT)
         self._restore_walk_limits()
 
     # ── 有威胁、自己空手：躲到「持有矛/石头的同伴」背后（用户规格）──
@@ -5254,7 +5292,7 @@ class BehaviorFSM:
             self._social_stroke(tgt, ob, False)     # 拍拍：竖线
         elif kind == "point":
             # 指向：手举着不放（不上表情），就是「看这个 / 我想要这个」
-            self.gfx.face_special = False
+            self.gfx.face(False, PRIO_URGENT)
             if not self._aim_target(tgt):
                 self._end_social()
         else:
@@ -5273,7 +5311,7 @@ class BehaviorFSM:
                 social.StrokeGesture(n, tuning.PET_ON_TICKS, "h", tuning.PET_SPAN)
                 if horizontal else
                 social.StrokeGesture(n, tuning.PAT_ON_TICKS, "v", tuning.PAT_SPAN))
-        self.gfx.face_special = True
+        self.gfx.face(True, PRIO_URGENT)     # 抚摸 / 拍拍的表情
         ox, oy = g.offset()
         side = "r" if ob.chunk0.x >= self.body.chunk0.x else "l"
         self.gfx.hand_aim[side] = (ob.chunk0.x + ox, ob.chunk0.y + oy)
@@ -5297,7 +5335,7 @@ class BehaviorFSM:
                                     tuning.WAKE_SHAKE_REPS_MAX)
             self._social_gesture = g = social.StrokeGesture(
                 reps, tuning.WAKE_SHAKE_TICKS, "h", tuning.WAKE_SHAKE_SPAN)
-        self.gfx.face_special = False
+        self.gfx.face(False, PRIO_URGENT)
         ox, oy = g.offset()
         side = "r" if ob.chunk0.x >= self.body.chunk0.x else "l"
         self.gfx.hand_aim[side] = (ob.chunk0.x + ox, ob.chunk0.y + oy)
@@ -5321,7 +5359,7 @@ class BehaviorFSM:
             self._social_gesture = g = social.PressGesture(
                 reps, tuning.REVIVE_PRESS_TICKS, tuning.REVIVE_RELEASE_TICKS)
             self._social_press_per = max(1, tuning.REVIVE_TOUCH_TICKS // reps)
-        self.gfx.face_special = True
+        self.gfx.face(True, PRIO_URGENT)     # 复活按压的表情
         if not self._both_hands_on(ob):
             return                                  # 两只手都要按上去（够不着就先挪身子）
         if g.pressing:                              # 身体跟着用力向下
@@ -5387,8 +5425,7 @@ class BehaviorFSM:
         return True
 
     def _point_at_peer(self, peer):
-        """【指指点点】指一下（单帧）：手臂指向目标并换上特殊表情。"""
-        self.gfx.face_special = True
+        self.gfx.face(True, PRIO_URGENT)
         return self._aim_target(peer)
 
     # ══ 统一社交动作 API：词表（behavior/social.py）驱动的 起手 / 推进 / 收势 ══
@@ -5414,7 +5451,7 @@ class BehaviorFSM:
             self._point_end()
         if a.crouch:
             self.body.set_crawl(True)
-        self.gfx.face_special = (a.gesture == "scold")
+        self.gfx.face(a.gesture == "scold", PRIO_URGENT)
         self._social_witness_boost()       # 别人在社交：附近同伴也想社交
         return True
 
@@ -5455,7 +5492,7 @@ class BehaviorFSM:
             if self._point_step():             # 一轮指完（想接着做就再来一轮）
                 return False
         elif g == "hold":
-            self.gfx.face_special = False      # 指向：只是举着手，不上表情
+            self.gfx.face(False, PRIO_URGENT)  # 指向：只是举着手，不上表情
             if not self._aim_act(tgt, self._act_mode, self._act_enforce):
                 return False
         elif g in ("stroke_h", "stroke_v"):
@@ -5468,7 +5505,7 @@ class BehaviorFSM:
             self._social_revive(tgt, ob)       # 按完自己收势
             return self._act_active()
         else:                                  # walk：趴着不动
-            self.gfx.face_special = False
+            self.gfx.face(False, PRIO_URGENT)
             self._clear_hands()
         if self._act_left > 0:
             self._act_left -= 1
@@ -5482,7 +5519,7 @@ class BehaviorFSM:
         self._act_idle = False
         self._point_end()
         self.body.set_crawl(False)
-        self.gfx.face_special = False
+        self.gfx.face(False, PRIO_URGENT)     # 收势要压得住起势那一档
 
     # ── 平时随手小动作：不切状态，站着（或趴着）做一小段 ──
     def _act_idle_tick(self):
@@ -5567,7 +5604,7 @@ class BehaviorFSM:
     def _point_end(self):
         self._point = None
         self._point_tgt = None
-        self.gfx.face_special = False        # 指指点点收势：表情一并收掉
+        self.gfx.face(False, PRIO_URGENT)    # 指指点点收势：表情一并收掉
         self._clear_hands()
 
     def _point_step(self) -> bool:
@@ -5622,7 +5659,7 @@ class BehaviorFSM:
 
     def _help_end(self):
         self._clear_hands()
-        self.gfx.face_special = False
+        self.gfx.face(False, PRIO_URGENT)
         self._help_cd = T_HELP_RETRY
         self._help_target = None
         self.body.stop_walk()
@@ -5667,7 +5704,7 @@ class BehaviorFSM:
             return
         b.stop_walk()
         b.facing = 1 if ob.chunk0.x >= b.chunk0.x else -1
-        self.gfx.face_special = True
+        self.gfx.face(True, PRIO_URGENT)     # 喂食的表情
         fruit.x, fruit.y = ob.chunk0.x, ob.chunk0.y
         fruit.vx = fruit.vy = 0.0
         b.release_fruit()
@@ -6529,7 +6566,8 @@ class BehaviorFSM:
             if spear:                        # 用矛意愿：圣徒几乎不玩矛
                 w *= clampf(float(getattr(self.pers, "spear_like", 1.0)), 0.0, 2.0)
             return _interest_key(self.win, o, d / max(0.05, w),
-                                 tuning.INTEREST_JITTER, tuning.INTEREST_TAKEN_MUL)
+                                 tuning.INTEREST_JITTER, tuning.INTEREST_TAKEN_MUL,
+                                 kind="play")
         return min(cands, key=score)[0]
 
     def _itemplay_enter(self):

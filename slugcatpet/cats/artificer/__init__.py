@@ -46,6 +46,7 @@ ARTIFICER_DEF = CatDef(
                         point_like=0.6, bravery=0.95, kindness=0.20,
                         play_style="hop", diet=DIET_CARNIVORE,
                         hurry=0.7, apologize=False,
+                        risk_tolerance=0.95, patience=0.10,   # 暴躁执拗：最敢冒险，最没耐心
                         toy_pref={"pyro_romp": 1.4}),
     tuning={"pyro_heat_cap": 5,    # = pyro.WARN_AT，AI 永不至眩晕/自爆
             "temper_maul_gate": -0.50},   # ≤此值光标拂过可触发爆跳劫持

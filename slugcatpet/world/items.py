@@ -18,11 +18,13 @@ from ..rendering.primitives import (blit, draw_fruit, draw_rope, draw_stone,
                                     draw_scavenger, draw_scavenger_spear,
                                     PEARL_ART_RAD)
 from .enums import ItemState
+from ..behavior.board import board_for
 from .slimemold import (SlimeMold, _dirvec as _slime_dir, _lerp_map as _slime_lerp_map,
                         TENDRIL_JAG_K)
 from .stone import Stone
 from .batfly import BatFly
 from .lizard import BREEDS, Lizard, _ang_lerp, lizard_rel, lizard_rel_kind
+from .scavenger import separate as separate_scavengers
 from .lizard_gfx import draw_lizard
 from .squidcada import Squidcada
 from .squidcada_gfx import draw_squidcada
@@ -1392,6 +1394,9 @@ class ItemInteractionMixin:
             lz.step(self._WL, self._HL, targets=targets, cursor=cur,
                     prey=prey, cats=targets, threats=threats, others=others, pack=pack)
             self._lizard_bite(lz)
+            # 蜥蜴的猎物也上认领板（Lizard.intent）：全场只有一份「谁在追什么」
+            obj_i, kind_i = lz.intent()
+            board_for(self).register_actor(lz, obj_i, kind_i)
         self._cull_flung_corpses()
         self.lizards = [lz for lz in self.lizards if lz.state != ItemState.GONE]
 
@@ -3231,6 +3236,12 @@ class ItemInteractionMixin:
         self._assign_pearl_targets()
         for sc in self.scavengers:
             sc.step(self._WL, self._HL, threats=threats, cursor=cur)
+            # 拾荒者也在同一张认领板上占位：它奔哪颗珍珠，那颗珍珠在猫眼里
+            # 就是「有主」的（原版 CollectScore(DataPearl)=10）
+            bd = board_for(self)
+            live = (not sc.dead) and sc.state == ItemState.FREE
+            bd.register_actor(sc, sc.goal_pearl if live else None, "trade")
+        separate_scavengers(self.scavengers, self._WL)   # 支配度决定站位
         self._step_scavenger_throws()
         self._step_scavenger_trade()
         self.scavengers = [sc for sc in self.scavengers if sc.state != ItemState.GONE]

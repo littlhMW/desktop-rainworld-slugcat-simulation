@@ -25,6 +25,7 @@ SURVIVOR_DEF = CatDef(
     stats=replace(DEFAULT_STATS, max_food=7, food_hibernate=4),
     personality=replace(DEFAULT_PERSONALITY, temper=0.5, crawl_like=0.5,
                         point_like=0.5, bravery=0.5, kindness=0.5,
+                        risk_tolerance=0.5, patience=0.5,
                         play_style="sit"),   # 中性基准
     tuning={},
     # 预留位：暂无独占机制，未来专属行动挂 fsm_mount

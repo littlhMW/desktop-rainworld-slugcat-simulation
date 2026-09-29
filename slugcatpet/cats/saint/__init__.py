@@ -42,6 +42,7 @@ SAINT_DEF = CatDef(
                         point_like=0.4, bravery=0.35, kindness=0.95,
                         play_style="hop", diet=DIET_VEGETARIAN,
                         hurry=0.35, spear_like=0.15,
+                        risk_tolerance=0.30, patience=0.85,   # 宽容：不冒险，肯等
                         toy_pref={"ceiling_play": 1.4}),
     tuning={
         "temper_ascend_gate": -0.20,          # ≤此值才可超度

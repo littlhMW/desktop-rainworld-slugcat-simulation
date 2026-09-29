@@ -69,7 +69,8 @@ def fetch_candidates(planner, edibles, diet=None, pearl_like=1.0, unit=None):
                 time_est /= max(1.0, float(pearl_like))   # 珍珠：越喜欢越先拿
             if unit is not None:                          # 个体偏好 + 同伴已在拿 → 让位
                 time_est = goal_key(unit, f, time_est,
-                                    tuning.INTEREST_JITTER, tuning.INTEREST_TAKEN_MUL)
+                                    tuning.INTEREST_JITTER, tuning.INTEREST_TAKEN_MUL,
+                                    kind="eat")
             out.append((f, g, time_est))
     out.sort(key=lambda item: item[2])
     return out

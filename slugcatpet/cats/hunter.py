@@ -26,7 +26,8 @@ HUNTER_DEF = CatDef(
                         sociability=0.3, temper=0.9, crawl_like=0.25,
                         point_like=0.55, bravery=0.90, kindness=0.25,
                         play_style="hop", diet=DIET_CARNIVORE,
-                        hurry=0.95, spear_like=1.25, pearl_like=0.6),
+                        hurry=0.95, spear_like=1.25, pearl_like=0.6,
+                        risk_tolerance=0.85, patience=0.15),   # 赶时间：敢冒险，没耐心等
     # 原版 Player.spearOnBack：猎手背后常备一支矛
     tuning={"back_spear": True},
     fsm_mount=None,

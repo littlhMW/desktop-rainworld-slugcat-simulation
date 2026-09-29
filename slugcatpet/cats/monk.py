@@ -29,7 +29,8 @@ MONK_DEF = CatDef(
     personality=replace(DEFAULT_PERSONALITY, activity=0.4, stamina=0.8, sociability=1.0,
                         temper=0.2, crawl_like=0.75, point_like=0.25,
                         bravery=0.30, kindness=0.90, play_style="crawl",
-                        hurry=0.35, wake_like=0.8),
+                        hurry=0.35, wake_like=0.8,
+                        risk_tolerance=0.30, patience=0.75),   # 温和：不爱冒险，很有耐心
     tuning={},
     fsm_mount=None,
     wip=False,
