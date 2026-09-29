@@ -1,4 +1,5 @@
-"""后空翻够取（caps.acrobat）：走到起跳点→驻停→boosted backflip_launch 高后空翻弧命中普通跳够不到的高/远目标；落地报 done。"""
+"""后空翻够取（全员）：走到起跳点→驻停→boosted backflip_launch 高后空翻弧命中普通跳
+够不到的高/远目标；落地报 done。方向与起跳点（＝距离）由规划层扫掠择优。"""
 from __future__ import annotations
 
 from ..behavior import tuning

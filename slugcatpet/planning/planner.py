@@ -7,6 +7,7 @@ from .cooldown import CooldownRegistry
 from .backflip_reach import BackflipReach
 from .ceiling_reach import CeilingDropReach
 from .climb_reach import ClimbReach
+from .hop_reach import HopReach
 from .jump_reach import JumpReach
 from .pole_reach import PoleDropReach, PoleJumpReach, PoleTongueReach
 from .pyro_reach import PyroJumpReach
@@ -29,7 +30,8 @@ class Planner:
             return self._ability_cache
         caps = self.pet.cat.caps
         out = [WalkReach(self.pet), JumpReach(self.pet),
-               PoleJumpReach(self.pet), PoleDropReach(self.pet)]
+               PoleJumpReach(self.pet), PoleDropReach(self.pet),
+               BackflipReach(self.pet), HopReach(self.pet)]
         if caps.tongue:
             out += [TongueReach(self.pet), ClimbReach(self.pet),
                     PoleTongueReach(self.pet), TongueHangStay(self.pet)]
@@ -37,8 +39,8 @@ class Planner:
                 out.append(CeilingDropReach(self.pet))
         if caps.pyro:
             out.append(PyroJumpReach(self.pet))
-        if caps.acrobat:
-            out.append(BackflipReach(self.pet))
+        # 后空翻（含距离档）与「跳跃寻路」是全员通用动作：原版每只蛞蝓猫都会
+        # 后空翻、土狼跳、跳杆，能不能用只取决于轨道够不够，不设 cap。
         self._ability_cache = out
         return out
 

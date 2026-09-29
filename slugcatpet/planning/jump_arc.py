@@ -125,24 +125,33 @@ def get_jump_fall_arc(stats, hold_ticks: int, move_dir: int = 0) -> JumpArc:
     return arc
 
 
-def get_pole_jump_arc(stats, direction: int) -> PoleJumpArc:
-    """取（stats, 方向）竖杆跳弧（缓存）：静止→beam jump 斜跳出→持向漂移至落地。"""
+def get_pole_jump_arc(stats, direction: int, up: bool = True) -> PoleJumpArc:
+    """取（stats, 方向, 高度档）竖杆跳弧（缓存）。
+
+    up=True：静止→beam jump 斜跳出→持向漂移至落地；
+    up=False：原版离杆平跳（Player.Jump 的 ClimbOnBeam·离杆分支）→持向漂移至落地。
+    """
     d = 1 if int(direction) >= 0 else -1
-    key = ("polejump", stats, d)
+    up = bool(up)
+    key = ("polejump", stats, d, up)
     arc = _cache.get(key)
     if arc is None:
-        arc = _simulate_pole_jump(stats, d)
+        arc = _simulate_pole_jump(stats, d, up)
         _cache[key] = arc
     return arc
 
 
-def get_pole_hop_arc(stats, direction: int) -> PoleHopArc:
-    """取（stats, 方向）杆间小跳弧（缓存）：松杆位→小冲量斜跳→持向漂移→落地。"""
+def get_pole_hop_arc(stats, direction: int, up: bool = True) -> PoleHopArc:
+    """取（stats, 方向, 高度档）杆间小跳弧（缓存）。
+
+    up=True：松杆位→小冲量斜跳→持向漂移→落地；up=False：离杆平跳（同 get_pole_jump_arc）。
+    """
     d = 1 if int(direction) >= 0 else -1
-    key = ("polehop", stats, d)
+    up = bool(up)
+    key = ("polehop", stats, d, up)
     arc = _cache.get(key)
     if arc is None:
-        arc = _simulate_pole_hop(stats, d)
+        arc = _simulate_pole_hop(stats, d, up)
         _cache[key] = arc
     return arc
 
@@ -261,11 +270,11 @@ def _simulate_pyro(stats, variant: str, ix: int, iy: int) -> PyroArc:
     return PyroArc(variant, tuple(pts))
 
 
-def _simulate_pole_jump(stats, direction: int) -> PoleJumpArc:
-    # 空中松杆位起跳（避地面 STAND 阻尼、留头顶空间）→beam jump 斜跳出→持向漂移→采全程上冲+下落至落地
+def _simulate_pole_jump(stats, direction: int, up: bool = True) -> PoleJumpArc:
+    # 空中松杆位起跳（避地面 STAND 阻尼、留头顶空间）→beam jump 或离杆平跳→持向漂移→采全程至落地
     body = SlugcatBody((_SIM_W / 2.0, _PJUMP_START_Y), _SIM_W, _DROP_H, stats=stats)
     ox, oy = body.chunk0.x, body.chunk0.y
-    body.pole_jump(direction)
+    body.pole_jump(direction, up=up)
     pts = []
     for _ in range(_MAX_DROP_TICKS):
         body.step()
@@ -275,11 +284,11 @@ def _simulate_pole_jump(stats, direction: int) -> PoleJumpArc:
     return PoleJumpArc(int(direction), tuple(pts))
 
 
-def _simulate_pole_hop(stats, direction: int) -> PoleHopArc:
-    # 与 _simulate_pole_jump 同一起点/物理，只是冲量换成小跳（pole_hop）
+def _simulate_pole_hop(stats, direction: int, up: bool = True) -> PoleHopArc:
+    # 与 _simulate_pole_jump 同一起点/物理，只是冲量换成小跳或离杆平跳（pole_hop）
     body = SlugcatBody((_SIM_W / 2.0, _PJUMP_START_Y), _SIM_W, _DROP_H, stats=stats)
     ox, oy = body.chunk0.x, body.chunk0.y
-    body.pole_hop(direction)
+    body.pole_hop(direction, up=up)
     pts = []
     for _ in range(_MAX_DROP_TICKS):
         body.step()

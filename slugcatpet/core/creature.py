@@ -55,6 +55,8 @@ WALL_JUMP_VY_FEET = 7.0 * K_VEL
 WALL_JUMP_LOCK = 14                 # 蹬墙后硬直，期内不再吸附
 WALL_LEDGE_SLIDE = 0.5 * K_VEL      # 扶墙下滑速度（原版 WallClimb 的缓降）
 CEIL_HANG_PAD = 22.0                # 吊顶时胸心离上边缘：伸手够顶、整只猫不出画面
+POLE_OFF_VX = 2.0                   # Player.Jump 离杆平跳：胸 chunk vx = 2·朝向
+POLE_OFF_VY = 2.0                   # Player.Jump 离杆平跳：胸 chunk vy = +2（y↓ 向下）
 CEIL_SHIMMY_SPEED = 1.6 * K_VEL     # 吊顶横向挪动速度
 
 # 零重力蹬窗边推力/速度上限
@@ -307,8 +309,13 @@ class SlugcatBody:
         self.walk_target_x = None
         self.move_dir = int(move_dir)
 
-    def pole_jump(self, direction, move_dir=None):
-        """竖杆跳：朝 direction 斜跳出杆。"""
+    def pole_jump(self, direction, move_dir=None, up=True):
+        """竖杆跳：朝 direction 斜跳出杆（up 决定高度档）。
+
+        up=True 是原版 beam jump（Player.Jump 的 ClimbOnBeam·input.x!=0 分支，
+        胸 6/8、胯 5/7）；up=False 是原版「离杆平跳」（同一分支的 input.x==0 /
+        y≤0 情形：只给胸 chunk vy=+2 与 vx=2·朝向，胯不动）——于是离杆跳也有
+        「往哪边 + 多高」两个参数。"""
         c0, c1 = self.chunk0, self.chunk1
         c0.pinned = c1.pinned = False
         self.on_pole = False
@@ -321,14 +328,20 @@ class SlugcatBody:
         self.jump_boost = 0.0
         d = 1.0 if direction >= 0 else -1.0
         s = self.stats
-        c0.vx = s.pole_jump_head_vx * d
-        c0.vy = s.pole_jump_head_vy
-        c1.vx = s.pole_jump_feet_vx * d
-        c1.vy = s.pole_jump_feet_vy
+        if up:
+            c0.vx = s.pole_jump_head_vx * d
+            c0.vy = s.pole_jump_head_vy
+            c1.vx = s.pole_jump_feet_vx * d
+            c1.vy = s.pole_jump_feet_vy
+        else:
+            c0.vx = POLE_OFF_VX * d
+            c0.vy = POLE_OFF_VY
+            c1.vx = 0.0
+            c1.vy = 0.0
         self.walk_target_x = None
         self.move_dir = int(d if move_dir is None else move_dir)
 
-    def pole_hop(self, direction, move_dir=None):
+    def pole_hop(self, direction, move_dir=None, up=True):
         """杆上跳向邻近杆：小冲量斜跳（原版 jump-pole-hopping）。
 
         pole_jump 是全力 beam jump（横速 stats.pole_jump_head_vx≈6px/tick，一条弧要
@@ -337,7 +350,9 @@ class SlugcatBody:
         planning.pole_hop 的规划弧与这里同源（jump_arc.get_pole_hop_arc），否则
         「规划说够得着、执行却飞过头」。
         """
-        self.pole_jump(direction, move_dir)
+        self.pole_jump(direction, move_dir, up=up)
+        if not up:
+            return                       # up=False 已由 pole_jump 写好离杆平跳冲量
         d = 1.0 if direction >= 0 else -1.0
         c0, c1 = self.chunk0, self.chunk1
         c0.vx = c1.vx = tuning.POLE_HOP_VX * d

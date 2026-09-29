@@ -15,7 +15,7 @@ class CatCaps:
     ascension: bool = True
     gills: bool = False           # 仅 Rivulet
     pyro: bool = False            # 需配 tuning.pyro_heat_cap
-    acrobat: bool = False         # 仅 Rivulet
+    acrobat: bool = False         # 溪流撒欢（RivFlip 高后空翻状态）；后空翻寻路已全员通用
     # 跳跃/竖杆够取全员通用，不设 cap
 
 
