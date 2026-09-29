@@ -2,7 +2,7 @@
 from __future__ import annotations
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                                QCheckBox, QRadioButton, QButtonGroup, QFrame, QDialog,
-                               QGridLayout)
+                               QGridLayout, QSpinBox)
 from PySide6.QtCore import Qt
 
 from ..cats import REGISTRY, pickable_variants
@@ -84,6 +84,8 @@ class SettingsWindow(QWidget):
         self._section_spawn(v)
         v.addWidget(self._divider())
         self._section_env(v)
+        v.addWidget(self._divider())
+        self._section_storm(v)
         v.addWidget(self._divider())
         self._section_hud(v)
         self._outer.addWidget(self._body)
@@ -192,6 +194,49 @@ class SettingsWindow(QWidget):
             w.set_zerog(True)
         elif key == "water" and not w.water_on:
             w.set_water(True)
+
+    def _section_storm(self, v):
+        """暴雨番茄钟：开关 + 三个时长（专注 / 预警 / 睡眠）。"""
+        v.addWidget(self._header(t("settings_storm_section")))
+        hint = QLabel(t("settings_storm_hint"))
+        hint.setObjectName("dim")
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+        st = self._window.storm
+        chk = QCheckBox(t("settings_storm_enable"))
+        chk.setChecked(bool(st.enabled))
+        chk.toggled.connect(self._on_storm_toggled)
+        v.addWidget(chk)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(2)
+        self._storm_spins = {}
+        for row, (key, label_key, lo, hi, val) in enumerate((
+                ("focus", "settings_storm_focus_minutes", 1, 600, st.focus_minutes),
+                ("warning", "settings_storm_warning_minutes", 1, 120, st.warning_minutes),
+                ("sleep", "settings_storm_sleep_minutes", 1, 240, st.sleep_minutes))):
+            grid.addWidget(QLabel(t(label_key)), row, 0)
+            sp = QSpinBox()
+            sp.setRange(lo, hi)
+            sp.setValue(int(round(val)))
+            grid.addWidget(sp, row, 1)
+            self._storm_spins[key] = sp
+        v.addLayout(grid)
+        btn = QPushButton(t("settings_storm_apply"))
+        btn.clicked.connect(self._on_storm_apply)
+        v.addWidget(btn)
+
+    def _on_storm_toggled(self, checked):
+        self._window.set_storm_enabled(checked)
+
+    def _on_storm_apply(self):
+        spins = getattr(self, "_storm_spins", None)
+        if not spins:
+            return
+        self._window.set_storm_durations(
+            focus_minutes=spins["focus"].value(),
+            warning_minutes=spins["warning"].value(),
+            sleep_minutes=spins["sleep"].value())
 
     def _section_hud(self, v):
         chk = QCheckBox(t("settings_show_hud"))

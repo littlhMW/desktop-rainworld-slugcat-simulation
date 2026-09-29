@@ -50,6 +50,7 @@ _STR = {
     "tip_karmaflower": {"zh": "放业力花", "en": "Place karma flower"},
     "tip_slugpup": {"zh": "放幼崽", "en": "Place slugpup"},
     "tip_clear":   {"zh": "清除可交互实体", "en": "Clear placed items"},
+    "tip_shelter": {"zh": "放庇护所", "en": "Place shelter"},
 
     # —— settings：自然生成生物列表 ——
     "settings_spawn_section": {"zh": "自然生成", "en": "Natural spawn"},
@@ -129,6 +130,16 @@ _STR = {
     "settings_snow":         {"zh": "暴风雪", "en": "Blizzard"},
     "settings_zerog":        {"zh": "无重力", "en": "Zero gravity"},
     "settings_water":        {"zh": "涨水", "en": "Flood"},
+
+    # —— settings：暴雨番茄钟 ——
+    "settings_storm_section":   {"zh": "暴雨番茄钟", "en": "Rain timer"},
+    "settings_storm_hint":      {"zh": "专注 40 分钟 → 最后 5 分钟猫开始不安 → 暴雨 → 全部躲进庇护所睡 10 分钟 → 醒来重来（没庇护所时会自动放一间）",
+                                 "en": "Focus 40 min -> cats grow restless in the last 5 min -> storm -> everyone shelters and sleeps 10 min -> wake and repeat (a shelter is placed for you if there is none)"},
+    "settings_storm_enable":    {"zh": "开启暴雨番茄钟", "en": "Enable rain timer"},
+    "settings_storm_focus_minutes":   {"zh": "专注（分钟）", "en": "Focus (minutes)"},
+    "settings_storm_warning_minutes": {"zh": "预警（分钟）", "en": "Warning (minutes)"},
+    "settings_storm_sleep_minutes":   {"zh": "睡眠（分钟）", "en": "Sleep (minutes)"},
+    "settings_storm_apply":     {"zh": "应用时长", "en": "Apply durations"},
     "settings_show_hud":     {"zh": "显示状态面板", "en": "Show status panel"},
     "settings_pick_title":   {"zh": "选择皮", "en": "Pick a variant"},
     "settings_pick_cat":     {"zh": "选择要添加的蛞蝓猫", "en": "Choose a slugcat to add"},
@@ -191,6 +202,8 @@ _STR = {
     "st_air": {"zh": "在空中", "en": "Airborne"},
     "st_swim": {"zh": "正在游泳", "en": "Swimming"},
     "st_warmth": {"zh": "正在取暖", "en": "Warming up"},
+    "st_storm_seek": {"zh": "正在冲回庇护所", "en": "Running to shelter"},
+    "st_shelter_sleep": {"zh": "在庇护所里睡着", "en": "Sleeping in shelter"},
     "st_other": {"zh": "—", "en": "—"},
     # —— HUD：状态第二段「目标是什么」（behavior/status.py 出词）——
     "tg_cursor": {"zh": "鼠标", "en": "the cursor"},
@@ -213,6 +226,7 @@ _STR = {
     "tg_stone": {"zh": "石头", "en": "a stone"},
     "tg_pole": {"zh": "杆子", "en": "a pole"},
     "tg_hpole": {"zh": "横杆", "en": "a beam"},
+    "tg_shelter": {"zh": "庇护所", "en": "the shelter"},
     "hud_target": {"zh": "目标", "en": "Target"},
     # —— tabbar：打开设置 ——
     "btn_open_settings": {"zh": "打开设置", "en": "Open settings"},

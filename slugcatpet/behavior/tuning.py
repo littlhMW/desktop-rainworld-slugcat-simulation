@@ -728,3 +728,21 @@ SLAM_AOE_STUN = 55              # 波及眩晕 tick（随落高倍率放大）
 # ── 兴趣目标抖动（同屏多只猫：别都盯上同一个最近目标）──
 INTEREST_JITTER   = 0.40        # 每只猫对每件目标的个体偏好系数 1±这个值（稳定，不逐 tick 乱跳）
 INTEREST_TAKEN_MUL = 1.55       # 已经有同伴把它当目标 → 打分乘这个数（让位）
+
+# ── 暴雨番茄钟 + 庇护所（第 89 轮）──
+STORM_FOCUS_MINUTES = 40.0        # 专注时长（番茄钟主段）
+STORM_WARNING_MINUTES = 5.0       # 专注最后 N 分钟开始「雨前焦虑」
+STORM_SLEEP_MINUTES = 10.0        # 躲进庇护所后的睡眠时长
+STORM_GATHER_TIMEOUT_MINUTES = 3.0  # 集合阶段兜底：这么久还没全进屋就先关门
+STORM_SETTLE_TICKS = 40           # 全员进庇护 → 关门后再稳定 1s 才入睡
+STORM_RAIN_RISE_TICKS = 1200      # 暴雨起势：雨强 0→1 的连续爬升耗时（30s）
+STORM_RAIN_FADE_TICKS = 80        # 暴雨收尾：雨强归零耗时（2s）
+STORM_DOOR_TICKS = 40             # 庇护所门 0→1 开合耗时（1s）
+SHELTER_ENTRY_RADIUS = 26.0       # entry_goal 到位容差
+STORM_FLOOD_MAX_HEIGHT_FRAC = 0.22   # 峰值积水高度占 HL 的比例
+STORM_ANXIETY_LOOK_P = 0.12       # 焦虑时每次发呆「抬头看庇护所」的概率上限
+STORM_ANXIETY_HOLD_MULT = 0.45    # 焦虑顶点时 idle 停留时长的倍率（越焦虑越不站定）
+STORM_ANXIETY_WANDER_BIAS = 0.55  # 焦虑时闲逛目标偏向庇护所附近的概率
+STORM_PRESSURE_LO = 0.35          # 不安档下沿
+STORM_PRESSURE_HI = 0.70          # 明显焦虑档下沿
+STORM_RETRY_TICKS = 120           # StormSeekShelter 放弃后的重试间隔

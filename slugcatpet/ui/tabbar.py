@@ -24,6 +24,8 @@ EXPANDED_H = 250                       # 仅估值，实际走 _expanded_h()
 SLIDE_MS = 150
 # 图标盘配色（贴合面板绿橄榄调）
 _ICON_GREY = QColor(192, 199, 183)
+_ICON_GREY_DARK = QColor(78, 84, 74)
+_ICON_GREY_LIGHT = QColor(150, 158, 142)
 _POLE_EDGE = QColor(20, 22, 26)
 _POLE_SHEEN = QColor(104, 112, 126)
 _POLE_CORE = QColor(40, 42, 47)
@@ -346,6 +348,20 @@ def _paint_place_icon(p, kind, r, atlas=None):
         q = min(w, h) * 0.34
         p.drawLine(QPointF(cx - q, cy - q), QPointF(cx + q, cy + q))
         p.drawLine(QPointF(cx + q, cy - q), QPointF(cx - q, cy + q))
+    elif kind == "shelter":
+        # 庇护所：外框 + 内部 + 两块门板（与小屋同一套视觉语言）
+        body = QRectF(cx - w * 0.44, cy - h * 0.34, w * 0.88, h * 0.68)
+        p.setPen(_pen(_ICON_GREY, max(1.4, w * 0.09)))
+        p.setBrush(_ICON_GREY_DARK)
+        p.drawRect(body)
+        p.setPen(_pen(_ICON_GREY_LIGHT, max(1.0, w * 0.06)))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRect(body.adjusted(w * 0.10, h * 0.10, -w * 0.10, -h * 0.10))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(_ICON_GREY_LIGHT)
+        dw = w * 0.16
+        p.drawRect(QRectF(cx + w * 0.05, body.bottom() - h * 0.34, dw * 0.5, h * 0.34))
+        p.drawRect(QRectF(cx + w * 0.05 + dw * 0.5, body.bottom() - h * 0.34, dw * 0.5, h * 0.34))
     elif kind == "clear":
         # 禁止圈 ⊘
         d = min(w, h) * 0.90
@@ -698,6 +714,7 @@ class TabBar(QWidget):
                        ("slugpup", t("tip_slugpup"), self._place_slugpup),
                        ("seedcob", t("tip_seedcob"), self._place_seedcob),
                        ("karmaflower", t("tip_karmaflower"), self._place_karmaflower),
+                       ("shelter", t("tip_shelter"), self._place_shelter),
                        ("erase", t("tip_erase"), self._erase_mode),
                        ("clear", t("tip_clear"), self._clear_all)]
         for i, (kind, tip, cb) in enumerate(place_items):
@@ -919,6 +936,10 @@ class TabBar(QWidget):
 
     def _place_karmaflower(self):
         self.pet.enter_place_karmaflower_mode()
+        self._collapse()
+
+    def _place_shelter(self):
+        self.pet.enter_place_shelter_mode()
         self._collapse()
 
     def _erase_mode(self):

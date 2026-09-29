@@ -165,6 +165,9 @@ def main():
         params["pets"] = [_cat(p) for p in pet.pets if not getattr(p, "is_pup", False)]
         params["pups"] = [_cat(p) for p in pet.pets if getattr(p, "is_pup", False)]
         params["world"] = snapshot(pet)
+        storm = pet.storm_state()          # 庇护所 + 暴雨番茄钟相位
+        params["shelters"] = storm["shelters"]
+        params["storm"] = storm["storm"]
         params["schema_version"] = SCHEMA_VERSION
         _save_params(params)
 

@@ -139,10 +139,11 @@ ZEROG_POLE_SEEK_PROB = 0.5
 ZEROG_POLE_PLAY_TICKS = 120
 ZEROG_SLIDE_PERIOD = 30
 # 零重力下保留原态，其余打断转漂浮 idle
-_ZEROG_KEEP = frozenset(("IdleStand", "Dragged", "Dead", "Stunned", "Ascension", "Swimming"))
+_ZEROG_KEEP = frozenset(("IdleStand", "Dragged", "Dead", "Stunned", "Ascension", "Swimming",
+                         "ShelterSleep"))
 # 浸水下保留态，其余打断转 Swimming
 _SWIM_KEEP = frozenset(("Swimming", "Ascension", "Dragged", "Dead", "Stunned",
-                        "TongueClimb", "CeilingHang"))
+                        "TongueClimb", "CeilingHang", "ShelterSleep"))
 
 ARM_REACH_NEAR = 24.0
 ARM_REACH_FAR = 48.0
@@ -170,17 +171,22 @@ _STATE_TO_MOOD = {"PoleClimb": "pole_climb",
 # 疲劳强制休息不打断的态
 _EXHAUST_BLOCKED = frozenset(("Dragged", "Dead", "Stunned", "Ascension",
                               "WakeSequence", "LieDown", "Sleep", "SeekWarmth",
-                              "Swimming"))
+                              "Swimming", "StormSeekShelter", "ShelterSleep"))
 # 趋暖强制中断不打断的态
 _COLD_BLOCKED = frozenset(("Dragged", "Dead", "Stunned", "Ascension",
-                           "WakeSequence", "SeekWarmth", "Swimming"))
+                           "WakeSequence", "SeekWarmth", "Swimming",
+                           "StormSeekShelter", "ShelterSleep"))
 # 避水强制中断不打断的态
 _WATER_BLOCKED = frozenset(("RelocateToWall", "TongueClimb", "CeilingHang", "Swimming",
-                            "Dragged", "Dead", "Stunned", "Ascension"))
+                            "Dragged", "Dead", "Stunned", "Ascension", "ShelterSleep"))
+# 暴雨集合 / 庇护所睡眠：这两态里不许被别的动作拉走（含自身，防重复入态）
+_STORM_BLOCKED = frozenset(("Dragged", "Dead", "Ascension", "Stunned", "Swimming",
+                            "TongueClimb", "CeilingHang",
+                            "StormSeekShelter", "ShelterSleep"))
 # 取果触发不打断的态
 _FETCH_NEVER = frozenset(("FetchFruit", "Ascension", "Dragged", "Dead", "WakeSequence",
                           "Stunned", "SeekWarmth", "Swimming",
-                          "LieDown", "Sleep",          # 趴/睡时别把猫叫起来去取果
+                          "LieDown", "Sleep", "ShelterSleep",   # 趴/睡时别把猫叫起来去取果
                           "PyroMaul", "RivSnatch", "CatchFly", "ItemPlay",
                           # 面敌做出的决定是锁：迎战 / 掩护同伴 / 逃跑这三个态里
                           # 不许取食欲望把人拆走去吃果子（旧版漏了这三项，于是
@@ -194,8 +200,9 @@ _EN_VIGOROUS = frozenset(("TongueClimb", "PoleClimb", "CeilingHang", "Swimming",
                           "PyroRomp", "RivFlip", "PyroMaul", "RivSnatch"))
 _EN_LIGHT = frozenset(("RelocateToWall", "PostThrowWander", "FetchFruit", "AngryStone",
                        "WakeSequence", "CursorLick", "SeekWarmth", "SeekHPole", "MakeWay",
-                       "FleeLizard", "CatchFly", "ItemPlay", "CoverAlly"))
-_EN_REST = frozenset(("LieDown", "Sleep"))
+                       "FleeLizard", "CatchFly", "ItemPlay", "CoverAlly",
+                       "StormSeekShelter"))
+_EN_REST = frozenset(("LieDown", "Sleep", "ShelterSleep"))
 _EN_IDLE = frozenset(("IdleStand", "PostThrowStand"))
 
 # 被顶让路仅从这些无更高目的态触发
@@ -565,6 +572,12 @@ class BehaviorFSM:
             except ValueError:
                 pass
 
+        # 暴雨集合 / 庇护所睡眠
+        self._storm_exec = None            # StormSeekShelter 的 PlanExecutor
+        self._storm_goal_obj = None        # 状态面板「目标是什么」用
+        self._storm_cd = 0                 # 够不到庇护所时的重试冷却
+        self._shelter_sleep_left = 0       # 番茄钟睡眠剩余 tick
+
         # 独占状态挂载槽：CatDef.fsm_mount 按 caps 注册
         self._ext_states = {}
         self._ext_enters = {}
@@ -857,6 +870,8 @@ class BehaviorFSM:
             self._fetch_release()
         elif st == "SeekWarmth":
             self._seekwarmth_break()
+        elif st == "StormSeekShelter":
+            self._storm_break()
         elif st == "SeekHPole":
             self._seekhpole_break()
         elif st == "Swimming":
@@ -980,6 +995,14 @@ class BehaviorFSM:
         A(ActionSpec(key='ColdUrgent', band=BAND_EMERGENCY,
                     pre=self._act_coldurgent_pre, gate=self._act_coldurgent_gate, start=self._act_coldurgent,
                     tags=frozenset({TAG_EMERGENCY})))
+        A(ActionSpec(key='StormSeekShelter', band=BAND_EMERGENCY,
+                    pre=self._act_stormseek_pre, gate=self._act_stormseek_gate,
+                    start=self._act_stormseek,
+                    tags=frozenset({TAG_EMERGENCY, TAG_NAV})))
+        A(ActionSpec(key='StormSleep', band=BAND_EMERGENCY,
+                    pre=self._act_stormsleep_pre, gate=self._act_stormsleep_gate,
+                    start=self._act_stormsleep,
+                    tags=frozenset({TAG_EMERGENCY})))
         A(ActionSpec(key='BlockReact', band=BAND_NEED,
                     pre=self._act_blockreact_pre, gate=self._act_blockreact_gate, start=self._act_blockreact,
                     tags=frozenset({TAG_NAV})))
@@ -1101,6 +1124,35 @@ class BehaviorFSM:
     def _act_coldurgent(self, ctx):
             self._break_active_controllers()
             self._transition("SeekWarmth")
+
+    def _act_stormseek_pre(self, ctx):
+        if self._storm_cd > 0:
+            self._storm_cd -= 1
+    def _act_stormseek_gate(self, ctx):
+        return (self.win.storm_active and getattr(self.win, "shelters", None)
+                and self._storm_phase() == "gather"
+                and self._storm_cd <= 0
+                and not self.grab.active and not self._zerog()
+                and not self.body.swimming
+                and self.state not in _STORM_BLOCKED)
+    def _act_stormseek(self, ctx):
+            self._break_active_controllers()
+            self._transition("StormSeekShelter")
+
+    def _act_stormsleep_pre(self, ctx):
+        pass
+    def _act_stormsleep_gate(self, ctx):
+        if self._storm_phase() != "sleep" or self.grab.active:
+            return False
+        sh = self._storm_shelter()
+        if sh is None:
+            return False
+        b = self.body
+        return (self.state not in ("ShelterSleep", "Dead", "Dragged", "Ascension",
+                                   "Stunned", "Swimming")
+                and sh.contains(b.chunk1.x, b.chunk1.y))
+    def _act_stormsleep(self, ctx):
+            self._transition("ShelterSleep")
 
     def _act_blockreact_pre(self, ctx):
         pass
@@ -1391,7 +1443,7 @@ class BehaviorFSM:
         # 以后再加「强制中断状态」（涉水 / 无重力 / 冷水 / 爆炸…）也不会漏清
         # _hibernating，不会再卡成「闭着眼耷拉着头却还在活动」的半睡姿态。
         # WakeSequence 例外：起床动画要靠 sleep_curl 自己渐退，不能被一刀削掉。
-        if new not in ("LieDown", "Sleep", "WakeSequence"):
+        if new not in ("LieDown", "Sleep", "ShelterSleep", "WakeSequence"):
             self._hibernating = False
             self.gfx.sleeping = False
             self.body.sleeping = False
@@ -1497,6 +1549,10 @@ class BehaviorFSM:
             self._hpole_enter()
         elif st == "SeekWarmth":
             self._seekwarmth_enter()
+        elif st == "StormSeekShelter":
+            self._storm_enter()
+        elif st == "ShelterSleep":
+            self._shelter_sleep_enter()
         elif st == "SeekHPole":
             self._seekhpole_enter()
         elif st == "FetchFruit":
@@ -1678,6 +1734,7 @@ class BehaviorFSM:
             self._transition("LieDown")
             return
         self.gfx.look_at = self._ambient_look(cursor)
+        self._storm_anxiety_tick()       # 雨前焦虑：只影响闲暇表现
         if self._idle_hold > 0:
             self._idle_hold -= 1
             self._idle_pace()
@@ -2782,6 +2839,11 @@ class BehaviorFSM:
     def _roll_idle_hold(self) -> int:
         base = self.rng.uniform(tuning.IDLE_HOLD_MIN, tuning.IDLE_HOLD_MAX)
         mult = _lerpmap(self.body.energy, 0.0, 1.0, tuning.IDLE_HOLD_TIRED_MULT, 1.0)
+        # 雨前焦虑：越焦虑越坐不住（短距离来回走、活动零碎）
+        p = getattr(self.win, "storm_pressure", 0.0)
+        if p > tuning.STORM_PRESSURE_LO:
+            mult *= _lerpmap(p, tuning.STORM_PRESSURE_LO, 1.0, 1.0,
+                             tuning.STORM_ANXIETY_HOLD_MULT)
         return int(base * mult)
 
     # 游泳漂游 Swimming
@@ -3426,6 +3488,7 @@ class BehaviorFSM:
                                  tuning.SOCIAL_WANDER_MOVE_W, tuning.SOCIAL_WANDER_CROSS_W,
                                  tuning.SOCIAL_WANDER_STAY_GAIN,
                                  self.WL * tuning.SOCIAL_WANDER_STAY_SPAN_FRAC)
+        x = self._storm_wander_bias_x(x, lo, hi)
         self.body.walk_to(x)
 
     def _point_at_cursor(self, cursor, enforce_side=False, cover=False):
@@ -4512,6 +4575,140 @@ class BehaviorFSM:
         self.climb = None
         self.gfx.hand_aim["l"] = None
         self.gfx.hand_aim["r"] = None
+
+    # ── 暴雨：集合 / 庇护所睡眠 / 雨前焦虑 ──
+    def _storm_phase(self):
+        st = getattr(self.win, "storm", None)
+        return getattr(st, "phase", "focus") if st is not None else "focus"
+
+    def _storm_shelter(self):
+        """离自己最近的那间庇护所（现在只有一间，多间时自动选近的）。"""
+        shs = getattr(self.win, "shelters", None)
+        if not shs:
+            return None
+        b = self.body
+        best, bd = None, 1.0e18
+        for sh in shs:
+            d = sh.distance_to(b.chunk1.x, b.chunk1.y)
+            if d < bd:
+                best, bd = sh, d
+        return best
+
+    def _storm_enter(self):
+        """暴雨集合：只把「庇护所入口」交给现有 PlanExecutor，不另写一套 A*。"""
+        self.gfx.sleeping = False
+        self.body.sleeping = False
+        self.gfx.sleep_curl = 0.0
+        self.body.set_posture(True)
+        self.climb = None
+        self._storm_exec = None
+        sh = self._storm_shelter()
+        if sh is None:
+            return
+        self._storm_goal_obj = sh
+        g = sh.entry_goal(tuning.SHELTER_ENTRY_RADIUS)
+        if not self.planner.stay_candidates(g):
+            self.planner.on_giveup(g)      # 够不到就登记冷却，别每 tick 重规划
+            self._storm_cd = tuning.STORM_RETRY_TICKS
+            return
+        self._storm_exec = PlanExecutor(self.win, self.planner, g, mode=MODE_STAY)
+
+    def _storm_break(self):
+        if self._storm_exec is not None:
+            self._storm_exec.cancel()
+            self._storm_exec = None
+        self.body.stop_walk()
+
+    def _st_stormseekshelter(self, cursor, disturbed):
+        """跑向庇护所入口；到了就站着等门关（入睡由 StormSleep 统一接管）。"""
+        b = self.body
+        sh = self._storm_shelter()
+        if sh is None or not self.win.storm_active:
+            self._storm_break()
+            self._transition("IdleStand" if b.on_floor() else "Airborne")
+            return
+        if self.grab.active:
+            self._storm_break()
+            self._transition("Dragged")
+            return
+        self.gfx.look_at = (sh.center_x, sh.center_y)
+        if sh.contains(b.chunk1.x, b.chunk1.y):
+            self._storm_break()
+            self._transition("IdleStand")
+            return
+        if self._storm_exec is None:
+            self._storm_break()
+            self._storm_cd = tuning.STORM_RETRY_TICKS
+            self._transition("IdleStand" if b.on_floor() else "Airborne")
+            return
+        status = self._storm_exec.update()
+        if status == GIVEUP:
+            self._storm_break()
+            self._storm_cd = tuning.STORM_RETRY_TICKS
+            self._transition("IdleStand" if b.on_floor() else "Airborne")
+
+    def _shelter_sleep_enter(self):
+        """番茄钟睡眠：固定时长；不扣食物、不加业力、不掷睡眠长度。"""
+        b = self.body
+        self._hibernating = True
+        self.gfx.face(False, PRIO_FORCE)
+        b.set_posture(False)
+        b.stop_walk()
+        self.gfx.sleeping = True
+        b.sleeping = True
+        self._settle_to_rest()
+        self._sleep_drop_hands()
+        self._storm_break()
+        st = getattr(self.win, "storm", None)
+        left = getattr(st, "sleep_ticks", None) if st is not None else None
+        self._shelter_sleep_left = int(left) if left else 24000
+
+    def _st_sheltersleep(self, cursor, disturbed):
+        b = self.body
+        if self.grab.active:
+            self._transition("Dragged")
+            return
+        self.gfx.sleeping = True
+        b.sleeping = True
+        sh = self._storm_shelter()
+        if sh is not None and not sh.contains(b.chunk1.x, b.chunk1.y):
+            self._hibernating = False
+            self._transition("IdleStand")     # 被挪出安全区：先回去，Storm* 会接上
+            return
+        if not self.win.storm_active or self.timer >= self._shelter_sleep_left:
+            self._hibernating = False
+            self._transition("WakeSequence")  # 复用现有起床动画
+
+    def _storm_anxiety_tick(self):
+        """雨前焦虑：只改闲暇表现 —— 看庇护所、少久呆、往庇护所附近靠。
+
+        不强制进庇护所，也不碰吃饭 / 战斗 / 鼠标抓取；真正落雨那一刻才交给
+        StormSeekShelter。没庇护所、压力不够时不掷任何骰子（随机数纪律）。
+        """
+        p = getattr(self.win, "storm_pressure", 0.0)
+        if p <= tuning.STORM_PRESSURE_LO or not getattr(self.win, "shelters", None):
+            return
+        sh = self._storm_shelter()
+        if sh is None:
+            return
+        prob = tuning.STORM_ANXIETY_LOOK_P * _lerpmap(
+            p, tuning.STORM_PRESSURE_LO, 1.0, 0.25, 1.0)
+        if self.rng.random() < prob:
+            self.gfx.look_at = (sh.center_x, sh.center_y)
+
+    def _storm_wander_bias_x(self, x, lo, hi):
+        """雨前焦虑：闲逛目标有概率被拉向庇护所（只是靠过去，不是去躲雨）。"""
+        p = getattr(self.win, "storm_pressure", 0.0)
+        if p <= tuning.STORM_PRESSURE_LO or not getattr(self.win, "shelters", None):
+            return x
+        sh = self._storm_shelter()
+        if sh is None:
+            return x
+        prob = tuning.STORM_ANXIETY_WANDER_BIAS * _lerpmap(
+            p, tuning.STORM_PRESSURE_LO, 1.0, 0.2, 1.0)
+        if self.rng.random() >= prob:
+            return x
+        return clampf(sh.entry_x() + self.rng.uniform(-40.0, 40.0), lo, hi)
 
     def _karma_flowers_reachable(self):
         """场上够得着、还没被吃掉的业力花（独立链路，不混普通食物）。"""

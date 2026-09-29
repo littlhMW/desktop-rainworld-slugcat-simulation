@@ -7,7 +7,7 @@ import inspect
 import random
 from PySide6.QtWidgets import QApplication, QWidget
 from PySide6.QtCore import Qt, QTimer, QElapsedTimer, QRect, QPoint, QPointF, QRectF
-from PySide6.QtGui import QImage, QPainter, QColor, QGuiApplication, QCursor
+from PySide6.QtGui import QImage, QPainter, QColor, QGuiApplication, QCursor, QRegion
 
 from .behavior import tuning
 from .rendering.atlas import AtlasSet
@@ -22,6 +22,10 @@ from .core.water import WaterSurface
 from .world.effects import EffectsMixin
 from .world.items import ItemInteractionMixin
 from .world.enums import ItemState
+from .world.rain import RainSystem
+from .world.shelter import Shelter, shelter_from_dict
+from .stormcycle import StormCycle
+from .rendering import rain_draw
 
 MAX_PETS = 10
 
@@ -118,6 +122,7 @@ def system_cursor_px() -> float:
 # 窗口抖动
 SHAKE_DECAY = 0.8
 SHAKE_MAX = 6.0
+RAIN_SHAKE_MAX = 2.2        # 雨势折算出的每 tick 抖动幅度上限（并入既有 _shake）
 SHAKE_EPS = 0.05
 
 
@@ -364,6 +369,20 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
         self._shake = [0.0, 0.0]
 
+        # 暴雨番茄钟 + 庇护所（默认关闭；设置里开，且至少有一间庇护所才走相位）
+        self.rain = RainSystem(self._WL, self._HL)
+        self.rain.patterns = rain_draw.make_rain_patterns()
+        self.shelters = []
+        self.storm = StormCycle(enabled=bool(self._params.get("storm_enabled", False)))
+        _st = self._params.get("storm")
+        if isinstance(_st, dict):
+            self.storm.from_dict(_st)
+        self.storm_pressure = 0.0        # 雨前焦虑 0~1（只有闲暇行为读它）
+        self.storm_active = False        # 暴雨进行中（StormSeekShelter 的闸）
+        self._storm_rng = random.Random(0x57071)   # 私有流：不搅动全局随机数
+        self._shelter_drag_start = None
+        self._shelter_seed = 0
+
         self._prev_dirty = None
         self._fx_active_prev = False
         self._fx_active = False
@@ -373,6 +392,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._reincarnate_cleanup_pending = False   # 转生：全体复活那一瞬才清场
         self._build_pets()
         self._restore_world()
+        self._restore_shelters()
 
         self._clock = QElapsedTimer()
         self._clock.start()
@@ -462,6 +482,19 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             restore(self, data)
         except Exception as e:
             print("[slugcatpet] world restore failed: %r" % (e,), file=sys.stderr)
+
+    def _restore_shelters(self):
+        """按存档把庇护所建回来（旧档没有这一段就是空列表）。"""
+        rows = self._params.get("shelters")
+        if not isinstance(rows, list):
+            return
+        out = []
+        for d in rows:
+            sh = shelter_from_dict(d, self._WL, ground_y=self._HL)
+            if sh is not None:
+                out.append(sh)
+        self.shelters = out
+        self._shelter_seed = len(out)
 
     # ── 单猫兼容别名 ──
     @property
@@ -709,6 +742,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         fx_active = (pet_fx or self.sparks or self.shockwaves or self.fx or self.bubbles
                      or self.cursor_hijack is not None or self._place_mode or fast_stone
                      or snow_active
+                     or self.rain.active
                      or shake_active)
         # 零重力/蝙蝠已含在 _dirty_rect，不放这里
         self._fx_active = bool(fx_active)
@@ -763,6 +797,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self.resize(geom["win_w"], geom["win_h"])
         self.move(area.x(), area.y())
         self._reground(geom["WL"], geom["HL"])
+        self.rain.set_world(self._WL, self._HL)
         self._prev_dirty = None
         self.update()
 
@@ -786,6 +821,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                     *self.batflies, *self.lizards, *self.squidcadas, *self.pearls,
                     *self.needleworms, *self.spears, *self.scavengers):
             _clamp_item_to_bounds(obj, WL, HL)
+        for sh in getattr(self, "shelters", ()) or ():
+            sh.ground_y = HL
+            sh.y = HL - sh.h
+            sh.x = min(max(sh.x, 0.0), max(0.0, WL - sh.w))
+            sh.center_x = sh.x + sh.w * 0.5
+            sh.center_y = sh.y + sh.h * 0.5
 
     def _refresh_platforms(self):
         """其它可见窗口的顶边＝一块平地（窗口本体不挡路）。"""
@@ -912,12 +953,16 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._cursor_world = cur          # 矛的「钉在光标上」判定用（见 items._tick_spears）
         self._mouse_pole_tick(cur)
 
+        self._storm_tick()            # 须在 pet.step 前：雨强/门/积水目标当 tick 生效
+
         self._zerog_update()
         cycle_prog = self._cold_update_world()
         self._water_update()          # 须在 pet.step 前
 
         for pet in self.pets:
             pet.step(cur, cycle_prog)
+
+        self._rain_push_tick()        # 雨压：暴露在雨里的东西被轻轻往下压
 
         self._all_dead_tick()
         self._natural_spawn_tick()
@@ -1106,6 +1151,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                   *self.needleworms, *self.spears, *self.scavengers):
             o.water_y = surf.level_at(o.x)
         for pet in self.pets:
+            if self.shelters and self.shelter_of(pet.body.chunk1.x, pet.body.chunk1.y):
+                pet.body.water_surface = None    # 庇护所是干燥的安全区：不在里面游泳/溺水
+                pet.body.bubble_cb = None
+                continue
             pet.body.water_surface = surf
             pet.body.bubble_cb = self.spawn_bubble
 
@@ -1503,8 +1552,17 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         return QRect(x0, y0, x1 - x0, y1 - y0)
 
     def _draw_water(self, p):
-        """绘制水体与水面高光。"""
+        """绘制水体与水面高光。庇护所安全区挖洞 —— 里面不进积水。"""
         from PySide6.QtGui import QPolygonF, QPen
+        p.save()
+        shs = self.shelters or ()
+        if shs:
+            reg = QRegion(QRect(0, 0, int(self._WL) + 1, int(self._HL) + 48))
+            for sh in shs:
+                r = sh.safe_rect()
+                reg = reg.subtracted(QRegion(QRect(int(r[0]), int(r[1]),
+                                                   int(r[2] - r[0]) + 1, int(r[3] - r[1]) + 1)))
+            p.setClipRegion(reg, Qt.ClipOperation.IntersectClip)
         surf = self.water_surface
         n = surf.n
         WL = self._WL
@@ -1535,6 +1593,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         for x, y in pts:
             line.append(QPointF(x, y))
         p.drawPolyline(line)
+        p.restore()
 
     def _draw_bubbles(self, p):
         """绘制溺水气泡。"""
@@ -1621,6 +1680,15 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
         self._draw_fx_under(p)
 
+        rain_draw.draw_rain_under(p, self.rain, self.shelters, self._WL, self._HL)
+
+        if self.shelters:
+            # 庇护所画在猫之前：躲进去的猫仍然看得见；水层再把它挖掉，里面保持干燥
+            p.save()
+            p.setClipRect(self._ground_clip(), Qt.ClipOperation.IntersectClip)
+            self._draw_shelters(p)
+            p.restore()
+
         p.save()
         p.setClipRect(self._ground_clip(), Qt.ClipOperation.IntersectClip)
 
@@ -1673,6 +1741,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
         self._draw_fx(p)
 
+        rain_draw.draw_rain_over(p, self.rain, self.shelters, self._WL, self._HL)
+
         if self.snow_on:
             self._snow.draw(p, self._WL, self._HL, self._scale)
 
@@ -1681,6 +1751,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             p.setClipRect(self._ground_clip(), Qt.ClipOperation.IntersectClip)
             self._draw_place_hint(p)
             p.restore()
+
+        rain_draw.draw_rain_darkness(p, self.rain, self.shelters, self._WL, self._HL)
 
     def _ground_clip(self):
         """地面线（HL）以下就是任务栏：生物/物体一律裁在线以上，脚踩在线上。
@@ -1721,6 +1793,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                     self.place_seedcob(lx, ly)
                 elif self._place_kind == "karmaflower":
                     self.place_karmaflower(lx, ly)
+                elif self._place_kind == "shelter":
+                    self._begin_shelter_place(lx, ly)
                 else:
                     self.place_fruit(lx, ly)
             elif e.button() == Qt.MouseButton.RightButton:
@@ -1771,6 +1845,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         super().keyPressEvent(e)
 
     def mouseReleaseEvent(self, e):
+        if self._place_mode and self._place_kind == "shelter":
+            if e.button() == Qt.MouseButton.LeftButton:
+                self._finish_shelter_place()
+            return
         if not self.pets:
             return
         if e.button() == Qt.MouseButton.LeftButton:
@@ -1790,3 +1868,184 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             self._end_scavenger_drag()
             self._end_seedcob_drag()
             self._end_karmaflower_drag()
+
+    # ── 暴雨番茄钟 + 庇护所 ──
+    def shelter_of(self, x, y):
+        """这个点落在哪间庇护所的安全区里（没有就 None）。"""
+        for sh in self.shelters:
+            if sh.contains(x, y):
+                return sh
+        return None
+
+    def nearest_shelter(self, x, y=None):
+        """离这个点最近的庇护所（雨前焦虑 / 躲雨都用同一份）。"""
+        best, bd = None, 1.0e18
+        yy = self._HL if y is None else y
+        for sh in self.shelters:
+            d = sh.distance_to(x, yy)
+            if d < bd:
+                best, bd = sh, d
+        return best
+
+    def _exposure_at(self, x, y):
+        """这个点淋不淋得到雨 0~1（庇护所里 0，屋檐下 0.75）。"""
+        cov = 0.0
+        for sh in self.shelters:
+            c = sh.coverage_at(x, y)
+            if c > cov:
+                cov = c
+        return 1.0 - cov
+
+    def _storm_tick(self):
+        """暴雨番茄钟一 tick：门 → 相位 → 雨强 → 震屏 → 积水目标。"""
+        for sh in self.shelters:
+            sh.step()
+        self.storm.step(self.pets, self.shelters)
+        self.storm_active = self.storm.active
+        self.storm_pressure = self.storm.pressure
+        self.rain.step(self.storm.rain_drive, 1.0)
+        # 震屏：雨势折算成抖动，仍旧并入既有 self._shake（不另起一套）
+        if self.rain.shake > 0.0:
+            amp = self.rain.shake * RAIN_SHAKE_MAX
+            rng = self._storm_rng
+            self._shake[0] = clampf(self._shake[0] + rng.uniform(-amp, amp),
+                                    -SHAKE_MAX, SHAKE_MAX)
+            self._shake[1] = clampf(self._shake[1] + rng.uniform(-amp, amp),
+                                    -SHAKE_MAX, SHAKE_MAX)
+        if self.rain.impact and self.rain.impact_xy is not None:
+            # 第一滴重雨：一次明显的震屏 + 地面冲击环
+            ix, iy = self.rain.impact_xy
+            self._shake[1] = clampf(self._shake[1] + SHAKE_MAX * 0.55,
+                                    -SHAKE_MAX, SHAKE_MAX)
+            self.add_shockwave(ix, iy, 96.0, flash=True)
+        self._storm_flood_tick()
+
+    def _storm_flood_tick(self):
+        """积水：只改既有 water_target，不重做 flood 系统。"""
+        if self.water_on:
+            return                        # 手动「涨水」环境优先，别两套抢同一个 target
+        f = self.rain.flood
+        if f <= 0.001:
+            if self.water_surface is not None:
+                self.water_target = self._HL
+            return
+        if self.water_surface is None:
+            self.water_y = self._HL
+            self.water_surface = WaterSurface(self._WL, self._HL, tuning.WATER_SPACING)
+        self.water_target = self._HL - self._HL * tuning.STORM_FLOOD_MAX_HEIGHT_FRAC * f
+
+    def _rain_push_tick(self):
+        """雨压：暴露在雨里的生物每 tick 被轻轻往下压（雨滴本身不做碰撞）。"""
+        if not self.rain.active:
+            return
+        push = self.rain.rain_force
+        for pet in self.pets:
+            b = pet.body
+            f = push(self._exposure_at(b.chunk1.x, b.chunk1.y))
+            if f > 0.0:
+                b.vy += f
+        for e in (*self.lizards, *self.batflies, *self.squidcadas, *self.needleworms):
+            if getattr(e, "state", None) != ItemState.FREE:
+                continue
+            f = push(self._exposure_at(getattr(e, "x", 0.0), getattr(e, "y", 0.0)))
+            if f > 0.0:
+                e.vy += f
+
+    # ── 暴雨设置 / 存档 ──
+    def set_storm_enabled(self, on):
+        """开/关暴雨番茄钟。开启时若还没庇护所，就在地面中间先放一间默认的。"""
+        on = bool(on)
+        self.storm.enabled = on
+        self._params["storm_enabled"] = on
+        if on and not self.shelters:
+            w = min(200.0, self._WL * 0.30)
+            h = min(110.0, self._HL * 0.30)
+            self.shelters.append(Shelter(self._WL * 0.5 - w * 0.5, self._HL - h, w, h,
+                                         self._HL, self._WL, seed=0,
+                                         door_ticks=int(tuning.STORM_DOOR_TICKS)))
+            self._shelter_seed += 1
+            self.world_version += 1
+        if not on:
+            self.storm.reset()
+            self.storm_active = False
+            self.storm_pressure = 0.0
+            for sh in self.shelters:
+                sh.start_opening()
+        self._prev_dirty = None
+        self.update()
+
+    def set_storm_durations(self, focus_minutes=None, warning_minutes=None,
+                            sleep_minutes=None):
+        self.storm.set_durations(focus_minutes, warning_minutes, sleep_minutes)
+        self.update()
+
+    def storm_state(self):
+        """存档用：庇护所 + 番茄钟相位（退出时写进 params）。"""
+        return {"shelters": [sh.to_dict() for sh in self.shelters],
+                "storm": self.storm.to_dict()}
+
+    def clear_shelters(self):
+        if self.shelters:
+            for sh in self.shelters:
+                sh.start_opening()
+            self.shelters = []
+            self.world_version += 1
+            self._prev_dirty = None
+            self.update()
+
+    def _draw_shelters(self, p):
+        for sh in self.shelters:
+            sh.draw(p)
+
+    # ── 摆放庇护所：按下起点 → 拖出矩形 → 松开生成 ──
+    def enter_place_shelter_mode(self):
+        self._place_mode = True
+        self._place_kind = "shelter"
+        self._shelter_drag_start = None
+        self._begin_place_capture()
+        return True
+
+    def _begin_shelter_place(self, lx, ly):
+        self._shelter_drag_start = (lx, ly)
+
+    def _shelter_drag_rect(self):
+        """当前拖出来的预览庇护所；没开始拖就按最小尺寸贴在光标上。"""
+        cur = self.cursor_logical()
+        if cur is None:
+            return None
+        ticks = int(tuning.STORM_DOOR_TICKS)
+        if self._shelter_drag_start is None:
+            return Shelter(cur[0], cur[1], Shelter.MIN_W, Shelter.MIN_H, self._HL,
+                           self._WL, seed=self._shelter_seed, door_ticks=ticks)
+        sx, sy = self._shelter_drag_start
+        cx, cy = cur
+        x0, x1 = min(sx, cx), max(sx, cx)
+        top = min(sy, cy)
+        # 只落在地面：底边永远贴 HL，高度由拖出的上沿决定
+        return Shelter(x0, top, max(x1 - x0, Shelter.MIN_W), self._HL - top,
+                       self._HL, self._WL, seed=self._shelter_seed, door_ticks=ticks)
+
+    def _finish_shelter_place(self):
+        if not self._place_mode or self._place_kind != "shelter":
+            return None
+        sh = self._shelter_drag_rect()
+        self._shelter_drag_start = None
+        if sh is None:
+            self._exit_place_mode()
+            return None
+        self.shelters.append(sh)
+        self._shelter_seed += 1
+        self.world_version += 1
+        self._exit_place_mode()
+        self._prev_dirty = None
+        self.update()
+        return sh
+
+    def _draw_shelter_hint(self, p):
+        sh = self._shelter_drag_rect()
+        if sh is None:
+            return
+        p.save()
+        p.setOpacity(0.55)
+        sh.draw(p)
+        p.restore()

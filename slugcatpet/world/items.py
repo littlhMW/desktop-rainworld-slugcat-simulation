@@ -1855,6 +1855,9 @@ class ItemInteractionMixin:
 
     def erase_target(self, cx, cy):
         """光标下最该删的那个对象 → (对象, 所在池名)；没有则 None。"""
+        for sh in getattr(self, "shelters", ()) or ():
+            if sh.contains(cx, cy):
+                return (sh, "shelters")      # 庇护所整间删掉
         best, bestd, bestname = None, 1e9, None
         pools = [(n, getattr(self, n)) for n in self.ERASE_POOLS]
         if self.lamp is not None:
@@ -1919,7 +1922,10 @@ class ItemInteractionMixin:
         hit = self.erase_target(cx, cy)
         if hit is not None:
             obj = hit[0]
-            if hasattr(obj, "bulb_x"):
+            if hasattr(obj, "safe_rect"):                  # 庇护所：整间描边
+                x0, y0, x1, y1 = obj.safe_rect()
+                p.drawRect(x0, y0, x1 - x0, y1 - y0)
+            elif hasattr(obj, "bulb_x"):
                 p.drawEllipse(QPointF(obj.bulb_x, obj.bulb_y), LAMP_PICK_R, LAMP_PICK_R)
             else:
                 ox = getattr(obj, "x", None)
@@ -2036,6 +2042,10 @@ class ItemInteractionMixin:
 
         if self._place_kind == "karmaflower":
             self._draw_karmaflower_hint(p)
+            return
+
+        if self._place_kind == "shelter":
+            self._draw_shelter_hint(p)
             return
 
         stone = (self._place_kind == "stone")

@@ -49,6 +49,8 @@ _STATES = {
     "Airborne": "st_air",
     "Swimming": "st_swim",
     "SeekWarmth": "st_warmth",
+    "StormSeekShelter": "st_storm_seek",
+    "ShelterSleep": "st_shelter_sleep",
 }
 
 # 社交欲望态：按 _social_kind 细分
@@ -111,6 +113,7 @@ _STATE_TARGET = {
     "RivSnatch": ("_fight_target",),
     "ClearCorpse": ("_clear_target",),
     "SeekWarmth": ("_warm_goal_obj",),
+    "StormSeekShelter": ("_storm_goal_obj",),
     "Swimming": ("_swim_goal",),
     "HPole": ("_hp_goal_obj", "_hp_step_obj"),
     "SeekHPole": ("_hp_goal_obj",),
@@ -193,9 +196,11 @@ def _describe(obj, beh, peers):
     from ..world.pearl import Pearl
     from ..world.lamp import Lamp
     from ..world.pole import Pole
+    from ..world.shelter import Shelter
     from ..world.hpole import HPoleController
     dead_suffix = t("tg_corpse") if getattr(obj, "dead", False) else ""
-    for cls, key in ((Lizard, "tg_lizard"), (Scavenger, "tg_scavenger"),
+    for cls, key in ((Shelter, "tg_shelter"),
+                     (Lizard, "tg_lizard"), (Scavenger, "tg_scavenger"),
                      (NeedleWorm, "tg_needleworm"), (Squidcada, "tg_squidcada"),
                      (BatFly, "tg_batfly"), (SeedCob, "tg_cob"), (Seed, "tg_cob"),
                      (KarmaFlower, "tg_flower"), (Fruit, "tg_fruit"),
