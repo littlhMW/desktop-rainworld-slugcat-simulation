@@ -20,7 +20,7 @@ import math
 import random as _random
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QColor, QPolygonF, QRadialGradient, QTransform
+from PySide6.QtGui import QColor, QPainter, QPolygonF, QRadialGradient, QTransform
 
 from ..core.chunkphys import apply_water
 from ..core.units import clampf, inv_lerp, lerp
@@ -64,8 +64,10 @@ RING_SPRITE = "EndGameCircle"  # 32x32
 GOLD_RGB = (135, 93, 47)      # RainWorld.GoldRGB
 STALK_TIP_RGB = (47, 39, 58)  # Lerp(blackColor, fogColor, 0.3) 近似
 GLOW_OUTER_RGB = (20, 40, 82)  # HSL2RGB(AntiGold.hue, .6, .2)
-GLOW_R_OUT = 37.5             # 原版 75 * Lerp(.5,1,t) / 16 * 8
-GLOW_R_IN = 20.0              # 原版 40 * Lerp(.5,1,t) / 16 * 8
+# Futile_White 是 8x8：原版 sprite.scale = K/16 ⇒ 直径 = 8K/16 = K/2
+#   EffectSprite(0) K=75 ⇒ 直径 37.5、半径 18.75；EffectSprite(1/2) K=40 ⇒ 半径 10
+GLOW_R_OUT = 18.75
+GLOW_R_IN = 10.0
 
 
 def _deg_to_vec(a: float) -> tuple[float, float]:
@@ -390,35 +392,32 @@ def _draw_stalk(painter, atlas, kf, ts: float) -> None:
 
 
 def _draw_glow(painter, x: float, y: float, movement: float, bites: int) -> None:
-    """原版三张 Futile_White 光斑：外圈暗青（静止时才亮）+ 内圈金色。"""
+    """原版三张 Futile_White 光斑（Foreground / GrabShaders 容器，是「灯光」）。
+
+    EffectSprite(0) 外圈暗青 = HSL2RGB(AntiGold.hue, .6, .2)，alpha 0.4*(1-movement)*fade
+                    —— 只有静止时才亮；EffectSprite(1/2) 内圈金色，alpha 0.7/0.8*fade。
+    灯光用 Plus（加色）叠加，才不会把花瓣糊掉。
+    """
     t = inv_lerp(0.0, float(BITES), float(bites))
     fade = 0.5 + 0.5 * t
-    outer = 0.4 * (1.0 - movement) * fade
-    if outer > 0.01:
-        c = QColor(*GLOW_OUTER_RGB)
-        c.setAlphaF(min(1.0, outer))
-        c2 = QColor(*GLOW_OUTER_RGB)
-        c2.setAlphaF(0.0)
-        g = QRadialGradient(QPointF(x, y), GLOW_R_OUT * fade)
-        g.setColorAt(0.0, c)
-        g.setColorAt(1.0, c2)
-        painter.save()
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(g)
-        painter.drawEllipse(QPointF(x, y), GLOW_R_OUT * fade, GLOW_R_OUT * fade)
-        painter.restore()
-    a = 0.7 * fade
-    c = QColor(*GOLD_RGB)
-    c.setAlphaF(min(1.0, a))
-    c2 = QColor(*GOLD_RGB)
-    c2.setAlphaF(0.0)
-    g = QRadialGradient(QPointF(x, y), GLOW_R_IN * fade)
-    g.setColorAt(0.0, c)
-    g.setColorAt(1.0, c2)
     painter.save()
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(g)
-    painter.drawEllipse(QPointF(x, y), GLOW_R_IN * fade, GLOW_R_IN * fade)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+    layers = ((GLOW_R_OUT, GLOW_OUTER_RGB, 0.4 * (1.0 - movement) * fade),
+              (GLOW_R_IN, GOLD_RGB, 0.7 * fade),
+              (GLOW_R_IN, GOLD_RGB, 0.8 * fade))
+    for radius, rgb, alpha in layers:
+        if alpha <= 0.01:
+            continue
+        c = QColor(*rgb)
+        c.setAlphaF(min(1.0, alpha))
+        c2 = QColor(*rgb)
+        c2.setAlphaF(0.0)
+        g = QRadialGradient(QPointF(x, y), radius * fade)
+        g.setColorAt(0.0, c)
+        g.setColorAt(1.0, c2)
+        painter.setBrush(g)
+        painter.drawEllipse(QPointF(x, y), radius * fade, radius * fade)
     painter.restore()
 
 
@@ -427,7 +426,6 @@ def draw_karmaflower(painter, atlas, kf, ts: float = 1.0) -> None:
     ts = clampf(ts, 0.0, 1.0)
     x = kf.last_x + (kf.x - kf.last_x) * ts
     y = kf.last_y + (kf.y - kf.last_y) * ts
-    _draw_glow(painter, x, y, kf.movement, kf.bites)
     _draw_stalk(painter, atlas, kf, ts)
     quad = []
     for i in range(PETAL_N):
@@ -442,3 +440,4 @@ def draw_karmaflower(painter, atlas, kf, ts: float = 1.0) -> None:
         else:
             quad.append((x, y))
     _draw_ring(painter, atlas, quad)
+    _draw_glow(painter, x, y, kf.movement, kf.bites)
