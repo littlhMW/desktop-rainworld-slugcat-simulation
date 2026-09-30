@@ -410,7 +410,7 @@ class Shelter:
         return mid + (1.0 if self.door_side == "left" else -1.0) * (hi - lo) * 0.15
 
     def entry_goal(self, radius=26.0):
-        return point_goal(self.entry_x(), self.ground_y, radius=radius,
+        return point_goal(self.entry_x(), self.interior_floor_y(), radius=radius,
                           contact="body")
 
     def interior_goal(self, radius=22.0):
@@ -498,77 +498,3 @@ class Shelter:
         # 只画黑色墙体 —— 入口那块留白，猫从缺口进出
         p.setBrush(QColor(0, 0, 0, 255))
         for (a, b, c, d) in self.wall_rects():
-            p.drawRect(QRectF(a, b, c - a, d - b))
-        # 门**完全关上**才把入口封成黑的（跟碰撞口径一致：关门途中还能过）
-        if self.door_state == CLOSED:
-            dx0, dy0, dx1, dy1 = self.entrance
-            p.drawRect(QRectF(dx0, dy0, dx1 - dx0, dy1 - dy0))
-
-    def draw_front(self, p, atlas=None):
-        """猫身前：入口那一格口子。开着留空，关的时候从下往上封，关满即封死。"""
-        if self.close_fac <= 0.0:
-            return
-        from PySide6.QtGui import QColor
-        from PySide6.QtCore import QRectF, Qt
-
-        dx0, dy0, dx1, dy1 = self.entrance
-        fh = (dy1 - dy0) * ease(self.close_fac)
-        if fh <= 0.5:
-            return
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(0, 0, 0, 255))
-        p.drawRect(QRectF(dx0, dy1 - fh, dx1 - dx0, fh))
-
-    # ── 存档 ──
-    def to_dict(self):
-        return {"x": self.x, "y": self.y, "w": self.w, "h": self.h,
-                "ground_y": self.ground_y, "seed": self.seed,
-                "door_side": self.door_side, "door_state": self.door_state,
-                "door_t": self.close_fac, "door_ticks": self.door_ticks,
-                "template": self.template.key}
-
-    def dump_geometry(self):
-        """调试/测试用：这间庇护所的真实几何快照。"""
-        return {"tile": self.tile, "footprint": self.safe_rect(),
-                "interior": self.interior,
-                "entrance": self.entrance, "roof": self.roof,
-                "floor": self.floor, "corridor_top": self.corridor_top,
-                "left_wall": self.left_wall, "right_wall": self.right_wall,
-                "outer_wall": self.outer_wall,
-                "p_zero": self.p_zero, "dir_x": self.dir_x,
-                "door_side": self.door_side, "template": self.template.key}
-
-
-def shelter_from_dict(d, WL, ground_y=None):
-    """从存档建回（旧档缺字段一律有默认值）。"""
-    if not isinstance(d, dict):
-        return None
-    h = float(d.get("h", 80.0))
-    y = d.get("y")
-    if y is None:
-        # 更老的档只有 ground_y（底边贴桌面地面）
-        y = float(d.get("ground_y", ground_y if ground_y is not None else 0.0)) - h
-    try:
-        sh = Shelter(float(d.get("x", 0.0)), float(y),
-                     float(d.get("w", 140.0)), h,
-                     None, WL, seed=int(d.get("seed", 0) or 0),
-                     door_ticks=int(d.get("door_ticks", 0) or 0),
-                     template=d.get("template") if isinstance(d.get("template"), str) else None)
-    except Exception:
-        return None
-    side = d.get("door_side")
-    if side in ("left", "right") and bool(d.get("legacy_fixed_door_side", False)):
-        sh.door_side = side
-        sh._layout()
-    else:
-        # 新规则按屏幕中线重算；旧存档不再把历史模板方向当作硬约束。
-        sh.door_side = "left" if sh.center_x >= sh.WL * 0.5 else "right"
-        sh._layout()
-    st = d.get("door_state")
-    if st in (OPEN, CLOSING, CLOSED, OPENING):
-        sh.door_state = st
-    try:
-        sh.close_fac = _clampf(float(d.get("door_t", 0.0)), 0.0, 1.0)
-    except Exception:
-        sh.close_fac = 0.0
-    return sh
