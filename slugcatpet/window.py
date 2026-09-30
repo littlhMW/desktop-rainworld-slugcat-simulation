@@ -967,13 +967,33 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         return any(getattr(getattr(pet, "behavior", None), "grab", None) is not None
                    and pet.behavior.grab.active for pet in getattr(self, "pets", ()))
 
+    def _cursor_play_active(self) -> bool:
+        """有猫正在追光标（玩光标），或正挂在光标那截虚杆上 → 光标才当杆。
+
+        平时光标不进 poles（用户口径）：场上一有杆，空中抓杆 / 杆间跳 / 无重力抓杆
+        就会顺手把这截杆抓走 —— 猫会莫名其妙跳上去挂在鼠标上。只有玩光标期间
+        （ChaseCursor）才把它喂给同一套规划/攀爬逻辑；已经爬上去了就不中途抽走。
+        """
+        pl = self._mouse_pole
+        for pet in getattr(self, "pets", ()):
+            bf = getattr(pet, "behavior", None)
+            if bf is None:
+                continue
+            if getattr(bf, "state", None) == "ChaseCursor":
+                return True
+            pc = getattr(bf, "poleclimb", None)
+            if pl is not None and pc is not None and pc.pole is pl:
+                return True
+        return False
+
     def _mouse_pole_tick(self, cur) -> None:
-        """光标＝一小节竖杆（用户指定的桌宠扩展）。
+        """光标＝一小节竖杆（用户指定的桌宠扩展），只在玩光标时上场。
 
         原版杆子是房间 tile，没有「跟着鼠标跑的杆」；这里把它做成一段短竖杆
         塞进 poles，规划层（PoleJumpReach / hop_plan / PoleClimber）与真杆完全同源，
-        于是猫会把光标当成可爬、可站、可跳过去抓的杆。
-        虚拟杆不渲染、不参与交叉换杆（见 Pole.virtual / cross_point）。
+        于是追光标的猫会把光标当成可爬、可跳过去抓的杆。
+        虚拟杆不渲染、不参与交叉换杆（见 Pole.virtual / cross_point）；
+        平时不上场（见 _cursor_play_active），免得别的行为把它当普通地形顺手抓走。
         """
         pl = self._mouse_pole
         if self._mouse_pole_suppress > 0:
@@ -991,7 +1011,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # 空闲下来、光标还在窗口内就照旧出现。
         busy = (self._mouse_pole_suppress > 0 or self._place_mode
                 or self._mouse_pole_busy())
-        on = (self._mouse_pole_on and not busy and cx is not None
+        on = (self._mouse_pole_on and not busy and self._cursor_play_active()
+              and cx is not None
               and 0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL)
         if not on:
             self._mouse_pole_vel = None

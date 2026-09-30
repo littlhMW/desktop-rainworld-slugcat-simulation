@@ -6336,6 +6336,14 @@ class BehaviorFSM:
             self._clear_hands()
             self._transition("Dragged")
             return
+        # 玩光标时那截虚杆才在场上（见 window._mouse_pole_tick）：空中贴上去就抓住它。
+        # 平时虚杆不在场，所以「爬光标」只会发生在玩的时候。
+        mp = getattr(self.win, "_mouse_pole", None)
+        if mp is not None and not b.on_floor():
+            self._air_pole_target = mp
+            if self._air_pole_grab():
+                return
+            self._air_pole_target = None    # 没贴到：别把一根随时会消失的杆留成目标
         self._play_left -= 1
         if cursor is None:
             self._cursor_plan_end()
