@@ -10,76 +10,79 @@
 """
 from __future__ import annotations
 
-import random
 from dataclasses import replace
 
 from .base import CatCaps, CatDef
+from ..core.gfxmath import _hsl2rgb
 from .stats import DEFAULT_STATS
 from .survivor import SURVIVOR_DEF
 
-# ── 个体颜色（wiki Slugpup）──────────────────────────────────────────────
-# 「猫崽的体色和瞳色多变，绿色和黄色系的最常见，而红色和紫色系的最罕见。」「体色由
-#   游戏文件里的变量 Dark 控制（1/2 抽深色/浅色色板）；瞳色与体色相关：深色猫崽的
-#   眼睛固定纯白，浅色猫崽的眼睛固定纯黑。」这里只做体型/外观区分，不做性格差异。
-PUP_DARK_P = 0.5                 # Dark 变量：1/2 抽深色板
-
-# 色相权重 (起, 止, 权重)：绿 / 黄最多，红 / 紫最少
-PUP_HUE_BANDS = (
-    (0.0, 30.0, 1.0),            # 红
-    (30.0, 70.0, 4.0),           # 黄 / 橙
-    (70.0, 160.0, 5.0),          # 绿（最常见）
-    (160.0, 250.0, 2.0),         # 青 / 蓝
-    (250.0, 340.0, 1.0),         # 紫（最罕见）
-    (340.0, 360.0, 1.0),         # 品红 / 红
-)
+# ── 个体外观：按 Rain World 的 Player.NPCStats 生成 ────────────────────
+# NPCStats 的随机顺序、幂分布和 H/S/L/Dark/EyeColor 取值按反编译结果保持一致。
+# 绿/黄更常见、红/紫更少见来自 H 的原生随机分布，不再人为切色相区间。
+_MASK32 = 0xFFFFFFFF
+_MT19937 = 1812433253
 
 
-def pup_hsv_to_rgb(h, s, v):
-    """HSV（各自 0..1）→ 0..255 的 RGB。"""
-    h = (h % 1.0) * 6.0
-    i = int(h)
-    f = h - i
-    p = v * (1.0 - s)
-    q = v * (1.0 - s * f)
-    t = v * (1.0 - s * (1.0 - f))
-    if i == 0:
-        r, g, b = v, t, p
-    elif i == 1:
-        r, g, b = q, v, p
-    elif i == 2:
-        r, g, b = p, v, t
-    elif i == 3:
-        r, g, b = p, q, v
-    elif i == 4:
-        r, g, b = t, p, v
-    else:
-        r, g, b = v, p, q
+class _PupRNG:
+    """Rain World NPCStats 所用的 XorShift128，保持 32-bit 溢出语义。"""
+
+    __slots__ = ("x", "y", "z", "w")
+
+    def __init__(self, seed: int):
+        self.x = seed & _MASK32
+        self.y = (_MT19937 * self.x + 1) & _MASK32
+        self.z = (_MT19937 * self.y + 1) & _MASK32
+        self.w = (_MT19937 * self.z + 1) & _MASK32
+
+    def _next_u32(self) -> int:
+        t = (self.x ^ ((self.x << 11) & _MASK32)) & _MASK32
+        self.x, self.y, self.z = self.y, self.z, self.w
+        self.w = (self.w ^ (self.w >> 19) ^ t ^ (t >> 8)) & _MASK32
+        return self.w
+
+    def next_float(self) -> float:
+        return self._next_u32() / 4294967295.0
+
+    def next_float_range(self, lo: float, hi: float) -> float:
+        # 保持原版 NextFloatRange 的方向：hi - (hi-lo)*u。
+        return (lo - hi) * self.next_float() + hi
+
+
+def _hsl2rgb8(h: float, s: float, l: float) -> tuple[int, int, int]:
+    r, g, b = _hsl2rgb(h, s, l)
     return tuple(int(round(max(0.0, min(1.0, c)) * 255.0)) for c in (r, g, b))
 
 
-def pup_colors(seed: int):
-    """按个体种子抽 (体色, 瞳色)。同一只猫（id）每次启动都一致。"""
-    rng = random.Random((seed ^ 0x5A17C0DE) & 0xFFFFFFFF)
-    total = sum(w for _, _, w in PUP_HUE_BANDS)
-    pick = rng.random() * total
-    lo, hi = PUP_HUE_BANDS[0][0], PUP_HUE_BANDS[-1][1]
-    for a, b, w in PUP_HUE_BANDS:
-        pick -= w
-        if pick <= 0.0:
-            lo, hi = a, b
-            break
-    hue = (lo + (hi - lo) * rng.random()) / 360.0     # 绿 / 黄最常见的色相区
-    dark = rng.random() < PUP_DARK_P                  # 深色板 or 浅色板
-    if dark:
-        sat = 0.10 + 0.85 * rng.random()              # 深色板：中高饱和 + 低明度
-        val = 0.02 + 0.23 * rng.random()
-    else:
-        sat = 0.05 + 0.60 * rng.random()              # 浅色板：低中饱和 + 高明度
-        val = 0.80 + 0.19 * rng.random()
-    body = pup_hsv_to_rgb(hue, sat, val)
-    # 瞳色不随机、只跟体色深浅走：深色体 → 纯白瞳，浅色体 → 纯黑瞳。
-    eye = (255, 255, 255) if dark else (0, 0, 0)
-    return body, eye
+def pup_appearance(seed: int):
+    """返回 (body_rgb, eye_rgb, size, wideness)，同一 ID 可稳定重建。"""
+    rng = _PupRNG(seed)
+
+    # 与 Player.NPCStats 构造函数保持同一随机读取顺序。
+    _bal = rng.next_float() ** 1.5
+    met = rng.next_float() ** 1.5
+    stealth = rng.next_float() ** 1.5
+    size = rng.next_float() ** 1.5
+    wideness = rng.next_float() ** 1.5
+
+    h0 = rng.next_float_range(0.15, 0.58)
+    h1 = rng.next_float()
+    hue = h0 + (h1 - h0) * (rng.next_float() ** (1.5 - met))
+
+    sat = rng.next_float_range(0.0, 1.0) ** (0.3 + stealth * 0.3)
+    dark = rng.next_float_range(0.0, 1.0) <= 0.3 + stealth * 0.2
+    lightness = rng.next_float_range(0.9 if dark else 0.75, 1.0) ** (1.5 - stealth)
+    eye_value = rng.next_float() ** (2.0 - stealth * 1.5)
+
+    # PlayerGraphics：Dark 时把 L 反向，形成低明度体色。
+    body_l = max(0.01, min(1.0, 1.0 - lightness if dark else lightness))
+    body = _hsl2rgb8(hue, sat, body_l)
+
+    # 眼睛靠近黑/白两端，同时保留 NPCStats.EyeColor 的随机明暗。
+    base_eye = _hsl2rgb8(hue, sat, max(0.01, min(1.0, 1.0 - eye_value)))
+    target = (255, 255, 255) if dark else (0, 0, 0)
+    eye = tuple(int(round(base_eye[i] * 0.2 + target[i] * 0.8)) for i in range(3))
+    return body, eye, size, wideness
 
 
 SLUGPUP_DEF = CatDef(
