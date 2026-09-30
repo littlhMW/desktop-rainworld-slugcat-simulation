@@ -37,7 +37,7 @@
 
 **⑦ 矛大师的细线：尾巴根红 → 针端黄（`world/needlethread.py`）**：原版 `ApplyPalette` 的 `threadCol` 是一色米黄；按用户口径改成沿线长渐变（`_shade(i)`，首端 `(226,58,44)` → 末端 `(248,222,82)`），宽度/alpha 仍走原版 `InverseLerp(0,0.3,life)`。
 
-**证据**（离屏渲染，`work/scratch/_vis140b.py` / `_vis140eat.py`）：`r140b_vis.png`（双持外八字·竖杆持物·细线尾红针黄）、`r140b_eat.png`（左：双持站立；右：吃饭时只有食物手抬到嘴边、矛手原地）；双持实测角 `(-31.2°, +48.8°)`，抱竖杆时 `_carry_anchor("l") = 手位 − 7px`。面条蝇证据图 `nw140_wings_ab.png` / `lz140_run3.png`。
+**证据**（离屏渲染，`work/scratch/_vis140b.py` / `_vis140eat.py`）：`r140b_vis.png`（双持外八字·竖杆持物·细线尾红针黄）、`r140b_eat.png`（左：双持站立；右：吃饭时只有食物手抬到嘴边、矛手原地）；双持实测角 `(-31.2°, +48.8°)`，抱竖杆时 `_carry_anchor("l") = 手位 − 7px`。面条蝇证据图 `nw140_wings_ab.png` / `lz140_ab.png`。
 
 **测试**：`work/scratch/e2e_r140.py`（8 组 30+ 断言）+ `work/scratch/e2e_r140b.py`（6 组 30 项），都已登记进 `run_all19.ps1`。
 
