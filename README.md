@@ -48,16 +48,16 @@ python run_slugcatpet.py
 
 当前包含：
 
-- Monk
-- Survivor
-- Rivulet
-- Watcher
-- Gourmand
-- Hunter
-- Artificer
-- Spearmaster
-- Saint
-- Slugpup
+- 僧侣（Monk）
+- 求生者（Survivor）
+- 溪流（Rivulet）
+- 守望者（Watcher）
+- 饕餮（Gourmand）
+- 猎手（Hunter）
+- 工匠（Artificer）
+- 矛大师（Spearmaster）
+- 圣徒（Saint）
+- 蛞蝓猫幼崽（Slugpup）
 
 ## 项目来源
 
