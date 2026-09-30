@@ -1,14 +1,8 @@
 # -*- coding: utf-8 -*-
 """暴雨天气：连续雨强 + 固定雨滴池 + 雨幕参数 + 积水驱动（纯逻辑，不绘制）。
 
-反编译口径：原版暴雨不是离散档位，而是一条 0→1 的连续曲线。这里也只暴露一个
-连续值 ``intensity``，其它所有量（变暗 / 雨滴数 / 雨幕密度 / 震动 / 积水）都是
-它的函数，于是「安静 → 变暗 → 偶尔一滴 → 第一滴重雨 → 整屏雨幕 → 死亡雨」是
-一条平滑过程，不需要任何 ``if rain_level >= 3`` 之类的分支。
-
-雨滴不做粒子洪流：``RainDrop`` 是带 ``__slots__`` 的定长池，``step`` 只把 ``y``
-往前推，落到地面就从顶上绕回去，可见数量按 intensity 截断 —— 全程不新建/销毁
-对象，所以暴雨期间整窗刷新也不会掉帧。
+渲染与天气逻辑分离：这里提供稳定的 0→1 暴雨驱动，以及雨幕、暗化、震屏、
+积水等视觉所需的连续参数。雨滴采用固定池，避免暴雨期间反复创建对象。
 """
 from __future__ import annotations
 
@@ -27,10 +21,10 @@ def smoothstep(a, b, x):
     return t * t * (3.0 - 2.0 * t)
 
 
-DROP_COUNT = 120          # 雨滴池容量（固定，不增删）
-FIRST_DROP_AT = 0.62      # 第一滴重雨的强度阈值
-FIRST_DROP_FLASH = 26     # 第一滴重雨 + 落地溅射的余韵时长（tick）
-RAIN_FORCE_SCALE = 0.30   # 雨压：满强度、全暴露时每 tick 给猫/生物的下压加速度
+DROP_COUNT = 160
+FIRST_DROP_AT = 0.54
+FIRST_DROP_FLASH = 34
+RAIN_FORCE_SCALE = 0.18
 RAIN_FORCE_DEADZONE = 0.20
 
 
@@ -55,22 +49,24 @@ class RainSystem:
     def __init__(self, WL, HL, seed=0x5A17):
         self.WL = float(WL)
         self.HL = float(HL)
+        self._seed = int(seed)
         self.rng = random.Random(seed)
         self.drops = []
         self._make_drops()
         self.intensity = 0.0
         self.visible_drops = 0
         self.sheet_density = 0.0
+        self.mist = 0.0
         self.darkness = 0.0
         self.shake = 0.0
         self.flood = 0.0
         self.rumble = 0.0
         self.tile_off = 0.0
         self.exposure = 1.0
-        self.first_drop = False        # 本 tick 刚打第一滴重雨
+        self.first_drop = False
         self.first_drop_done = False
-        self.flash = 0                 # 第一滴的余韵倒计时（供渲染层用）
-        self.impact = False            # 本 tick 触发一次明显冲击（震屏 + 冲击环）
+        self.flash = 0
+        self.impact = False
         self.impact_xy = None
         self._t = 0
 
@@ -80,31 +76,32 @@ class RainSystem:
         drops = []
         for i in range(DROP_COUNT):
             drops.append(RainDrop(
-                x=r.uniform(-8.0, self.WL + 8.0),
+                x=r.uniform(-16.0, self.WL + 16.0),
                 y=r.uniform(-self.HL, self.HL),
-                speed=r.uniform(9.0, 17.0),
-                length=r.uniform(6.0, 16.0),
-                alpha=r.uniform(0.28, 0.72),
-                width=1.0 if r.random() < 0.7 else 2.0,
+                speed=r.uniform(10.0, 18.0),
+                length=r.uniform(14.0, 56.0),
+                alpha=r.uniform(0.16, 0.46),
+                width=0.8 if r.random() < 0.80 else 1.4,
                 seed=i))
         self.drops = drops
 
     @property
     def active(self):
-        """还在下雨 / 还有雨痕（整窗刷新的判据）。"""
+        """还在下雨 / 还有第一滴余韵。"""
         return self.intensity > 0.001 or self.flash > 0
 
     def set_world(self, WL, HL):
-        """窗口尺寸 / 地面线变化：雨滴池按新尺寸重铺，别落在旧坐标上。"""
+        """窗口尺寸 / 地面线变化：雨滴池按新尺寸重铺。"""
         self.WL = float(WL)
         self.HL = float(HL)
-        self.rng.seed(0x5A17)
+        self.rng.seed(self._seed)
         self._make_drops()
 
     def reset(self):
         self.intensity = 0.0
         self.visible_drops = 0
         self.sheet_density = 0.0
+        self.mist = 0.0
         self.darkness = 0.0
         self.shake = 0.0
         self.flood = 0.0
@@ -116,11 +113,7 @@ class RainSystem:
         self.impact_xy = None
 
     def reset_cycle(self):
-        """新一个雨周期开始：「第一滴重雨」要重新算一次。
-
-        旧实现里 ``first_drop_done`` 只在 ``reset()``（关掉暴雨）里清，于是第二个
-        周期开始后永远等不到那记重音/冲击 —— 因为它一直是 True。
-        """
+        """新一轮雨开始：允许重新出现一次第一滴重雨。"""
         self.first_drop = False
         self.first_drop_done = False
         self.flash = 0
@@ -128,7 +121,7 @@ class RainSystem:
         self.impact_xy = None
 
     def rain_force(self, exposure=1.0):
-        """雨压：按强度与暴露度算一个向下的加速度（只影响猫 / 生物 / 水）。"""
+        """雨压：按强度与暴露度算一个向下的加速度。"""
         if self.intensity <= RAIN_FORCE_DEADZONE:
             return 0.0
         e = 0.0 if exposure < 0.0 else (1.0 if exposure > 1.0 else float(exposure))
@@ -140,22 +133,37 @@ class RainSystem:
         self.intensity = i
         self.exposure = exposure
         self._t += 1
-        # 雨滴：只推 y，落地绕回
-        fall = 1.0 + 6.0 * i
-        top = -self.HL
+
+        # 雨滴：只推 y，落地绕回；稍有横向风感，但不做随机抖动。
+        fall = 0.85 + 6.4 * i
+        top = -self.HL - 24.0
+        wrap = self.HL + 48.0
+        drift = 1.2 + 3.0 * i
         for d in self.drops:
             d.y += d.speed * fall
-            if d.y > self.HL + 10.0:
-                d.y -= self.HL + 20.0
+            d.x += drift * (0.25 + 0.75 * (d.seed & 1))
+            if d.y > self.HL + 24.0:
+                d.y -= wrap
                 if d.y < top:
                     d.y = top
-        self.visible_drops = int(len(self.drops) * i)
-        self.sheet_density = smoothstep(0.62, 0.95, i)
-        self.darkness = smoothstep(0.05, 0.75, i) * 0.78
-        self.shake = max(0.0, (i - 0.45) / 0.55) ** 2
-        self.flood = smoothstep(0.65, 1.0, i)
+            if d.x > self.WL + 24.0:
+                d.x -= self.WL + 48.0
+            elif d.x < -24.0:
+                d.x += self.WL + 48.0
+
+        # 视觉曲线分开：低强度先有湿空气，中段才出现密集雨幕和明显变暗。
+        self.visible_drops = int(len(self.drops) * (0.10 + 0.90 * smoothstep(0.34, 0.78, i)))
+        self.sheet_density = smoothstep(0.46, 0.86, i)
+        self.mist = smoothstep(0.10, 0.70, i)
+        self.darkness = (0.16 * smoothstep(0.04, 0.32, i)
+                         + 0.42 * smoothstep(0.26, 0.92, i))
+        self.darkness = min(0.52, self.darkness)
+        # 震屏只服务于世界内容；雨幕和暴雨遮罩本身在屏幕空间稳定绘制。
+        self.shake = smoothstep(0.50, 0.96, i)
+        self.flood = smoothstep(0.48, 0.94, i)
         self.rumble = i
-        self.tile_off = (self.tile_off + 14.0 + 60.0 * i) % 4096.0
+        self.tile_off = (self.tile_off + 9.0 + 42.0 * i) % 8192.0
+
         self.first_drop = False
         self.impact = False
         if self.flash > 0:
@@ -165,4 +173,7 @@ class RainSystem:
             self.first_drop = True
             self.impact = True
             self.flash = FIRST_DROP_FLASH
-            self.impact_xy = (self.rng.uniform(self.WL * 0.15, self.WL * 0.85), self.HL)
+            self.impact_xy = (
+                self.rng.uniform(self.WL * 0.15, self.WL * 0.85),
+                self.HL,
+            )
