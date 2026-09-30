@@ -1823,6 +1823,8 @@ class ItemInteractionMixin:
             lg.snap = False
             lg.grip = 0
             lg.planted = False
+            lg.airborne = False
+            lg.swing = 0
             lg.plant_dx = lg.plant_dy = 0.0
 
     def _draw_lizard_hint(self, p):

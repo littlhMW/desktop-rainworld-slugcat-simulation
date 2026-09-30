@@ -60,7 +60,10 @@ LEG_AIR_FRIC = 0.99           # 原版 Limb 的 airFriction
 LEG_AIM_AHEAD = 26.0          # limbsAimFor 替代：躯干前方这么多像素（原版是行进目标格中心）
 LEG_GRIP_DELAY = 1            # 原版 limbGripDelay（各品种都是 1）
 FLOOR_GRIP_TOL = 1.5          # 脚离真实地形 ≤ 这么多才算 grounded（原版 gripCounter 的贴合判定）
-LEG_STEP_STAGGER = 4.0        # 每条腿「拉满就换步」的距离错开量：四只脚不会同时抬起（原版靠各腿髋位错开）
+LEG_LAND_TOL = 3.5            # 自由脚离落点面 ≤ 这么多 → 直接吸附落地（原版 reachedSnapPosition）
+LEG_STEP_STAGGER = 2.5        # 每条腿「拉满就换步」的距离错开量：四只脚不会同时抬起（原版靠各腿髋位错开）
+LEG_SWING_MAX = 14            # 摆腿最多持续这么多 tick，超过就允许随时落地（否则脚会一直悬着）
+LEG_MIN_SUPPORT = 2           # 四足品种任何时刻至少留几只脚踩在地上（换步 / 起步都不许破）
 NO_GRIP_SPEED = 0.10            # 原版 noGripSpeed：没有脚支撑时地面滑行速度的「上限」（不是摩擦系数）
 FOOT_PULL_K = 0.03              # planted 脚把身体拉回腿长以内的强度（辅助 locomotion，不是主推进）
 FOOT_PULL_MAX = 0.35            # 单 tick 最大回拉
@@ -124,7 +127,35 @@ WALK_TURN = 0.14              # 游走时速度趋近速率
 BLINK_RATE = 0.0125           # 头部呼吸闪烁推进速率（同游戏 LizardGraphics.breath 步长）
 MAX_SEG_SPEED = 24.0
 BODY_SEED_TRAIL_K = 0.5       # 站在地面上时种子朝「拖在头后方」的偏置（方向是中性不动点，不给就会越推越竖）
-BODY_AX_LERP = 0.12           # 锚点方向每 tick 朝 chain_dir 靠这么多（转身时平滑滑过去，不再瞬移 2*头距）
+BODY_AX_LERP = 0.12           # 锚点方向每 tick 朝 body_dir 靠这么多（转身时平滑滑过去，不再瞬移 2*头距）
+# ── 身体朝向 / 转身（原版 bodyChunk 惯性转向的桌宠替身）──
+# 原版没有「facing 开关」：AI 想看左边时，只有前端 bodyChunk 改变运动方向，连接约束让
+# 第 1 节稍晚、尾巴更晚跟上，LizardGraphics 再按 chunk 的实际位置生成身体 —— 看起来
+# 就是「头先转 → 前身转 → 中身滞后 → 尾巴最后甩过来」。这里把朝向拆成三条通道：
+#   look_dir  头看向哪一侧（独立通道，允许只回头、身体不动）
+#   move_dir  这一 tick 想往哪一侧走（= 速度意图）
+#   body_dir  身体实际转到哪一侧（连续量、有限速率：+1 右 → 0 横对镜头 → -1 左）
+# 转身冲量 _turn_imp 由速度突变产生，喂给前 1~2 节躯干的 vx（原版 chunk 惯性：
+# 前节先被带过去，尾巴最后才跟），量小、只持续几 tick。
+TURN_RATE = 0.055             # |body_dir| 每 tick 的变化量（2.0/0.055 ≈ 36 tick 掉完头）
+TURN_RATE_AIR = 0.032         # 腾空时没有脚蹬地，转身更慢
+TURN_IMP_K = 14.0             # 转身冲量 = 本 tick 身体轴摆量 * K（摆量 ≤ TURN_RATE）
+TURN_IMP_DV_K = 0.35          # 再叠一点速度突变的贡献（vx - _last_vx）
+TURN_IMP_MAX = 0.85           # 冲量上限（像素/tick）
+TURN_IMP_SEGS = 2             # 冲量作用在前几节躯干
+TURN_DIR_EPS = 0.06           # |body_dir - move_dir| 大于它 = 还在转身
+TURN_HOP_VY = 2.6             # 掉头小跳的初速（有力气的品种才会蹬这一下）
+
+# 身体冲量：原版 AI 给的不是「头这一个点」，而是 bodyChunks 拿到的 impulse
+# （头只是 head.ConnectToPoint 挂在 chunk0 前方的一个点）。起跳 / 扑击 / 咬合
+# 时把同一份冲量直接灌给前几节躯干：前节先走 → 连接被拉长 → 中段和尾巴按惯性
+# 滞后跟上。这才是「躯干为什么会动」，而不是给头部加一个火箭、身体靠绳子被拖。
+BODY_IMP_SEGS = 2             # 冲量直接作用的前几节躯干
+BODY_IMP_FALLOFF = 0.45       # 每往后一节衰减（后节拿到的更少）
+BODY_IMP_MAX = 6.0            # 单次冲量上限（防把身体甩飞）
+BODY_JUMP_SHARE = 0.55        # 蹬地起跳时分给躯干的初速比例
+BODY_BITE_PUSH = 1.6          # 咬合时前半身朝猎物压出去的冲量
+BODY_BITE_LUNGE = 2.5         # 咬合瞬间头点朝猎物递出去的距离（原版 snap 的前半身前伸）
 
 # ── 原版关系表（StaticWorld.InitStaticWorldRelationships，decomp_full/StaticWorld.cs:3668-3726）──
 # 值 = (关系类型, 强度)。类型 -> AI 模块的映射照抄 LizardAI.ModuleToTrackRelationship
@@ -344,6 +375,7 @@ class LizardBreed:
                  # 品种差异（见文件末 BREED_TRAITS）
                  "spawn_weight", "cosmetics", "can_climb", "camo", "charge_leap",
                  "climb_wall", "climb_pole", "wall_attach", "wall_detach", "wall_jump",
+                 "jump_fac", "turn_hop",
                  # DLC 品种（LizardBreeds.cs：SpitLizard / ZoopLizard / EelLizard）
                  "spit", "swim_speed", "leg_pairs", "lizard_spit_immune")
 
@@ -435,6 +467,9 @@ class LizardBreed:
         self.climb_wall = False
         self.climb_pole = False
         self.wall_attach = False
+        # 跳跃能力（≠ 会不会爬）：反编译 LizardBreedParams.loungeJumpyness
+        self.jump_fac = 0.5
+        self.turn_hop = True
         self.wall_detach = False
         self.wall_jump = False
         self.can_climb = False         # = climb_wall or climb_pole（兼容旧调用点）
@@ -667,20 +702,35 @@ BREED_TRAITS = {
     # climb_wall 只给 WallClimber（反编译 LizardBreedParams.cs:196-210）：
     # 蓝 / 白 / 鳗鱼（DLC）。其余品种「会爬杆但不攀爬背景墙」。
     # 明确能力表：杆攀爬仅允许原版可爬杆品种；背景墙仅 WallClimber。
-    "pink":       dict(spawn_weight=1.00, climb_wall=False, climb_pole=True),
-    "green":      dict(spawn_weight=0.90, climb_wall=False, climb_pole=False),
-    "blue":       dict(spawn_weight=0.90, climb_wall=True, climb_pole=True),
-    "yellow":     dict(spawn_weight=0.35, climb_wall=False, climb_pole=True),
-    "white":      dict(spawn_weight=0.30, climb_wall=True, climb_pole=True, camo=True),
-    "red":        dict(spawn_weight=0.02, climb_wall=False, climb_pole=True),
-    "black":      dict(spawn_weight=0.30, climb_wall=False, climb_pole=True),
-    "salamander": dict(spawn_weight=0.25, climb_wall=False, climb_pole=True),
+    # jump_fac = 跳跃能力（≠ 会不会爬）：反编译 LizardBreedParams.loungeJumpyness
+    # （LizardBreeds.decompiled.cs:75 粉 0.5 / :157 绿 0 / :249 蓝 0.9 / :338 黄 0.5
+    #  / :428 白 0.5 / :525 红 0.5 / :608 黑 0.5 / :690 蝾螈 0.5 / :787 青 0.9 /
+    #  DLC 共用的 Salamander 模板 :1642 = 0.5）。绿蜥 = 0 → 扑击压根不往上蹿。
+    "pink":       dict(spawn_weight=1.00, climb_wall=False, climb_pole=True,
+                       jump_fac=0.5),
+    "green":      dict(spawn_weight=0.90, climb_wall=False, climb_pole=False,
+                       jump_fac=0.0),
+    "blue":       dict(spawn_weight=0.90, climb_wall=True, climb_pole=True,
+                       jump_fac=0.9),
+    "yellow":     dict(spawn_weight=0.35, climb_wall=False, climb_pole=True,
+                       jump_fac=0.5),
+    "white":      dict(spawn_weight=0.30, climb_wall=True, climb_pole=True, camo=True,
+                       jump_fac=0.5),
+    "red":        dict(spawn_weight=0.02, climb_wall=False, climb_pole=True,
+                       jump_fac=0.5),
+    "black":      dict(spawn_weight=0.30, climb_wall=False, climb_pole=True,
+                       jump_fac=0.5),
+    "salamander": dict(spawn_weight=0.25, climb_wall=False, climb_pole=True,
+                       jump_fac=0.5),
     "cyan":       dict(spawn_weight=0.25, climb_wall=False, climb_pole=True,
-                       wall_jump=True, charge_leap=True),
+                       wall_jump=True, charge_leap=True, jump_fac=0.9),
     # DLC《倾盆大雨》
-    "caramel":    dict(spawn_weight=0.03, climb_wall=False, climb_pole=False),
-    "zoop":       dict(spawn_weight=0.05, climb_wall=False, climb_pole=True),
-    "eel":        dict(spawn_weight=0.06, climb_wall=True, climb_pole=True)
+    "caramel":    dict(spawn_weight=0.03, climb_wall=False, climb_pole=False,
+                       jump_fac=0.5),
+    "zoop":       dict(spawn_weight=0.05, climb_wall=False, climb_pole=True,
+                       jump_fac=0.5),
+    "eel":        dict(spawn_weight=0.06, climb_wall=True, climb_pole=True,
+                       jump_fac=0.5)
 }
 for _b in BREEDS:
     _t = BREED_TRAITS.get(_b.key, {})
@@ -691,6 +741,13 @@ for _b in BREEDS:
     _b.wall_attach = bool(_t.get("wall_attach", _b.climb_wall))
     _b.wall_detach = bool(_t.get("wall_detach", _b.climb_wall))
     _b.can_climb = bool(_b.climb_wall or _b.climb_pole)
+    # 三种能力彻底拆开（旧实现把「会不会爬」当成「会不会跳」在用）：
+    #   can_climb / climb_wall / climb_pole = 攀爬能力
+    #   caps.jump                           = 寻路层能不能用跳跃/跨越连接
+    #   jump_fac                            = 物理层跳多猛（反编译 loungeJumpyness）
+    #   turn_hop                            = 掉头时会不会蹬一下地（同源 loungeJumpyness）
+    _b.jump_fac = float(_t.get("jump_fac", 0.5))
+    _b.turn_hop = bool(_t.get("turn_hop", _b.jump_fac > 0.0))
     _b.camo = bool(_t.get("camo", False))
     _b.charge_leap = bool(_t.get("charge_leap", False))
 
@@ -736,7 +793,7 @@ class _Leg:
 
     __slots__ = ("x", "y", "lx", "ly", "vx", "vy", "abs_x", "abs_y",
                  "reaching", "snap", "grip", "planted", "plant_dx", "plant_dy",
-                 "flip", "disabled", "back", "near", "pair")
+                 "airborne", "swing", "flip", "disabled", "back", "near", "pair")
 
     def __init__(self, x, y, back: bool, near: bool, pair: int = None):
         self.x = self.lx = float(x)
@@ -751,6 +808,10 @@ class _Leg:
         self.planted = False            # 已真正抓住地形
         self.plant_dx = 0.0             # 种植时：脚相对髋的偏移
         self.plant_dy = 0.0
+        # 这一趟迈步有没有真的离过地：换步那一下脚还贴在地上，没这个标记
+        # 下一帧就会被判成「踩住了」又钉回去，腿永远迈不出去。
+        self.airborne = False
+        self.swing = 0                 # 这一趟摆腿已经持续了多少 tick
         self.flip = 0.0                # LizardLimb.flip（初值 0，逐帧 Lerp 到 ±1）
         self.disabled = False          # currentlyDisabled（眩晕/游泳时挂起）
         self.back = back
@@ -774,6 +835,9 @@ class Lizard:
                  "target", "target_obj", "bite_event", "bite_hold", "bite_cd", "_tgt_hold",
                  "walk_phase", "idle_timer", "goal_x", "hop_cd", "blink", "last_blink",
                  "chain_dir", "_ax_c",
+                 "body_dir", "move_dir", "look_dir", "turn_mode", "turn_progress",
+                 "_turn_imp", "_last_body_dir", "_vx_intent",
+                 "_body_imp_x", "_body_imp_y",
                  "held_by_hand", "water_y", "room_gravity", "_contact_floor",
                  "dead", "spacing", "spikes", "cosmetics", "cosmetic_pts", "like", "tamed", "friend_id",
                  "climb_x", "climb_dir", "climb_surfaces", "hauler",
@@ -956,7 +1020,22 @@ class Lizard:
         self.state = ItemState.FREE
         self.facing = 1
         self.chain_dir = 1.0
-        self._ax_c = 1.0                    # 锚点方向（chain_dir 的低通值，见 _step_chain）
+        self._ax_c = 1.0                    # 锚点方向（body_dir 的低通值，见 _step_chain）
+        # 身体朝向三条通道（见常量区说明）：头看哪儿 / 想往哪走 / 身体实际转到哪儿
+        self.body_dir = 1.0                 # +1 朝右 → 0 横对镜头（转身半途）→ -1 朝左
+        self._last_body_dir = 1.0
+        self.move_dir = 1.0                 # 这一 tick 的行进意图（0 = 站定/贴墙）
+        self.look_dir = 1.0                 # 头看向哪一侧（由 head_angle 推出）
+        self.turn_mode = "idle"             # idle / walk / turn
+        self.turn_progress = 0.0            # 1-|body_dir|：0 对齐、1 完全横对镜头
+        self._turn_imp = 0.0                # 转身冲量（喂给前 TURN_IMP_SEGS 节）
+        # 身体冲量（喂给前 BODY_IMP_SEGS 节）：起跳 / 咬合由 AI 直接给躯干，
+        # 不是只推头点。_step_chain 取走并清零。
+        self._body_imp_x = 0.0
+        self._body_imp_y = 0.0
+        # AI 这一 tick 的行进意图速度（物理改 vx 之前先记下来：脚支撑会把 vx 清零，
+        # 不能拿积分后的 vx 当「想往哪走」）
+        self._vx_intent = 0.0
         # 原版 LizardGraphics 的 depthRotation / headDepthRotation（决定头取哪一行贴图）
         self.depth = self.last_depth = -1.0          # 原版初值：朝右 = -1
         self.head_depth = self.last_head_depth = -1.0
@@ -1243,6 +1322,7 @@ class Lizard:
         阶段不碰速度也不碰世界，执行阶段才真正落到物理上。
         """
         self.last_x, self.last_y = self.x, self.y
+        self._vx_intent = self.vx      # AI 的意图速度（在物理改 vx 之前先记下来）
         self.last_head_angle = self.head_angle
         self.last_jaw = self.jaw
         self.last_blink = self.blink
@@ -1274,6 +1354,7 @@ class Lizard:
         else:
             self._integrate(WL, HL)
 
+        self._step_turn()                   # 身体朝向 / 转身状态（在链体之前定 body_dir）
         self.anim = self._intent()          # AI → 动画意图（这一帧的映射只发生一次）
         self._step_chain(self._ground)
         self._step_legs(HL)
@@ -1371,6 +1452,12 @@ class Lizard:
             if over > 0.0 and dd > 1e-6:
                 corr += ddx / dd * over      # 身体朝脚的方向回拉
         corr /= len(planted)
+        if corr != 0.0 and len(planted) <= self._leg_min_support():
+            # 支撑脚只剩最少数量了：这只脚不可能再松开（松开就一只脚都不剩），
+            # 于是不能再让身体继续把它拉长 —— 身体朝支撑脚方向的那一份速度直接
+            # 拿掉，等腾空的脚落地接管之后这只脚才会换步。
+            if self.vx * corr < 0.0:
+                self.vx = 0.0
         self.vx += clampf(corr * FOOT_PULL_K, -FOOT_PULL_MAX, FOOT_PULL_MAX)
 
     def _collide_static_lines(self, WL: float) -> None:
@@ -1864,10 +1951,17 @@ class Lizard:
             self.climb_attached = False
 
     def _hop_vy(self) -> float:
-        """蹬地起跳初速：不会爬的品种（绿蜥）压根不往上蹿。焦糖蜥跳跃也靠它。"""
-        if not self.breed.can_climb:
+        """蹬地起跳初速：按「跳跃能力」算，不是按「会不会爬」。
+
+        旧实现拿 breed.can_climb 当跳跃能力用：不会爬的绿蜥 / 焦糖蜥连跳也不会，
+        会爬的白蜥却按体型硬算 —— 「爬」和「跳」被绑成了一件事。现在读
+        breed.jump_fac（反编译 loungeJumpyness），0.5 = 基准（旧值不变）。
+        """
+        fac = float(getattr(self.breed, "jump_fac", 0.5))
+        if fac <= 0.0:
             return 0.0
-        return CLIMB_HOP * math.sqrt(max(0.4, self.breed.body_size_fac))
+        return (CLIMB_HOP * math.sqrt(max(0.4, self.breed.body_size_fac))
+                * (0.7 + 0.6 * min(1.0, fac)))
 
     def _plan_for(self, o, WL, HL):
         """接近规划：同一套 utility，按品种调「绕路 / 落点 / 贴墙 / 起跳倾向」。"""
@@ -1900,7 +1994,7 @@ class Lizard:
             return
         lx = plan.launch[0] if plan.launch else self.x
         if abs(self.x - lx) <= 10.0 and self._contact_floor and self.hop_cd <= 0:
-            self.vy = self._hop_vy()
+            self._leap()
             self.hop_cd = HOP_CD
             want = clampf((o.x - self.x) * 0.05, -2.6, 2.6)
             self.vx += (want - self.vx) * LUNGE_ACCEL
@@ -2188,7 +2282,7 @@ class Lizard:
         self.target = self.target_obj = None
         self.look_at = (tx, ty)
         if self._contact_floor and self.rng.random() < FLEE_HOP:
-            self.vy = self._hop_vy() * 0.7
+            self._leap(0.7)
         return True
 
     def _anger_tick(self, others):
@@ -2369,7 +2463,7 @@ class Lizard:
             if not _cat_offering_food(self.target_obj):
                 self._start_bite()
         elif self._contact_floor and self.hop_cd <= 0 and (self.y - self.target[1]) > 34.0:
-            self.vy = self._hop_vy()
+            self._leap()
             self.hop_cd = HOP_CD
 
     # ── 叼走死猫 / 昏迷猫到屏幕角落 ──
@@ -2619,6 +2713,25 @@ class Lizard:
             dmg = b.bite_damage * lerp(0.8, 1.2, self.rng.random())
         self.bite_event = (obj, dmg)
         self.vx *= 0.2
+        # 咬合的一瞬：前半身朝猎物「压」出去（原版 jaw 一夹，前 chunk 被反作用
+        # 顶出去，后半身靠惯性拖在后面）。只推前 BODY_IMP_SEGS 节。
+        px, py = _obj_pos(obj)
+        if px is None:
+            px, py = _obj_pos(self.target_obj)
+        if px is None and self.target is not None:
+            px, py = self.target
+        if isinstance(px, (int, float)) and isinstance(py, (int, float)):
+            fx, fy = px - self.x, py - self.y
+            fd = math.hypot(fx, fy)
+            if fd > 1e-6:
+                nx, ny = fx / fd, fy / fd
+                # 头点（= 原版 head.ConnectToPoint 的目标点）先递出去一点：链子的
+                # 杆长约束只消径向误差，光给躯干灌水平冲量会被它原样吃掉（冲量
+                # 方向和杆轴共线 = 刚性方向）—— 只有头真的往前一步，前半身才有
+                # 「伸出去」的位移；躯干冲量负责让前节跟上、尾节滞后。
+                self.x += nx * BODY_BITE_LUNGE
+                self.y += ny * BODY_BITE_LUNGE
+                self._body_impulse(nx * BODY_BITE_PUSH, ny * BODY_BITE_PUSH)
 
     def _wander(self, WL, HL) -> None:
         """游走：定一个近处落点，走到／超时就换，再歇一会儿。
@@ -2707,6 +2820,92 @@ class Lizard:
         d = math.hypot(dx, dy) or 1.0
         return clampf(-dy / d, -1.0, 1.0)
 
+    # ── 身体朝向 / 转身 ──
+    def _step_turn(self) -> None:
+        """朝向状态机：Idle/Walk → DirectionChange → Turn → Reoriented → Walk。
+
+        原版扭头不是「头贴图转了个角度」：AI 想看左边 → 前端 bodyChunk 改变运动
+        方向 → 连接约束重新收敛 → 第 1 节先动、第 2 节稍晚、尾巴更晚。这里把
+        「身体转到哪一侧」做成有限速率的连续量 body_dir，掉头时它从 +1 平滑扫过
+        0（= 身体横对镜头）到 -1，锚点随之外移到头顶两侧 —— 于是头先转、前身跟上、
+        中段滞后、尾巴最后甩过来，而不是整条身体瞬间镜像。
+        """
+        prev = self.body_dir
+        held_turn = self.state == ItemState.MOUSE or self.hauled
+        # ① move_dir：这一 tick 想往哪一侧走。站定 / 被拎 / 眩晕时不给方向
+        #    （朝向保持原样，不会因为停下时的 ±0.0x 抖动翻面）。
+        if self.dead or self.stun > 0 or self.state == ItemState.MOUSE:
+            self.move_dir = 0.0
+        elif self.climb_x is not None:
+            # 贴在竖杆 / 背景墙上：横轴由表面切线接管（见 _step_head），
+            # 身体轴保持进墙前的方向，不被左右速度乱翻。
+            self.move_dir = 0.0
+        elif abs(self._vx_intent) > TURN_VX:
+            # 用 AI 的意图速度（不是积分后的 vx：脚支撑会把 vx 清零，方向会被抖没）
+            self.move_dir = 1.0 if self._vx_intent > 0.0 else -1.0
+        else:
+            self.move_dir = 0.0
+        # ② body_dir：朝 move_dir 转，但每 tick 只转这么多（原版靠 chunk 惯性跟上）。
+        if self.move_dir != 0.0:
+            rate = TURN_RATE if self._contact_floor else TURN_RATE_AIR
+            if self.move_dir > self.body_dir:
+                self.body_dir = min(self.move_dir, self.body_dir + rate)
+            elif self.move_dir < self.body_dir:
+                self.body_dir = max(self.move_dir, self.body_dir - rate)
+        self.turn_progress = clampf(1.0 - abs(self.body_dir), 0.0, 1.0)
+        # ③ 状态：站定 / 已对齐（行走）/ 还在转
+        if self.move_dir == 0.0:
+            self.turn_mode = "idle"
+        elif abs(self.body_dir - self.move_dir) > TURN_DIR_EPS:
+            self.turn_mode = "turn"
+        else:
+            self.turn_mode = "walk"
+        # ④ 掉头小跳（原版 LizardTurn 的实体动作）：身体正好扫过中线的那一下，
+        #    有力气的品种蹬一下地，把上半身甩过顶 —— 顺带让腿重新排步。
+        #    turn_hop 是独立能力（绿蜥 0 → 掉头就是慢慢拧过去）。
+        if (self.breed.turn_hop and self._contact_floor and self.stun <= 0
+                and not self.dead and self.vy >= 0.0
+                and ((prev > 0.0 >= self.body_dir) or (prev < 0.0 <= self.body_dir))
+                and abs(prev) > 1e-9):
+            self.vy = -TURN_HOP_VY * math.sqrt(max(0.4, self.breed.body_size_fac))
+            self._body_impulse(0.0, self.vy * BODY_JUMP_SHARE)
+        # ⑤ 身体轴：符号跟 body_dir（滞后），腿的前方目标跟 move_dir（意图）——
+        #    两件事分开，腿才不会在身体还没转过来时朝旧方向迈步。
+        self.chain_dir = 1.0 if self.body_dir >= 0.0 else -1.0
+        # ⑥ 转身冲量（原版 chunk 惯性）：身体轴这一 tick 摆过 swing，前 1~2 节先被
+        #    带过去，尾巴最后才跟上。主项用 swing（干净、就是「身体在转」这件事
+        #    本身），再叠一点速度突变（vx - _last_vx，原版 chunk 拿到的是这个）——
+        #    单独用 dv 不行：摩擦 + 脚支撑每 tick 都在改 vx，dv 又小又毛，转身时
+        #    常常够不到门槛。
+        swing = self.body_dir - prev
+        imp = swing * TURN_IMP_K
+        if not held_turn and abs(self.vx - self._last_vx) > SEG_BEND_MIN_VX:
+            imp += (self.vx - self._last_vx) * TURN_IMP_DV_K
+        self._turn_imp = (clampf(imp, -TURN_IMP_MAX, TURN_IMP_MAX)
+                          if (self.turn_mode == "turn" or abs(swing) > 1e-9) else 0.0)
+        self._last_body_dir = self.body_dir
+
+    # ── 身体冲量：让躯干真的被动作驱动 ──
+    def _body_impulse(self, dvx: float, dvy: float) -> None:
+        """给躯干 chunk 一次冲量（同 tick 累积，_step_chain 统一施加）。
+
+        原版蜥蜴是「bodyChunks 拿到 impulse → BodyChunkConnection 被拉伸 →
+        后节因惯性滞后」；头只是挂在 chunk0 前方的一个点。宠物里头的驱动点仍
+        由 AI 直接写（_integrate），但动作的冲量必须同时落到躯干上，否则躯干
+        永远只是被锚点拖着的绳子 —— 起跳、扑击、咬合看起来都「没使劲」。
+        """
+        self._body_imp_x += float(dvx)
+        self._body_imp_y += float(dvy)
+
+    def _leap(self, scale: float = 1.0) -> float:
+        """蹬地起跳：头点拿初速，同一份冲量灌给躯干前几节（原版 Creature.Jump）。"""
+        vy = self._hop_vy() * scale
+        if vy == 0.0:
+            return 0.0
+        self.vy = vy
+        self._body_impulse(0.0, vy * BODY_JUMP_SHARE)
+        return vy
+
     def _step_head(self) -> None:
         if not self.dead:
             nx, ny = self.seg[0].x, self.seg[0].y
@@ -2718,18 +2917,25 @@ class Lizard:
             elif self.state == ItemState.MOUSE:
                 if abs(self.vx) + abs(self.vy) > 0.4:  # 被拎着：头随拖拽方向
                     want = _ang_from_up(self.vx, self.vy)
+            elif self.climb_x is not None and self.climb_dir != 0:
+                # 贴在竖杆 / 背景墙上：头沿「表面切线」朝上或朝下。原来这里沿用
+                # 水平的 chain_dir，于是爬杆时头一直朝左右、身体朝上 —— 头方向
+                # 和移动方向脱节（原版爬杆时头是朝爬行方向的）。
+                want = 0.0 if self.climb_dir < 0 else 180.0
             else:
-                # 没有观察目标时，头跟随行走方向，不再从头与第0节的瞬时几何位置猜方向。
-                want = 90.0 if self.chain_dir > 0.0 else 270.0
+                # 没有观察目标时，头朝行进方向（move_dir）；身体轴 body_dir 滞后跟上。
+                want = 90.0 if self.move_dir >= 0.0 else 270.0
             if want is not None:
                 self.head_angle = _ang_lerp(self.head_angle, want, self._look_rate())
             self.head_driven = True
         else:
             self.head_angle = _ang_lerp(self.head_angle, 90.0 * self.facing, 0.04)
-        # facing 是移动方向状态，不再从“头相对第0节的位置”反推。
-        # 头可以独立回头看；只有明确的水平移动才改变实际行进朝向。
-        if abs(self.vx) > TURN_VX:
-            self.facing = 1 if self.vx > 0.0 else -1
+        # look_dir：头看向哪一侧（独立通道 —— 头可以只回头、身体不动）。
+        self.look_dir = math.sin(math.radians(self.head_angle))
+        # facing = 身体实际朝向（跟 body_dir），不是「这一帧的速度符号」：
+        # 旧写法一帧就把 facing 翻过去，于是出现「身体还朝右、却在往左滑」的
+        # 背面倒退帧。现在朝向只按 _step_turn 的速率扫过去。
+        self.facing = 1 if self.body_dir >= 0.0 else -1
         # 下颚：单一目标 + 开/闭双速率（原版 jaw 是独立通道，不是「追猎就一路张着」）
         target = self.anim.jaw_open if self.anim is not None else self._jaw_target()
         rate = JAW_OPEN_RATE if target > self.jaw else JAW_CLOSE_RATE
@@ -2769,7 +2975,7 @@ class Lizard:
             it.locomotion, it.body_compress, it.alert = "lurk", 0.5, 0.4
         elif st in ("Wander", "FollowFriend", "PackCoordination", "CasualBite"):
             it.locomotion = "walk"
-        it.turn = clampf(self.vx - self._last_vx, -2.0, 2.0)
+        it.turn = clampf(self._turn_imp, -2.0, 2.0)
         return it
 
     # ── 链体 ──
@@ -2805,7 +3011,10 @@ class Lizard:
         if self.dead:
             self.turn_lift = 0.0
             return
-        lift = TURN_LIFT * (1.0 - min(1.0, abs(self.depth)))
+        # 支起量由「身体转过多少」驱动（turn_progress = 1-|body_dir|），而不是由
+        # 腿反推的 depth 顺带带出来：转身是身体的事，腿只是跟着重新排步。两者
+        # 形状同源（都在转身半途到 1），但 body_dir 才是这条链的驱动量。
+        lift = TURN_LIFT * self.turn_progress
         lift += max(0.0, self.anim.look_lift) * LOOK_LIFT
         lift += self.anim.body_raise * BODY_RAISE_LIFT
         lift -= self.anim.body_compress * BODY_COMPRESS_DIP
@@ -2947,14 +3156,37 @@ class Lizard:
         飘在头的上方。
         """
         held = self.state == ItemState.MOUSE or self.hauled
+        # 转身冲量由 _step_turn 算好（身体轴摆量 + 速度突变），这里只施加到前 1~2
+        # 节：前节先被带过去，中段靠约束传播稍晚、尾巴最后跟。
+        dv = self.vx - self._last_vx
+        self._last_vx = self.vx
+        if held:
+            self._turn_imp = 0.0
         # 方向带记忆：只有真正走出速度才翻面；否则停稳瞬间的
         # ±0.0x 抖动会把躯干甩到头前面，看起来就是「朝反方向走」。
+        # chain_dir 现在由 _step_turn 按 body_dir 定；这里只管「没跑过 _step_turn
+        # 的裸调用」（单元测试直接调 _step_chain）也要能翻面。
         if abs(self.vx) > TURN_VX and self.vx * self.chain_dir < 0.0:
             self.chain_dir = 1.0 if self.vx > 0.0 else -1.0
         grav = SEG_GRAV * (1.35 if held else 1.0) * self.room_gravity
         align = SEG_ALIGN_HELD if held else SEG_ALIGN
         conn = SEG_CONN_HELD if held else SEG_CONN_ELASTICITY
         # ① BodyChunk.Update：vel 受重力、乘空气阻力，pos += vel
+        for k in range(min(TURN_IMP_SEGS, len(self.seg))):
+            self.seg[k].vx += self._turn_imp * (1.0 - 0.45 * k)
+        # 起跳 / 扑击 / 咬合的身体冲量：前 BODY_IMP_SEGS 节拿到全部，后面递减。
+        # 施加两处：积分前（这一 tick 就动）+ 末尾的速度结算（下几 tick 仍带着
+        # 它走）—— 于是「前节先出去、连接被拉长、中段和尾巴滞后跟上」。
+        imp_x = clampf(self._body_imp_x, -BODY_IMP_MAX, BODY_IMP_MAX)
+        imp_y = clampf(self._body_imp_y, -BODY_IMP_MAX, BODY_IMP_MAX)
+        self._body_imp_x = self._body_imp_y = 0.0
+        if held:
+            imp_x = imp_y = 0.0
+        shares = [0.0] * len(self.seg)
+        for k in range(min(BODY_IMP_SEGS, len(self.seg))):
+            shares[k] = (1.0 - BODY_IMP_FALLOFF) ** k
+            self.seg[k].vx += imp_x * shares[k]
+            self.seg[k].vy += imp_y * shares[k]
         for s in self.seg:
             s.vy += grav
             s.vx *= SEG_AIR_FRIC
@@ -2971,8 +3203,8 @@ class Lizard:
         #    用户报的「转身时身体碰撞体积出错」就是这个瞬移。这里锚点改用 chain_dir 的
         #    低通值：转身时它平滑地滑过头顶（滑到中间时与头重合），一圈走完几何照旧，
         #    不再是「啪」地跳到另一侧；静止时它恒等于 chain_dir，链形支撑与旧版相同。
-        c = getattr(self, "_ax_c", float(self.chain_dir))
-        c += (self.chain_dir - c) * BODY_AX_LERP
+        c = getattr(self, "_ax_c", float(self.body_dir))
+        c += (self.body_dir - c) * BODY_AX_LERP
         self._ax_c = c
         anc_x = self.x - c * self.head_conn
         anc_y = self.y
@@ -3022,7 +3254,18 @@ class Lizard:
                     s.x -= dx * k
                     s.y -= dy * k
                     nl = math.hypot(s.x - prev_x, s.y - prev_y) or 1.0
-                    dir_x, dir_y = (s.x - prev_x) / nl, (s.y - prev_y) / nl
+                    nx, ny = (s.x - prev_x) / nl, (s.y - prev_y) / nl
+                    if (not held and not s.tail
+                            and nx * dir_x + ny * dir_y < 0.0):
+                        # 防自折：这一节相对父节折回去了（脖子处 180° 打结）。原版
+                        # 3 个 chunk 有质量、会互相顶开，2D 里等价于「躯干节必须落在
+                        # 父节的延长线一侧」。折回去对 align 来说是个吸收态 —— 光靠
+                        # 每帧 16% 的软拉永远拉不回来（往旧方向拉、杆长约束又把它
+                        # 推回旧位置），所以只能在这里直接摆正。尾巴不设限（能卷）。
+                        nx, ny = dir_x, dir_y
+                        s.x = prev_x + nx * s.dist
+                        s.y = prev_y + ny * s.dist
+                    dir_x, dir_y = nx, ny
                 # ③ 落地（原版 PushOutOfTerrain + bounce）
                 lim = HL - s.rad * (TAIL_SINK_FAC if s.tail else BODY_STAND_FAC)
                 if s.y > lim:
@@ -3033,8 +3276,7 @@ class Lizard:
         # 连接平滑移到渲染层，物理节点在长度约束后不再被二次拉坏。
         # ③ 转向惯性：速度突变（转身/扑出）时身体往转向侧甩 ——
         #    头一节弯得最多、后面依次减少、尾巴最后才跟过来（原版靠 chunk 质量惯性）。
-        turn = self.vx - self._last_vx
-        self._last_vx = self.vx
+        turn = dv
         if not held and abs(turn) > SEG_BEND_MIN_VX:
             bend = clampf(turn * SEG_BEND_K, -SEG_BEND_MAX, SEG_BEND_MAX)
             n_seg = len(self.seg)
@@ -3046,8 +3288,8 @@ class Lizard:
                     s.y = lim
         # ④ 速度 = 本 tick 的实际位移：约束消掉的只是径向分量，切向动量得以保留
         for k, s in enumerate(self.seg):
-            s.vx = s.x - ax0[k]
-            s.vy = s.y - ay0[k]
+            s.vx = (s.x - ax0[k]) + imp_x * shares[k]
+            s.vy = (s.y - ay0[k]) + imp_y * shares[k]
             spd = math.hypot(s.vx, s.vy)
             if spd > MAX_SEG_SPEED:
                 q = MAX_SEG_SPEED / spd
@@ -3079,10 +3321,24 @@ class Lizard:
         要点（与原版一一对应）：
           jointDist = 25*(sizeFac+1)/2
           a = normalize(Lerp(DirVec(rotationChunk→髋), DirVec(髋→limbsAimFor), 0.4))
-          num = DistanceToLine(脚, 髋, 髋+Perp(a)) == -dot(a, 脚-髋)（屏幕叉积换算来的）
-          迈步触发：num < jointDist * (-StepLength)，StepLength = Lerp(-0.5,0.5,stepLength)
+          num = DistanceToLine(脚, 髋, 髋+Perp(a)) == -(脚-髋)·a（屏幕叉积换算来的）
+          换步触发：脚被拉到髋后方超过 StepLength
           绝对猎点：Lerp(脚, 髋, liftFeet) + a*(jointDist+1)；踩住时 FindGrip 锁定世界坐标
           腿长硬上限：ConnectToPoint(髋, jointDist)（原版 BodyPart.ConnectToPoint）
+
+        状态机（「碰到了」和「已经踩稳了」必须分开）：
+
+          Free ──伸腿──→ Reaching ──落到真实地形上──→ Grounded ──连贴 N 帧──→ Planted
+            ↑                                                                  │
+            └──────────── 换步（拉到身后）/ 脚下地形消失 ←──────────────────────┘
+
+        支撑判定只看「脚 y 和这只脚脚下真实地形的差」，**不看 reaching**。
+        reaching 只是「这条腿正在动」的标记；拿它当 grounded 的门，会出现
+        「脚明明踩在地上、reaching 却已经清零」的腿永远进不了支撑相 ——
+        身体只能靠剩下的腿滑行，这就是四脚全 false 的来历。
+
+        planted 的脚这一相里完全不跑 Limb.Update 的位移（脚是支点，停在世界上
+        不动，身体自己走过去），只有换步 / 地形消失才解除。
         """
         b = self.breed
         joint = self._leg_joint()
@@ -3092,10 +3348,31 @@ class Lizard:
         step_len = lerp(-0.5, 0.5, b.step_length)         # StepLength（health = 1）
         floor = room_hl - LEG_LIMB_RAD
         stunned = self.stun > 0
-        # limbsAimFor：原版是行进目标格中心，宠物里取躯干前方一点
-        self.limbs_aim = (self.x + self.chain_dir * LEG_AIM_AHEAD, self.y)
+        # limbsAimFor：原版是行进目标格中心，宠物里取躯干前方一点。
+        # 用 move_dir（这一 tick 想去哪）而不是 chain_dir（身体轴，转身时滞后）——
+        # 腿朝「要去的方向」迈步，身体自己慢慢拧过去。
+        aim_dir = self.move_dir if self.move_dir != 0.0 else self.chain_dir
+        self.limbs_aim = (self.x + aim_dir * LEG_AIM_AHEAD, self.y)
         grip = [0, 0, 0, 0]
         num8 = 0.0
+
+        def foot_floor(lg):
+            """这只脚脚底下的真实站立面（腿的着地点）。"""
+            return (self.terrain.floor_under(lg.x, lg.y) - LEG_LIMB_RAD
+                    if self.terrain is not None else floor)
+
+        # ① 支撑相的门：这一帧脚是不是真的踩在真实地形上（完全不看 reaching）。
+        #    用单侧判定：脚「低于面」也算接触（下一相 PushOutOfTerrain 会把它顶上来），
+        #    只看「脚还悬在面上方多少」。双侧 abs() 会让脚在面上方 1.6px 悬着时
+        #    误判成离地 —— 这正是换步脚永远落不了地的来历。
+        on_ground = [bool(not stunned and lg.y >= foot_floor(lg) - FLOOR_GRIP_TOL)
+                     for lg in self.legs]
+        support_now = sum(1 for i, lg in enumerate(self.legs)
+                          if lg.planted and on_ground[i])
+        # planted 的总数（含腾空还钉着的老支点）：脚底下没面时用它来判
+        # 「松开会不会一只都不剩」。
+        planted_n = sum(1 for lg in self.legs if lg.planted)
+
         for i, lg in enumerate(self.legs):
             pi = lg.pair if lg.pair < len(self.seg) else len(self.seg) - 1
             hip = self.seg[pi]
@@ -3109,58 +3386,123 @@ class Lizard:
                 ux, uy = -ux, -uy          # 原版：connection.index == 2 时 a *= -1
             vx, vy = _dirvec(self.limbs_aim[0] - hx, self.limbs_aim[1] - hy)
             ax, ay = _dirvec(ux + (vx - ux) * 0.4, uy + (vy - uy) * 0.4)
+            ax0, ay0 = ax, ay     # FindGrip 会就地改 a；抬脚位要用原始 a（原版如此）
             # 原版 num = DistanceToLine(脚, 髋, 髋+Perp(a)) == -(脚-髋)·a
-            # （DistanceToLine 的 l1 在最后一位：l1=髋+Perp(a)、l2=髋）。
             num = -(ax * (lg.x - hx) + ay * (lg.y - hy))
+
             if stunned:
                 lg.disabled = True
                 lg.reaching = False
-                lg.grip = 0
                 lg.planted = False
+                lg.grip = 0
+                lg.airborne = False
+                lg.swing = 0
+                lg.plant_dx = lg.plant_dy = 0.0
                 lg.vy += 0.9                             # 原版 vel.y -= 0.9f（y↑）→ 屏幕 +
             else:
                 lg.disabled = False
-                if not lg.reaching:
-                    lg.abs_x = lg.x + (hx - lg.x) * lift + ax * (joint + 1.0)
-                    lg.abs_y = lg.y + (hy - lg.y) * lift + ay * (joint + 1.0)
-                    if num < joint * (-step_len):
-                        lg.reaching = True
-                elif not _dist_less(lg.x, lg.y, lg.abs_x, lg.abs_y, LEG_LIMB_RAD + 1.0):
-                    # 还没踩到猎点：朝地形伸（FindGrip 的宠物版＝把落点压到地面/墙）
-                    k = (6.0 - 12.0 * (i % 2)) * 0.2
-                    px_, py_ = ay * k, -ax * k                 # Perp_screen(dx,dy) = (dy,-dx)
-                    ax += px_
-                    ay += py_
-                    ay += 0.3 * b.feet_down                    # 原版 a.y -= 0.3*feetDown
-                    ax += (-1.0 if i % 2 == 0 else 1.0) * b.leg_pair_disp * lg.flip
-                    # FindGrip 的宠物版：先问「脚下这块地形的表面在哪」，
-                    # 再把落点夹进 jointDist 半径内 —— 而不是先把 x 顶到
-                    # joint-1 处再硬塞到地面、最后又被腿长压回来。
-                    rmax = joint - 1.0
-                    want_x = hx + ax * rmax
-                    support_y = (self.terrain.floor_under(want_x, hy)
-                                 if self.terrain is not None else room_hl)
-                    gy = support_y - LEG_LIMB_RAD
-                    dy_g = gy - hy
-                    if abs(dy_g) > rmax:
-                        # 地形整块落在 jointDist 之外：这一脚够不到地面，
-                        # 本次没有 grip，也不生成虚假的悬空落点。
-                        lg.reaching = False
-                        lg.snap = False
-                    else:
-                        reach_x = math.sqrt(max(0.0, rmax * rmax - dy_g * dy_g))
-                        lg.abs_x = hx + clampf(want_x - hx, -reach_x, reach_x)
-                        lg.abs_y = gy
-                else:
-                    # 拉满就换步。四条腿用同一个「拉满」阈值会一起抬脚，
-                    # 于是每次换步都有好几帧四脚离地（身体只能 0.1px/tick 滑），
-                    # 看起来就是一卡一卡。按腿号错开一点，支撑脚始终不断档。
-                    stretch = joint - LEG_STEP_STAGGER * i
-                    if (num > joint * -0.5 * (b.step_length + 0.1)
-                            and not _dist_less(lg.x, lg.y, hx, hy, stretch)
-                            and not _dist_less(lg.abs_x, lg.abs_y, hx, hy, stretch)):
-                        lg.reaching = False
+                if lg.planted and on_ground[i]:
+                    # ② 支撑相：钉住的脚这一帧还踩得住 —— 只累 gripCounter，
+                    #    位置完全不动。该换步才解除。
+                    lg.grip += 1
+                    lg.snap = True
+                    if self._leg_should_release(i, lg, hx, hy, num, joint, b,
+                                                support_now):
                         lg.planted = False
+                        lg.reaching = True           # 换步：立刻进下一次 FindGrip
+                        lg.airborne = True           # 这一趟必须真的离过地才算迈步
+                        lg.swing = 0
+                        lg.grip = 0
+                        lg.plant_dx = lg.plant_dy = 0.0
+                        support_now -= 1
+                        planted_n -= 1
+                    else:
+                        grip[2 if lg.pair >= 1 else 0] += 1
+                elif lg.planted:
+                    # 脚下地形没了（窗口挪走 / 走出平台边 / 整只蜥蜴在飞）：
+                    # 解除，重新找落点。
+                    # ① 还有脚踩着地的时候，松开不能把支撑脚数拉到最少支撑数
+                    #    以下 —— 等别的脚先落地接管，避免「四脚同时腾空 →
+                    #    身体贴地滑」。
+                    # ② 一只脚都没接地（真的在飞 / 被吊起来）时全部松开：
+                    #    这时候支点只是把身体拴在半空的橡皮筋，没有任何支撑意义。
+                    if (not any(on_ground)
+                            or planted_n - 1 >= self._leg_min_support()):
+                        lg.planted = False
+                        lg.reaching = True
+                        lg.airborne = True
+                        lg.swing = 0
+                        lg.grip = 0
+                        lg.snap = False
+                        lg.plant_dx = lg.plant_dy = 0.0
+                        support_now -= 1
+                        planted_n -= 1
+
+                if not lg.planted:
+                    # ③ 没钉住的脚：脚在地上就直接进支撑相（原版 stance），
+                    #    不在就伸腿去够地形（原版 FindGrip）。
+                    lg.swing += 1
+                    if lg.swing >= LEG_SWING_MAX:
+                        # 摆太久还没落地：取消「必须先离地」的限制，让它随时能踩住。
+                        lg.airborne = False
+                    if on_ground[i] and not lg.airborne:
+                        lg.grip += 1
+                        if lg.grip >= LEG_GRIP_DELAY:
+                            lg.planted = True
+                            lg.reaching = False
+                            lg.snap = True
+                            lg.abs_x, lg.abs_y = lg.x, lg.y
+                            lg.plant_dx, lg.plant_dy = lg.x - hx, lg.y - hy
+                            lg.swing = 0
+                            grip[2 if lg.pair >= 1 else 0] += 1
+                            support_now += 1
+                            planted_n += 1
+                    else:
+                        if not on_ground[i]:
+                            lg.airborne = False      # 真的离地了：这一趟在迈步
+                        lg.reaching = True
+                        lg.grip = 0
+                        if lg.airborne:
+                            # 刚拔脚：先朝「髋前方 jointDist+1」的猎点把脚抬起来
+                            # （原版 liftFeet 那一步）。少了这一相，脚会贴着地面
+                            # 平移到落点，永远不离地，也就永远进不了支撑相。
+                            lg.abs_x = (lg.x + (hx - lg.x) * lift
+                                        + ax * (joint + 1.0))
+                            lg.abs_y = (lg.y + (hy - lg.y) * lift
+                                        + ay * (joint + 1.0))
+                            continue_out = True
+                        else:
+                            continue_out = False
+                        # FindGrip 的宠物版：先问「脚下这块地形的表面在哪」，
+                        # 再把落点夹进 jointDist 半径内 —— 而不是先把 x 顶到
+                        # joint-1 处再硬塞到地面、最后又被腿长压回来。
+                        k = (6.0 - 12.0 * (i % 2)) * 0.2
+                        px_, py_ = ay * k, -ax * k             # Perp_screen(dx,dy) = (dy,-dx)
+                        ax += px_
+                        ay += py_
+                        ay += 0.3 * b.feet_down                # 原版 a.y -= 0.3*feetDown
+                        ax += (-1.0 if i % 2 == 0 else 1.0) * b.leg_pair_disp * lg.flip
+                        if not continue_out:
+                            rmax = joint - 1.0
+                            want_x = hx + ax * rmax
+                            support_y = (self.terrain.floor_under(want_x, hy)
+                                         if self.terrain is not None else room_hl)
+                            gy = support_y - LEG_LIMB_RAD
+                            dy_g = gy - hy
+                            if abs(dy_g) > rmax:
+                                # 地形整块落在 jointDist 之外：这一脚够不到，
+                                # 不生成虚假的悬空落点，把猎点放回「髋前方
+                                # jointDist+1」的抬脚位（原版 liftFeet），等身体
+                                # 走近再迈 —— 而不是留着一个陈旧的 abs 乱指。
+                                lg.abs_x = (lg.x + (hx - lg.x) * lift
+                                            + ax0 * (joint + 1.0))
+                                lg.abs_y = (lg.y + (hy - lg.y) * lift
+                                            + ay0 * (joint + 1.0))
+                                lg.snap = False
+                            else:
+                                reach_x = math.sqrt(max(0.0, rmax * rmax - dy_g * dy_g))
+                                lg.abs_x = hx + clampf(want_x - hx, -reach_x, reach_x)
+                                lg.abs_y = gy
             # ── Limb.Update ──
             if lg.planted:
                 lg.abs_x, lg.abs_y = lg.x, lg.y
@@ -3189,20 +3531,26 @@ class Lizard:
                     lg.y = leg_floor
                     if lg.vy > 0.0:
                         lg.vy = 0.0
+                elif (not lg.planted and not lg.airborne
+                      and lg.vy >= 0.0 and lg.abs_y >= lg.y - 0.5
+                      and leg_floor - lg.y <= LEG_LAND_TOL):
+                    # 落地吸附（原版 reachedSnapPosition）：脚已经降到落点面附近、
+                    # 目标是地面就踩下去。少了这一步，脚会因为「水平距离远 →
+                    # 方向矢量几乎水平 → vy 极小」而永远贴着面上方飘。
+                    lg.y = leg_floor
+                    lg.vy = 0.0
             # ── ConnectToPoint(髋, jointDist)：腿长硬上限（脚不会被甩飞）──
             ddx, ddy = lg.x - hx, lg.y - hy
             dd = math.hypot(ddx, ddy)
-            if dd >= joint and dd > 1e-6:
-                if not lg.planted:
-                    # 悬空的脚：按原版 ConnectToPoint 把脚拉回腿长以内。
-                    over = dd - joint
-                    ux, uy = ddx / dd, ddy / dd
-                    lg.x -= ux * over
-                    lg.y -= uy * over
-                    lg.vx -= ux * over
-                    lg.vy -= uy * over
-                # planted 脚是支点：绝不拖离地面。超长的部分交给
-                # _apply_foot_support() 把身体往脚的方向回拉。
+            if dd >= joint and dd > 1e-6 and not lg.planted:
+                over = dd - joint
+                ox_, oy_ = ddx / dd, ddy / dd
+                lg.x -= ox_ * over
+                lg.y -= oy_ * over
+                lg.vx -= ox_ * over
+                lg.vy -= oy_ * over
+            # planted 脚是支点：绝不拖离地面。超长的部分交给
+            # _apply_foot_support() 把身体往脚的方向回拉。
             # ── flip（原版 LizardGraphics.cs:1209-1215）──
             # num11 = DistanceToLine(脚, connection.pos, rotationChunk.pos)；
             # 本式算出的值 = -原版值（屏幕 y↓），所以符号规则与原版一致：i<2 取负。
@@ -3211,45 +3559,36 @@ class Lizard:
             lg.flip = lerp(lg.flip, 1.0 if num11 < 0.0 else -1.0, 0.3)
             if abs(num11) > LEG_DEPTH_MIN:
                 num8 += 1.0 if num11 > 0.0 else -1.0
-            # ── gripCounter ──
-            # 原版 gripCounter 只在脚已经到达 FindGrip 的绝对位置、并且
-            # 当前位置仍贴着实际地形时才累计。脚悬空就不算支撑。
-            # grounded（这一帧脚真的踩在真实地形上）→ 连续满足才 grip++ →
-            # grip >= limbGripDelay 才 planted（进入固定支撑相）。
-            # 「碰到了」和「已经踩稳了」是两件事，不要混成一个状态。
-            grounded = False
-            if not stunned and lg.reaching:
-                near_grip = lg.snap or _dist_less(
-                    lg.x, lg.y, lg.abs_x, lg.abs_y, LEG_LIMB_RAD + 1.0)
-                if near_grip:
-                    gy = (self.terrain.floor_under(lg.x, lg.y) - LEG_LIMB_RAD
-                          if self.terrain is not None else floor)
-                    grounded = abs(lg.y - gy) <= FLOOR_GRIP_TOL
-            if grounded:
-                lg.grip += 1
-                if not lg.planted:
-                    # 只有 FindGrip 真正成功（脚到了 abs 点并且贴住地面）
-                    # 才进入支撑相，并记下此时的支点偏移。
-                    lg.planted = True
-                    lg.plant_dx = lg.x - hx
-                    lg.plant_dy = lg.y - hy
-                    lg.abs_x, lg.abs_y = lg.x, lg.y
-                    lg.snap = True
-                if lg.grip >= LEG_GRIP_DELAY:
-                    grip[2 if lg.pair >= 1 else 0] += 1
-            else:
-                # 脚离开支撑：grip 与 planted 一起清零，别留下「逻辑上还踩着」
-                # 的旧支点。
-                lg.grip = 0
-                lg.planted = False
-                lg.plant_dx = 0.0
-                lg.plant_dy = 0.0
         self._collide_chain_lines(room_hl)
         for lg in self.legs:
             if not lg.planted:
                 lg.plant_dx = lg.plant_dy = 0.0
         self.depth_in = clampf(num8, -1.0, 1.0)
         self._step_bob(grip)
+
+    def _leg_min_support(self) -> int:
+        """支撑相至少保留几只脚（四足 = 2，两腿品种 = 1）。"""
+        return max(1, min(LEG_MIN_SUPPORT, len(self.legs) - 1))
+
+    def _leg_should_release(self, i, lg, hx, hy, num, joint, b, support_now) -> bool:
+        """支撑相里的脚什么时候让位（原版 LizardLimb 的换步条件）。
+
+        ① 脚已经被拉到髋后方超过 ``jointDist * -0.5*(stepLength+0.1)``；
+        ② 脚和髋的实际距离超过这条腿的阈值（按腿号错开，四只脚不会一起抬）。
+
+        **不允许把支撑脚数拉到最少支撑数以下**，也没有「拉到硬上限就放它走」的
+        例外 —— 那条例外是四脚同时腾空的源头：支撑脚被拽到 joint 就无条件松开，
+        哪怕松开之后一只脚都不剩。被拽长的部分由 ``_apply_foot_support`` 让身体
+        停下来等腾空的脚落地，而不是把腿拽断。
+        """
+        # 每条腿的「拉满」阈值都要落在硬上限 joint 以内，否则 0 号腿的阈值正好
+        # 等于 joint —— 它只有被拽到硬上限才能换步，一换步支撑脚数就掉到最少
+        # 支撑数以下（这正是四脚全 false 的另一半来历）。
+        stretch = joint - LEG_STEP_STAGGER * (i + 1)
+        if not (num > joint * -0.5 * (b.step_length + 0.1)
+                and not _dist_less(lg.x, lg.y, hx, hy, stretch)):
+            return False
+        return support_now > self._leg_min_support()
 
     def _step_bob(self, grabbing) -> None:
         """走动上下颠（原版 drawPositions[0/1/2].y += frontBob/hindBob * walkBob）。
@@ -3304,6 +3643,21 @@ def _ang_lerp(a: float, b: float, k: float) -> float:
     """角度插值（走最短弧）。"""
     d = (b - a + 180.0) % 360.0 - 180.0
     return a + d * k
+
+
+def _obj_pos(src):
+    """取目标坐标 (x, y)；拿不到（没有目标 / .x 不是数）时返回 (None, None)。
+
+    有些对象（Qt 控件、部分观察替身）的 .x 是个方法而不是坐标 —— 直接拿去相减
+    会 TypeError，所以这里只认真正的数值。
+    """
+    if src is None:
+        return None, None
+    px, py = getattr(src, "x", None), getattr(src, "y", None)
+    if (isinstance(px, (int, float)) and not isinstance(px, bool)
+            and isinstance(py, (int, float)) and not isinstance(py, bool)):
+        return float(px), float(py)
+    return None, None
 
 
 def _dirvec(dx: float, dy: float) -> tuple[float, float]:

@@ -448,6 +448,7 @@ class BehaviorFSM:
         self._pole_throw_cd = 0          # 爬杆够不着目标的重试冷却
         self._crawl_left = 0
         self._crawl_from = None
+        self._crawl_wall = False
         self._nuzzle_t = 0
         self._fetch_watch = None
         self._sleep_urge = 0.0
@@ -7666,6 +7667,7 @@ class BehaviorFSM:
 
     def _crawl_enter(self):
         b = self.body
+        self._crawl_wall = False
         if self._crawl_left <= 0:
             self._crawl_left = tuning.CRAWL_AWAY_TICKS
         if b.on_pole:                    # 杆上没有匍匐：站着走完这一段
@@ -7679,12 +7681,24 @@ class BehaviorFSM:
         b = self.body
         if self.grab.active:
             b.set_crawl(False)
+            self._crawl_from = None
             self._transition("Dragged")
             return
-        lz = self._nearest_lizard(tuning.CRAWL_FEAR_R * 1.6)
+        # 匍匐躲避要锁定**同一只**蜥蜴。每 tick 现挑最近的那只，会在两只差不多
+        # 近的蜥蜴之间来回跳：away（躲开的方向）逐 tick 翻号，于是脸和身体朝
+        # 相反方向来回甩 —— 就是用户报的「面向正面却后退」。
+        lz = self._crawl_from
+        if lz is not None and (getattr(lz, "dead", False)
+                               or lz.state != ItemState.FREE
+                               or lz not in getattr(self.win, "lizards", ())):
+            lz = None
+        if lz is None:
+            lz = self._nearest_lizard(tuning.CRAWL_FEAR_R * 1.6)
+            self._crawl_from = lz
         self._crawl_left -= 1
         if lz is None or self._crawl_left <= 0:
             b.set_crawl(False)
+            self._crawl_from = None
             self._crawl_cd = T_CRAWL_RETRY
             self._transition("IdleStand")
             return
@@ -7692,6 +7706,7 @@ class BehaviorFSM:
         if d < tuning.CRAWL_FEAR_R * 0.5 and not self._behind_creature(lz):
             b.set_crawl(False)                  # 打了照面：别匍匐了，拔腿就跑
             self._flee_from = lz
+            self._crawl_from = None
             self._crawl_cd = T_CRAWL_RETRY
             self._transition("FleeLizard")
             return
@@ -7702,10 +7717,17 @@ class BehaviorFSM:
         goal = b.chunk1.x + away * CRAWL_AWAY_STEP
         if b.walk_min is not None:
             goal = min(max(goal, b.walk_min), b.walk_max)
-        if (goal - b.chunk1.x) * away <= CRAWL_CORNER_EPS:
+        corner = (goal - b.chunk1.x) * away <= CRAWL_CORNER_EPS
+        if self._crawl_wall:
+            # 本次匍匐已经缩到墙角了：这一整段就保持「蹲下、面朝威胁」。否则
+            # 残留速度让 x 在 walk_min 上下漂十几像素，corner 会一帧真一帧假，
+            # 脸跟着一帧朝墙一帧朝威胁 —— 看起来就是原地翻面。
+            corner = True
+        self._crawl_wall = corner
+        if corner:
             # 已经贴到那一侧的边：夹完的落点还在原地/反方向。再 walk_to 就会被
             # 夹到身体另一侧，朝一边、身体往另一边挪（用户报的「面向正面却后退」）。
-            # 贴边就别推了，就地蹲下、转过去面朝威胁。
+            # 贴边就别推了，就地蹲下、转过去面朝威胁，并且一直保持到离开墙角。
             b.stop_walk()
             b.facing = 1 if away < 0 else -1
         else:
