@@ -385,7 +385,9 @@ FLEE_POLE_R = 170.0           # 威胁时愿意跑过去爬的竖杆水平距离
 # 害怕时逃跑优先级最高；只有勇敢的敢还手、善良的敢救人，且敌贴太近一律逃
 FEAR_TOO_CLOSE_R = 76.0       # 蜥蜴贴到这个距离：不管性格，一律逃／跳过它
 FEAR_BRAVE_FIGHT = 0.60       # 勇敢度超过它才敢在恐惧状态下还手
-FEAR_KIND_RESCUE = 0.60       # 善良度超过它才敢在恐惧状态下先救人
+FEAR_KIND_RESCUE = 0.60       # 善良度到这个值：有威胁时稳定先救人（高倾向）
+FEAR_KIND_LOW = 0.25          # 善良度下限：低于它完全不在威胁中考虑救人；
+                              # 中间段按 kind 线性缩放的概率抽一次骰子（见 _rescue_bias）
 APOLOGY_TICKS = 220           # 误伤同伴后抱歉：面对它匍匐
 THANK_TICKS = 260             # 被救活后去拍拍恩人
 # 送礼驯服（原版 FriendTracker.GiftRecieved）：拿着蝉乌贼贴近未驯服蜥蜴才可能交付

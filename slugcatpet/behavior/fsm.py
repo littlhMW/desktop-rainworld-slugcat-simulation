@@ -466,6 +466,9 @@ class BehaviorFSM:
         self._crawl_cd = 0
         self._protest_cd = 0
         self._revive_cd = 0
+        # 威胁中「先救人」的倾向骰子：对同一个威胁只抽一次（kind 决定倾向，
+        # 不是资格；见 _rescue_bias）。只在真的有人可救时才抽，别空耗随机数流。
+        self._rescue_rolls = {}
         # 友伤规避：攻击意图（别的猫据此躲弹道）+ 自己的避让计时
         self.attack_intent = None        # {ox,oy,vx,vy,dir,target,target_pt,until}
         self._shot_clock = 0             # 单调 tick：意图过期 / 避让计时都拿它比
@@ -2016,6 +2019,7 @@ class BehaviorFSM:
             self._transition("MakeWay")     # 被顶满时长 → 让路
             return True
         elif (blocker is not None and self._can_ground_blockreact()
+              and self.state != "FleeLizard"     # 正被威胁追：跳过威胁优先，别抢跳
               and self._blocked_ticks >= tuning.BLOCKED_JUMP_TICKS
               and self._jump_over_cd <= 0):
             # 有威胁时不再「性格不好就先骂」：无论性格都先跳过阻挡者自己让步（用户规格）
@@ -2451,6 +2455,35 @@ class BehaviorFSM:
         return (b.carried_spear is not None or b.carried_stone is not None
                 or b.back_spear is not None)
 
+    def _rescue_bias(self, th) -> bool:
+        """善良度 → 威胁中「先救人」的**倾向**（不是资格）。
+
+        旧版 ``kind >= FEAR_KIND_RESCUE`` 才有资格：0.59 的猫永远不救、
+        0.60 的猫突然每次都救，中间地带整段被「撤退」吃掉（用户口径：
+        「不救人」的成因之一）。现在：
+
+          * kind < FEAR_KIND_LOW     → 完全不考虑救人；
+          * kind >= FEAR_KIND_RESCUE → 每次都救（老版那个「够善良」）；
+          * 中间段                   → 按 kind 线性缩放的概率决定。
+
+        概率对**同一个威胁对象只抽一次**（key = id(th)），否则每帧重掷会
+        出现「救一下又不救」的抽搐；威胁换了 / 消失再重抽。
+        """
+        kind = clampf(float(getattr(self.pers, "kindness", 0.5)), 0.0, 1.0)
+        if kind < tuning.FEAR_KIND_LOW:
+            return False
+        if kind >= tuning.FEAR_KIND_RESCUE:
+            return True
+        key = id(th)
+        got = self._rescue_rolls.get(key)
+        if got is None:
+            span = max(1e-6, tuning.FEAR_KIND_RESCUE - tuning.FEAR_KIND_LOW)
+            got = self.rng.random() < (kind - tuning.FEAR_KIND_LOW) / span
+            if len(self._rescue_rolls) > 16:     # 换过很多只威胁：清一次，别无限涨
+                self._rescue_rolls.clear()
+            self._rescue_rolls[key] = got
+        return got
+
     def _revive_target_safe(self, th):
         """附近倒地的同伴，且**不在威胁那一侧**（不为了一具尸体往刀口上跑）。
 
@@ -2555,12 +2588,14 @@ class BehaviorFSM:
             self._break_active_controllers()
             self._transition("FightThreat")
             return True
-        kind = getattr(self.pers, "kindness", 0.5)
-        if (kind >= tuning.FEAR_KIND_RESCUE and self._cover_cd <= 0
-                and self._cover_ally_start(th)):
-            return True                  # 空手又有持械同伴：躲到它背后（落点先验距）
-        if kind >= tuning.FEAR_KIND_RESCUE and self._revive_cd <= 0:
-            dp = self._revive_target_safe(th)
+        # 善良度决定倾向而不是资格（见 _rescue_bias）：低于下限完全不考虑，
+        # 中间段按 kind 缩放概率，够善良每次都救。先确认「真的有人可救/可躲」，
+        # 再抽骰子 —— 空场不消耗随机数，也不会每帧重掷。
+        cover_ok = self._cover_cd <= 0 and self._cover_target(th) is not None
+        dp = self._revive_target_safe(th) if self._revive_cd <= 0 else None
+        if (cover_ok or dp is not None) and self._rescue_bias(th):
+            if cover_ok and self._cover_ally_start(th):
+                return True              # 空手又有持械同伴：躲到它背后（落点先验距）
             if dp is not None:
                 self._social_kind = "revive"
                 self._social_target = dp
@@ -2656,6 +2691,7 @@ class BehaviorFSM:
         """
         b = self.body
         if self._cornered_by(lz) and self._jump_over(lz):
+            self._jump_over_cd = tuning.JUMP_OVER_COOLDOWN   # 别落地又立刻再跳
             self._flee_from = lz
             self._flee_cd = FLEE_COOLDOWN
             self._crawl_cd = T_CRAWL_RETRY
@@ -2771,11 +2807,12 @@ class BehaviorFSM:
         if not b.on_floor():
             return False
         cross = 1.0 if lz.x >= b.chunk1.x else -1.0
-        b.facing = 1 if cross > 0 else -1
-        b.move_dir = b.facing
-        b.walk_target_x = None
-        b.chunk0.vx = b.chunk1.vx = cross * tuning.FEAR_JUMP_VX
-        b.request_jump("stand")
+        # 真正的威胁跳（SlugcatBody.threat_jump）：直接给头/尾两个 body chunk
+        # 灌入越人所需初速，并清掉杆/匍匐/挂起状态。旧版借 request_jump("stand")
+        # 的弱站立跳（-4/-3），AI 决定「回头越过它」但动作层没有对应动作，
+        # 表现就是原地轻微弹一下。
+        if not b.threat_jump(cross):
+            return False
         self.gfx.look_at = (lz.x, lz.y)
         self._press_reset()          # 跳完重新记账：别在空中又判定「退无可退」
         return True
@@ -2804,7 +2841,10 @@ class BehaviorFSM:
         b = self.body
         b.set_posture(True)
         self._flee_cd = FLEE_COOLDOWN      # 进场即计时：被咬断也算躲过一轮
-        b.walk_to(self._flee_target_x(self._flee_from))
+        # 起跳帧（_flee_lizard_now 刚做威胁跳）不给步点：这一跳的横速已经
+        # 钉在 chunk 上，再 walk_to 会把它拽回来，跳完几乎原地落回。
+        if b.on_floor() and not b.took_off() and self._flee_from is not None:
+            b.walk_to(self._flee_target_x(self._flee_from))
 
     def _st_fleelizard(self, cursor, disturbed):
         b = self.body
@@ -2813,21 +2853,29 @@ class BehaviorFSM:
             return
         lz = self._flee_from
         alive = lz is not None and getattr(lz, "state", None) == ItemState.FREE
-        if alive:
-            self.gfx.look_at = (lz.x, lz.y)
-            # 退无可退（被逼退够远／够久，或背后是墙又挪不动）：不往回
-            # 跑了 —— 转身面向它，从它头上跳到对面继续逃。
-            if (self._jump_over_cd <= 0 and self._cornered_by(lz)
-                    and self._jump_over(lz)):
-                self._jump_over_cd = tuning.JUMP_OVER_COOLDOWN
-                self._flee_cd = FLEE_COOLDOWN
-                b.walk_to(self._flee_target_x(lz))   # 落点已在对侧，继续往反方向跑
-                return
-            if self.timer % 12 == 0:              # 蜥蜴在动，隔几拍重取反方向
-                b.walk_to(self._flee_target_x(lz))
-        if ((not alive) or self.timer >= FLEE_MAX_TICKS or not b.on_floor()
+        if ((not alive) or self.timer >= FLEE_MAX_TICKS
                 or abs(lz.x - b.chunk1.x) >= FLEE_SAFE_R):
             self._transition("IdleStand")
+            return
+        if not b.on_floor():
+            # 已经在空中（多半是刚跳过它）：整段飞行交给物理，别再重取步点。
+            # 旧版每 12 tick 还 walk_to()，空中把横速反向拽回来，跳完几乎原地
+            # 落回 —— 就是「原地轻微跳动」的观感来源。清空步点后 move_dir 才是
+            # 唯一横速来源，而威胁跳钉在 chunk 上的初速不会被 H_ACCEL 削掉。
+            b.walk_target_x = None
+            return
+        self.gfx.look_at = (lz.x, lz.y)
+        # 退无可退（被逼退够远／够久，或背后是墙又挪不动）：不往回跑了 ——
+        # 转身面向它，从它头上跳到对面继续逃。
+        if (self._jump_over_cd <= 0 and self._cornered_by(lz)
+                and self._jump_over(lz)):
+            self._jump_over_cd = tuning.JUMP_OVER_COOLDOWN
+            self._flee_cd = FLEE_COOLDOWN
+            return                            # 起跳帧不再安排步点：交给威胁跳的初速
+        # 蜥蜴在动，隔几拍重取反方向；刚落地的第一帧（步点被威胁跳清空）
+        # 立刻补一个，避免落地后站着不动又被打上「退无可退」。
+        if self.timer % 12 == 0 or b.walk_target_x is None:
+            b.walk_to(self._flee_target_x(lz))
 
     def _zerog(self) -> bool:
         return getattr(self.body, "zerog", False)
@@ -6122,22 +6170,33 @@ class BehaviorFSM:
         hi = self.WL if self.body.walk_max is None else self.body.walk_max
         return clampf(ob.chunk1.x + side * COVER_BACK_OFF, lo, hi)
 
-    def _cover_ally_start(self, th) -> bool:
-        """有威胁、自己空手 → 起手「躲到持械同伴背后」。返回是否已切态。"""
+    def _cover_target(self, th):
+        """可用掩体（持械同伴）——纯查询，不改状态；None = 没得躲。
+
+        与 _cover_ally_start 拆开是为了让面敌逻辑能「先确认有人可救/可躲，
+        再抽救人倾向的骰子」，不给空场白白消耗随机数。
+        """
         b = self.body
         if self._weapon_ready():
-            return False                    # 手里有家伙：照旧迎战/逃
+            return None                     # 手里有家伙：照旧迎战/逃
         gw = self._nearest_ground_weapon()
         if (gw is not None
                 and math.hypot(gw.x - b.chunk1.x, gw.y - b.chunk1.y)
                 <= tuning.ARM_SEEK_R):
-            return False                    # 近处有家伙可捡：先去拿
+            return None                     # 近处有家伙可捡：先去拿
         ally = self._armed_peer()
         tx = self._cover_x(ally, th) if ally is not None else None
         if tx is None:
-            return False
+            return None
         if abs(tx - th.x) < COVER_MIN_GAP:
-            return False                    # 躲过去的落点离威胁太近：宁可跑开
+            return None                     # 躲过去的落点离威胁太近：宁可跑开
+        return ally
+
+    def _cover_ally_start(self, th) -> bool:
+        """有威胁、自己空手 → 起手「躲到持械同伴背后」。返回是否已切态。"""
+        ally = self._cover_target(th)
+        if ally is None:
+            return False
         self._cover_ally = ally
         self._break_active_controllers()
         self._transition("CoverAlly")

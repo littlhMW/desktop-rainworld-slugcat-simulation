@@ -47,6 +47,15 @@ TOSS_COB_T = 40
 
 WALK_STOP_EPS = 2.0
 
+# 威胁跳（AI：退无可退 → 面向威胁从它头上跳到对面）。
+# 数值取 stats.pole_jump_* 那一档：站立跳只有 -4/-3 加一点持跳续力，弧线矮、
+# 横速还会在起跳帧被跑速回收，越不过一个身位 —— 就是「原地轻轻跳一下」。
+THREAT_JUMP_HEAD_VX = 6.0
+THREAT_JUMP_HEAD_VY = -8.0
+THREAT_JUMP_FEET_VX = 5.0
+THREAT_JUMP_FEET_VY = -7.0
+THREAT_JUMP_BOOST = 8.0
+
 # AI 直走撞到统一地形后的自动越障：Planner 之外的行为也能翻过低/中等障碍。
 TERRAIN_JUMP_AFTER = 8
 TERRAIN_JUMP_COOLDOWN = 32
@@ -124,6 +133,8 @@ class SlugcatBody:
         self.walk_speed_target = None
         self._terrain_block_ticks = 0
         self._terrain_jump_cd = 0
+        # 脉冲式起跳（威胁跳）后的几帧不按跑速回收横向速度，见 _movement_update
+        self._jump_takeoff = 0
         self.dead = False
         self.coyote = 0                 # 土狼窗口剩余 tick（离地后仍可跳）
         self.item_cd = 0                # 上手冷却：拿到东西后还要等几个 tick 才用
@@ -331,6 +342,51 @@ class SlugcatBody:
         self.jump_boost = self.stats.jump_boost
         self.walk_target_x = None
         self.move_dir = int(move_dir)
+
+    def took_off(self) -> bool:
+        """本 tick 刚做过脉冲起跳（threat_jump / tip_launch / pole_jump）。
+
+        AI 用它区分「正在起跳的那一帧」和「站在地上」：起跳帧不能给步点，
+        否则 walk_to 会在同一 tick 把刚钉上去的横速拽回来。
+        """
+        return self._jump_takeoff > 0
+
+    def threat_jump(self, direction, move_dir=None):
+        """威胁跳：面向威胁，从它头上跳过去（AI 专用，不退无可退不调用）。
+
+        与 ``pole_jump`` 同一套「离地脉冲」写法：直接写 chunk 初速，不走
+        ``_jump_pending`` 的站立跳。原版 Player 跳过生物靠的是「先加速、起跳、
+        空中保持横速」；宠物里 AI 的横向意图每 tick 由 walk_to / move_dir 重写，
+        所以这里把横速钉在 chunk 上、把 walk_target_x 清掉，起跳帧也不做接地
+        滑停回收（``_jump_takeoff``），否则 6px/tick 会被削回跑速 4.2。
+
+        顺带清掉会拦住脉冲的残留状态：俯卧 / 抓杆 / 卡住的脚 / 过渡动画。
+        返回是否真的跳了（死 / 眩晕时 False）。
+        """
+        if self.dead or self.stun > 0:
+            return False
+        c0, c1 = self.chunk0, self.chunk1
+        c0.pinned = c1.pinned = False
+        self.on_pole = False
+        self.animation = None
+        self.feet_stuck = None
+        self.crawl_anchor = None
+        self.crawl_pose = 0.0
+        self.crawl_want = False
+        self.standing = True
+        self._jump_pending = self._jump_hold = self._jump_hold_left = None
+        self.coyote = 0
+        self.walk_target_x = None
+        d = 1.0 if direction >= 0 else -1.0
+        self.facing = 1 if d > 0 else -1
+        self.move_dir = int(d if move_dir is None else move_dir)
+        c0.vx = THREAT_JUMP_HEAD_VX * d
+        c0.vy = THREAT_JUMP_HEAD_VY
+        c1.vx = THREAT_JUMP_FEET_VX * d
+        c1.vy = THREAT_JUMP_FEET_VY
+        self.jump_boost = THREAT_JUMP_BOOST
+        self._jump_takeoff = 2
+        return True
 
     def pole_jump(self, direction, move_dir=None, up=True):
         """竖杆跳：朝 direction 斜跳出杆（up 决定高度档）。
@@ -1351,6 +1407,12 @@ class SlugcatBody:
             dyn0 = min(dyn0, self.walk_speed_target)
             dyn1 = min(dyn1, self.walk_speed_target)
         grounded = c0.on_floor or c1.on_floor
+        # 脉冲式起跳（威胁跳）那一帧不做接地滑停回收：它的横速是在 _movement_update
+        # 之前直接写进 chunk 的，若这一帧还按跑速回收，6px/tick 的越人跳会被削回
+        # 跑速（4.2），弧线一矮就落回原地 —— 就是「原地轻轻跳一下」。
+        takeoff = self._jump_takeoff > 0
+        if takeoff:
+            self._jump_takeoff -= 1
         for c, dyn in ((c0, dyn0), (c1, dyn1)):
             if c.pinned:
                 continue
@@ -1366,7 +1428,7 @@ class SlugcatBody:
                     step = dyn - c.vx
                 if step > 0:
                     c.vx += step
-            if grounded:
+            if grounded and not takeoff:
                 target = max(-dyn, min(dyn, c.vx)) if move_x != 0 else 0.0
                 c.vx += (target - c.vx) * SKID_DAMP
             if self.bodyMode == "Crawl":
