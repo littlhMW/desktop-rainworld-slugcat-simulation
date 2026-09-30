@@ -1098,6 +1098,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # 但全员复活时它们同样跟着一起复活。
         gating = [p for p in pets if not getattr(p, "is_pup", False)] or pets
         if all(p.behavior.is_dead() for p in gating):
+            # 暴雨期间不进入全员转生倒计时；尸体可以等待同伴救援。
+            if self.storm_active:
+                self._all_dead_t = 0
+                return
             if all(p.behavior.is_reincarnating() for p in pets):
                 return                      # 倒计时中：不冒白点，也不清场
             self._all_dead_t += 1
