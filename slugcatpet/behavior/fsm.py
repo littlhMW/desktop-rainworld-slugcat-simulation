@@ -707,6 +707,19 @@ class BehaviorFSM:
         self._transition("Stunned")
         return True
 
+    def _pup_final(self) -> bool:
+        """猫崽的身份是非蛞蝓猫生物：不转世、也不会被同伴救 —— 死了就是死了。"""
+        return bool(getattr(self.win, "is_pup", False))
+
+    def _after_death_reincarnate(self):
+        """环境致死的死后收尾：普通蛞蝓猫排转世倒计时；猫崽什么都不排。"""
+        if self._pup_final():
+            self._reincarnate = False
+            self._revive_timer = 0
+            return
+        self._reincarnate = True
+        self._revive_timer = tuning.REINCARNATE_TICKS
+
     def kill(self):
         if self.state == "Dead":
             return
@@ -756,8 +769,7 @@ class BehaviorFSM:
         self.body.die()
         self.gfx.dead = True
         self._transition("Dead")
-        self._reincarnate = True
-        self._revive_timer = tuning.REINCARNATE_TICKS
+        self._after_death_reincarnate()
         self._schedule_karma_flower(had_flower)
 
     def kill_storm(self):
@@ -778,8 +790,7 @@ class BehaviorFSM:
         self.body.die()
         self.gfx.dead = True
         self._transition("Dead")
-        self._reincarnate = True
-        self._revive_timer = tuning.REINCARNATE_TICKS
+        self._after_death_reincarnate()
         self._schedule_karma_flower(had_flower)
 
     def kill_drown(self):
@@ -796,8 +807,7 @@ class BehaviorFSM:
         self.body.die()
         self.gfx.dead = True
         self._transition("Dead")
-        self._reincarnate = True
-        self._revive_timer = tuning.REINCARNATE_TICKS
+        self._after_death_reincarnate()
         self._schedule_karma_flower(had_flower)
 
     def kill_pyro_drown(self):
@@ -817,8 +827,7 @@ class BehaviorFSM:
         self.body.die()
         self.gfx.dead = True
         self._transition("Dead")
-        self._reincarnate = True
-        self._revive_timer = tuning.REINCARNATE_TICKS
+        self._after_death_reincarnate()
         self._schedule_karma_flower(had_flower)
 
     def _death_karma_settle(self) -> bool:
@@ -836,6 +845,8 @@ class BehaviorFSM:
         僧侣（monk）无条件；猎手 15~45s；其他猫死亡时带着业力花条才长（150~210s）。
         同一具尸体只排一次。
         """
+        if self._pup_final():
+            return                      # 猫崽不是蛞蝓猫：死后不长业力花
         if self._flower_planted:
             return
         variant = getattr(self.win, "variant", "")
@@ -866,6 +877,8 @@ class BehaviorFSM:
             return False
         if getattr(self.win, "storm_active", False):
             return False
+        if self._pup_final():
+            return False                # 猫崽不转世：死了就是死了
         self._reincarnate = True
         if self._revive_timer <= 0:
             self._revive_timer = tuning.REINCARNATE_TICKS

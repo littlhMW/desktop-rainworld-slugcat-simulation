@@ -19,8 +19,8 @@ from .survivor import SURVIVOR_DEF
 
 # ── 个体颜色（wiki Slugpup）──────────────────────────────────────────────
 # 「猫崽的体色和瞳色多变，绿色和黄色系的最常见，而红色和紫色系的最罕见。」「体色由
-#   游戏文件里的变量 Dark 控制（1/2 抽深色/浅色色板）；瞳色与体色相关，深色猫崽的
-#   眼睛是浅色的，反之亦然。」这里只做体型/外观区分，不做游戏版本的性格差异。
+#   游戏文件里的变量 Dark 控制（1/2 抽深色/浅色色板）；瞳色与体色相关：深色猫崽的
+#   眼睛固定纯白，浅色猫崽的眼睛固定纯黑。」这里只做体型/外观区分，不做性格差异。
 PUP_DARK_P = 0.5                 # Dark 变量：1/2 抽深色板
 
 # 色相权重 (起, 止, 权重)：绿 / 黄最多，红 / 紫最少
@@ -77,14 +77,8 @@ def pup_colors(seed: int):
         sat = 0.05 + 0.60 * rng.random()              # 浅色板：低中饱和 + 高明度
         val = 0.80 + 0.19 * rng.random()
     body = pup_hsv_to_rgb(hue, sat, val)
-    # 瞳色与体色相关（色相小幅偏移），明度反相：深色体 → 浅色瞳，反之亦然
-    eye_hue = (hue + 0.08 * (rng.random() - 0.5)) % 1.0
-    if dark:
-        eye = pup_hsv_to_rgb(eye_hue, 0.10 + 0.35 * rng.random(),
-                             0.78 + 0.20 * rng.random())
-    else:
-        eye = pup_hsv_to_rgb(eye_hue, 0.25 + 0.45 * rng.random(),
-                             0.08 + 0.20 * rng.random())
+    # 瞳色不随机、只跟体色深浅走：深色体 → 纯白瞳，浅色体 → 纯黑瞳。
+    eye = (255, 255, 255) if dark else (0, 0, 0)
     return body, eye
 
 

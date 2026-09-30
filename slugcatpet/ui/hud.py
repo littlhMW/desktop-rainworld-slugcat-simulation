@@ -45,7 +45,9 @@ class HudPanel(QWidget):
         self.hide()
 
     def _pets(self):
-        return getattr(self.pet, "pets", None) or [self.pet]
+        # 猫崽的身份是非蛞蝓猫生物：不进状态面板（它们仍在场景里活动）。
+        pets = getattr(self.pet, "pets", None) or [self.pet]
+        return [p for p in pets if not getattr(p, "is_pup", False)]
 
     def _build(self):
         outer = QVBoxLayout(self)

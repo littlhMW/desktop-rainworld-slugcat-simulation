@@ -1096,27 +1096,31 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if not pets:
             self._all_dead_t = 0
             return
-        # 幼崽不参与「全员死亡」判定（它们不能被救也不会被计入门槛），
-        # 但全员复活时它们同样跟着一起复活。
-        gating = [p for p in pets if not getattr(p, "is_pup", False)] or pets
+        # 猫崽的身份是非蛞蝓猫生物：不进「全员死亡」门槛、也不跟着转世，
+        # 死了就是死了（尸身留在场上，等玩家自己处理）。
+        gating = [p for p in pets if not getattr(p, "is_pup", False)]
+        if not gating:
+            self._all_dead_t = 0
+            return
         if all(p.behavior.is_dead() for p in gating):
             # 暴雨期间不进入全员转生倒计时；尸体可以等待同伴救援。
             if self.storm_active:
                 self._all_dead_t = 0
                 return
-            if all(p.behavior.is_reincarnating() for p in pets):
+            if all(p.behavior.is_reincarnating() for p in gating):
                 return                      # 倒计时中：不冒白点，也不清场
             self._all_dead_t += 1
             if self._all_dead_t < tuning.ALL_DEAD_GRACE_TICKS:
                 return
             self._all_dead_t = 0
-            for p in pets:
+            for p in gating:
                 p.behavior.begin_reincarnation()
             self._reincarnate_cleanup_pending = True
             return
         self._all_dead_t = 0
+        # 清场只等「会转世的那些」醒过来 —— 永久死的猫崽不能把清场卡住。
         if self._reincarnate_cleanup_pending and all(not p.behavior.is_dead()
-                                                     for p in pets):
+                                                     for p in gating):
             self._reincarnate_cleanup_pending = False
             # 全体复活＝换雨循环：场上所有东西（生物/物品/杆/花）一起清空
             self.clear_world_for_reincarnation()
@@ -1423,8 +1427,15 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         pet.body.put_spear_on_back(sp)
 
     def remove_pet(self, pet):
-        """移除一只常规蛞蝓猫，成功返回 True（场上至少要留一只）。"""
-        if len(self.pets) <= 1 or pet not in self.pets:
+        """移除一只常规蛞蝓猫，成功返回 True（场上至少留一只**常规**蛞蝓猫）。
+
+        猫崽的身份是非蛞蝓猫生物，不占这个保底名额 —— 否则「1 成年 + 1 幼崽」
+        时删掉成年猫会剩下 0 只蛞蝓猫。
+        """
+        if getattr(pet, "is_pup", False) or pet not in self.pets:
+            return False
+        adults = [p for p in self.pets if not getattr(p, "is_pup", False)]
+        if len(adults) <= 1:
             return False
         return self._remove_pet(pet)
 
@@ -1442,7 +1453,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         """清掉场上全部幼崽，返回清掉几只。
 
         只在「清除可交互实体」里用；转生（clear_world_for_reincarnation）不清幼崽，
-        幼崽和成年猫一样整体复活。
+        而猫崽本来也不转世、不复活 —— 死了就留在场上。
         """
         n = 0
         for pet in list(self.pets):
