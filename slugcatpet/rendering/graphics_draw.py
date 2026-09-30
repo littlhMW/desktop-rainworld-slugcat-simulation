@@ -581,7 +581,9 @@ class GraphicsDrawMixin:
         if self.dead:
             element = self._face_dead_frame
         elif self.face_override == "stun":
-            element = self._face_stun_frame        # 借晕眩脸（按种族覆写取帧）
+            # 借晕眩脸演「使劲」；种族可用 face_press 换成自己的常态表情（圣徒不借）
+            element = (self._face_press_frames[0] if self._face_press_frames
+                       else self._face_stun_frame)
         elif self.stunned:
             element = self._face_stun_frame
         elif self.sleep_curl > 0.0:

@@ -103,6 +103,7 @@ PLATFORM_REFRESH_TICKS = 30
 CURSOR_PX_FALLBACK = 32.0        # 取不到系统光标尺寸时的兜底（标准箭头 32px）
 MOUSE_POLE_MIN_HALF = 8.0        # 杆半长下限（逻辑单位；超大画布缩放时别缩没了）
 MOUSE_POLE_RELEASE_TICKS = 80    # 松开鼠标后这么久内不当杆（2s @ 40tick/s）
+SHELTER_HINT_ICON = 56.0         # 放庇护所：点击前光标处那个图标的边长（逻辑单位）
 # 抓猫／拽东西／正在放东西的时候，光标不是一根杆
 _DRAG_ATTRS = ("_dragged_fruit", "_dragged_stone", "_dragged_slimemold",
                "_dragged_batfly", "_dragged_lizard", "_dragged_squidcada",
@@ -2203,10 +2204,28 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         return sh
 
     def _draw_shelter_hint(self, p):
+        if self._shelter_drag_start is None:
+            self._draw_shelter_cursor_icon(p)   # 还没按下：光标处只显示庇护所图标
+            return
         sh = self._shelter_drag_rect()
         if sh is None:
             return
         p.save()
         p.setOpacity(0.55)
         sh.draw(p)
+        p.restore()
+
+    def _draw_shelter_cursor_icon(self, p):
+        """点击前的预览：光标处一个庇护所图标（wiki 原图）。拖动中仍然画矩形。"""
+        cur = self.cursor_logical()
+        if cur is None:
+            return
+        from PySide6.QtCore import QRectF
+        from .ui.tabbar import _paint_place_icon
+
+        d = SHELTER_HINT_ICON
+        r = QRectF(cur[0] - d * 0.5, cur[1] - d * 0.5, d, d)
+        p.save()
+        p.setOpacity(0.85)
+        _paint_place_icon(p, "shelter", r, getattr(self, "atlas", None))
         p.restore()

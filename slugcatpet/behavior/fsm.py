@@ -68,7 +68,7 @@ CORPSE_HAUL_FLING = 14.0     # 甩出去的初速（够飞出窗口被清掉）
 CORPSE_HAUL_TICKS = 3600     # 单趟最长 tick（约 90s；绿蜥等重尸按原版质量比拖得很慢，超时松爪）
 T_CORPSE_HAUL_RETRY = 600    # 一趟之后多久不再惦记（约 15s）
 CORPSE_HAUL_P = 0.5          # 闲下来时每次检查起意的概率
-LICK_PLAY_P = 0.55           # 圣徒：射程内有生物时起意伸舌逗它
+LICK_PLAY_P = 0.125          # 圣徒：射程内有生物时起意伸舌逗它（用户口径：减少到 1/8）
 LICK_PLAY_CD = 240           # 一次逗弄后的冷却（约 6s）
 LICK_REACH_FRAC = 0.85       # 舌头总长的这个比例之内才够得着
 T_HPOLE_TIMEOUT = 1600
@@ -2510,8 +2510,8 @@ class BehaviorFSM:
         return clampf(float(getattr(self.pers, "tongue_curiosity", 0.5)), 0.0, 1.0)
 
     def _lick_want(self) -> float:
-        """逗弄生物的概率 = 基准 × 舌头好奇心（中性时就是原来的 LICK_PLAY_P）。"""
-        return clampf(LICK_PLAY_P * (0.35 + 1.30 * self._tongue_curiosity()), 0.0, 1.0)
+        """逗弄生物的概率：上限就是基准 1/8，舌头好奇心只在 0.75×~1× 之间微调。"""
+        return clampf(LICK_PLAY_P * (0.75 + 0.25 * self._tongue_curiosity()), 0.0, 1.0)
 
     def _nearby_lizard(self):
         """水平距离最近且在威胁圈内的威胁（蜥蜴 / 愤怒的面条蝇成体）；没有则 None。"""

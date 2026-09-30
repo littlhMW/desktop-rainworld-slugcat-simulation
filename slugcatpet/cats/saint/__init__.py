@@ -30,6 +30,9 @@ SAINT_DEF = CatDef(
         # 同一张 FaceStunned，不做种族分支；圣徒的"永远闭眼"只作用在常态表情上
         # （DefaultFaceSprite：SaintFaceCondition() 恒 true → FaceB 族）。
         "face_stunned": ("base", "FaceStunned"),
+        # 复活按压借的那张脸（行为层 face_override = "stun"）：圣徒照旧用自己的
+        # 默认表情（闭眼的 FaceB 族），不借晕眩脸；其他蛞蝓猫不变
+        "face_press": ("base", "FaceB"),
         "face_dead": ("base", "FaceDead"),  # 死亡脸是标记不是表情，沿用原版
         "legs_walk": ("base", "LegsA"),
         "legs_crawl": ("base", "LegsACrawling"),

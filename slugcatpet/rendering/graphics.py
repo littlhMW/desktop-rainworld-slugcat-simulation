@@ -258,6 +258,9 @@ class SlugcatGraphics(GraphicsDrawMixin):
         self._face_scar_frame = fam["face_scar"][1] if "face_scar" in fam else None
         # 晕/死脸也可由种族覆写（本作各族都用原版 FaceStunned / FaceDead）
         self._face_stun_frame = fam["face_stunned"][1] if "face_stunned" in fam else "FaceStunned"
+        # 复活按压借来的那张脸：默认是晕眩脸，种族可用 face_press 换成自己的常态表情（圣徒）
+        self._face_press_frames = (self._family_frames(*fam["face_press"])
+                                   if "face_press" in fam else [])
         self._face_dead_frame = fam["face_dead"][1] if "face_dead" in fam else "FaceDead"
         self._leg_walk_frames = self._family_frames(*fam["legs_walk"])
         self._leg_crawl_frames = self._family_frames(*fam["legs_crawl"])
