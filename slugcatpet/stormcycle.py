@@ -220,16 +220,30 @@ class StormCycle:
                 sh.start_closing()
 
     def _step_sleep(self, shelters):
+        # 手动暴雨也必须拥有真实的暴雨时长。旧代码这里每 tick 把 phase_t
+        # 重置为 0，导致手动暴雨永远停在 SLEEP，表现成「暴雨番茄钟不结束」。
+        self.phase_t += 1
         if self.manual:
-            self.phase_t = 0
             self.pressure = 1.0
-            self.rain_drive = 1.0
+            fade_start = max(0, self.sleep_ticks - self.fade_ticks)
+            if self.phase_t >= fade_start:
+                self.rain_drive = max(0.0, 1.0 - (
+                    self.phase_t - fade_start) / float(max(1, self.fade_ticks)))
+            else:
+                self.rain_drive = 1.0
             for sh in shelters:
                 if sh.door_state == OPENING:
                     sh.start_closing()
+            if self.phase_t >= self.sleep_ticks:
+                self.phase = FOCUS
+                self.phase_t = 0
+                self.settle_t = 0
+                self.pressure = 0.0
+                self.rain_drive = 0.0
+                self.manual = False
+                self.enabled = self._manual_prev
             return
 
-        self.phase_t += 1
         self.pressure = 1.0
         remain = self.sleep_ticks - self.phase_t
         if remain <= self.fade_ticks:
@@ -318,19 +332,3 @@ class StormCycle:
     def from_dict(self, d):
         if not isinstance(d, dict):
             return
-        self.enabled = bool(d.get("enabled", self.enabled))
-        self.manual = bool(d.get("manual", False))
-        if d.get("phase") in (FOCUS, GATHER, SLEEP):
-            self.phase = d["phase"]
-        try:
-            self.cycles_done = max(0, int(d.get("cycles_done", self.cycles_done)))
-        except Exception:
-            pass
-        try:
-            self.phase_t = max(0, int(d.get("phase_t", 0)))
-            self.settle_t = max(0, int(d.get("settle_t", 0)))
-            self.rain_drive = max(0.0, min(1.0, float(d.get("rain_drive", 0.0))))
-        except Exception:
-            pass
-        self.set_durations(d.get("focus_minutes"), d.get("warning_minutes"),
-                           d.get("sleep_minutes"))
