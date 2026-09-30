@@ -225,8 +225,12 @@ CAMO_SAMPLE_TICKS = 100        # 每 ~2.5 s 采一次（低频率）
 CAMO_SAMPLE_RADIUS_X = 70.0    # 采样半宽下限（实际取 max(body_rad*4.5, 它)）
 CAMO_SAMPLE_RADIUS_Y = 55.0    # 采样半高下限（实际取 max(body_rad*3.5, 它)）
 CAMO_COLOR_RATE = 0.15         # 整只体色向新采样色渐变的速度（平滑、不跳色）
-CAMO_BREATH_TICKS = 260        # 呼吸周期 ~6.5 s
-CAMO_MIX_MIN = 0.0             # 换气到最白那一瞬也留一点迷彩
+# 呼吸节律：绝大部分时间停在「纯取色」不动，只在每周期末尾短暂退回体色再变回来。
+# 原来是一条正弦（一半时间卡在中间色），看起来像整只一直在变色。
+CAMO_BREATH_TICKS = 900        # 一个完整呼吸周期 ~22.5 s
+CAMO_PULSE_TICKS = 150         # 其中只有 ~3.75 s 真的退回体色
+CAMO_MIX_MAX = 1.0             # 保持段：整只＝取到的背景色
+CAMO_MIX_MIN = 0.0             # 换气到体色那一瞬
 SALAMANDER_RGB = (232, 232, 244)
 HUE_DEV_K = 0.6                # 原版体色色相偏差的 SCurve 参数（所有品种都是 0.6）
 WHITE_PALE_SAT = 0.45          # 白蜥随机色版本：低饱和 + 高亮度 = 淡彩色
@@ -994,8 +998,10 @@ class Lizard:
         return clampf(NOTICE_R * self.breed.visual_radius / 900.0, 52.0, NOTICE_R * 2.2)
 
     def camo_tick(self, win, tick: int) -> None:
-        """白蜥：低频采一圈「自己周围」的环境主色，整只体色平滑渐变过去。
+        """白蜥：低频采一次「自己身后」的**背景**主色，整只长时间保持它。
 
+        采样在 `platform.bgcolor` 里会把「我们自己画的前景」（猫 / 生物 / 物品 /
+        HUD）挖掉，只留桌面背景 —— 别的猫从旁边走过不会带着白蜥一起变色。
         每 `CAMO_SAMPLE_TICKS` 按 `self.id` 错开采样点，半径随身体大小放大；
         采样失败就保持上次的颜色（一直失败则保持白色）。只有 `breed.camo`
         的品种（白蜥）跑。
@@ -1018,9 +1024,15 @@ class Lizard:
                     int(self.camo_color[0] + (self.camo_target[0] - self.camo_color[0]) * t),
                     int(self.camo_color[1] + (self.camo_target[1] - self.camo_color[1]) * t),
                     int(self.camo_color[2] + (self.camo_target[2] - self.camo_color[2]) * t))
-        ph = tick / float(CAMO_BREATH_TICKS) + self.seed * 0.13
-        breath = 0.5 + 0.5 * math.sin(ph * math.tau)
-        self.camo_mix = CAMO_MIX_MIN + (1.0 - CAMO_MIX_MIN) * breath
+        # 呼吸：长时间停在取色，周期末尾才短暂退回体色再变回来（每只错开相位）
+        ph = (tick + int(self.seed * 0.13 * CAMO_BREATH_TICKS)) % CAMO_BREATH_TICKS
+        hold = CAMO_BREATH_TICKS - CAMO_PULSE_TICKS
+        if ph < hold:
+            self.camo_mix = CAMO_MIX_MAX
+        else:
+            v = (ph - hold) / float(max(1, CAMO_PULSE_TICKS))
+            breath = 0.5 - 0.5 * math.cos(v * math.tau)
+            self.camo_mix = CAMO_MIX_MAX - (CAMO_MIX_MAX - CAMO_MIX_MIN) * breath
 
     def bounding_pad(self):
         """脏矩形外扩半径。"""

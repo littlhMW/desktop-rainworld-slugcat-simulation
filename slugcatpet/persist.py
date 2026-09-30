@@ -19,13 +19,15 @@ from .world.lamp import Lamp
 from .world.lizard import BREED_BY_KEY, Lizard
 from .world.needleworm import NeedleWorm
 from .world.pearl import Pearl
-from .world.pole import Pole
+from .world.pole import Pole, VERTICAL
 from .world.scavenger import Scavenger
 from .world.seedcob import Seed, SeedCob
 from .world.slimemold import SlimeMold
 from .world.spear import Spear
 from .world.squidcada import Squidcada
 from .world.stone import Stone
+
+from ._paths import log_error
 
 SCHEMA = 1
 
@@ -57,7 +59,10 @@ _TABLE = (
      lambda d: Spear(d["x"], d["y"], seed=int(d.get("seed", 0)),
                      angle_deg=float(d.get("angle_deg", 90.0))),
      ("x", "y", "vx", "vy", "state", "angle_deg", "spin", "spinning", "stuck",
-      "stuck_angle", "embedded", "always_stick", "pinned")),
+      "stuck_angle", "embedded", "always_stick", "pinned",
+      # 矛大师的骨针：不存这几项，重启后活着白针会退化成普通矛（不能吸食、线也没了）
+      "needle", "needle_live", "needle_type", "needle_fade",
+      "damage", "needle_thread_cut")),
     ("scavenger", "scavengers", None,
      ("x", "y", "vx", "vy", "state", "health", "dead", "like", "variant",
       "facing", "walk_phase")),
@@ -77,7 +82,8 @@ _TABLE = (
 
 def snapshot(win) -> dict:
     """把窗口里的全部环境实体序列化成 JSON 可存的 dict。"""
-    out = {"v": SCHEMA, "kinds": {}, "hand": {}, "spawns": [], "lamp": None}
+    out = {"v": SCHEMA, "kinds": {}, "hand": {}, "spawns": [], "lamp": None,
+           "poles": []}
     idx = {}                       # id(obj) -> (kind, index)
     for kind, attr, _ctor, fields in _TABLE:
         rows = []
@@ -98,6 +104,8 @@ def snapshot(win) -> dict:
             if kind == "lizard":
                 d["breed"] = getattr(getattr(obj, "breed", None), "key", "pink")
                 d["id"] = int(getattr(obj, "id", 0) or 0)
+            if kind == "spear":
+                d["seed"] = int(getattr(obj, "_id", 0) or 0)
             if kind == "needleworm":
                 d["age"] = getattr(obj, "age", None)
             if kind == "scavenger":
@@ -141,6 +149,18 @@ def snapshot(win) -> dict:
         out["lamp"] = {"anchor_x": lamp.anchor_x, "anchor_y": lamp.anchor_y,
                        "bulb_x": lamp.bulb_x, "bulb_y": lamp.bulb_y,
                        "edge": lamp.edge, "seed": int(getattr(lamp, "seed", 0) or 0)}
+    # 结构杆（放的竖杆/横杆）：虚拟杆＝鼠标那截不存；钉矛的杆 read 档时按矛重建
+    poles = []
+    for pl in getattr(win, "poles", ()) or ():
+        if getattr(pl, "virtual", False) or getattr(pl, "from_spear", None) is not None:
+            continue
+        try:
+            poles.append({"kind": str(pl.kind), "ax": float(pl.ax), "ay": float(pl.ay),
+                          "bx": float(pl.bx), "by": float(pl.by),
+                          "seed": int(getattr(pl, "seed", 0) or 0)})
+        except Exception:
+            pass
+    out["poles"] = poles
     return out
 
 
@@ -170,19 +190,27 @@ def restore(win, data) -> int:
             if obj is None:
                 objs.append(None)
                 continue
-            for name in fields:
-                if name not in d:
-                    continue
-                try:
-                    setattr(obj, name, d[name])
-                except Exception:
-                    pass
-            if getattr(obj, "state", None) in ("carried", "mouse"):
-                # 手里那件靠恢复后的重新抓取接回；没接上就落在地上，不留悬空引用
-                obj.state = "free"
-                obj.held_by_hand = None
-                if hasattr(obj, "held_by"):
-                    obj.held_by = None
+            try:
+                for name in fields:
+                    if name not in d:
+                        continue
+                    try:
+                        setattr(obj, name, d[name])
+                    except Exception:
+                        pass
+                if getattr(obj, "state", None) in ("carried", "mouse"):
+                    # 手里那件靠恢复后的重新抓取接回；没接上就落在地上，不留悬空引用。
+                    # 果子/石头/蝠蝇用 held_by_hand，矛用 held_by —— 两个都只会写自己
+                    # 真有的那个（矛是 __slots__ 类，写不存在的属性会抛 AttributeError，
+                    # 那会把整份 world 存档连带丢掉）。
+                    obj.state = "free"
+                    for slot in ("held_by_hand", "held_by"):
+                        if hasattr(obj, slot):
+                            setattr(obj, slot, None)
+            except Exception as e:       # 单行坏数据不许毁掉其余实体
+                log_error("restore %s[%d] failed: %r" % (kind, i, e))
+                objs.append(None)
+                continue
             objs.append(obj)
             n += 1
         made[kind] = objs
@@ -201,6 +229,30 @@ def restore(win, data) -> int:
                             seed=int(lamp.get("seed", 0)))
         except Exception:
             win.lamp = None
+    # 结构杆：窗口自己那份虚拟杆（鼠标）留着，其余按存档重建
+    rows = data.get("poles")
+    if isinstance(rows, list):
+        keep = [pl for pl in (getattr(win, "poles", None) or ())
+                if getattr(pl, "virtual", False)]
+        for d in rows:
+            if not isinstance(d, dict):
+                continue
+            try:
+                keep.append(Pole(str(d.get("kind", VERTICAL)), float(d["ax"]),
+                                 float(d["ay"]), float(d["bx"]), float(d["by"]),
+                                 seed=int(d.get("seed", 0) or 0)))
+            except Exception as e:
+                log_error("restore pole failed: %r" % (e,))
+        win.poles = keep
+    # 钉住的矛＝一截杆（存档不重复存，按矛重建，不然读档后那截杆没了、矛也不能爬）
+    for sp in getattr(win, "spears", ()) or ():
+        if getattr(sp, "pinned", False) and getattr(sp, "pole", None) is None:
+            try:
+                # 必须把杆写回矛（_sync_spear_poles 就是这么干的）：
+                # 只建杆不挂回去的话，下一 tick sync 会再建一截重复的杆。
+                sp.pole = win._make_spear_pole(sp)
+            except Exception as e:
+                log_error("restore spear pole failed: %r" % (e,))
     # 手里/背上的东西重新抓起
     held = data.get("hand") or {}
     if isinstance(held, dict):

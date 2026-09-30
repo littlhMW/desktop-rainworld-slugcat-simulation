@@ -156,3 +156,18 @@ class PickDialog(CardDialog):
 
     def selected_index(self) -> int:
         return max(0, self._group.checkedId())
+
+
+class NoticeDialog(CardDialog):
+    """单按钮提示卡（加猫失败之类要让人看见，不能只 print）。"""
+
+    def __init__(self, title: str, text: str, ok_text: str,
+                 parent=None, width: int = 320):
+        super().__init__(title, parent, width)
+        lbl = QLabel(text)
+        lbl.setObjectName("cardText")
+        lbl.setWordWrap(True)
+        self.body.addWidget(lbl)
+        self.ok_btn = self.add_button(ok_text, "primary")
+        self.ok_btn.setDefault(True)
+        self.ok_btn.clicked.connect(self.accept)

@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt
 
 from ..cats import REGISTRY, pickable_variants
 from ..i18n import t
-from .._paths import resource_dir
+from .._paths import log_error, resource_dir
 from ..window import MAX_PETS, spawnable_kinds
 from .catmenu import variant_label, pet_label
 from .dialogs import ConfirmDialog, PickDialog
@@ -60,8 +60,7 @@ class SettingsWindow(QWidget):
         self._rebuild()
 
     def open(self):
-        if self._dlg is not None and not self._dlg.isVisible():
-            self._dlg = None             # 残留句柄：不清理会永久卡住增删
+        self._drop_stale_dlg()           # 残留句柄：不清理会永久卡住增删
         self._rebuild()
         self.show()
         self.raise_()
@@ -249,8 +248,39 @@ class SettingsWindow(QWidget):
         v.addWidget(chk)
 
     # 增删走卡片弹窗（open()=WindowModal，不 exec）
+    def _drop_stale_dlg(self):
+        """弹窗句柄只有「还在屏幕上」才算占用。
+
+        窗口被隐藏/被系统收起时 QDialog 不一定发 finished，残留句柄会让
+        「添加 / 移除」永远点不动（第 87、91 轮各踩过一次，这里彻底收口）。
+        """
+        d = self._dlg
+        if d is None:
+            return None
+        if d.isVisible():
+            return d
+        self._dlg = None
+        return None
+
+    def _warn(self, title, text):
+        """把失败摆到用户眼前 + 落 error.log（发布版没有控制台）。"""
+        try:
+            from .dialogs import NoticeDialog
+            dlg = NoticeDialog(title, text, t("settings_ok"), parent=self)
+            dlg.finished.connect(lambda _r, d=dlg: self._notice_done(d))
+            dlg.place_center(self)
+            dlg.show()
+            self._notice = dlg
+        except Exception as exc:
+            log_error("settings notice failed: %r" % (exc,))
+
+    def _notice_done(self, dlg):
+        if getattr(self, "_notice", None) is dlg:
+            self._notice = None
+        dlg.deleteLater()
+
     def _on_add(self):
-        if self._dlg is not None:
+        if self._drop_stale_dlg() is not None:
             return
         if self._window.cat_slots_used() >= MAX_PETS:
             self._rebuild()               # 名额满了：刷新出置灰的按钮
@@ -271,21 +301,30 @@ class SettingsWindow(QWidget):
     def _add_finished(self, dlg, result):
         self._dlg = None
         dlg.deleteLater()
-        if result == QDialog.DialogCode.Accepted:
-            idx = dlg.selected_index()
-            ok = False
-            if 0 <= idx < len(_VARIANTS):
-                try:
-                    ok = self._window.add_pet(_VARIANTS[idx]) is not None
-                except Exception as exc:      # 单只猫建不起来也不能让按钮永远失灵
-                    print("add_pet failed:", _VARIANTS[idx], exc)
-            if not ok:
-                print("add_pet rejected: slots=%d/%d"
-                      % (self._window.cat_slots_used(), MAX_PETS))
-            self._rebuild()               # 无论成败都同步按钮的可用状态
+        if result != QDialog.DialogCode.Accepted:
+            return
+        idx = dlg.selected_index()
+        variant = _VARIANTS[idx] if 0 <= idx < len(_VARIANTS) else None
+        why = None
+        if variant is None:
+            why = "index %r" % (idx,)
+        elif self._window.cat_slots_used() >= MAX_PETS:
+            why = t("settings_max_pets")
+        else:
+            try:
+                if self._window.add_pet(variant) is None:
+                    why = t("settings_add_none")
+            except Exception as exc:      # 单只猫建不起来也不能让按钮永远失灵
+                why = repr(exc)
+        self._rebuild()                   # 无论成败都同步按钮的可用状态
+        if why is not None:               # 失败要说出来，不能只 print 到看不见的 stderr
+            log_error("add_pet(%s) failed: %s" % (variant, why))
+            self._warn(t("settings_add"),
+                       t("settings_add_failed", variant=variant_label(variant or ""),
+                         why=why))
 
     def _on_remove(self, pet):
-        if self._dlg is not None:
+        if self._drop_stale_dlg() is not None:
             return
         name = pet_label(pet, list(self._window.pets))
         dlg = ConfirmDialog(t("settings_remove"), t("settings_remove_confirm", name=name),

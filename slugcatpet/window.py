@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 from PySide6.QtCore import Qt, QTimer, QElapsedTimer, QRect, QPoint, QPointF, QRectF
 from PySide6.QtGui import QImage, QPainter, QColor, QGuiApplication, QCursor, QRegion
 
+from ._paths import log_error
 from .behavior import tuning
 from .rendering.atlas import AtlasSet
 from .rendering.layout import Layout
@@ -1374,7 +1375,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
     # ── 增删猫 ──
     def add_pet(self, variant="saint"):
-        """新增一只猫，满员返回 None。"""
+        """新增一只猫；满员或怎么都建不起来时返回 None（失败写 error.log）。"""
         if self.cat_slots_used() >= MAX_PETS:
             return None
         used_idx = {p.index for p in self.pets}
@@ -1382,14 +1383,28 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         k = 0
         while k in used_idx or f"pet-{k}" in used_id:   # 取首个空缺整数
             k += 1
-        init_state = {"energy": 1.0, "temper": 0.0, "food": tuning.FOOD_INIT,
-                      "karma": tuning.KARMA_INIT, "cold": 0.0}
         margin = self.layout_data.canvas_w / 2.0
         lo, hi = margin, max(margin + 1.0, self._WL - margin)
-        spawn_x = clampf(random.uniform(lo, hi), 0.0, self._WL)
-        pet = PetUnit(self, k, f"pet-{k}", variant, init_state, spawn_x=spawn_x)
+        pet = None
+        for attempt in range(4):        # 换几个落点重试；真建不起来也要留下痕迹
+            init_state = {"energy": 1.0, "temper": 0.0, "food": tuning.FOOD_INIT,
+                          "karma": tuning.KARMA_INIT, "cold": 0.0}
+            spawn_x = clampf(random.uniform(lo, hi), 0.0, self._WL)
+            try:
+                pet = PetUnit(self, k, f"pet-{k}", variant, init_state, spawn_x=spawn_x)
+                break
+            except Exception as exc:
+                pet = None
+                log_error("add_pet(%s) attempt %d failed: %r"
+                          % (variant, attempt + 1, exc))
+        if pet is None:
+            log_error("add_pet(%s) gave up" % (variant,))
+            return None
         self.pets.append(pet)
-        self._give_spawn_gear(pet)
+        try:
+            self._give_spawn_gear(pet)       # 背矛类的出生装备坏了也不该卡住加猫
+        except Exception as exc:
+            log_error("_give_spawn_gear(%s) failed: %r" % (variant, exc))
         self._prev_dirty = None
         self._after_pets_changed()
         return pet

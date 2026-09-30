@@ -56,7 +56,8 @@ class PetUnit:
     """一只猫，独立身体/图形/行为。"""
 
     def __init__(self, window, index: int, pet_id: str, variant: str, init_state: dict,
-                 spawn_x: float | None = None, spawn_y: float | None = None):
+                 spawn_x: float | None = None, spawn_y: float | None = None,
+                 preview: bool = False):
         self.window = window
         self.index = index
         self.id = pet_id
@@ -77,6 +78,8 @@ class PetUnit:
         self._pers_churn_rng = random.Random(0x1A7C + index * 7919)
         self._pers_churn_t = 0
         self._build(init_state, spawn_x, spawn_y)
+        if preview:
+            return                       # 放置预览：只要身体+图形，不要行为层
         self._attach_behavior()
 
     def __getattr__(self, name):

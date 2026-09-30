@@ -8,6 +8,7 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import (QBrush, QColor, QPainter, QPainterPath, QPen,
                            QPolygonF, QRadialGradient)
 
+from .._paths import log_error
 from ..core.units import clampf, inv_lerp, lerp
 from ..core.gfxmath import _hsl2rgb
 from ..control.hotkey import HK_PLACE_ESC, VK_ESCAPE
@@ -1796,6 +1797,55 @@ class ItemInteractionMixin:
         draw_lizard(p, self.atlas, lz, 1.0)
         p.restore()
 
+    def _pup_hint_object(self):
+        """放置预览用的一次性幼崽：只有身体 + 图形，不建行为层、不进 self.pets。"""
+        got = getattr(self, "_pup_preview", None)
+        if got is not None:
+            return got
+        from ..petunit import PetUnit
+        from ..window import PUP_VARIANT
+        init_state = {"energy": 1.0, "temper": 0.0, "food": tuning.FOOD_INIT,
+                      "karma": tuning.KARMA_INIT, "cold": 0.0}
+        try:
+            pup = PetUnit(self, -99, "pup-preview", PUP_VARIANT, init_state,
+                          spawn_x=self._WL * 0.5, spawn_y=self._HL, preview=True)
+        except Exception as exc:
+            log_error("slugpup preview build failed: %r" % (exc,))
+            pup = None
+        self._pup_preview = pup
+        return pup
+
+    def _draw_slugpup_hint(self, p):
+        """放猫崽的预览：光标处半透明摆一只幼崽。
+
+        以前这里没有分支，直接掉到兜底那句「画个果子」，于是放猫崽预览出来是
+        一个蓝果（用户报的 bug）。
+        """
+        cur = self.cursor_logical()
+        if cur is None:
+            return
+        cx, cy = cur
+        if not (0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL):
+            return
+        pup = self._pup_hint_object()
+        if pup is None:
+            return
+        try:
+            pup.body.teleport(cx, cy)
+            pup.body.step()
+            pup.gfx.update()
+            pup._tick_tail()                   # 尾巴跟着摆好，别拖在出生点
+            p.save()
+            try:
+                p.setOpacity(0.5)
+                pup.gfx.draw_sprites(p, self.atlas, timeStacker=1.0)
+            finally:
+                p.restore()
+        except Exception as exc:               # 预览画不出来也不能毁掉整帧
+            if not getattr(self, "_pup_hint_warned", False):
+                self._pup_hint_warned = True
+                log_error("slugpup hint draw failed: %r" % (exc,))
+
     # ── 幼崽（Slugpup）：不是常规蛞蝓猫，从「生物生成」里放 ──
     def can_place_slugpup(self) -> bool:
         from ..window import PUP_MAX
@@ -2052,6 +2102,10 @@ class ItemInteractionMixin:
 
         if self._place_kind == "lizard":
             self._draw_lizard_hint(p)
+            return
+
+        if self._place_kind == "slugpup":
+            self._draw_slugpup_hint(p)
             return
 
         if self._place_kind == "squidcada":

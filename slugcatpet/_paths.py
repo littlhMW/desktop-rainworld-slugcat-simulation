@@ -49,6 +49,19 @@ def dump_dir() -> Path:
     return user_dir() / "rainworld_dump"
 
 
+def log_error(msg: str) -> None:
+    """把不该静默吞掉的错误落到 ~/.slugcatpet/error.log。
+
+    发布版是 windowed exe：print 出来的东西用户根本看不到，出了问题只能靠猜。
+    """
+    import time
+    try:
+        with (user_dir() / "error.log").open("a", encoding="utf-8") as f:
+            f.write("[%s] %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg))
+    except Exception:
+        pass
+
+
 def decomp_dir() -> Path | None:
     """反编译源码目录：RW_DECOMP 环境变量优先，否则猜仓库旁的 work/scratch/decomp_full。"""
     import os
