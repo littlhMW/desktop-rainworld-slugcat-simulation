@@ -40,19 +40,30 @@ def _ring(points, halfs) -> QPolygonF:
     """
     n = len(points)
     n1 = n - 1
-    left, right = [], []
+    # 一次填满 2n 的定长表（左缘正序 + 右缘逆序），省掉两个中间 list 与
+    # reversed/extend 的额外遍历 —— 面条蝇一帧要建上千个环，这里省下的都是纯开销。
+    out = [None] * (2 * n)
     for i in range(n):
-        ax, ay = points[i - 1] if i else points[0]
-        bx, by = points[i + 1] if i < n1 else points[n1]
+        if i == 0:
+            ax, ay = points[0]
+            bx, by = points[1] if n1 else points[0]
+        elif i == n1:
+            ax, ay = points[n1 - 1]
+            bx, by = points[n1]
+        else:
+            ax, ay = points[i - 1]
+            bx, by = points[i + 1]
         dx, dy = bx - ax, by - ay
+        # 用 hypot 而不是 sqrt(dx*dx+dy*dy)：两者实测速度持平（本机 hypot 甚至略快），
+        # 但 hypot 与原 ribbon/draw_rope 的几何**逐位相同**，换成 sqrt 会让 e2e_r81 的
+        # 「顶点序列逐位相同」守护失效（实测 300 组里 83 组差 1 ulp）。没收益的改动不做。
         L = math.hypot(dx, dy) or 1.0
         nx, ny = -dy / L, dx / L
         cx, cy = points[i]
         hw = halfs[i]
-        left.append(QPointF(cx + nx * hw, cy + ny * hw))
-        right.append(QPointF(cx - nx * hw, cy - ny * hw))
-    left.extend(reversed(right))
-    return QPolygonF(left)          # 一次构造，省掉逐点 append
+        out[i] = QPointF(cx + nx * hw, cy + ny * hw)
+        out[n + n1 - i] = QPointF(cx - nx * hw, cy - ny * hw)
+    return QPolygonF(out)
 
 
 def draw_rope(painter, points, widths, color) -> None:
@@ -147,6 +158,62 @@ def ribbon(painter, points, halfwidths, colors) -> None:
     aa_hint(painter)
     painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(grad)
+    painter.drawPath(path)
+    painter.restore()
+
+
+def ribbon_many(painter, groups, flat=None) -> None:
+    """把多条带状几何合进**一个** QPainterPath 里一次填充（文档 §14.1）。
+
+    对比 `ribbon()`：每条都要新建 QPainterPath + QLinearGradient + save/restore
+    + drawPath。面条蝇一只成体每帧要画 12 条（6 翅 + 6 腿），几十只之后这些
+    「小对象 + 状态切换」就是主线程的大头。合批后 12 次 drawPath 变 1~2 次。
+
+    ``groups`` = [(points, halfwidths, colors), ...]；``flat`` 给定时整批用同一个
+    纯色（腿就是这种：颜色本来几乎一样），否则按每条的颜色均值拉一条渐变。
+    """
+    path = QPainterPath()
+    n = 0
+    first = last = None
+    stops = []
+    for pts, halfs, cols in groups:
+        if isinstance(pts, QPolygonF):
+            poly = pts                      # 调用方已经建好环（如翅的刚体变换）
+            last = poly.at(poly.count() - 1)
+            last = (last.x(), last.y())
+            if first is None:
+                f0 = poly.at(0)
+                first = (f0.x(), f0.y())
+        else:
+            if len(pts) < 2:
+                continue
+            poly = _ring(pts, halfs)
+            if first is None:
+                first = pts[0]
+            last = pts[-1]
+        path.addPolygon(poly)
+        n += 1
+        if flat is None:
+            k = len(cols)
+            stops.append((int(sum(c[0] for c in cols) / k),
+                          int(sum(c[1] for c in cols) / k),
+                          int(sum(c[2] for c in cols) / k)))
+    if n == 0:
+        return
+    path.setFillRule(Qt.FillRule.WindingFill)
+    if flat is not None:
+        brush = _qcolor(flat)
+    else:
+        brush = QLinearGradient(QPointF(first[0], first[1]), QPointF(last[0], last[1]))
+        if len(stops) == 1:
+            brush.setColorAt(0.0, _qcolor(stops[0]))
+        else:
+            for i, c in enumerate(stops):
+                brush.setColorAt(i / (len(stops) - 1.0), _qcolor(c))
+    painter.save()
+    aa_hint(painter)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(brush)
     painter.drawPath(path)
     painter.restore()
 

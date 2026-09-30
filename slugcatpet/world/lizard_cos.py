@@ -42,9 +42,10 @@ SPRITE_Z = {
     "Antennae": Z_FRONT,
     "JumpRings": Z_FRONT,
 }
-# 用 LizardScale 摆锤物理的族（原版 LongBodyScales.Update：角度弹簧 + ConnectToPoint）
-PHYS_KINDS = frozenset(("TailTuft", "AxolotlGills", "LongShoulderScales",
-                        "LongHeadScales"))
+# 用 LizardScale 摆锤物理的族（原版 LongBodyScales.Update：角度弹簧 + ConnectToPoint）。
+# 只留「一眼就能看出在摆」的三族；其余（背刺 / 条纹 / 翅鳞 / 肩鳞 / 尾鳍 / 曼尾）
+# 一律当静态装饰：生成时定好「这只蜥蜴有哪几族」，运行时整族跟着体表法线走。
+PHYS_KINDS = frozenset(("TailTuft", "AxolotlGills", "LongHeadScales"))
 NECK_RAD_K = 0.82        # 颈根半径系数（相对躯干半径，渲染与花纹共用）
 
 
@@ -645,7 +646,9 @@ def roll_cosmetics(rnd, key, total_len, body_frac):
                    else _spine_spikes(R, key)[0])
         out.append(_tail_tuft(R, key, None))
 
-    if key == "cyan":
+    if key in ("eel", "zoop"):
+        pass          # 上面两条 DLC 分支互斥：原版这里就是 else-if 链，不再走主链
+    elif key == "cyan":
         if R.value() < 0.75:
             out.append(_wing_scales(R, key))
         # 注意：tailColor != 0 时必给 TailGeckoScales

@@ -4,6 +4,44 @@
 
 ## 2026-10-01
 
+### R138 · §8 咬合参数补齐 + §13 花纹复刻核对 + §14.1 面条蝇绘制优化
+
+**§8 咬合参数补齐（`world/lizard.py`）** —— 把公开反编译里的粉蜥咬合参数真正落进桌宠逻辑，不再是「距离够近就结算伤害」的一锤子买卖。
+
+- 新增 `LizardBreed` 参数 `bite_delay / bite_in_front / bite_homing_speed / lounge_distance / lounge_speed`，粉蜥档一字不改：`biteDelay=12`、`biteInFront=25`、`biteHomingSpeed=1.7`、`loungeDistance=150`、`loungeSpeed=1.0`。
+- `bite_in_front` 留 `None` 时按 `25.0 * attempt_bite_radius / 80.0` 折算，`_bite_reach()` 改成 `head_rad + BITE_IN_FRONT_K(0.64) * bite_in_front * body_size_fac`，所以**每个品种的咬距与旧口径逐位相同**（实测 `bite_in_front / 25.0 * 80.0 == attempt_bite_radius` 全品种成立），`e2e_hunt.py` 等旧断言零改动。
+- `_start_bite()` 改成真正的 **AttemptBite**：不再当场结算，而是 `bite_wind = biteDelay` 进入前摇；前摇里张嘴（`jaw = 1.0`）、`bite_hold = BITE_HOLD + wind`、`bite_cd = COOLDOWN_TICKS + wind`、掷好的伤害暂存 `_bite_wind_dmg`。
+- 新增 `_bite_homing()`：前摇每 tick 沿「头 → 目标」方向压上去，步长 `bite_homing_speed * BITE_HOMING_STEP(0.30) * body_size_fac`，并给 `_body_impulse` 一个前压——这才是「边瞄边咬」，而不是站着等。
+- 新增 `_snap_jaws()`：前摇结束那一帧才真正咬合；目标跑出 `_bite_reach() * BITE_SNAP_SLACK(1.6)` → **落空**（不写 `bite_event`），否则 `bite_event = (obj, dmg)`。`_look_rate()` 在前摇期按 `bite_homing_speed / BITE_HOMING_REF(1.7)` 缩放转头速度（粉蜥 = 旧值）。
+- `_lunge()`：`reach` 改用 `_bite_reach()`；`d <= lounge_distance * body_size_fac` 时顶速乘 `lounge_speed`、加速度乘 `LOUNGE_ACCEL_FAC(1.35)` —— `loungeSpeed` 从死参数变成「近身扑击的顶速比」。
+- 新增 `BREED_BITE` 表，12 个品种各一行 `(biteDelay, biteHomingSpeed, loungeDistance, loungeSpeed)`：pink(12,1.70,150,1.00) / green(10,1.20,190,1.20) / blue(14,1.90,110,0.70) / yellow(12,1.60,150,1.00) / white(12,2.00,170,0.85) / red(8,2.20,230,1.35) / black(12,1.70,160,1.10) / salamander(14,1.50,140,0.90) / cyan(10,1.90,200,1.15) / caramel(15,1.40,120,0.70) / zoop(12,1.60,140,0.90) / eel(13,1.60,140,0.95)；未登记品种走粉蜥档。
+- `kill()` 清 `bite_wind / _bite_wind_obj / _bite_wind_dmg`，死蜥不会带着半截前摇。
+
+**§13 花纹复刻核对（`world/lizard_cos.py`）** —— 对着原版那条 else-if 链逐品种核对，抓到两个真 bug。
+
+- **eel / zoop 的 DLC 分支原来和主链并存**：原版是一整条 else-if，旧写法把它们写成独立 `if`，于是这两种还会再走一遍主链。改成互斥后 eel 平均族数 **5.33 → 4.00**（不再同时长尾长尾鳞 + 尾羽 + 尾鳍），zoop **3.30 → 2.00**（尾羽只出一次）；eel 也不再长主链专属的 LongHeadScales / BumpHawk。
+- **`PHYS_KINDS` 砍成三族**：`TailTuft / AxolotlGills / LongHeadScales`；去掉 `LongShoulderScales`（实例最多，红蜥一趟两条）→ 降级为静态装饰，运行时不再逐片做摆锤。
+- 核对实测（每族每 600 只的家族数，改后）：pink 1.62 / green 1.85 / blue 1.88 / yellow 2.28 / white **0**（原版 else-if 排除白蜥）/ red 4.14 / black 2.24 / salamander 2.11 / cyan 2.77 / caramel 1.59 / zoop 2.00 / eel 4.00。固有族全对：black→Whiskers、yellow→Antennae、cyan→JumpRings、salamander→AxolotlGills+TailFin。同种子同结果。
+
+**§14.1 面条蝇绘制优化（`rendering/primitives.py` + `world/needleworm_gfx.py`）** —— 用户本轮授权「允许完成优化哪怕改变外观」，所以按收益优先动绘制批处理。
+
+- `primitives.py` 新增 `ribbon_many(painter, groups, flat=None)`：把多条带状几何合进**一个** `QPainterPath` 一次 `drawPath`；`groups = [(points, halfwidths, colors), ...]`，`flat` 给定时整批纯色，否则按每条颜色均值拉一条渐变；`pts` 允许直接是 `QPolygonF`。
+- `_ring()` 优化：一次填满 `2n` 定长表（省掉两个中间 list + `reversed/extend`），下标特判首尾代替 `points[i-1] if i else`，`normal(i)` 闭包内联。**`math.hypot` 保留没换**：一度改成 `sqrt(dx*dx+dy*dy)`，实测本机 hypot 反而略快（65.9 → 64.4 ms/4000 环），而且换 sqrt 会让 `e2e_r81` 的「顶点序列与原 ribbon 逐位相同」守护失效（300 组里 83 组差 1 ulp）—— 零收益的改动不做，已回退。
+- `needleworm_gfx.py`：新增 `_COLS_CACHE` + `_body_cols(body, det, cb0, n)`，身体「沿体长渐暗」的用色表按 key 缓存（以前每只每帧重算 ~20 次 `_mix`）；`_draw_wings` 的 3 对翅收进 `groups` 后一次 `ribbon_many`，眼（`JetFishEyeB`）收集后统一 `blit`，`wing_col` 提到循环外；6 条腿同样合批一次画。
+- 实测（`_bench_nw.py`，40 只成体，直接调 `draw_needleworm`）：**34.22 → 29.32 ms/frame（−14.3%，0.856 → 0.733 ms/只）**；幼体 15.98 → 15.3 ms（0.399 ms/只）；`drawPath` 调用数每帧 **480 → 200**。
+- 试过但**撤回**：翅的「模板环 + `QTransform` 刚体变换」实测 29.37 vs 29.28 ms **打平**，白加复杂度 → 撤回；上下边开放折线（`2n` → `2n+2` 点）会改变自交区填充、视觉风险且收益小 → 未做；两条腿并进一个环、翅膀停在 ~12 → 外观/收益都不划算 → 未做。
+
+**测试**：新增 `work/scratch/e2e_r132.py`（约 45 项，全绿）—— §8 粉蜥反编译值/全品种五参数/品种间有差异/**咬距逐位不变**/AttemptBite 不结算/`bite_hold = 18+delay`/前摇张嘴/前压冲量/第 11 帧未咬、第 12 帧 `_snap_jaws`/前摇跑掉=落空/`_look_rate` 随 `bite_homing_speed` 变且粉蜥=旧值/lounge 顶速比 = `lounge_speed`/红>蓝/`kill()` 清前摇；§13 三族/肩鳞静态/zoop 尾羽只出一次/族数 < 2.5/eel 主链专属族 = 0/eel 仍有鳃+尾鳞且族数 < 4.5/white 零花纹/五品种固有族/同种子同结果；§14.1 `ribbon_many` 存在/源码里翅腿都走合批/`_body_cols` 按引用复用/节数不同不同表/实画有像素/8 只混 40 tick 不炸。`run_all19.ps1` 已登记（122 个脚本）。
+
+另外按本轮改动更新了两个既有守护：
+
+- `e2e_r46.py`：翅/腿改走 `ribbon_many` 合批后，原来只 spy `G.ribbon` 的探针看不到它们。给探针加了 `ribbon_many` 分支，把 `groups` 摊回逐条「伪 ribbon 调用」，腿 6 条 / 翅 4 张 / 挂点 / 翅长这些几何断言原样保留，没有放松。
+- `e2e_r97.py`：`PHYS_KINDS` 断言从旧的「LongBodyScales 四族」改成 §13 的三族 `TailTuft/AxolotlGills/LongHeadScales`，并补一条「LongShoulderScales 已是静态装饰」。这是规格变更（§13 明确「真正需要动态的只有少数几个明显的部件」），不是回归。
+
+全量回归：`run_all19.ps1` **122 个脚本 fails=0 []**。
+
+**未做（留档）**：§2/§5/§6 驯服社交 / 黄蜥 Pack / AttemptBite→Grasp→Carry 分层（**用户明确说驯服相关暂时不做**）；§9.1 `_strip_path()` 把 head+seg 平滑成一条软管的拓扑级改动（风险大，需单开一轮）；§9/§10 动作序列（PrepareToLounge 式分节点冲量、Attack 四阶段姿态）。
+
 ### R137 · §37 AI 时间片 + §20 竖线跨高度参数化搜索 + §17 猎物链合并成 PreyState
 
 - **背景**：R136 结尾留了三条「要做但单独一轮」的审计项（§37 / §20 / §17），本轮连同上一轮遗留一次做完；三项都不是新 bug，是那份规范里**架构层面的欠账**。

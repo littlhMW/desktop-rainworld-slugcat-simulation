@@ -25,7 +25,7 @@ from PySide6.QtWidgets import QGraphicsItem
 
 from ..core.units import clampf, lerp, inv_lerp
 from ..core.gfxmath import _hsl2rgb
-from ..rendering.primitives import blit, draw_rope, ribbon
+from ..rendering.primitives import blit, draw_rope, ribbon, ribbon_many
 from ..rendering.pixelmode import aa_hint
 from .needleworm import (AGE_EGG, AGE_SMALL, WING_SEG, FANG_LENGTH, TAIL_ROWS,
                          _chunk_rads, _lerp_map)
@@ -69,6 +69,30 @@ def _dir(ax, ay, bx, by):
 
 
 _PAL_CACHE = {}
+_COLS_CACHE = {}
+
+
+def _body_cols(body, det, cb0, n):
+    """身体「沿体长渐暗」的用色表（文档 §14.1）。
+
+    只跟 (体色, 细节色, cb[0], 节数) 有关，而这四样在一只虫身上是常量 —— 以前
+    每只每帧重算 20 来次 _mix，几十只之后纯属白烧。缓存后按引用返回，调用方
+    只读不写。
+    """
+    key = (body, det, cb0, n)
+    got = _COLS_CACHE.get(key)
+    if got is not None:
+        return got
+    out = []
+    for i in range(n):
+        v = inv_lerp(0.0, n - 1.0, i)
+        fade = _mix(det, BLACK_RGB, (v * v) * 0.85 if cb0 else 1.0)
+        out.append(_mix(body, fade, (inv_lerp(0.3, 1.0, v) ** 2)
+                        * (1.0 if cb0 else 0.6)))
+    if len(_COLS_CACHE) > 512:
+        _COLS_CACHE.clear()
+    _COLS_CACHE[key] = out
+    return out
 
 
 def palette(nw):
@@ -187,6 +211,7 @@ def _draw_wings(painter, atlas, nw, ts, pts, seg_dir, l: int, layer: int,
     root_col = _mix(FOG_RGB, det, 0.5)
     tip_col = _mix(eye if cb[1] else FOG_RGB, (255, 255, 255), 0.35 if cb[1] else 0.5)
     prof_c = [_mix(root_col, tip_col, t) for t in prof_t]
+    groups, eyes = [], []
     for m, off in enumerate(WING_SEG[nw.age]):
         ci = sn + off
         if ci >= len(pts):
@@ -208,13 +233,17 @@ def _draw_wings(painter, atlas, nw, ts, pts, seg_dir, l: int, layer: int,
         # 贴图逐行宽 2,4,6,6,8×20,6×8,4×9,2×11（行 0 在翅尖、行 51 在翅根）换成
         # 「根→尖」的半宽比 = 0.25,0.5,0.75,1.0,0.75,0.25（翅尖外半段最宽，像蝉翅）。
         # 之前画成 2.4→1.2 的锥条，所以翅又细又小。
-        ribbon(painter,
-               [(base[0] + d[0] * ln * t, base[1] + d[1] * ln * t) for t in prof_t],
-               prof_w, prof_c)
+        # 文档 §14.1：3 对翅合到一条路径里画（原来是 3 次 drawPath + 3 次
+        # 渐变构造）。翅是纯色叶片，合批后观感不变。
+        groups.append(([(base[0] + d[0] * ln * t, base[1] + d[1] * ln * t)
+                        for t in prof_t], prof_w, prof_c))
         if not nw.small:
-            blit(painter, atlas, "JetFishEyeB", base[0], base[1],
-                 _aim(bdir[0], bdir[1]), 0.9, 1.2,
-                 body if layer == 0 else _mix(body, hi, abs(zx) * 0.6))
+            eyes.append((base[0], base[1], bdir[0], bdir[1]))
+    if groups:
+        ribbon_many(painter, groups)
+    wing_col = body if layer == 0 else _mix(body, hi, abs(zx) * 0.6)
+    for ex, ey, edx, edy in eyes:
+        blit(painter, atlas, "JetFishEyeB", ex, ey, _aim(edx, edy), 0.9, 1.2, wing_col)
 
 
 def _wing_side(layer: int, zx: float) -> int:
@@ -334,15 +363,11 @@ def draw_needleworm(painter, atlas, nw, ts) -> None:
                 _wing_side(0, zx), 0, body, hi, det, eye)
     _draw_fang(painter, nw, ts, pts, zx)
     # ── 身体（BodyMesh：吻+躯干+尾，尾端渐暗）──
-    cols = []
-    for i in range(len(pts)):
-        if not nw.small:
-            v = inv_lerp(0.0, len(pts) - 1.0, i)
-            fade = _mix(det, BLACK_RGB, (v * v) * 0.85 if cb[0] else 1.0)
-            cols.append(_mix(body, fade, (inv_lerp(0.3, 1.0, v) ** 2) * (1.0 if cb[0] else 0.6)))
-        else:
-            cols.append(body)
-    ribbon(painter, pts, [r for r in rads], cols)
+    if nw.small:
+        cols = [body] * len(pts)
+    else:
+        cols = _body_cols(body, det, bool(cb[0]), len(pts))
+    ribbon(painter, pts, rads, cols)
     # ── 浅色中线条纹（HighLightMesh：躯干前 2/3）──
     hl_n = max(2, int(nw.body_n + len(nw.seg) - sn) * 2 // 3)
     hp, hr, hc = [], [], []
@@ -361,6 +386,7 @@ def draw_needleworm(painter, atlas, nw, ts) -> None:
     n_legs = 1 if nw.small else 3
     zy = lerp(nw.lzrot[1], nw.zrot[1], ts)
     tot_body = total - sn
+    leg_groups = []
     for side in (-1.0, 1.0):
         for i in range(n_legs):
             f = _lerp_map(float(i), 0.0, 2.0, 0.03, 0.1, 2.0)
@@ -384,9 +410,12 @@ def draw_needleworm(painter, atlas, nw, ts) -> None:
             gd = math.hypot(gx, gy) or 1.0
             tx, ty = rx + gx / gd * ln, ry + gy / gd * ln
             tcol = _mix(body, det, clampf(abs(ln) / (9.0 * nw.legs_fac), 0.0, 1.0))
-            ribbon(painter, [(rx, ry), ((rx + tx) * 0.5, (ry + ty) * 0.5), (tx, ty)],
-                   [0.8 * nw.legs_fac, 2.2 * nw.legs_fac, 1.5 * nw.legs_fac],
-                   [body, body, tcol])
+            # 文档 §14.1：6 条腿合到一条路径（原来 6 次 drawPath / 6 次渐变）
+            leg_groups.append(([(rx, ry), ((rx + tx) * 0.5, (ry + ty) * 0.5), (tx, ty)],
+                               [0.8 * nw.legs_fac, 2.2 * nw.legs_fac, 1.5 * nw.legs_fac],
+                               [body, body, tcol]))
+    if leg_groups:
+        ribbon_many(painter, leg_groups)
     _draw_wings(painter, atlas, nw, ts, pts, seg_dir,
                 _wing_side(1, zx), 1, body, hi, det, eye)
     # ── 眼睛（JetFishEyeB，NeedleWormGraphics.cs:475-483）──

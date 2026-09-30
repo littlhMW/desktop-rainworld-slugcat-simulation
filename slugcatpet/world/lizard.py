@@ -144,6 +144,14 @@ BODY_RAISE_LIFT = 2.0          # 威吓/警觉时支起上半身
 BODY_COMPRESS_DIP = 1.2        # 恐惧/伏击时压低身体
 BITE_HOLD = 18                # 咬合保持 tick
 COOLDOWN_TICKS = 150
+# 咬合前摇 / 扑击的原版参数（文档 §8）。粉蜥的反编译值：biteDelay=12、
+# biteInFront=25、biteHomingSpeed=1.7；其余品种在 BREED_BITE 里逐条给。
+BITE_IN_FRONT_K = 0.64        # biteInFront → 咬距的折算（16/25：粉蜥 biteInFront=25
+                              # 时正好等于旧口径的 16px 前伸）
+BITE_HOMING_REF = 1.7         # biteHomingSpeed 基准（粉蜥）；头跟随即按它归一
+BITE_HOMING_STEP = 0.30       # 前摇里「边瞄边压上去」的每 tick 位移比例
+BITE_SNAP_SLACK = 1.6         # 前摇结束时目标仍在这个倍数咬距内 → 咬中（跑掉 = 落空）
+LOUNGE_ACCEL_FAC = 1.35       # lounge 冲刺段相对扑咬加速度的倍率
 IDLE_TICKS = (60, 200)        # 原地停留时长
 WANDER_MARGIN = 40.0
 WALK_TURN = 0.14              # 游走时速度趋近速率
@@ -440,6 +448,8 @@ class LizardBreed:
                  "attempt_bite_radius", "taming_difficulty", "head_shield_angle",
                  "danger", "visual_radius", "tongue", "tongue_range", "body_mass",
                  "flips_from_rock", "bite_damage_chance", "bite_dominance",
+                 "bite_delay", "bite_in_front", "bite_homing_speed",
+                 "lounge_distance", "lounge_speed",
                  # 步态（LizardBreedParams 同名参数，原版腿 IK 的行为参数）
                  "step_length", "lift_feet", "feet_down", "limb_speed",
                  "limb_quickness", "smooth_legs", "leg_pair_disp", "walk_bob",
@@ -463,6 +473,8 @@ class LizardBreed:
                  hide_eyes=False, spikes=None,
                  toughness=1.0, stun_toughness=1.0, bite_chance=0.5,
                  bite_damage_chance=1.0 / 3.0,
+                 bite_delay=12, bite_in_front=None, bite_homing_speed=1.7,
+                 lounge_distance=150.0, lounge_speed=1.0,
                  attempt_bite_radius=80.0, taming_difficulty=1.0,
                  head_shield_angle=100.0, danger=0.45, visual_radius=900.0,
                  tongue=False, tongue_range=0.0, body_mass=2.1,
@@ -511,6 +523,16 @@ class LizardBreed:
         self.bite_chance = bite_chance          # 咬中时掷的命中概率
         self.bite_damage_chance = bite_damage_chance   # 咬中后造成 biteDamage 的概率
         self.attempt_bite_radius = attempt_bite_radius   # 开始尝试咬的半径（游戏像素）
+        # 原版 biteDelay：AttemptBite 到 JawsSnapShut 之间隔多少帧（前摇 = 猎物能
+        # 逃开的窗口）。biteInFront：嘴在头前多远，没显式给的品种按现有
+        # attempt_bite_radius 折算，保证换口径前后每个品种的咬距一个像素都不动。
+        self.bite_delay = int(bite_delay)
+        self.bite_in_front = (float(bite_in_front) if bite_in_front is not None
+                              else 25.0 * attempt_bite_radius / 80.0)
+        self.bite_homing_speed = float(bite_homing_speed)   # 前摇里头部锁目标的速率
+        # 原版 loungeDistance / loungeSpeed：进入这个距离就是一次全力冲刺
+        self.lounge_distance = float(lounge_distance)
+        self.lounge_speed = float(lounge_speed)
         self.taming_difficulty = taming_difficulty
         self.head_shield_angle = head_shield_angle
         self.danger = danger
@@ -770,6 +792,28 @@ BREED_BY_KEY = {b.key: b for b in BREEDS}
 #                shoulder=LongShoulderScales/WingScales、head=LongHeadScales、
 #                whisker=Whiskers（黑蜥固有）、antenna=Antennae（黄蜥固有）、
 #                gill=AxolotlGills（蝾螈/鳗鱼蜥）、fin=TailFin（尾鳍）。
+# 咬合 / 扑击的品种参数（文档 §8）。粉蜥那一列是公开的反编译记录
+# （biteDelay=12 / biteInFront=25 / biteHomingSpeed=1.7 / attemptBiteRadius=80 /
+# biteDamage=1 / biteDamageChance=1/3 / toughness=1 / baseSpeed=4.1 / bodyMass=2.1 /
+# bodyStiffness=0.2 / danger=0.45），其余品种按 wiki 的「撕咬间隔 / 撕咬距离 /
+# 基本速度 / 体型」相对次序排：绿蜥和红蜥咬得又慢又远又猛，蓝蜥/焦糖蜥反着来。
+# 想单独调某个品种的咬距，就在它的 LizardBreed(...) 里直接给 bite_in_front。
+BREED_BITE = {
+    #            biteDelay  biteHomingSpeed  loungeDistance  loungeSpeed
+    "pink":       (12, 1.70, 150.0, 1.00),
+    "green":      (10, 1.20, 190.0, 1.20),
+    "blue":       (14, 1.90, 110.0, 0.70),
+    "yellow":     (12, 1.60, 150.0, 1.00),
+    "white":      (12, 2.00, 170.0, 0.85),
+    "red":         (8, 2.20, 230.0, 1.35),
+    "black":      (12, 1.70, 160.0, 1.10),
+    "salamander": (14, 1.50, 140.0, 0.90),
+    "cyan":       (10, 1.90, 200.0, 1.15),
+    "caramel":    (15, 1.40, 120.0, 0.70),
+    "zoop":       (12, 1.60, 140.0, 0.90),
+    "eel":        (13, 1.60, 140.0, 0.95),
+}
+
 BREED_TRAITS = {
     # climb_wall 只给 WallClimber（反编译 LizardBreedParams.cs:196-210）：
     # 蓝 / 白 / 鳗鱼（DLC）。其余品种「会爬杆但不攀爬背景墙」。
@@ -822,6 +866,12 @@ for _b in BREEDS:
     _b.turn_hop = bool(_t.get("turn_hop", _b.jump_fac > 0.0))
     _b.camo = bool(_t.get("camo", False))
     _b.charge_leap = bool(_t.get("charge_leap", False))
+    # 咬合 / 扑击参数（文档 §8）：没登记的品种走粉蜥那一档
+    _bd, _bh, _ld, _ls = BREED_BITE.get(_b.key, (12, 1.70, 150.0, 1.00))
+    _b.bite_delay = int(_bd)
+    _b.bite_homing_speed = float(_bh)
+    _b.lounge_distance = float(_ld)
+    _b.lounge_speed = float(_ls)
 
 _WEIGHT_TOTAL = sum(b.spawn_weight for b in BREEDS)
 
@@ -932,6 +982,7 @@ class Lizard:
                  "limbs_aim",
                  "head_angle", "last_head_angle", "jaw", "last_jaw",
                  "bite_event", "bite_hold", "bite_cd", "_tgt_hold",
+                 "bite_wind", "_bite_wind_obj", "_bite_wind_dmg",
                  "walk_phase", "idle_timer", "goal_x", "hop_cd", "blink", "last_blink",
                  "chain_dir", "_ax_c",
                  "body_dir", "move_dir", "look_dir", "turn_mode", "turn_progress",
@@ -1170,6 +1221,9 @@ class Lizard:
         self.jaw = 0.0
         self.last_jaw = 0.0
         self.bite_event = None
+        self.bite_wind = 0            # 咬合前摇剩余 tick（原版 biteDelay）
+        self._bite_wind_obj = None    # 前摇锁定的目标 / 这一口掷出的伤害
+        self._bite_wind_dmg = 0.0
         self._tgt_hold = 0
         self.bite_cd = rng.randint(30, 90)
         self.bite_hold = 0
@@ -1298,6 +1352,9 @@ class Lizard:
         self.dead_t = 0
         self.stun = 0
         self.jaw = 0.0
+        self.bite_wind = 0
+        self._bite_wind_obj = None
+        self._bite_wind_dmg = 0.0
         self.target = self.target_obj = None
         self.look_at = None
         self.threat = self.threat_obj = None
@@ -1505,6 +1562,11 @@ class Lizard:
         self._step_cosmetics()
         self._want_vx = 0.0           # 这一 tick 的意图已经用完（下一 tick AI 再写）
 
+        if self.bite_wind > 0:
+            self.bite_wind -= 1
+            self._bite_homing()               # 前摇里继续瞄 / 压上去
+            if self.bite_wind == 0:
+                self._snap_jaws()             # 原版 JawsSnapShut：这一刻才结算
         if self.bite_hold > 0:
             self.bite_hold -= 1
         if self.bite_cd > 0:
@@ -2822,9 +2884,13 @@ class Lizard:
             # 青蜥蓄力弹射：扑击整段更快更猛（wiki：爬墙 + 蓄力弹射跳跃）
             sp *= CHARGE_LEAP_SPD
             acc = min(1.0, LUNGE_ACCEL * CHARGE_LEAP_ACC)
+        # 原版 loungeDistance → Lounge：进了这个距离就是一次全力冲刺（品种顶速 =
+        # loungeSpeed），而不是继续慢悠悠地「走过去」。
+        if d <= self.breed.lounge_distance * self.breed.body_size_fac:
+            sp *= self.breed.lounge_speed
+            acc = min(1.0, acc * LOUNGE_ACCEL_FAC)
         self._drive_vx(kx * sp, acc)
-        reach = self.head_rad + (16.0 * self.breed.body_size_fac
-                                 * (self.breed.attempt_bite_radius / 80.0))
+        reach = self._bite_reach()
         if d <= reach and self.bite_cd <= 0 and self.target_obj is not None:
             # 猫端着驯服食物送到嘴边（原版送礼）→ 先吃食不咬它
             if not _cat_offering_food(self.target_obj):
@@ -2835,9 +2901,13 @@ class Lizard:
 
     # ── 叼走死猫 / 昏迷猫到屏幕角落 ──
     def _bite_reach(self) -> float:
-        """咬得着的距离（同 _lunge 里的 reach）。"""
+        """咬得着的距离 = 头半径 + 原版 biteInFront（嘴在头前多远）× 体型。
+
+        attemptBiteRadius 是「离多远就开始尝试咬」（AI 判据），biteInFront 是「嘴
+        到底在头前多远」（几何）。旧实现把两者搅成一个式子，这里是拆开后的口径。
+        """
         b = self.breed
-        return self.head_rad + 16.0 * b.body_size_fac * (b.attempt_bite_radius / 80.0)
+        return self.head_rad + BITE_IN_FRONT_K * b.bite_in_front * b.body_size_fac
 
     def _mouth_point(self):
         """嘴前叼点：头轴正前方一个头半径。"""
@@ -3066,21 +3136,30 @@ class Lizard:
             self.bite_event = None
 
     def _start_bite(self, obj=None) -> None:
-        """原版 Lizard.cs:1238：按 biteDamageChance 掷骰，命中则 biteDamage * Lerp(0.8,1.2,rand)。
+        """原版 Lizard.cs:1238 AttemptBite：先张嘴压上去，`biteDelay` 帧后 JawsSnapShut。
 
+        伤害**不再在这一帧结算**：前摇里目标跑出咬距就是原版那样的「落空」，只有
+        `biteDelay` 结束的那一刻还在嘴边的才吃这一口（见 _snap_jaws）。
         obj 给 casual 撕咬用（原版 casualAggressionTarget 不是当前猎物目标）。
         """
         if obj is None:
             obj = self.target_obj
-        self.bite_hold = BITE_HOLD
-        self.bite_cd = COOLDOWN_TICKS
-        self.jaw = 1.0
+        wind = max(0, int(self.breed.bite_delay))
+        # bite_hold 盖住「前摇 + 咬合保持」整段：下巴全程张着、头部按扑咬速率跟随。
+        self.bite_hold = BITE_HOLD + wind
+        self.bite_cd = COOLDOWN_TICKS + wind
+        self.bite_wind = wind
+        self._bite_wind_obj = obj
         b = self.breed
         dmg = 0.0
         if b.bite_damage_chance >= 1.0 or self.rng.random() < b.bite_damage_chance:
             dmg = b.bite_damage * lerp(0.8, 1.2, self.rng.random())
-        self.bite_event = (obj, dmg)
+        self._bite_wind_dmg = dmg
+        self.bite_event = None
+        self.jaw = 1.0
         self.vx *= 0.2
+        if wind == 0:
+            self._snap_jaws()
         # 咬合的一瞬：前半身朝猎物「压」出去（原版 jaw 一夹，前 chunk 被反作用
         # 顶出去，后半身靠惯性拖在后面）。只推前 BODY_IMP_SEGS 节。
         px, py = _obj_pos(obj)
@@ -3100,6 +3179,56 @@ class Lizard:
                 self.x += nx * BODY_BITE_LUNGE
                 self.y += ny * BODY_BITE_LUNGE
                 self._body_impulse(nx * BODY_BITE_PUSH, ny * BODY_BITE_PUSH)
+
+    def _bite_homing(self) -> None:
+        """咬合前摇：照原版 biteHomingSpeed 一边瞄一边压上去。
+
+        前摇不是「站着发呆等 12 帧」——原版这段时间下颚张着、头（和整个前身）朝
+        猎物贴过去，所以猎物「能不能在被咬到之前逃开」才变成一个真实的窗口。
+        """
+        obj = self._bite_wind_obj
+        px, py = _obj_pos(obj)
+        if px is None:
+            px, py = _obj_pos(self.target_obj)
+        if px is None and self.target is not None:
+            px, py = self.target
+        if not isinstance(px, (int, float)) or isinstance(px, bool):
+            return
+        if not isinstance(py, (int, float)) or isinstance(py, bool):
+            return
+        px, py = float(px), float(py)
+        self.look_at = (px, py)
+        fx, fy = px - self.x, py - self.y
+        fd = math.hypot(fx, fy)
+        if fd <= 1e-6:
+            return
+        reach = self._bite_reach()
+        if fd <= reach * 0.5:
+            return                       # 已经贴到嘴边了：别把身体顶进猎物里
+        step = self.breed.bite_homing_speed * BITE_HOMING_STEP * self.breed.body_size_fac
+        self.x += fx / fd * step
+        self.y += fy / fd * step
+        imp = step * BODY_BITE_PUSH * 0.4
+        self._body_impulse(fx / fd * imp, fy / fd * imp)
+
+    def _snap_jaws(self) -> None:
+        """原版 Lizard.cs JawsSnapShut：前摇结束才真正咬下去。
+
+        前摇里目标跑出咬距（BITE_SNAP_SLACK 倍）→ 这一口落空，不写 bite_event；
+        还咬得着才交给 items.py 结算伤害。
+        """
+        obj, dmg = self._bite_wind_obj, self._bite_wind_dmg
+        self._bite_wind_obj = None
+        self._bite_wind_dmg = 0.0
+        self.bite_wind = 0
+        self.jaw = 1.0
+        if obj is None:
+            return
+        px, py = _obj_pos(obj)
+        if px is not None:
+            if math.hypot(px - self.x, py - self.y) > self._bite_reach() * BITE_SNAP_SLACK:
+                return
+        self.bite_event = (obj, dmg)
 
     def _wander(self, WL, HL) -> None:
         """游走：定一个近处落点，走到／超时就换，再歇一会儿。
@@ -3143,6 +3272,10 @@ class Lizard:
 
     def _look_rate(self) -> float:
         """头转向速率：扑咬/对峙最快、追猎次之、闲逛最慢（原版头绳索刚度随行为变）。"""
+        if self.bite_wind > 0:
+            # 咬合前摇：原版 biteHomingSpeed 决定头多快锁住目标（粉蜥 1.7 = 基准）。
+            return clampf(HEAD_LOOK_FAST * (self.breed.bite_homing_speed / BITE_HOMING_REF),
+                          0.06, 0.60)
         if self.bite_hold > 0 or self.stage in ("Attack", "FightRival"):
             return HEAD_LOOK_FAST
         if self.stage in ("HuntPrey", "ApproachPrey", "Flee", "Injured", "Warn",
