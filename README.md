@@ -58,6 +58,7 @@ python run_slugcatpet.py
 - 矛大师（Spearmaster）
 - 圣徒（Saint）
 - 蛞蝓猫幼崽（Slugpup）
+- 怪猫（Inv）
 
 ## 项目来源
 
@@ -131,6 +132,7 @@ Currently included:
 - Spearmaster
 - Saint
 - Slugpup
+- Inv
 
 ## Project Origin
 
