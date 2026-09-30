@@ -32,16 +32,16 @@ SEG_STIFF_TAIL = 0.30         # 尾节更软
 SEG_GRAV = 0.22               # 悬空（被拎起）时链节下坠
 SEG_AIR_FRIC = 0.90           # 链节空气阻力（原版 BodyChunk airFriction 0.999，宠物里加重防抖）
 SEG_CONN_ELASTICITY = 0.95    # 原版 BodyChunkConnection(Normal, elasticity 0.95)
-SEG_ALIGN = 0.45              # 链节「接在父节延长线上」的软约束（替代原版 chunk 间的撑直）
-SEG_ALIGN_HELD = 0.20         # 被拎起/拖动时放软：身体拖在后面，看得出被拽的体长变化
+SEG_ALIGN = 0.16              # 链节「接在父节延长线上」的软约束（替代原版 chunk 间的撑直）
+SEG_ALIGN_HELD = 0.08         # 被拎起/拖动时放软：身体拖在后面，看得出被拽的体长变化
 SEG_BEND_K = 0.30             # 转向惯性：速度突变把身体往转向侧甩的强度
 SEG_BEND_MAX = 2.4            # 单节最大弯曲位移（防甩飞）
 SEG_BEND_MIN_VX = 0.30        # 触发弯曲的最小速度变化
 GAIT_WAVE = 0.50              # 步态波浪幅度（躯干随步频起伏）
 SEG_CONN_HELD = 0.35          # 同上的杆长约束强度（原版 BodyChunkConnection 0.95 太硬，拖动时像根棍）
 SEG_SOLVER_ITER = 3           # 杆长约束迭代次数（原版 chunk 之间有质量互顶，等价于多次收敛）
-SEG_SMOOTH_ITER = 2           # 连接平滑迭代：把每节往相邻两节中点拉，消掉折角
-SEG_SMOOTH_K = 0.18           # 每次平滑拉过去的比例（太大就变成一根软绳）
+SEG_SMOOTH_ITER = 0           # 连接平滑迭代：把每节往相邻两节中点拉，消掉折角
+SEG_SMOOTH_K = 0.0           # 每次平滑拉过去的比例（太大就变成一根软绳）
 TAIL_LEN_BOOST = 1.12         # 尾节距整体略微加长（原版尾比躯干松弛，宠物里偏短）
 DEPTH_LERP = 0.1              # 原版 depthRotation 的插值系数（LizardGraphics.Update）
 HEAD_DEPTH_LERP = 0.5         # 原版 headDepthRotation 的插值系数
@@ -2931,23 +2931,7 @@ class Lizard:
                 prev_x, prev_y = s.x, s.y
         # ②b 连接平滑：原版 chunk 之间有质量互顶，链子不会出现尖角；杆长约束
         #     只保证「相邻节距离对」，留下的小折角在这里抹平（拖动时不抹，保住手感）。
-        if not held:
-            pts = [(anc_x, anc_y)] + [(s.x, s.y) for s in self.seg]
-            for _ in range(SEG_SMOOTH_ITER):
-                nxt = [pts[0]]
-                for i in range(1, len(pts) - 1):
-                    ox_, oy_ = pts[i]
-                    ax_, ay_ = pts[i - 1]
-                    bx_, by_ = pts[i + 1]
-                    nxt.append((ox_ + (0.5 * (ax_ + bx_) - ox_) * SEG_SMOOTH_K,
-                                oy_ + (0.5 * (ay_ + by_) - oy_) * SEG_SMOOTH_K))
-                nxt.append(pts[-1])
-                pts = nxt
-            for s, (qx, qy) in zip(self.seg, pts[1:]):
-                s.x, s.y = qx, qy
-                lim = HL - s.rad * (TAIL_SINK_FAC if s.tail else BODY_STAND_FAC)
-                if s.y > lim:
-                    s.y = lim
+        # 连接平滑移到渲染层，物理节点在长度约束后不再被二次拉坏。
         # ③ 转向惯性：速度突变（转身/扑出）时身体往转向侧甩 ——
         #    头一节弯得最多、后面依次减少、尾巴最后才跟过来（原版靠 chunk 质量惯性）。
         turn = self.vx - self._last_vx
@@ -3053,7 +3037,8 @@ class Lizard:
                     # FindGrip 的宠物版：本窗口只有「地面 + 左右墙」，
                     # 于是落点 = 髋正前方 (joint-1) 处压到地面，再夹进 joint-1 半径内
                     # （原版 FindGrip 也只取 maximumRadiusFromAttachedPos 内的地形格）。
-                    gy = floor
+                    support_y = (self.terrain.support(gx, hy, HL) if self.terrain is not None else HL)
+                    gy = support_y - LEG_LIMB_RAD
                     gdx, gdy = gx - hx, gy - hy
                     gd = math.hypot(gdx, gdy)
                     rmax = joint - 1.0
@@ -3081,8 +3066,10 @@ class Lizard:
                 lg.y += lg.vy
                 lg.vx *= LEG_AIR_FRIC
                 lg.vy *= LEG_AIR_FRIC
-                if lg.y > floor:                             # PushOutOfTerrain
-                    lg.y = floor
+                leg_floor = (self.terrain.support(lg.x, lg.y, HL) - LEG_LIMB_RAD if self.terrain is not None else floor)
+                if lg.y > leg_floor:                         # PushOutOfTerrain
+                    lg.y = leg_floor
+                    lg.vy = min(0.0, lg.vy)
             # ── ConnectToPoint(髋, jointDist)：腿长硬上限（脚不会被甩飞）──
             ddx, ddy = lg.x - hx, lg.y - hy
             dd = math.hypot(ddx, ddy)
