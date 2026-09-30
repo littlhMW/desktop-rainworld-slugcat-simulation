@@ -8059,162 +8059,114 @@ class BehaviorFSM:
         return best
 
     def _st_itemplay(self, cursor, disturbed):
-        """拿起地上的矛/石头把玩一会儿，再放下走人。"""
+        """玩耍：拿物、拨弄、端详、小跳、甩出去再追；目标使用统一寻路。"""
         b = self.body
         if self.grab.active:
             self._itemplay_end()
             self._transition("Dragged")
             return
+        if self._itemplay_phase == 2:
+            it = self._itemplay_target
+            if it is None or getattr(it, "state", None) in ("gone", "eaten"):
+                self._itemplay_end(); self._transition("IdleStand"); return
+            if self._itemplay_chase_exec is None:
+                goal = obj_goal(it, valid=lambda o: getattr(o, "state", None) == "free",
+                                radius=tuning.ITEMPLY_REACH, contact="travel")
+                self._itemplay_chase_exec = PlanExecutor(self.win, self.planner, goal, mode=MODE_TOUCH)
+            self.gfx.look_at = (it.x, it.y)
+            status = self._itemplay_chase_exec.update()
+            if math.hypot(it.x - b.chunk1.x, it.y - b.chunk1.y) <= tuning.ITEMPLY_REACH:
+                self._itemplay_end(); self._transition("IdleStand")
+            elif status == GIVEUP:
+                self._itemplay_end(); self._transition("IdleStand")
+            return
         if self._itemplay_phase == 0:
             it = self._itemplay_target
-            if it is None or it.state not in ("free", "hanging"):
-                self._itemplay_end()
-                self._transition("IdleStand")
-                return
+            if it is None or getattr(it, "state", None) not in ("free", "hanging"):
+                self._itemplay_end(); self._transition("IdleStand"); return
             from ..world.spear import Spear
             from ..world.pearl import Pearl
             is_spear = isinstance(it, Spear)
-            is_fruit = it in getattr(self.win, "fruits", ()) or isinstance(it, Pearl)
+            is_pearl = isinstance(it, Pearl)
+            is_fruit = is_pearl or it in getattr(self.win, "fruits", ())
             kind = "spear" if is_spear else ("fruit" if is_fruit else "stone")
             side = b.pick_hand(kind)
             if side is None:
-                self._itemplay_end()
-                self._transition("IdleStand")
-                return
-            if side is None:
-                side = "r"            # 两手都塞着更重要的东西：这次抓不动，下次再来
+                self._itemplay_end(); self._transition("IdleStand"); return
             self._itemplay_side = side
-            b.walk_to(it.x)
             self.gfx.look_at = (it.x, it.y)
+            b.walk_to(it.x)
             hx, hy = b._carry_pos(side)
             d = min(math.hypot(b.chunk0.x - it.x, b.chunk0.y - it.y),
                     math.hypot(hx - it.x, hy - it.y))
-            if d < b.arm_full_reach * 2.0:
-                b.reach_for(it, side)
-            if d < tuning.GRAB_REACH:
+            if d < b.arm_full_reach * 2.0: b.reach_for(it, side)
+            if d <= tuning.GRAB_REACH:
                 b.stop_walk()
-                if is_spear:
-                    b.grab_spear(it, side)
-                elif is_fruit:
-                    b.grab_fruit(it, side)
-                else:
-                    b.grab_stone(it, side)
+                if is_spear: b.grab_spear(it, side)
+                elif is_fruit: b.grab_fruit(it, side)
+                else: b.grab_stone(it, side)
                 self._itemplay_phase = 1
                 self.timer = 0
-                self._itemplay_left = self.rng.randint(tuning.ITEMPLY_TICKS_MIN,
-                                                       tuning.ITEMPLY_TICKS_MAX)
+                self._itemplay_mode_t = 0
+                self._itemplay_left = self.rng.randint(tuning.ITEMPLY_TICKS_MIN, tuning.ITEMPLY_TICKS_MAX)
             elif self.timer > 240:
-                self._itemplay_end()
-                self._transition("IdleStand")
+                self._itemplay_end(); self._transition("IdleStand")
             return
         carried = b.carried_spear
         if carried is None:
             carried = b.carried_stone if b.carried_stone is not None else b.carried_fruit
         if carried is None:
-            self._itemplay_end()
-            self._transition("IdleStand")
-            return
-
-        # 「甩出去后追」是独立的一段玩法：物件飞出去后，猫用统一 Planner 追回，
-        # 追不到才放弃。只对能真正投掷的石头/矛启用。
-        if self._itemplay_phase == 2:
-            it = self._itemplay_target
-            if it is None or getattr(it, "state", None) == "gone":
-                self._itemplay_end()
-                self._transition("IdleStand")
-                return
-            if self._itemplay_chase_exec is None:
-                goal = obj_goal(it,
-                                valid=lambda o: getattr(o, "state", None) == "free",
-                                radius=tuning.ITEMPLY_REACH,
-                                contact="travel")
-                self._itemplay_chase_exec = PlanExecutor(
-                    self.win, self.planner, goal, mode=MODE_TOUCH)
-            self.gfx.look_at = (it.x, it.y)
-            status = self._itemplay_chase_exec.update()
-            if math.hypot(it.x - b.chunk1.x, it.y - b.chunk1.y) <= tuning.ITEMPLY_REACH:
-                self._itemplay_end()
-                self._transition("IdleStand")
-                return
-            if status == GIVEUP:
-                self._itemplay_end()
-                self._transition("IdleStand")
-            return
+            self._itemplay_end(); self._transition("IdleStand"); return
         self._itemplay_left -= 1
         self._itemplay_mode_t += 1
         t = self.timer
         self._play_face = 1 if self._play_face >= 0 else -1
         b.facing = self._play_face
-
-        # 上手冷却结束后，活跃猫有机会把玩具甩出去，再用 Planner 追回；
-        # 追一次后本轮不再连续投，避免「循环扔-追-扔」变成死循环。
         from ..world.spear import Spear
-        can_throw_toy = (isinstance(carried, Spear) or carried is b.carried_stone)
-        if (can_throw_toy and self.body.item_ready()
-                and self._itemplay_phase == 1
-                and self._itemplay_throw_count == 0
-                and self._itemplay_mode_t > 45
-                and self.rng.random() < tuning.ITEMPLY_TOSS_P):
+        can_throw_toy = isinstance(carried, Spear) or carried is b.carried_stone
+        if (can_throw_toy and b.item_ready() and self._itemplay_throw_count == 0
+                and self._itemplay_mode_t > 45 and self.rng.random() < tuning.ITEMPLY_TOSS_P):
             dir_x = 1 if self._play_face >= 0 else -1
-            thrown = False
             if isinstance(carried, Spear):
                 thrown = self._launch_weapon(dir_x)
-            elif b.carried_stone is carried:
-                b.throw_stone(dir_x, weaponphys.frc(weak=self._exhausted),
-                              fling=True, recoil=0.25)
+            else:
+                b.throw_stone(dir_x, weaponphys.frc(weak=self._exhausted), fling=True, recoil=0.25)
                 thrown = True
             if thrown:
                 self._itemplay_throw_count = 1
                 self._itemplay_phase = 2
                 self._itemplay_mode_t = 0
                 return
-
-        # 一个玩具内部也会换「微动作」，不再整段保持同一姿势。
         if self._itemplay_mode_t >= self.rng.randint(34, 70):
             old_mode = self._itemplay_mode
             choices = ["inspect", "paw", "hop"]
             choices.remove(old_mode)
             self._itemplay_mode = self.rng.choice(choices)
             self._itemplay_mode_t = 0
-
         side = self._itemplay_side
         hx, hy = b._carry_pos(side)
         if self._itemplay_mode == "paw":
-            # 两只手轮流拨弄：手腕随时间做一个小弧线，视觉上像捏、拨、拍玩具。
             other = "l" if side == "r" else "r"
             phase = (self._itemplay_mode_t / 34.0) * math.tau
-            ox = math.sin(phase) * 8.0
-            oy = math.cos(phase) * 4.0
-            b.arm_aim[side] = (hx + self._play_face * ox, hy + oy)
-            b.arm_aim[other] = None
-            self.gfx.hand_aim[side] = b.arm_aim[side]
-            self.gfx.hand_aim[other] = None
-            if self._itemplay_mode_t % 17 == 0:
-                self._play_face = -self._play_face
-        elif self._itemplay_mode == "hop":
-            b.set_crawl(False)
-            # 活跃/急躁猫更容易带着玩具小跳，不是每个 tick 都跳。
-            if b.on_floor() and self._itemplay_mode_t % tuning.ITEMPLY_PRANCE_CD == 0:
-                self._play_hop()
+            aim = (hx + self._play_face * math.sin(phase) * 8.0, hy + math.cos(phase) * 4.0)
+            b.arm_aim[side] = aim; b.arm_aim[other] = None
+            self.gfx.hand_aim[side] = aim; self.gfx.hand_aim[other] = None
             self.gfx.look_at = (hx, hy)
+        elif self._itemplay_mode == "hop":
+            b.set_crawl(False); self.gfx.look_at = (hx, hy)
+            if b.on_floor() and self._itemplay_mode_t % tuning.ITEMPLY_PRANCE_CD == 0: self._play_hop()
         else:
-            # 端详玩具：头跟着手中的物件扫，不时转身换朝向。
             b.set_crawl(False)
             sway = math.sin(self._itemplay_mode_t * 0.16) * 12.0
+            b.arm_aim[side] = (hx, hy); b.arm_aim["l" if side == "r" else "r"] = None
+            self.gfx.hand_aim[side] = (hx, hy); self.gfx.hand_aim["l" if side == "r" else "r"] = None
             self.gfx.look_at = (hx + sway, hy - 3.0)
-            b.arm_aim[side] = (hx, hy)
-            b.arm_aim["l" if side == "r" else "r"] = None
-            self.gfx.hand_aim[side] = (hx, hy)
-            self.gfx.hand_aim["l" if side == "r" else "r"] = None
-            if self._itemplay_mode_t % tuning.ITEMPLY_PRANCE_CD == 0:
-                if self.rng.random() < tuning.ITEMPLY_TURN_P:
-                    self._play_face = -self._play_face
-
+            if self._itemplay_mode_t % tuning.ITEMPLY_PRANCE_CD == 0 and self.rng.random() < tuning.ITEMPLY_TURN_P:
+                self._play_face = -self._play_face
         if self._itemplay_left <= 0 or t > 2400:
             if self.rng.random() < getattr(self.pers, "temper", 0.5) * tuning.ITEMPLY_FLING_P:
                 self._itemplay_fling()
-            self._itemplay_end()
-            self._transition("IdleStand")
+            self._itemplay_end(); self._transition("IdleStand")
 
     def _play_hop(self) -> float:
         """玩耍跳：方向与距离都随机；返回这次抽到的横向落点（带符号，供验收）。
