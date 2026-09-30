@@ -41,6 +41,7 @@ from .backflip_reach import takeoff_c0_h
 from .goal import point_goal
 from .hop_reach import HopReach, HopReachController, surface_under
 from .jump_arc import get_arc, sweep_hit
+from .jump_reach import _arc_hits_solids
 from .pole_hop import hop_plan, land_sweep, pole_hit
 from .pole_reach import PoleJumpReach
 from .route import edge_for, landing_safe, route_cost
@@ -475,7 +476,10 @@ class SurfaceGraph:
                 if r is None:
                     continue
                 if same_level_block:
-                    _rk, rh, rmd, rlx, _rly, _rticks, _rlaunch = r
+                    # 轨迹按「真实起跳点」摆正后再查地形：
+                    # land_sweep 返回 (kind, hold, md, land_x, land_y, ticks, launch_x)，
+                    # 拿第 4 个（落点）当起跳点会把弧整条挪到墙的另一侧，绕墙跳就漏判。
+                    _rk, rh, rmd, _rland, _rly, _rticks, rlx = r
                     arc = get_arc(stats, rh, rmd)
                     if _arc_hits_solids(arc, rlx, a.y - arc.takeoff_h):
                         continue
@@ -804,7 +808,8 @@ class RouteExecutor:
                 or getattr(body, "on_pole", False)):
             return GIVEUP
         leg = self.plan.leg() if self.plan is not None else None
-        if leg is None or leg.kind == "finish":            return self._direct_tick()
+        if leg is None or leg.kind == "finish":
+            return self._direct_tick()
         if self._ctrl is None:
             self._ctrl = self._build(leg)
             if self._ctrl is None:

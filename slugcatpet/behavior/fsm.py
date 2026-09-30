@@ -7,7 +7,7 @@ import random
 from ..behavior import tuning
 from ..core.creature import (RUN_UPPER, ZEROG_GRAB_DIST, THROW_ORIGIN_DX, THROW_ORIGIN_DY,
                              WALK_STOP_EPS, _closest_on_segment)
-from ..planning import (GIVEUP, HOLDING, MODE_STAY, Goal, PlanExecutor, Planner,
+from ..planning import (GIVEUP, HOLDING, MODE_STAY, MODE_TOUCH, Goal, PlanExecutor, Planner,
                         obj_goal)
 from ..planning.fly_reach import in_reach
 from .blocking import (blocks_path, yield_target_x, on_same_pole,
@@ -1954,7 +1954,8 @@ class BehaviorFSM:
             if self._shoved_ticks >= tuning.SHOVE_YIELD_TICKS else None
         if (tx is not None and abs(tx - myx) > WALK_STOP_EPS
                 and self.state in _MAKEWAY_FROM
-                and not self.grab.active and not self._zerog() and not self.body.swimming
+                and not self.grab.active and not self._zerog()
+                and not self.body.swimming
                 and not self._exhausted and not self._cold_urgent()
                 and self.body.on_floor()):
             self._transition("MakeWay")     # 被顶满时长 → 让路
@@ -3439,7 +3440,8 @@ class BehaviorFSM:
         if b.carried_fruit is not None:
             return False
         c0 = b.chunk0
-        for f in (*self.win.batflies, *self.win.squidcadas, *self.win.needleworms):
+        for f in (*self.win.batflies, *self.win.squidcadas,
+                  *self.win.needleworms):
             if not getattr(f, "catchable", False):
                 continue
             side = b.pick_hand("fruit")
@@ -8097,14 +8099,17 @@ class BehaviorFSM:
             hx, hy = b._carry_pos(side)
             d = min(math.hypot(b.chunk0.x - it.x, b.chunk0.y - it.y),
                     math.hypot(hx - it.x, hy - it.y))
-            if d < b.arm_full_reach * 2.0: b.reach_for(it, side)
+            if d < b.arm_full_reach * 2.0:
+                b.reach_for(it, side)
             if d <= tuning.GRAB_REACH:
                 b.stop_walk()
                 if is_spear: b.grab_spear(it, side)
                 elif is_fruit: b.grab_fruit(it, side)
-                else: b.grab_stone(it, side)
+                else:
+                    b.grab_stone(it, side)
                 self._itemplay_phase = 1; self.timer = 0; self._itemplay_mode_t = 0
-                self._itemplay_left = self.rng.randint(tuning.ITEMPLY_TICKS_MIN, tuning.ITEMPLY_TICKS_MAX)
+                self._itemplay_left = self.rng.randint(tuning.ITEMPLY_TICKS_MIN,
+                                                       tuning.ITEMPLY_TICKS_MAX)
             elif self.timer > 240:
                 self._itemplay_end(); self._transition("IdleStand")
             return

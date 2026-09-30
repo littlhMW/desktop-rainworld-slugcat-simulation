@@ -701,7 +701,8 @@ class ItemInteractionMixin:
                 _sc_died = sc.hurt(STONE_DMG)
                 if _weapon_owner(s) is not None:
                     sc.on_attacked(0.5)
-                EV.emit_for(self, EV.CREATURE_KILLED if _sc_died else EV.CREATURE_HURT,
+                EV.emit_for(self,
+                            EV.CREATURE_KILLED if _sc_died else EV.CREATURE_HURT,
                             subject=_weapon_owner(s), obj=sc,
                             intensity=1.0 if _sc_died else 0.5,
                             x=s.x, y=s.y)

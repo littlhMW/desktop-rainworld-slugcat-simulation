@@ -497,7 +497,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if not isinstance(rows, list):
             return
         out = []
-        for d in rows:            sh = shelter_from_dict(d, self._WL, ground_y=self._HL)
+        for d in rows:
+            sh = shelter_from_dict(d, self._WL, ground_y=self._HL)
             if sh is not None:
                 out.append(sh)
         self.shelters = out
@@ -997,7 +998,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
     def _do_tick(self):
         """推进一个物理 tick。"""
-        self._pole_tick += 1        self._plat_tick -= 1
+        self._pole_tick += 1
+        self._plat_tick -= 1
         if self._plat_tick <= 0:
             self._plat_tick = PLATFORM_REFRESH_TICKS
             self._refresh_platforms()
@@ -1996,7 +1998,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                     continue
                 name, _ = hit_test(pet.body, pet.gfx, pos, pad=GRAB_PAD)
                 if name is not None:
-                    self.open_cat_menu(pet, e.globalPosition().toPoint())                    return
+                    self.open_cat_menu(pet, e.globalPosition().toPoint())
+                    return
             return
         if e.button() == Qt.MouseButton.LeftButton:
             pos = self.to_logical(e.position().x(), e.position().y())

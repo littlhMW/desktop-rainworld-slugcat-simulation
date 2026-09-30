@@ -797,7 +797,8 @@ class SlugcatBody:
         """朝 swim_target 单位向量，无目标/晕 → (0,0)。"""
         t = self.swim_target
         if t is None or self.stun > 0:
-            return 0.0, 0.0        dx, dy = t[0] - self.chunk0.x, t[1] - self.chunk0.y
+            return 0.0, 0.0
+        dx, dy = t[0] - self.chunk0.x, t[1] - self.chunk0.y
         d = math.hypot(dx, dy)
         if d < 1e-6:
             return 0.0, 0.0
@@ -1299,7 +1300,7 @@ class SlugcatBody:
             blocked = (c1.cx == move_x or c0.cx == move_x
                        or cp.terrain_obstacle_ahead(
                            c1.x, c1.y + c1.rad, move_x,
-                           radius=c1.rad, body_h=WALK_BODY_H,
+                           radius=c1.rad, body_h=tuning.WALK_BODY_H,
                            look_ahead=10.0, step_up=cp.STEP_UP))
             if blocked:
                 self._terrain_block_ticks += 1
@@ -1600,7 +1601,8 @@ class SlugcatBody:
                 st["lerp"] += self.step_speed
                 if st["lerp"] >= 1.0:
                     st["lerp"] = 1.0
-                    st["on"] = False                t = st["lerp"]
+                    st["on"] = False
+                t = st["lerp"]
                 tt = t * t * (3.0 - 2.0 * t)
                 foot[0] = st["start"] + (st["goal"] - st["start"]) * tt
                 foot[1] = fy - self.foot_lift * 4.0 * t * (1.0 - t)
