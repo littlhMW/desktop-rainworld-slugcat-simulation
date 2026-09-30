@@ -123,6 +123,13 @@ WALL_MARGIN = 40.0
 # 投掷视线：自己与目标之间站着别的蛞蝓猫就不出手（用户规格）
 THROW_BLOCK_R = 14.0            # 同伴躯干算多粗（挡枪判定半径）
 THROW_BLOCK_LEN = 320.0         # 没给目标时的水平射线长度
+# ── 友伤规避（AI 层；伤害照旧，只是尽量不把人打进弹道里）──
+SHOT_PROBE_TICKS = 16           # 出手前预演这么多帧弹道（平飞段→半重力下落）
+SHOT_INTENT_TICKS = 34          # 攻击意图存活 tick：起手到出手那一小段
+SHOT_DODGE_TICKS = 30           # 被瞄准者一次避让持续 tick
+SHOT_DODGE_DX = 54.0            # 避让侧移距离（先侧移，其次退开）
+SHOT_DODGE_R = 16.0             # 弹道离我这么近才值得躲
+_DODGE_FROM = frozenset(("IdleStand", "PostThrowWander", "PostThrowStand", "MakeWay"))
 
 # 零重力漂浮 idle
 ZEROG_ARRIVE_R = 30.0
@@ -148,8 +155,8 @@ _SWIM_KEEP = frozenset(("Swimming", "Ascension", "Dragged", "Dead", "Stunned",
 ARM_REACH_NEAR = 24.0
 ARM_REACH_FAR = 48.0
 THROW_JUMP_DY = 12.0      # 目标高出这么多 → 先起跳再水平投（原版只能横着发射）
-JUMPCUR_DY = 52.0         # 追鼠标：高度差在这以内才值得跳着够
-JUMPCUR_DY_SLACK = 1.35     # 「差不多够得到」：稍微高一点也跳一下试试（用户规格）
+JUMPCUR_DY = 52.0         # 追鼠标：高度差在这以内才值得跳着够（更高的看 Planner 的玩耍跳候选）
+PLAY_JUMP_P = tuning.PLAY_JUMP_P   # 娱乐性跳（够不到也跳一下）的概率（测试可改 fsm.PLAY_JUMP_P）
 JUMPCUR_R = 130.0         # 追鼠标：水平距离上限
 JUMPCUR_CD = 24
 JUMPCUR_P = 0.6
@@ -457,6 +464,12 @@ class BehaviorFSM:
         self._crawl_cd = 0
         self._protest_cd = 0
         self._revive_cd = 0
+        # 友伤规避：攻击意图（别的猫据此躲弹道）+ 自己的避让计时
+        self.attack_intent = None        # {ox,oy,vx,vy,dir,target,target_pt,until}
+        self._shot_clock = 0             # 单调 tick：意图过期 / 避让计时都拿它比
+        self._dodge_left = 0             # 本次避让还剩几 tick
+        self._dodge_cd = 0               # 避让后的短暂冷却（别原地抽搐）
+        self._dodge_from = None          # 正被谁的弹道指着（状态面板第二段用）
         # 动态关系表 + 事件游标：关系由事件驱动、每 tick 衰减（behavior/relationship.py）
         self._rel = relations_for(self.win)
         self._ev_seen = -1                # 事件总线游标（事件序号，不是 tick）
@@ -950,6 +963,7 @@ class BehaviorFSM:
         for fn in self._ext_tickers:
             fn()
         self._track_cursor(cursor)
+        self._shot_clock += 1
         disturbed = self.grab.active
 
         z = self._zerog()   # 无重力边沿检测
@@ -1097,6 +1111,10 @@ class BehaviorFSM:
                     pre=self._act_stormsleep_pre, gate=self._act_stormsleep_gate,
                     start=self._act_stormsleep,
                     tags=frozenset({TAG_EMERGENCY})))
+        A(ActionSpec(key='DodgeShot', band=BAND_NEED,
+                    pre=self._act_dodgeshot_pre, gate=self._act_dodgeshot_gate,
+                    start=self._act_dodgeshot,
+                    tags=frozenset({TAG_NAV, TAG_EMERGENCY})))
         A(ActionSpec(key='BlockReact', band=BAND_NEED,
                     pre=self._act_blockreact_pre, gate=self._act_blockreact_gate, start=self._act_blockreact,
                     tags=frozenset({TAG_NAV})))
@@ -1148,6 +1166,44 @@ class BehaviorFSM:
         A(ActionSpec(key='CursorLick', band=BAND_NEED,
                     pre=self._act_cursorlick_pre, gate=self._act_cursorlick_gate, start=self._act_cursorlick,
                     tags=frozenset({TAG_PERSONALITY})))
+
+    # ── 躲开同伴的弹道（读对方的攻击意图 + 预演弹道；一条普通走位）──
+    def _act_dodgeshot_pre(self, ctx):
+        if self._dodge_cd > 0:
+            self._dodge_cd -= 1
+
+    def _act_dodgeshot_gate(self, ctx):
+        if self.state == "DodgeShot" or self._dodge_cd > 0:
+            return False                 # 正在躲 / 刚躲完：别原地抽搐
+        if self.grab.active or self._zerog() or self.body.swimming:
+            return False
+        if self.state not in _DODGE_FROM:
+            return False                 # 只在「没事干」的态里让开
+        return self._threat_shot_at_me() is not None
+
+    def _act_dodgeshot(self, ctx):
+        o = self._threat_shot_at_me()
+        if o is None:
+            return False
+        self._dodge_from = o
+        self._transition("DodgeShot")
+        return True
+
+    def _st_dodgeshot(self, cursor, disturbed):
+        """躲弹道：优先横向让开（让射手那条线重新清出来），其次退开。"""
+        b = self.body
+        self._dodge_left -= 1
+        o = self._threat_shot_at_me()
+        it = self._live_intent(o) if o is not None else None
+        if self._dodge_left <= 0 or it is None:
+            b.stop_walk()
+            self._dodge_from = None
+            self._dodge_cd = SHOT_DODGE_TICKS
+            self._transition("IdleStand")
+            return
+        b.set_posture(True)
+        side = self._dodge_side(it)
+        b.walk_to(b.chunk1.x + side * SHOT_DODGE_DX)
 
     def _act_dragged_pre(self, ctx):
         self.grab.tick()
@@ -1659,6 +1715,10 @@ class BehaviorFSM:
         elif st == "PostThrowStand":
             b.set_posture(True)
             b.stop_walk()
+        elif st == "DodgeShot":
+            b.set_posture(True)
+            b.stop_walk()
+            self._dodge_left = SHOT_DODGE_TICKS
         elif st == "MakeWay":
             self._enter_makeway()
         elif st == "CoverAlly":
@@ -6220,10 +6280,14 @@ class BehaviorFSM:
         return status
 
     def _cursor_jump_attempt(self, cursor):
-        """只有 Planner 确认「当前鼠标确实存在可用跳跃候选」后，才主动尝试跳。
+        """只有 Planner 给出跳跃候选后，才主动尝试跳。
 
-        这样跳不是随机撞运气：墙后/够不到的鼠标不会反复空跳；能跳到的目标会
-        在平地、障碍边缘持续获得跳跃尝试。
+        候选两类，都出自同一套规划：
+          · 可达跳：现在的鼠标真够得到，跳上去就碰到；
+          · 玩耍跳：高度落在「玩得到」的窗口里但明知够不到，跳一下试试。
+        跳多高、往哪边跳由 Planner 的 play 候选算（起跳点／档位／方向），这里
+        不再自己拿光标高度比阈值 —— 这样跳不是随机撞运气，墙后 / 太高 / 就在
+        眼前的鼠标都不会反复空跳。
         """
         b = self.body
         if self._cursor_jump_cd > 0:
@@ -6235,23 +6299,29 @@ class BehaviorFSM:
         dy = b.chunk0.y - cursor[1]
         if abs(dx) < 22.0 and dy <= 8.0:
             return False
-        if abs(dy) > JUMPCUR_DY * JUMPCUR_DY_SLACK + 18.0:
-            return False
         goal = self._cursor_dynamic_goal()
         try:
-            jump_ok = any(c.ability_key == "jump"
-                           for c in self.planner.touch_candidates(goal))
+            cands = [c for c in self.planner.touch_candidates(goal, play=True)
+                     if c.ability_key == "jump"]
         except Exception:
-            jump_ok = False
-        if not jump_ok:
+            cands = []
+        if not cands:
             return False
+        play = bool(getattr(cands[0], "play", False))
+        hold = 3
+        md = 1 if dx > 0.0 else -1
+        if play:
+            plan = self.planner.play_jump_plan(goal)
+            if plan is None:
+                return False
+            hold, md = int(plan[1]), int(plan[2])
         activity = clampf(float(getattr(self.pers, "activity", 0.5)), 0.0, 1.0)
-        p = clampf(JUMPCUR_P * (0.75 + 0.7 * activity), 0.0, 0.95)
+        p = clampf((PLAY_JUMP_P if play else JUMPCUR_P) * (0.75 + 0.7 * activity),
+                   0.0, 0.95)
         if self.rng.random() >= p:
             return False
-        md = 1 if dx > 0.0 else -1
         b.move_dir = md
-        b.request_jump("stand", hold_ticks=3)
+        b.request_jump("stand", hold_ticks=hold)
         self._cursor_jump_cd = JUMPCUR_CD
         return True
 
@@ -7363,31 +7433,154 @@ class BehaviorFSM:
             else:
                 self._fight_throw_t = tuning.FIGHT_THROW_CD - tuning.FIGHT_RETRY_CD
 
+    # ── 弹道预演：物理逐行对照 world/spear.py 的 Spear.step ──
+    def _shot_velocity(self, dir_x):
+        """这一掷的出手点与初速 (ox, oy, vx, vy)（同 _cob_would_hit 的物理）。"""
+        c0 = self.body.chunk0
+        weak, toss = weaponphys.player_throw_mode(
+            getattr(self.win, "variant", ""), self._exhausted, True, False)
+        if toss:
+            vx, vy = weaponphys.toss_velocity(c0, dir_x, 0.07, 1, 1.0)
+        else:
+            vx, vy = weaponphys.throw_velocity(c0, dir_x, True,
+                                               weaponphys.frc(weak=weak))
+        return (c0.x + float(dir_x) * THROW_ORIGIN_DX, c0.y - THROW_ORIGIN_DY, vx, vy)
+
+    def _shot_arc(self, ox, oy, vx, vy, ticks=SHOT_PROBE_TICKS):
+        """掷出后逐 tick 的弹道点（平飞段不落，之后回落到原版半重力）。"""
+        from ..world.spear import AIR_FRICTION, GRAVITY
+        grav = GRAVITY * float(getattr(self.win, "room_gravity", 1.0))
+        pts = []
+        x, y = float(ox), float(oy)
+        for _ in range(int(ticks)):
+            if math.hypot(x - ox, y - oy) >= weaponphys.SPEAR_FLIGHT_FLAT_PX:
+                vy += grav - weaponphys.SPEAR_FLIGHT_LIFT
+            vx *= AIR_FRICTION
+            vy *= AIR_FRICTION
+            x += vx
+            y += vy
+            pts.append((x, y))
+        return pts
+
+    def _shot_hits_body(self, pts, ob, pad) -> bool:
+        """预演弹道会不会打到这具身体（同伴也在动：按它的速度预测同一 tick 的位置）。"""
+        for c in (ob.chunk0, ob.chunk1):
+            rad = float(getattr(c, "rad", 0.0))
+            for k, (px, py) in enumerate(pts):
+                cx = c.x + float(getattr(c, "vx", 0.0)) * k
+                cy = c.y + float(getattr(c, "vy", 0.0)) * k
+                if math.hypot(px - cx, py - cy) < pad + rad:
+                    return True
+        return False
+
+    def _shot_hits_pet(self, pts, pad=THROW_BLOCK_R, skip=None):
+        """预演弹道上第一个被打到的**别的**同伴（没有 None）。
+
+        skip＝这一掷瞄着的目标本身：瞄着它就不算「它挡道」，否则「打一只猫」永远
+        被自己判成友伤。真正要避免的是**顺路误伤**。
+        """
+        skip_body = getattr(skip, "body", None)
+        for o in getattr(self.win, "pets", ()):
+            ob = getattr(o, "body", None)
+            if ob is None or ob is self.body or ob.dead:
+                continue
+            if o is skip or (skip_body is not None and ob is skip_body):
+                continue
+            if self._shot_hits_body(pts, ob, pad):
+                return o
+        return None
+
+    def _avoid_friendly(self) -> bool:
+        """AI 是否启用「别把同伴打进弹道」这一层（设置里的全局开关，默认开）。"""
+        return bool(getattr(self.win, "ai_avoid_friendly_fire", True))
+
+    def _shot_path_clear(self, dir_x, tgt=None, force=False) -> bool:
+        """这一掷打出去，弹道上有没有同伴。tgt 给了就只看自己到目标那一段。
+
+        force=True 无视设置开关（玩耍用：玩到一半把人扎死没法解释）。
+        """
+        if not force and not self._avoid_friendly():
+            return True
+        ox, oy, vx, vy = self._shot_velocity(dir_x)
+        ticks = int(SHOT_PROBE_TICKS)
+        if tgt is not None:
+            tx = getattr(tgt, "x", None)
+            if tx is None:
+                return True
+            if (float(tx) - ox) * float(dir_x) <= 0.0:
+                return True                  # 目标在背后：交给调用方处理
+            spd = max(1e-6, abs(vx))
+            ticks = int(max(4.0, min(float(SHOT_PROBE_TICKS),
+                                     abs(float(tx) - ox) / spd)))
+        return self._shot_hits_pet(self._shot_arc(ox, oy, vx, vy, ticks),
+                                   skip=tgt) is None
+
     def _throw_line_blocked(self, dir_x, tgt=None) -> bool:
         """自己→目标之间站着别的蛞蝓猫 → 这一掷取消。
 
-        投掷一律水平（Weapon.cs:463-502 玩家只有水平分支），所以沿掷出方向扫一条
-        与胸口同高的线段：任何同伴躯干落在线段 THROW_BLOCK_R 内就算被挡住。
-        给了 tgt 就只用「自己到目标」那一段，免得把目标身后的同伴也算进去。
+        旧版只看「与胸口同高的一条水平线段」；矛是会飞十几帧的实体（平飞段之后
+        半重力下落，同伴自己也在走），所以改成整条**预测弹道**逐帧和同伴的预测
+        位置比距离。给了 tgt 就只用「自己到目标」那一段，免得把目标身后的同伴
+        也算进去。
         """
-        c0 = self.body.chunk0
-        ax, ay = c0.x, c0.y
-        if tgt is not None:
-            bx, by = tgt.x, tgt.y
-            if (bx - ax) * dir_x <= 0.0:
-                return False                 # 目标在背后：交给调用方处理
-        else:
-            bx, by = ax + dir_x * THROW_BLOCK_LEN, ay
+        return not self._shot_path_clear(dir_x, tgt)
+
+    # ── 攻击意图：让同伴提前知道「他要掷了」 ──
+    def _note_attack_intent(self, dir_x, tgt=None) -> None:
+        """记下「我这就投掷」：别的猫据此躲弹道（看朝向是猜不出这件事的）。"""
+        ox, oy, vx, vy = self._shot_velocity(dir_x)
+        tp = None
+        tx, ty = getattr(tgt, "x", None), getattr(tgt, "y", None)
+        if tx is not None and ty is not None:
+            tp = (float(tx), float(ty))
+        self.attack_intent = {"ox": ox, "oy": oy, "vx": vx, "vy": vy,
+                              "dir": 1 if float(dir_x) >= 0.0 else -1,
+                              "target": tgt, "target_pt": tp,
+                              "until": self._shot_clock + SHOT_INTENT_TICKS}
+
+    def _live_intent(self, pet):
+        """这只猫此刻还没过期的攻击意图（None＝没在瞄）。"""
+        beh = getattr(pet, "behavior", None)
+        it = getattr(beh, "attack_intent", None) if beh is not None else None
+        if not it or self._shot_clock > int(it.get("until", 0)):
+            return None
+        return it
+
+    def _threat_shot_at_me(self):
+        """附近有没有同伴正朝我这边掷东西（读意图 + 预演弹道）→ 那只猫 / None。"""
+        me = self.body
         for o in getattr(self.win, "pets", ()):
-            if o is self.win:
-                continue
             ob = getattr(o, "body", None)
-            if ob is None or ob.dead:
+            if ob is None or ob is me or ob.dead:
                 continue
-            for c in (ob.chunk0, ob.chunk1):
-                if _closest_on_segment(c.x, c.y, ax, ay, bx, by)[2] < THROW_BLOCK_R:
-                    return True
-        return False
+            it = self._live_intent(o)
+            if it is None:
+                continue
+            tp = it.get("target_pt")
+            if (tp is not None
+                    and math.hypot(tp[0] - me.chunk0.x, tp[1] - me.chunk0.y) < 30.0):
+                return o                  # 明确瞄着我：先让开
+            pts = self._shot_arc(it["ox"], it["oy"], it["vx"], it["vy"])
+            if self._shot_hits_body(pts, me, SHOT_DODGE_R):
+                return o
+        return None
+
+    def _dodge_side(self, it) -> int:
+        """往哪边让：直接比左右两侧「离弹道最近距离」，远的那个（不做心算公式）。
+
+        弹道接近竖直时两侧差不多远：那就退离射手那一侧。
+        """
+        me = self.body.chunk1
+        pts = self._shot_arc(it["ox"], it["oy"], it["vx"], it["vy"])
+
+        def gap(x):
+            return min(math.hypot(px - x, py - me.y) for px, py in pts)
+
+        g_r = gap(me.x + SHOT_DODGE_DX)
+        g_l = gap(me.x - SHOT_DODGE_DX)
+        if abs(g_r - g_l) < 1.0:
+            return 1 if me.x >= float(it["ox"]) else -1
+        return 1 if g_r > g_l else -1
 
     def _launch_weapon(self, dir_x, tgt=None) -> bool:
         """按原版水平掷出手里的矛/石头（不做高度判断，由调用方负责对准）。"""
@@ -7413,6 +7606,7 @@ class BehaviorFSM:
                           fling=True, recoil=0.4)
         else:
             return False
+        self._note_attack_intent(dir_x, tgt)     # 记意图：同伴据此提前让开
         b.chunk0.vx -= dir_x * 0.35
         self.gfx.blink = 15
         return True
@@ -7432,6 +7626,10 @@ class BehaviorFSM:
             return False
         dx = tgt.x - c0.x
         dy = tgt.y - c0.y                       # y↓：<0 目标在上方
+        dir_x = 1 if dx >= 0.0 else -1
+        if not self._shot_path_clear(dir_x, tgt):
+            return False                        # 弹道上有同伴：先不出手（等它让开）
+        self._note_attack_intent(dir_x, tgt)    # 起手就记：同伴这几帧里让开
         if abs(dy) > THROW_JUMP_DY and b.on_floor():
             b.request_jump("stand")             # 站在地上：跳到那一层再水平掷出
             self._throw_jumped = True           # 告诉调用方「这是起跳，不是出手」
@@ -7999,6 +8197,8 @@ class BehaviorFSM:
         if not b.item_ready():
             return                       # 上手冷却没走完：先接着玩
         dir_x = 1 if b.facing >= 0 else -1
+        if not self._shot_path_clear(dir_x, force=True):
+            return                       # 玩到一半把人扎死没法解释：绝不穿同伴
         if b.carried_spear is not None and not self._own_needle(b.carried_spear):
             # 矛大师自己尾巴长的针不当玩具扔（原版针是它唯一的取食工具）
             b.throw_spear(dir_x, weaponphys.frc(weak=self._exhausted), recoil=0.3)
@@ -8126,6 +8326,8 @@ class BehaviorFSM:
         if (can_throw_toy and b.item_ready() and self._itemplay_throw_count == 0
                 and self._itemplay_mode_t > 45 and self.rng.random() < tuning.ITEMPLY_TOSS_P):
             dir_x = 1 if self._play_face >= 0 else -1
+            if not self._shot_path_clear(dir_x, force=True):
+                return                   # 玩耍绝不把同伴打进弹道（不吃设置开关）
             thrown = self._launch_weapon(dir_x) if isinstance(carried, Spear) else True
             if not isinstance(carried, Spear):
                 b.throw_stone(dir_x, weaponphys.frc(weak=self._exhausted), fling=True, recoil=0.25)

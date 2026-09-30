@@ -82,6 +82,37 @@ class JumpReach(Ability):
             return None
         return best + (best_t,)
 
+    def _play_plan(self, goal):
+        """娱乐性跳：够不到也跳一下。与 _plan 只差一条 —— 不要求 sweep_hit 命中。
+
+        可达性判定（sweep_hit：这一跳最终碰不碰得到目标）在这里整条去掉，只留
+        基础物理合法性：走过去不穿墙、跳弧不穿地形、目标在自己上方且在玩耍高度
+        窗口内。起跳点也不是目标本身，而是从目标 x 往回退 PLAY_JUMP_STANDOFF 的
+        可行走点 —— 鼠标坐标是「想去的欲望点」，Planner 负责把它换算成实际起跳点
+        与方向，免得物理层反复去够一个够不到的高度。
+        """
+        pet = self.pet
+        gx, gy = goal.pos()
+        xmin, xmax = walk_band(pet)
+        stats = pet.cat.stats
+        floor = pet.stand_h()
+        hipx = pet.body.chunk1.x
+        hold = tuning.PLAN_JUMP_HOLD_GEARS[-1]      # 玩耍用最高档：跳得越高越像在玩
+        launch_y = floor - get_arc(stats, hold, 0).takeoff_h
+        if not (0.0 < float(launch_y) - float(gy) <= tuning.PLAY_JUMP_DY_MAX):
+            return None                             # 就在眼前 / 太高：不为玩乱跳
+        dx = float(gx) - hipx
+        md = 1 if dx > 0.0 else (-1 if dx < 0.0 else 0)
+        lx = clampf(float(gx) - float(md) * tuning.PLAY_JUMP_STANDOFF, xmin, xmax)
+        if _walk_crosses_solid(hipx, lx, floor):
+            return None
+        arc = get_arc(stats, hold, md)
+        if _arc_hits_solids(arc, lx, floor - arc.takeoff_h):
+            return None
+        hit = len(arc.points)
+        t = abs(hipx - lx) / tuning.PLAN_WALK_SPEED + hit + tuning.PLAN_STARTUP_TICKS
+        return (lx, hold, md, hit, t)
+
     def can_touch(self, goal):
         plan = self._plan(goal)
         if plan is None:
@@ -90,6 +121,19 @@ class JumpReach(Ability):
         walk_t = t - hit - tuning.PLAN_STARTUP_TICKS
         return Estimate(t, walk_t * tuning.PLAN_EN_RATE_LIGHT
                         + hit * tuning.PLAN_EN_RATE_VIGOROUS)
+
+    def can_play(self, goal):
+        """玩耍跳候选：可达跳没解、高度又在玩耍窗口里时给一条（够不到也跳一下）。"""
+        if self._plan(goal) is not None:
+            return None                     # 够得着就走可达跳，不做娱乐跳
+        plan = self._play_plan(goal)
+        if plan is None:
+            return None
+        hit, t = plan[3], plan[4]
+        walk_t = t - hit - tuning.PLAN_STARTUP_TICKS
+        return Estimate(t, walk_t * tuning.PLAN_EN_RATE_LIGHT
+                        + hit * tuning.PLAN_EN_RATE_VIGOROUS,
+                        bonus=tuning.PLAY_JUMP_BONUS, play=True)
 
     def make_controller(self, goal):
         return JumpReachController(self.pet, goal)
@@ -105,8 +149,15 @@ class JumpReachController:
         self._settle = 0
         self._airborne = False
         self._move_dir = 0
+        self._play = False
         plan = JumpReach(pet)._plan(goal)
+        if plan is None:
+            # 娱乐性跳：Planner 说「够不到、但可以玩一下」时也用它的起跳点/档位/方向
+            plan = JumpReach(pet)._play_plan(goal)
+            self._play = plan is not None
         self._launch_x = plan[0] if plan is not None else None
+        self._plan_hold = plan[1] if plan is not None else 0
+        self._plan_md = plan[2] if plan is not None else 0
 
     def update(self):
         pet = self.pet
@@ -131,10 +182,13 @@ class JumpReachController:
             still = (abs(body.chunk0.vx) < SETTLE_VX
                      and abs(body.chunk1.vx) < SETTLE_VX)
             if body.on_floor() and (still or self._settle > SETTLE_MAX):
-                pick = self._pick_at_launch(gx, gy)
-                if pick is None:
-                    return GIVEUP
-                hold, md = pick
+                if self._play:
+                    hold, md = self._plan_hold, self._plan_md   # 够不到：照 Planner 给的档位/方向跳
+                else:
+                    pick = self._pick_at_launch(gx, gy)
+                    if pick is None:
+                        return GIVEUP
+                    hold, md = pick
                 body.request_jump("stand", hold_ticks=hold)
                 body.move_dir = md
                 self._move_dir = md
@@ -147,6 +201,8 @@ class JumpReachController:
         elif self._airborne:
             body.stop_walk()
             self._airborne = False
+            if self._play:
+                return DONE          # 玩耍跳不要求碰到目标：跳起来、落回来就算做过
             return DONE if self._landed_ok(gx, gy) else GIVEUP
         return RUNNING
 

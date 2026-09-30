@@ -143,10 +143,29 @@ _STR = {
     # —— settings：雨循环 ——
     "settings_storm_section":   {"zh": "雨循环", "en": "Rain cycle"},
     "settings_storm_enable":    {"zh": "开启雨循环", "en": "Enable rain cycle"},
+    "settings_storm_capture":   {"zh": "暴雨时接管鼠标点击（点一下杀一只猫）",
+                                 "en": "Let the storm take mouse clicks (click kills a cat)"},
+    "settings_storm_capture_tip": {
+        "zh": "默认关闭：暴雨期间照样鼠标穿透，不挡你干活。开启后暴雨中点击庇护所外会随机杀一只猫；"
+              "屏幕最底下那一条（任务栏 / 托盘）任何时候都不会被挡。",
+        "en": "Off by default: the window stays click-through during a storm, so your work is never blocked. "
+              "When on, clicking outside a shelter during a storm kills a random cat. The strip at the very "
+              "bottom of the screen (taskbar / tray) is never blocked either way."},
     "settings_storm_focus_minutes":   {"zh": "平静期（分钟）", "en": "Calm (minutes)"},
     "settings_storm_warning_minutes": {"zh": "征兆期（分钟）", "en": "Omen (minutes)"},
     "settings_storm_sleep_minutes":   {"zh": "暴雨期（分钟）", "en": "Storm (minutes)"},
     "settings_storm_apply":     {"zh": "应用时长", "en": "Apply durations"},
+
+    # —— settings：AI 行为 ——
+    "settings_ai_section":        {"zh": "AI 行为", "en": "AI behaviour"},
+    "settings_ai_avoid_friendly": {"zh": "AI 避免友军误伤",
+                                   "en": "AI avoids friendly fire"},
+    "settings_ai_avoid_friendly_tip": {
+        "zh": "默认开启：猫出手前会预演弹道、绕到不会打到同伴的位置；同伴看到有人朝自己这边瞄，也会主动让开。"
+              "这只改 AI 走位，矛的伤害和即死规则完全不变。关掉后 AI 不再避让，真的可能误杀同伴。",
+        "en": "On by default: a cat probes its throw arc before firing and repositions so no ally is in the line, "
+              "and an ally that finds a shot aimed through it steps aside. This only changes AI positioning - "
+              "spear damage and instant-kill rules are untouched. Turn it off and friendly kills really can happen."},
     "settings_show_hud":     {"zh": "显示状态面板", "en": "Show status panel"},
     "settings_pick_title":   {"zh": "选择皮", "en": "Pick a variant"},
     "settings_pick_cat":     {"zh": "选择要添加的蛞蝓猫", "en": "Choose a slugcat to add"},
@@ -164,6 +183,7 @@ _STR = {
     "st_wander": {"zh": "四处走动", "en": "Wandering"},
     "st_cool_down": {"zh": "平静下来", "en": "Cooling down"},
     "st_make_way": {"zh": "让路", "en": "Making way"},
+    "st_dodge_shot": {"zh": "躲弹道", "en": "Dodging a shot"},
     "st_scold": {"zh": "指指点点", "en": "Point-pointing"},
     "st_point": {"zh": "指向", "en": "Pointing"},
     "st_pet": {"zh": "抚摸", "en": "Petting"},

@@ -388,6 +388,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self.storm_active = False        # 暴雨进行中（StormSeekShelter 的闸）
         self._storm_cycle_seen = 0       # StormCycle.cycle_id 的哨兵：变了就复位第一滴重雨
         self._storm_rng = random.Random(0x57071)   # 私有流：不搅动全局随机数
+        # 暴雨是否接管真实点击（默认关）：关着的时候暴雨期间照样穿透，
+        # 不挡用户干活；开着才是「暴雨里点一下杀一只猫」。任务栏那一条
+        # （地板线以下的下延带）永远不接管，见 _passthrough_want。
+        self.storm_capture_clicks = bool(self._params.get("storm_capture_clicks", False))
+        # AI 是否主动绕开同伴的弹道（默认开）：只改 AI 走位，矛的伤害一点没动。
+        self.ai_avoid_friendly_fire = bool(self._params.get("ai_avoid_friendly_fire", True))
         self._shelter_drag_start = None
         self._shelter_seed = 0
 
@@ -534,20 +540,27 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         return self.to_logical(g.x(), g.y())
 
     # ── 动态穿透 ──
-    def _update_passthrough(self):
-        if self.debug:
-            return
-        if self._place_mode:
-            return        # 放置模式接管点击，勿翻转
+    def _passthrough_want(self, cur) -> bool:
+        """这一刻窗口该不该鼠标穿透（纯判定；测试直接调它，不碰 Win32）。
+
+        两条硬规则，与暴雨是否接管点击无关：
+        1. 下延带（地板线以下那条贴着屏幕底边的带子＝任务栏那一条）永远放行，
+           所以暴雨点杀也不可能挡住任务栏 / 托盘右键菜单；
+        2. 光标不在窗口上（cur is None）时放行。
+        其余照旧：压着猫 / 正拖着东西 / 正在摆放 / 暴雨接管（开关打开时）才不穿透。
+        """
+        if cur is None:
+            return True
+        if cur[1] > self._HL:
+            return True                  # 下延带＝任务栏：任何情况下都不接管
         from .control.mouse import is_over
-        cur = self.cursor_logical()
         active = any(pet.behavior is not None and pet.behavior.grab.active for pet in self.pets)
         over_body = any(
             ((pet.behavior is None) or not pet.behavior.blocks_interaction())
             and is_over(pet.body, pet.gfx, cur, pad=6.0)
             for pet in self.pets)
-        storm_capture = bool(getattr(self.storm, "active", False))
-        storm_capture = bool(getattr(self.storm, "active", False))
+        storm_capture = (bool(getattr(self.storm, "active", False))
+                         and bool(self.storm_capture_clicks))
         dragging_fruit = self._dragged_fruit is not None
         over_fruit = self._fruit_at(cur) is not None
         dragging_stone = self._dragged_stone is not None
@@ -572,13 +585,20 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         over_cob = self._seedcob_at(cur) is not None
         dragging_flower = self._dragged_karmaflower is not None
         over_flower = self._karmaflower_at(cur) is not None
-        want = not (active or dragging_fruit or over_fruit or dragging_stone or over_stone
+        return not (active or dragging_fruit or over_fruit or dragging_stone or over_stone
                     or dragging_slime or over_slime or dragging_batfly or over_batfly
                     or dragging_lizard or over_lizard or dragging_squid or over_squid
                     or dragging_nworm or over_nworm
                     or dragging_pearl or over_pearl or dragging_spear or over_spear
                     or dragging_scav or over_scav or dragging_cob or over_cob
                     or dragging_flower or over_flower or over_body or storm_capture)
+
+    def _update_passthrough(self):
+        if self.debug:
+            return
+        if self._place_mode:
+            return        # 放置模式接管点击，勿翻转
+        want = self._passthrough_want(self.cursor_logical())
         if want != self._passthrough:
             self._passthrough = want
             if not self._hwnd:
@@ -1383,7 +1403,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
     def _storm_kill_click(self, pos) -> bool:
         """暴雨中点击庇护所外：随机杀死一只仍活着的成年蛞蝓猫。"""
-        if not self.storm.active:
+        if not self.storm.active or not self.storm_capture_clicks:
             return False
         lx, ly = pos
         if any(sh.contains(lx, ly) for sh in (self.shelters or ())):
@@ -2202,6 +2222,20 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 e.vy += f
 
     # ── 暴雨设置 / 存档 ──
+    def set_storm_capture_clicks(self, on) -> None:
+        """暴雨是否接管真实点击（写进 params，存档时一并落盘）。"""
+        self.storm_capture_clicks = bool(on)
+        self._params["storm_capture_clicks"] = self.storm_capture_clicks
+        self._passthrough = None          # 下一帧重算穿透
+
+    def set_ai_avoid_friendly_fire(self, on) -> None:
+        """AI 是否主动避开同伴的弹道（写进 params，存档时一并落盘）。
+
+        这只是 AI 走位：关掉后猫不再让位，矛的伤害与即死规则完全不变。
+        """
+        self.ai_avoid_friendly_fire = bool(on)
+        self._params["ai_avoid_friendly_fire"] = self.ai_avoid_friendly_fire
+
     def set_storm_enabled(self, on):
         """开/关雨循环。**不会**自动放庇护所 —— 屋子由工具栏自己框选出来。"""
         on = bool(on)

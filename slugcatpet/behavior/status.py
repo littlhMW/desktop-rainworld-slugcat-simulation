@@ -15,6 +15,7 @@ _STATES = {
     "PostThrowWander": "st_wander",
     "PostThrowStand": "st_cool_down",
     "MakeWay": "st_make_way",
+    "DodgeShot": "st_dodge_shot",
     "ScoldBlocker": "st_scold",
     "ChaseCursor": "st_chase_cursor",
     "FetchFruit": "st_fetch",
@@ -101,6 +102,7 @@ def status_text(beh) -> str:
 # 状态 → 这个态真正在用的目标字段（按优先级）
 _STATE_TARGET = {
     "MakeWay": ("_makeway_of", "_blocker_target"),
+    "DodgeShot": ("_dodge_from",),
     "ScoldBlocker": ("_blocker_target", "_pole_blocker"),
     "Socialize": ("_social_target", "_protest_target", "_apology_target",
                   "_thank_target"),

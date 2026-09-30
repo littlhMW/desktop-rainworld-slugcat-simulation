@@ -47,15 +47,20 @@ class Planner:
         self._ability_cache = out
         return out
 
-    def _candidates(self, goal, question):
+    def _candidates(self, goal, question, play=False):
         energy = self.pet.body.energy
         out = []
         for ab in self._abilities():
             est = getattr(ab, question)(goal)
+            if est is None and play:
+                # 娱乐性候选（够不到也跳一下）：只在明确问 play 的语境里生成，
+                # 免得取食 / 趋暖 / 救援那些「要真的到得了」的目标被空跳带偏。
+                est = ab.can_play(goal)
             if est is None or est.energy_est > energy:
                 continue
             out.append(Candidate(ab.key, est.time_est, est.energy_est,
-                                 lambda ab=ab, g=goal: ab.make_controller(g)))
+                                 lambda ab=ab, g=goal: ab.make_controller(g),
+                                 est.bonus, est.play))
         out.sort(key=self._route_cost)
         return out
 
@@ -66,7 +71,7 @@ class Planner:
     # 原样保留（执行器的超时/进度判断仍用真实耗时）。
     def _route_cost(self, c) -> float:
         edge = edge_for(c.ability_key, c.time_est, c.energy_est)
-        return route_cost(edge, self._pers())
+        return route_cost(edge, self._pers()) - c.bonus   # bonus：玩耍这类额外收益
 
     def _pers(self):
         """当前人格：优先行为层（运行期可能被替换），再回落种族原型。"""
@@ -81,8 +86,16 @@ class Planner:
         from .route import axis as _axis_of
         return _axis_of(self._pers(), name)
 
-    def touch_candidates(self, goal):
-        return self._candidates(goal, "can_touch")
+    def touch_candidates(self, goal, play=False):
+        return self._candidates(goal, "can_touch", play=play)
+
+    def play_jump_plan(self, goal):
+        """目标处的玩耍跳方案 (起跳 x, 档位, 方向, 空中 tick, 总 tick)；没有则 None。
+
+        「够不到也跳一下」的执行方拿它当起跳点与方向 —— 而不是把鼠标坐标直接
+        当起跳点、再自己比一次高度。
+        """
+        return JumpReach(self.pet)._play_plan(goal)
 
     def stay_candidates(self, goal):
         return self._candidates(goal, "can_stay")

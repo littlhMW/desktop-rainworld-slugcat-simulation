@@ -88,6 +88,8 @@ class SettingsWindow(QWidget):
         v.addWidget(self._divider())
         self._section_storm(v)
         v.addWidget(self._divider())
+        self._section_ai(v)
+        v.addWidget(self._divider())
         self._section_hud(v)
         self._outer.addWidget(self._body)
         self.adjustSize()
@@ -223,12 +225,21 @@ class SettingsWindow(QWidget):
             grid.addWidget(sp, row, 1)
             self._storm_spins[key] = sp
         v.addLayout(grid)
+        cap = QCheckBox(t("settings_storm_capture"))
+        cap.setChecked(bool(getattr(self._window, "storm_capture_clicks", False)))
+        cap.setToolTip(t("settings_storm_capture_tip"))
+        cap.toggled.connect(self._on_storm_capture_toggled)
+        v.addWidget(cap)
         btn = QPushButton(t("settings_storm_apply"))
         btn.clicked.connect(self._on_storm_apply)
         v.addWidget(btn)
 
     def _on_storm_toggled(self, checked):
         self._window.set_storm_enabled(checked)
+
+    def _on_storm_capture_toggled(self, checked):
+        """暴雨是否接管真实点击：关着的时候暴雨照样穿透，不挡用户干活。"""
+        self._window.set_storm_capture_clicks(checked)
 
     def _on_storm_apply(self):
         spins = getattr(self, "_storm_spins", None)
@@ -238,6 +249,19 @@ class SettingsWindow(QWidget):
             focus_minutes=spins["focus"].value(),
             warning_minutes=spins["warning"].value(),
             sleep_minutes=spins["sleep"].value())
+
+    def _section_ai(self, v):
+        """AI 行为：只影响 AI 自己的选择，不改任何伤害数值。"""
+        v.addWidget(self._header(t("settings_ai_section")))
+        chk = QCheckBox(t("settings_ai_avoid_friendly"))
+        chk.setChecked(bool(getattr(self._window, "ai_avoid_friendly_fire", True)))
+        chk.setToolTip(t("settings_ai_avoid_friendly_tip"))
+        chk.toggled.connect(self._on_ai_avoid_toggled)
+        v.addWidget(chk)
+
+    def _on_ai_avoid_toggled(self, checked):
+        """AI 避开友军弹道：关掉后 AI 不再让位，误伤（含致死）照常可能发生。"""
+        self._window.set_ai_avoid_friendly_fire(checked)
 
     def _section_hud(self, v):
         if self._hud is None:

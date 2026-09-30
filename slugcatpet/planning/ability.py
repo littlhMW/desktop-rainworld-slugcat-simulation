@@ -22,9 +22,16 @@ MODE_STAY = "stay"
 
 @dataclass(frozen=True)
 class Estimate:
-    """粗线性代价：预估耗时 tick / 预估体力开销。"""
+    """粗线性代价：预估耗时 tick / 预估体力开销。
+
+    bonus / play 只在**排序**上有意义：bonus 是「这条方案还有线路之外的好处」
+    （娱乐性跳等）的 tick 当量，play 标记这条候选不是「够得到」而是「够不到也想
+    试一下」（光标高处的玩耍跳），消费方据此换一套概率与执行口径。
+    """
     time_est: float
     energy_est: float
+    bonus: float = 0.0
+    play: bool = False
 
 
 @dataclass
@@ -34,6 +41,8 @@ class Candidate:
     time_est: float
     energy_est: float
     _factory: object
+    bonus: float = 0.0        # 排序加成（不改进 time_est：执行器的超时预算仍用真实耗时）
+    play: bool = False        # True＝娱乐性候选（够不到也想试），不是可达解
 
     def make_controller(self):
         return self._factory()
@@ -50,6 +59,14 @@ class Ability:
         return None
 
     def can_stay(self, goal):
+        return None
+
+    def can_play(self, goal):
+        """娱乐性候选：够不到、但值得「玩一下」时的方案（默认无）。
+
+        与 can_touch 的区别是它**不做可达性判定**：只要求基础物理合法。只有明确
+        问 play 的消费方（追鼠标那种玩耍语境）才会拿到它。
+        """
         return None
 
     def make_controller(self, goal):
