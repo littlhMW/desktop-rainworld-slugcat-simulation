@@ -286,7 +286,7 @@ class SlugcatGraphics(GraphicsDrawMixin):
         # 各族按种族写死的 scaleX / 横向偏移倍率，画的时候乘上去。
         vis = getattr(self.cat, "visual", None) or {}
         self.vis = vis
-        # 整只绘制缩放：幼崽（wiki「猫崽约为成年的一半」）用 draw_scale=0.5
+        # 整只绘制缩放：幼崽用 draw_scale≈0.65（实机截图：崽站立高度≈成年的 0.62）
         self.draw_scale = float(vis.get("draw_scale", 1.0))
         self._body_sx_fac = float(vis.get("body_sx", 1.0))
         self._hips_sx_fac = float(vis.get("hips_sx", 1.0))

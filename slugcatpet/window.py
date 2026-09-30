@@ -103,7 +103,7 @@ PLATFORM_REFRESH_TICKS = 30
 CURSOR_PX_FALLBACK = 32.0        # 取不到系统光标尺寸时的兜底（标准箭头 32px）
 MOUSE_POLE_MIN_HALF = 8.0        # 杆半长下限（逻辑单位；超大画布缩放时别缩没了）
 MOUSE_POLE_RELEASE_TICKS = 80    # 松开鼠标后这么久内不当杆（2s @ 40tick/s）
-SHELTER_HINT_ICON = 56.0         # 放庇护所：点击前光标处那个图标的边长（逻辑单位）
+SHELTER_HINT_ICON = 14.0         # 放庇护所：点击前光标处那个图标的边长（逻辑单位，1/4 大小）
 # 抓猫／拽东西／正在放东西的时候，光标不是一根杆
 _DRAG_ATTRS = ("_dragged_fruit", "_dragged_stone", "_dragged_slimemold",
                "_dragged_batfly", "_dragged_lizard", "_dragged_squidcada",
@@ -1721,6 +1721,21 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                  tuning.BUBBLE_RGBA, ax=0.5, ay=0.5)
         p.restore()
 
+    def _alpha_pad(self, p):
+        """放置模式（庇护所框选等）：给整窗补一层 alpha=1 的底。
+
+        Windows 对分层窗口按像素 alpha 做命中测试，全透明像素上的点击会直接穿到下层
+        窗口（桌面/浏览器），窗口收不到 mousePressEvent —— 表现就是「庇护所拖不动」。
+        DestinationOver 只改完全透明的像素（补成 alpha=1 的黑，肉眼不可见）；已经画过
+        的像素 alpha 基本不变（±1/255），半透明预览依旧保持半透明。
+        """
+        p.setCompositionMode(
+            QPainter.CompositionMode.CompositionMode_DestinationOver)
+        p.fillRect(QRectF(0.0, 0.0, float(self.width()), float(self.height())),
+                   QColor(0, 0, 0, 1))
+        p.setCompositionMode(
+            QPainter.CompositionMode.CompositionMode_SourceOver)
+
     def paintEvent(self, _):
         # 像素模式：先在 WL×HL 低分辨率缓冲里 1:1 画完，再整数倍最近邻放大到窗口，
         # 得到与本体一致的硬边像素观感。关时直接画到窗口。
@@ -1767,8 +1782,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 finally:
                     bp.end()
                 p.drawImage(QRect(0, 0, bw * s, bh * s), buf)
+                if self._place_mode:
+                    self._alpha_pad(p)
                 return
             self._paint_world(p)
+            if self._place_mode:
+                self._alpha_pad(p)
         finally:
             p.end()
 

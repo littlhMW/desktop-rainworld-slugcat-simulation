@@ -107,8 +107,11 @@ SLUGPUP_DEF = CatDef(
     personality=SURVIVOR_DEF.personality,
     tuning={},
     # 外观反编译 PlayerGraphics.cs:2880/2900/3041：0.9 + 0.2*Lerp(Wideness,0.5,0.5)
-    # draw_scale：绘整只缩到成年的一半（wiki：猫崽约为成年的一半大）
-    visual={"pup_wide": True, "draw_scale": 0.5},
+    # draw_scale：整只缩到成年的一小半多一点。原版游戏截图实测（成年白猫 vs 并排
+    # 的浅色/深色猫崽）站立高度约为成年的 0.62（头 56px / 崽 35px），而猫崽头帧
+    # （msc:HeadC 15px）比成年头帧（base:HeadA 17px）还矮一点，所以整只缩放取 0.65
+    # 才能落到实机 0.62 的观感。wiki 只写「约一半」，那是指缩到一半左右，偏小。
+    visual={"pup_wide": True, "draw_scale": 0.65},
     fsm_mount=None,
     wip=False,
 )
