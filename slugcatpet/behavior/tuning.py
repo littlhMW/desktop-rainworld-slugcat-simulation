@@ -722,7 +722,7 @@ PEARL_CARRY_TICKS   = 240       # 把玩珍珠多久才放下（放下后进 PEA
 SAINT_LICK_HOLD_DRAIN = 1.0 / 200.0   # 每 tick；满体力约 200 tick（≈3.3 s）拉空
 
 # ── 矛大师：尾巴长针（原版 SpearMaster 用尾针；桌宠里给一个间隔，别无限刷）──
-SPEARMASTER_NEEDLE_HOLD = 3     # 矛大师尽量保持「两手各一支 + 背上一支」三根活针
+SPEARMASTER_NEEDLE_HOLD = 2     # 矛大师尽量保持两只手各一支白针（背槽是猎手专属）
 # 矛大师拿白针把扎根的业力花打下来（用户口径：只此一家，打落即视作食用）
 KARMA_SHOOT_R = 260.0           # 站着出手的射程
 KARMA_SHOOT_NEAR = 26.0         # 比这还近就别浪费针了，走过去连根拔

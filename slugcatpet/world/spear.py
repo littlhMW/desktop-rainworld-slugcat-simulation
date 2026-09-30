@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import random as _random
 
+from ..core import chunkphys                     # 庇护所墙体扫掠要用 chunkphys.solids()
 from ..core.chunkphys import aabb_wall_collide, apply_water
 from . import weaponphys as wp
 from .enums import ItemState

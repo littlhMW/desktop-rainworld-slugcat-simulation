@@ -7570,6 +7570,7 @@ class BehaviorFSM:
         矛大师永远优先自己的活针（``Spear.spearmasterNeedle``）：那只手上占着的
         如果「不是自己连线的活针」就顶掉让位。旧实现是「两只手都攥着矛就不再长」，
         于是手里一根、背上又一根时每根新针都无处安放、直接掉在地上。
+         （背槽是猎手专属：矛大师的容量就是两只手。）
         """
         b = self.body
         free = b.free_hand()
@@ -7577,7 +7578,11 @@ class BehaviorFSM:
             return free                  # 有手空着：直接进那只手（原版 FreeHand()）
         # Spearmaster 只允许双手各持一支；背槽是 Hunter 专属，不参与尾针容量。
         if self._own_needle_count() >= tuning.SPEARMASTER_NEEDLE_HOLD:
-            return None
+            return None                  # 两手已经是自己的活针：没有背槽可借，不再长
+        # 手占着但不是「自己连线的活针」（别人的矛 / 断线的死针）→ 顶掉它，让新针入手
+        for side in ("r", "l"):
+            if not self._own_needle(b.hand_spears.get(side)):
+                return side
         return None
 
     def _tail_needle_tick(self):
@@ -7677,8 +7682,7 @@ class BehaviorFSM:
             self._tail_needle_cd = tuning.TAIL_NEEDLE_CD
             return
         if slot == "back":
-            # 两手都攥着自己的活针：先把一支挪到背上腾出手（原版 SpearToBack），
-            # 新针还是落进腾出来的那只手。
+            # 背槽已经不参与尾针容量（猎手专属）：没有手就等下一轮。
             self._tail_needle_cd = tuning.TAIL_NEEDLE_CD
             return
         self._tail_needle_burst()          # 拔出那一瞬的溅射（Player.cs:10025-10035）
@@ -7804,7 +7808,7 @@ class BehaviorFSM:
                 and bool(self.win.cat.tuning.get("tail_needle")))
 
     def _own_needle_count(self) -> int:
-        """「两手 + 背上」还连着的白针有几根（上限＝两只手各一支 + 背上一支）。"""
+        """两只手里还连着的白针有几根（上限＝两只手各一支；背槽是猎手专属）。"""
         b = self.body
         return sum(1 for sp in b.hand_spears.values()
                    if self._own_needle(sp))
