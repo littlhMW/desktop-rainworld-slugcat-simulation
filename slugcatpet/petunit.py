@@ -2,10 +2,12 @@
 from __future__ import annotations
 import math
 import random
+from dataclasses import replace
 
 from .behavior import tuning
 from .cats import PUP_VARIANT, get as get_cat_def
 from .cats.personality import individualize
+from .cats.slugpup import pup_colors
 from .cats.saint.tongue import Tongue
 from .control.vmath import dirvec
 from .core.creature import SlugcatBody
@@ -64,6 +66,11 @@ class PetUnit:
         self.variant = variant
         self.is_pup = (variant == PUP_VARIANT)   # 幼崽：不是常规蛞蛓猫
         self.cat = get_cat_def(variant)     # 种族定义
+        if self.is_pup:
+            # 猫崽的体色 / 瞳色每只随机（wiki Slugpup：Dark 1/2 抽深/浅色板，瞳色与体色
+            # 相关）。种子只取自 id → 存档重建后颜色不变。CatDef 是 frozen，造一份个体副本。
+            body_rgb, eye_rgb = pup_colors(_pers_seed(pet_id, 0, variant))
+            self.cat = replace(self.cat, body_color=body_rgb, eye_color=eye_rgb)
         # 个体性格：在原型的连续轴上做小幅偏移（原版 IndividualVariation）。
         # 种子只取自 (族, id, index) → 同一只猫每次启动都一样，可复现。
         self.personality = individualize(

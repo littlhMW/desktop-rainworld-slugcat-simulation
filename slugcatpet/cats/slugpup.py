@@ -10,11 +10,83 @@
 """
 from __future__ import annotations
 
+import random
 from dataclasses import replace
 
 from .base import CatCaps, CatDef
 from .stats import DEFAULT_STATS
 from .survivor import SURVIVOR_DEF
+
+# ── 个体颜色（wiki Slugpup）──────────────────────────────────────────────
+# 「猫崽的体色和瞳色多变，绿色和黄色系的最常见，而红色和紫色系的最罕见。」「体色由
+#   游戏文件里的变量 Dark 控制（1/2 抽深色/浅色色板）；瞳色与体色相关，深色猫崽的
+#   眼睛是浅色的，反之亦然。」这里只做体型/外观区分，不做游戏版本的性格差异。
+PUP_DARK_P = 0.5                 # Dark 变量：1/2 抽深色板
+
+# 色相权重 (起, 止, 权重)：绿 / 黄最多，红 / 紫最少
+PUP_HUE_BANDS = (
+    (0.0, 30.0, 1.0),            # 红
+    (30.0, 70.0, 4.0),           # 黄 / 橙
+    (70.0, 160.0, 5.0),          # 绿（最常见）
+    (160.0, 250.0, 2.0),         # 青 / 蓝
+    (250.0, 340.0, 1.0),         # 紫（最罕见）
+    (340.0, 360.0, 1.0),         # 品红 / 红
+)
+
+
+def pup_hsv_to_rgb(h, s, v):
+    """HSV（各自 0..1）→ 0..255 的 RGB。"""
+    h = (h % 1.0) * 6.0
+    i = int(h)
+    f = h - i
+    p = v * (1.0 - s)
+    q = v * (1.0 - s * f)
+    t = v * (1.0 - s * (1.0 - f))
+    if i == 0:
+        r, g, b = v, t, p
+    elif i == 1:
+        r, g, b = q, v, p
+    elif i == 2:
+        r, g, b = p, v, t
+    elif i == 3:
+        r, g, b = p, q, v
+    elif i == 4:
+        r, g, b = t, p, v
+    else:
+        r, g, b = v, p, q
+    return tuple(int(round(max(0.0, min(1.0, c)) * 255.0)) for c in (r, g, b))
+
+
+def pup_colors(seed: int):
+    """按个体种子抽 (体色, 瞳色)。同一只猫（id）每次启动都一致。"""
+    rng = random.Random((seed ^ 0x5A17C0DE) & 0xFFFFFFFF)
+    total = sum(w for _, _, w in PUP_HUE_BANDS)
+    pick = rng.random() * total
+    lo, hi = PUP_HUE_BANDS[0][0], PUP_HUE_BANDS[-1][1]
+    for a, b, w in PUP_HUE_BANDS:
+        pick -= w
+        if pick <= 0.0:
+            lo, hi = a, b
+            break
+    hue = (lo + (hi - lo) * rng.random()) / 360.0     # 绿 / 黄最常见的色相区
+    dark = rng.random() < PUP_DARK_P                  # 深色板 or 浅色板
+    if dark:
+        sat = 0.10 + 0.85 * rng.random()              # 深色板：中高饱和 + 低明度
+        val = 0.02 + 0.23 * rng.random()
+    else:
+        sat = 0.05 + 0.60 * rng.random()              # 浅色板：低中饱和 + 高明度
+        val = 0.80 + 0.19 * rng.random()
+    body = pup_hsv_to_rgb(hue, sat, val)
+    # 瞳色与体色相关（色相小幅偏移），明度反相：深色体 → 浅色瞳，反之亦然
+    eye_hue = (hue + 0.08 * (rng.random() - 0.5)) % 1.0
+    if dark:
+        eye = pup_hsv_to_rgb(eye_hue, 0.10 + 0.35 * rng.random(),
+                             0.78 + 0.20 * rng.random())
+    else:
+        eye = pup_hsv_to_rgb(eye_hue, 0.25 + 0.45 * rng.random(),
+                             0.08 + 0.20 * rng.random())
+    return body, eye
+
 
 SLUGPUP_DEF = CatDef(
     key="slugpup",
@@ -41,7 +113,8 @@ SLUGPUP_DEF = CatDef(
     personality=SURVIVOR_DEF.personality,
     tuning={},
     # 外观反编译 PlayerGraphics.cs:2880/2900/3041：0.9 + 0.2*Lerp(Wideness,0.5,0.5)
-    visual={"pup_wide": True},
+    # draw_scale：绘整只缩到成年的一半（wiki：猫崽约为成年的一半大）
+    visual={"pup_wide": True, "draw_scale": 0.5},
     fsm_mount=None,
     wip=False,
 )

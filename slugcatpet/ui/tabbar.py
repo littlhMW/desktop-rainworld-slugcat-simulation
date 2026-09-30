@@ -952,8 +952,9 @@ class TabBar(QWidget):
                 or self.pet.squidcadas or self.pet.pearls or self.pet.spears
                 or self.pet.needleworms
                 or self.pet.scavengers or self.pet.seedcobs or self.pet.seeds
-                or self.pet.lamp is not None):
-            self.pet.clear_all_items()
+                or self.pet.lamp is not None
+                or self.pet.pup_count() > 0):          # 幼崽也算「可交互实体」
+            self.pet.clear_all_items(clear_pups=True)
         else:
             self._toast(t("toast_no_object"))
 

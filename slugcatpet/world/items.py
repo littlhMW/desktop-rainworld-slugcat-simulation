@@ -52,6 +52,7 @@ from ..rendering.pixelmode import aa_hint, pen_width
 CORPSE_OUT_MARGIN = 14.0     # 尸体整个离开窗口这么多＝被扔出屏幕，直接清除
 ERASE_PICK_PAD = 6.0         # 删除模式命中放宽（与拖拽的 GRAB_PAD 同量级）
 LAMP_PICK_R = 12.0           # 灯笼按灯泡心算命中半径
+PUP_PICK_R = 14.0            # 猫崽在删除模式下的命中半径（约成年的一半）
 
 STALK_ROOT_W = 3.0
 STALK_TIP_W = 2.0
@@ -754,8 +755,12 @@ class ItemInteractionMixin:
         self._exit_place_mode()
         self.update()
 
-    def clear_all_items(self):
-        """清除所有可交互实体。"""
+    def clear_all_items(self, clear_pups=False):
+        """清除所有可交互实体。
+
+        clear_pups=True 时连幼崽一起清（「清除可交互实体」按钮）；转生调的是默认值，
+        幼崽和成年猫一样整体复活，不该在换雨循环时消失。
+        """
         self.clear_fruits()
         self.clear_stones()
         self.clear_slimemolds()
@@ -771,6 +776,8 @@ class ItemInteractionMixin:
         self.clear_karmaflowers()
         self.clear_poles()
         self.clear_lamp()
+        if clear_pups:
+            self.clear_pups()
 
     def clear_world_for_reincarnation(self):
         """全体转生：全体复活那一瞬把场上所有东西一起清空（原版换雨循环＝整房间重置）。
@@ -1933,6 +1940,13 @@ class ItemInteractionMixin:
     @staticmethod
     def _erase_dist(obj, cx, cy):
         """命中距离（<=0 表示光标在物体内部）；无法定位的返回 None。"""
+        if getattr(obj, "is_pup", False):
+            b = getattr(obj, "body", None)              # 幼崽：两根身体节的小圆
+            if b is None:
+                return None
+            return (min(math.hypot(cx - b.chunk0.x, cy - b.chunk0.y),
+                        math.hypot(cx - b.chunk1.x, cy - b.chunk1.y))
+                    - PUP_PICK_R)
         if hasattr(obj, "bulb_x"):
             return math.hypot(cx - obj.bulb_x, cy - obj.bulb_y) - LAMP_PICK_R
         if hasattr(obj, "body_path"):                  # 蜥蜴这类多节身体
@@ -1950,6 +1964,13 @@ class ItemInteractionMixin:
             if sh.contains(cx, cy):
                 return (sh, "shelters")      # 庇护所整间删掉
         best, bestd, bestname = None, 1e9, None
+        for pet in self.pets:              # 幼崽在删除范围里（成年蛞蝓猫不删）
+            if not getattr(pet, "is_pup", False):
+                continue
+            d = self._erase_dist(pet, cx, cy)
+            if d is None or d > ERASE_PICK_PAD or d >= bestd:
+                continue
+            best, bestd, bestname = pet, d, "pups"
         pools = [(n, getattr(self, n)) for n in self.ERASE_POOLS]
         if self.lamp is not None:
             pools.append(("lamp", (self.lamp,)))
@@ -1969,7 +1990,9 @@ class ItemInteractionMixin:
         if hit is None:
             return False
         obj, name = hit
-        if name == "lamp":
+        if name == "pups":
+            self.remove_pup(obj)               # 幼崽：整只卸载（不受最后一只猫的保护）
+        elif name == "lamp":
             self.clear_lamp()
         else:
             pool = getattr(self, name)
@@ -1979,17 +2002,17 @@ class ItemInteractionMixin:
                 pass
             if getattr(obj, "state", None) is not None:
                 obj.state = ItemState.GONE
-        for attr in ("_dragged_fruit", "_dragged_stone", "_dragged_slimemold",
-                     "_dragged_batfly", "_dragged_lizard", "_dragged_squidcada",
-                     "_dragged_needleworm", "_dragged_pearl", "_dragged_spear",
-                     "_dragged_scavenger", "_dragged_seedcob",
-                      "_dragged_karmaflower"):
-            if getattr(self, attr, None) is obj:
-                setattr(self, attr, None)
-        for pet in self.pets:                  # 猫手里 / 背上 / 嘴里的引用一并放开
-            release = getattr(pet.body, "release_object", None)
-            if release is not None:
-                release(obj)
+            for attr in ("_dragged_fruit", "_dragged_stone", "_dragged_slimemold",
+                         "_dragged_batfly", "_dragged_lizard", "_dragged_squidcada",
+                         "_dragged_needleworm", "_dragged_pearl", "_dragged_spear",
+                         "_dragged_scavenger", "_dragged_seedcob",
+                          "_dragged_karmaflower"):
+                if getattr(self, attr, None) is obj:
+                    setattr(self, attr, None)
+            for pet in self.pets:              # 猫手里 / 背上 / 嘴里的引用一并放开
+                release = getattr(pet.body, "release_object", None)
+                if release is not None:
+                    release(obj)
         self.world_version += 1
         self.geometry_version += 1
         self.update()
@@ -2013,6 +2036,11 @@ class ItemInteractionMixin:
             if hasattr(obj, "safe_rect"):                  # 庇护所：整间描边
                 x0, y0, x1, y1 = obj.safe_rect()
                 p.drawRect(x0, y0, x1 - x0, y1 - y0)
+            elif getattr(obj, "is_pup", False) and getattr(obj, "body", None) is not None:
+                b = obj.body
+                rr = PUP_PICK_R + 4.0
+                p.drawEllipse(QPointF(b.chunk0.x, b.chunk0.y), rr, rr)
+                p.drawEllipse(QPointF(b.chunk1.x, b.chunk1.y), rr, rr)
             elif hasattr(obj, "bulb_x"):
                 p.drawEllipse(QPointF(obj.bulb_x, obj.bulb_y), LAMP_PICK_R, LAMP_PICK_R)
             else:

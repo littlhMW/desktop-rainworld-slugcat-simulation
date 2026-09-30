@@ -1423,9 +1423,35 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         pet.body.put_spear_on_back(sp)
 
     def remove_pet(self, pet):
-        """移除一只猫，成功返回 True。"""
+        """移除一只常规蛞蝓猫，成功返回 True（场上至少要留一只）。"""
         if len(self.pets) <= 1 or pet not in self.pets:
             return False
+        return self._remove_pet(pet)
+
+    def remove_pup(self, pet):
+        """移除一只幼崽。
+
+        幼崽不占常规蛞蝓猫名额，也不受「场上至少留一只猫」的保护 —— 删除模式
+        与「清除可交互实体」都要能把它清掉。
+        """
+        if not getattr(pet, "is_pup", False) or pet not in self.pets:
+            return False
+        return self._remove_pet(pet)
+
+    def clear_pups(self) -> int:
+        """清掉场上全部幼崽，返回清掉几只。
+
+        只在「清除可交互实体」里用；转生（clear_world_for_reincarnation）不清幼崽，
+        幼崽和成年猫一样整体复活。
+        """
+        n = 0
+        for pet in list(self.pets):
+            if getattr(pet, "is_pup", False) and self.remove_pup(pet):
+                n += 1
+        return n
+
+    def _remove_pet(self, pet):
+        """真正的卸载流程（守卫由 remove_pet / remove_pup 各自决定）。"""
         if getattr(pet, "controlled", False):
             self.stop_control()               # 先退出控制再移除
         self._drop_carried(pet)
