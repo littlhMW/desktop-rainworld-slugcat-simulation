@@ -255,6 +255,7 @@ PLATFORMS: list = []          # [(x0, y0, x1)] 逻辑坐标，y0＝顶边
 STEP_UP = 8.0                 # 比脚面高不过这么多的实心块算台阶（撑庇护所底墙 5.6px）
 SOLIDS: list = []             # [(x0, y0, x1, y1)] 实心 AABB（庇护所真墙体）
 CAT_SOLIDS: list = []         # 同 SOLIDS（猫与生物/物品同一套墙，只能从门洞进出）
+SPEAR_SOLIDS: list = []       # 明确定义为「墙壁条」且允许矛刺入的实心 AABB
 
 
 def set_platforms(rects) -> None:
@@ -267,21 +268,25 @@ def platforms() -> list:
     return PLATFORMS
 
 
-def set_solids(rects, cat_rects=None) -> None:
-    """由 window 每 tick 刷新：庇护所的墙（左墙/顶/外墙/内墙/关上的门）。
-
-    ``rects`` 给生物 / 物品 / 尸体（真房间）；``cat_rects`` 给蛞蝓猫 ——
-    现在与它同表（四面墙 + 走廊层缺口 + 关上的门）；单独留一张表是为了以后按角色分。
-    墙不会为了让寻路成功而关掉碰撞 —— 猫考「走廊层」进出，寻路层同步认得这些墙。
+def set_solids(rects, cat_rects=None, spear_rects=None) -> None:
+    """刷新实心墙体，并显式标记可以被矛刺入的「墙壁条」。
+    
+    ``rects`` 给所有实体做真实 AABB 碰撞；``cat_rects`` 保留猫的独立表；
+    ``spear_rects`` 是语义层：这些面就是 Wall 条，矛撞上应进入插墙状态。
     """
-    global SOLIDS, CAT_SOLIDS
+    global SOLIDS, CAT_SOLIDS, SPEAR_SOLIDS
     SOLIDS = list(rects or ())
     CAT_SOLIDS = list(cat_rects) if cat_rects is not None else list(SOLIDS)
+    SPEAR_SOLIDS = list(spear_rects) if spear_rects is not None else list(SOLIDS)
 
 
 def solids() -> list:
     return SOLIDS
 
+
+
+def spear_solids() -> list:
+    return SPEAR_SOLIDS
 
 def cat_solids() -> list:
     return CAT_SOLIDS
