@@ -22,12 +22,12 @@ _STR = {
 
     # —— setup_panel：首次导入面板 ——
     "setup_importing":   {"zh": "正在导入素材…", "en": "Importing assets…"},
-    "setup_hint_init":   {"zh": "首次启动需从你的游戏读取画面，请稍候",
-                          "en": "First launch needs to read the picture from your game, please wait"},
-    "setup_hint_busy":   {"zh": "首次启动需从你的游戏读取素材，请稍候。未来不再需要读取",
-                          "en": "First launch needs to read assets from your game, please wait. Won't be needed again in the future"},
-    "setup_hint_error":  {"zh": "点【选择 RainWorld 文件夹】手动指定：选中的文件夹里应能看到 RainWorld.exe 和 RainWorld_Data 文件夹",
-                          "en": "Click [Select RainWorld folder] to specify manually: the chosen folder should contain RainWorld.exe and the RainWorld_Data folder"},
+    "setup_hint_init":   {"zh": "首次启动需读取游戏素材，请稍候",
+                          "en": "First launch needs to import game assets, please wait"},
+    "setup_hint_busy":   {"zh": "首次启动需读取游戏素材，请稍候。之后无需重复导入",
+                          "en": "First launch imports game assets. This is only needed once"},
+    "setup_hint_error":  {"zh": "请选择 RainWorld 文件夹，里面应有 RainWorld.exe 和 RainWorld_Data",
+                          "en": "Select the RainWorld folder containing RainWorld.exe and RainWorld_Data"},
     "setup_quit":        {"zh": "退出", "en": "Quit"},
     "setup_pick":        {"zh": "选择 RainWorld 文件夹", "en": "Select RainWorld folder"},
     "setup_unexpected":  {"zh": "导入时发生意外错误：{e}", "en": "Unexpected error during import: {e}"},
@@ -89,7 +89,7 @@ _STR = {
     "hud_affection":{"zh": "心情", "en": "Mood"},
     "hud_cold":     {"zh": "寒冷", "en": "Cold"},
     "hud_op_hint":  {"zh": "右键蛞蝓猫或点击此行可操作",
-                     "en": "Right-click the slugcat or click this row to operate"},
+                     "en": "Right-click a cat or click its row"},
 
     # —— 皮名（variant 显示名） ——
     # 中文名统一采用官方译名表（僧侣/求生者/溪流/守望者/饕餮/怪猫/猎手/工匠/矛大师/圣徒）
@@ -128,8 +128,8 @@ _STR = {
     "settings_remove":       {"zh": "移除", "en": "Remove"},
     "settings_max_pets":     {"zh": "最多 10 只", "en": "At most 10 cats"},
     "settings_min_pets":     {"zh": "至少保留 1 只", "en": "Keep at least 1 cat"},
-    "settings_add_none":     {"zh": "这只猫没能建起来（详情见 error.log）",
-                              "en": "That cat could not be created (see error.log)"},
+    "settings_add_none":     {"zh": "添加失败（详见 error.log）",
+                              "en": "Could not add cat (see error.log)"},
     "settings_add_failed":   {"zh": "没能添加{variant}：{why}",
                               "en": "Could not add {variant}: {why}"},
     "settings_remove_confirm": {"zh": "确定移除 {name}？", "en": "Remove {name}?"},
@@ -147,7 +147,7 @@ _STR = {
                                  "en": "Storm blocks mouse clicks (no click-through)"},
     "settings_storm_block_tip": {
         "zh": "默认关闭：暴雨期间照样鼠标穿透，不挡你干活。开启后暴雨里点击不再落到桌面上（用来配合下一项点杀）。"
-              "屏幕最底下那一条（任务栏 / 托盘）任何时候都不会被挡。",
+              "",
         "en": "Off by default: the window stays click-through during a storm, so your work is never blocked. "
               "When on, clicks during a storm no longer reach the desktop (this is what makes the next option work). "
               "The strip at the very bottom of the screen (taskbar / tray) is never blocked either way."},
@@ -187,7 +187,7 @@ _STR = {
     "hud_resize_tip": {"zh": "拖动右下角可调整面板大小",
                        "en": "Drag the corner to resize the panel"},
     "hud_close_tip": {"zh": "关闭面板（Ctrl+Alt+H 可再打开）",
-                      "en": "Close panel (reopen with Ctrl+Alt+H)"},
+                      "en": "Reopen with Ctrl+Alt+H"},
 
     # —— HUD：名字旁的实时状态词（behavior/status.py 出 key）——
     "st_idle": {"zh": "发呆", "en": "Idle"},
