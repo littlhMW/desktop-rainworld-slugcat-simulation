@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 # 主状态 → i18n key
-# 猎杀类（飞虫 / 蜥蜴 / 爆米花 / 备好家伙的 FightThreat）统一显示成「猎杀」，
+# 捕猎类（飞虫 / 蜥蜴 / 爆米花 / 备好家伙的 FightThreat）统一显示成「捕猎」，
 # 「猎杀的是什么」交给下面的 _STATE_TARGET / _STATE_CTRL 第二段。
 _STATES = {
     "IdleStand": "st_idle",
@@ -38,6 +38,7 @@ _STATES = {
     "AngryStone": "st_angry_stone",
     "PyroMaul": "st_maul",
     "PyroRomp": "st_romp",
+    "Slam": "st_slam",
     "RivSnatch": "st_snatch",
     "RivFlip": "st_flip",
     "EatCob": "st_hunt_live",
@@ -112,9 +113,8 @@ _STATE_TARGET = {
     "CrawlAway": ("_crawl_from",),
     "FightThreat": ("_fight_target",),
     "RivFlip": ("_rf_pole",),
-    "AngryStone": ("_fight_target",),
-    "PyroMaul": ("_slam_target",),
-    "PyroRomp": ("_fight_target",),
+    "PyroRomp": ("_romp_x",),
+    "Slam": ("_slam_target",),
     "ClearCorpse": ("_clear_target",),
     "SeekWarmth": ("_warm_goal_obj",),
     "StormSeekShelter": ("_storm_goal_obj",),
@@ -130,15 +130,16 @@ _STATE_TARGET = {
     "TongueClimb": (),
 }
 
-# 状态 → 该态挂在控制器对象上的目标（取食器 / 抓虫器 / 猎虫器）
+# 状态 → 该态挂在控制器对象上的目标（取食器 / 抓虫器 / 猎虫器 / 投石器）
 _STATE_CTRL = {
     "FetchFruit": "fetch",
     "CatchFly": "flycatch",
     "HuntFly": "flyhunt",
+    "AngryStone": "stonethrow",
 }
 
 # 光标类：目标不是实体，直接给词
-_CURSOR_STATES = ("ChaseCursor", "CursorLick", "RivSnatch")
+_CURSOR_STATES = ("ChaseCursor", "CursorLick", "RivSnatch", "PyroMaul")
 
 
 def _target_obj(beh):

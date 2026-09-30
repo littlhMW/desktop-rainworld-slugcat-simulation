@@ -216,6 +216,7 @@ _STR = {
     "st_angry_stone": {"zh": "砸石头", "en": "Throwing stones"},
     "st_maul": {"zh": "撕咬", "en": "Mauling"},
     "st_romp": {"zh": "爆跳", "en": "Blast-jumping"},
+    "st_slam": {"zh": "震击", "en": "Slam"},
     "st_snatch": {"zh": "抢夺", "en": "Snatching"},
     "st_flip": {"zh": "后空翻", "en": "Backflipping"},
     "st_clear_corpse": {"zh": "拖尸", "en": "Hauling corpse"},
