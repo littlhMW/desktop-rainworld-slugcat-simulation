@@ -1779,21 +1779,14 @@ class SlugcatBody:
         ox, oy = _rot(sgn * CARRY_OFF_X * s, CARRY_OFF_Y * s, ang)
         return c0.x + ox, c0.y + oy
 
-    def _carry_anchor(self, side):
-        """携带物落点 + 这只手要不要被携带点驱动：(x, y, aimed)。
+    def _holding_on_pole(self):
+        """持物时是否正处于杆/吊顶动作；杆上的手由攀爬姿态接管。"""
+        return bool(self.bodyMode == "ClimbingOnBeam" or self.on_pole or self.ceil_cling)
 
-        原版 Player.cs:5984-5990：轻物每帧被搬到 hands[i].pos（**物跟手**）；
-        而 SlugcatHand.EngageInMovement 在 ClimbingOnBeam 时自己抓杆并 return false
-        （SlugcatHand.cs:41-74 的 flag 分支整段跳过 HuntRelativePosition），
-        手不跟物。旧实现反过来把手钉在携带点上 ⇒ 爬杆时那只手不抓杆、拉着东西
-        僵在半空（左手持物爬杆最明显）。这里改成原版方向：物跟手。
-        """
+    def _carry_anchor(self, side):
+        """稳定的持物锚点；不读取可能滞后的 hand_pos。"""
         cx, cy = self._carry_pos(side)
-        if self.bodyMode == "ClimbingOnBeam":
-            hp = self.hand_pos.get(side)
-            if hp is not None:
-                return hp[0], hp[1], False
-        return cx, cy, True
+        return cx, cy, not self._holding_on_pole()
 
     def reach_for(self, fruit, side):
         """Aim hand at fruit; clear opposite side (only one hand reaches)."""
@@ -1978,8 +1971,11 @@ class SlugcatBody:
         cx, cy, aimed = self._carry_anchor(side)
         s.last_x, s.last_y = s.x, s.y
         s.last_rotation = s.rotation_deg
+        s.rotation_deg = s.last_rotation
+        s.spin = 0.0
         s.x, s.y = cx, cy
-        self._aim_hand(side, cx if aimed else None, cy if aimed else None)
+        if not self._holding_on_pole():
+            self._aim_hand(side, cx if aimed else None, cy if aimed else None)
 
     # ── 矛（原版 Spear：玩家持矛时杆斜指前上方，掷出后走弹道）──
     def grab_spear(self, spear, side=None, arm=True):
@@ -2062,12 +2058,10 @@ class SlugcatBody:
         """
         fdir = 1.0 if self.facing >= 0 else -1.0
         if self.on_pole:
-            dx = self.chunk0.x - self.chunk1.x
-            dy = -abs(self.chunk0.y - self.chunk1.y)     # 体轴朝上（y↓）
-            if abs(dx) < 1e-6 and abs(dy) < 1e-6:
-                dx = fdir
-                dy = -up_frac
-            return _ang_from_up(dx, dy)
+            # 杆上不要用两个 chunk 的瞬时 dx 算角度；它会在抓杆/摆动时左右翻转。
+            if self.animation in ("StandOnBeam", "HangFromBeam", "GetUpOnBeam"):
+                return 90.0 if fdir > 0 else 270.0
+            return 0.0
         wob = 0.0
         if self.is_moving():
             wob = math.cos(self.stride_phase * 2.0 * math.pi * self.walk_bob_freq) * 4.0
@@ -2176,9 +2170,13 @@ class SlugcatBody:
             cx, cy, aimed = self._carry_anchor(side)
             sp.last_x, sp.last_y = sp.x, sp.y
             sp.x, sp.y = cx, cy
-            sp.last_angle = sp.angle_deg
-            sp.angle_deg = self.spear_hold_angle()
-            self._aim_hand(side, cx if aimed else None, cy if aimed else None)
+            sp.spin = 0.0
+            sp.spinning = False
+            hold_angle = self.spear_hold_angle()
+            sp.last_angle = hold_angle
+            sp.angle_deg = hold_angle
+            if not self._holding_on_pole():
+                self._aim_hand(side, cx if aimed else None, cy if aimed else None)
         bs = self.back_spear
         if bs is not None:
             bx, by, bang = self._back_spear_pose()
