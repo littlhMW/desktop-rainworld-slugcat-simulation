@@ -7562,13 +7562,10 @@ class BehaviorFSM:
         free = b.free_hand()
         if free is not None:
             return free                  # 有手空着：直接进那只手（原版 FreeHand()）
+        # Spearmaster 只允许双手各持一支；背槽是 Hunter 专属，不参与尾针容量。
         if self._own_needle_count() >= tuning.SPEARMASTER_NEEDLE_HOLD:
-            return None                  # 两手 + 背上都是自己的活针：不再长
-        if not any(self._own_needle(sp) for sp in b.hand_spears.values()):
-            return None                  # 两只手里都不是自己的活针：不让位
-        if self._own_needle(b.back_spear):
-            return None                  # 背上已经是自己的活针
-        return "back"
+            return None
+        return None
 
     def _tail_needle_tick(self):
         """矛大师：尾巴自己长针（原版 SpearMaster 的独占能力）。
@@ -7669,13 +7666,8 @@ class BehaviorFSM:
         if slot == "back":
             # 两手都攥着自己的活针：先把一支挪到背上腾出手（原版 SpearToBack），
             # 新针还是落进腾出来的那只手。
-            side = next((s for s in ("r", "l")
-                         if self._own_needle(b.hand_spears.get(s))), None)
-            if side is None:
-                self._tail_needle_cd = tuning.TAIL_NEEDLE_CD
-                return
-            b.put_spear_on_back(b.hand_spears[side])
-            slot = side
+            self._tail_needle_cd = tuning.TAIL_NEEDLE_CD
+            return
         self._tail_needle_burst()          # 拔出那一瞬的溅射（Player.cs:10025-10035）
         tx, ty = b.chunk1.x, b.chunk1.y
         segs = getattr(getattr(self.win, "tail", None), "segs", None)
@@ -7801,7 +7793,7 @@ class BehaviorFSM:
     def _own_needle_count(self) -> int:
         """「两手 + 背上」还连着的白针有几根（上限＝两只手各一支 + 背上一支）。"""
         b = self.body
-        return sum(1 for sp in list(b.hand_spears.values()) + [b.back_spear]
+        return sum(1 for sp in b.hand_spears.values()
                    if self._own_needle(sp))
 
     def _itemplay_fling(self):
