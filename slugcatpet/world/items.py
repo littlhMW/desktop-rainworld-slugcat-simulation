@@ -227,6 +227,21 @@ def _needle_feed_amount(obj) -> float:
     return NEEDLE_FEED_DEFAULT
 
 
+def _spear_should_protect_pet(sp, victim) -> bool:
+    """AI/玩耍用矛的同伴保护：中性或友好关系不允许即死。"""
+    owner = getattr(sp, "thrower", None)
+    if owner is None or owner is victim:
+        return False
+    beh = getattr(owner, "behavior", None)
+    if beh is not None and getattr(beh, "state", None) == "ItemPlay":
+        return True
+    try:
+        from ..behavior.relationship import relations_for
+        return relations_for(owner).hostility_to(victim) < 0.60
+    except Exception:
+        return True
+
+
 def _weapon_owner(w):
     """投掷物的掷出者 uid（原版 Weapon.thrownBy；成体面条蝇的 tempLike 记账用）。"""
     owner = getattr(w, "thrower", None)
@@ -2933,11 +2948,18 @@ class ItemInteractionMixin:
                         self._friendly_fire(getattr(sp, "thrower", None), pet)
                         died, stun = _pet_stun_death(dmg, SPEAR_STUN_BONUS)
                         stun = int(stun * STUN_SCALE)
-                        self._spear_needle_feed(sp, pet, bool(b.dead))   # 骨矛吸食活物
-                        if died:
-                            pet.behavior.kill()
+                        if _spear_should_protect_pet(sp, pet):
+                            # 玩耍/同伴命中仍有撞击与眩晕反馈，但禁止即死。
+                            self._spear_needle_feed(sp, pet, False)
+                            pet.behavior.apply_stun(max(12, min(stun, 70)))
+                            sp.vx *= -0.25
+                            sp.vy *= 0.25
                         else:
-                            pet.behavior.apply_stun(stun)
+                            self._spear_needle_feed(sp, pet, bool(b.dead))
+                            if died:
+                                pet.behavior.kill()
+                            else:
+                                pet.behavior.apply_stun(stun)
                         self._shake[0] += 1.6 * (1.0 if sp.vx >= 0.0 else -1.0)
                         self._shake[1] += 1.1
                         sp.vx = sp.vy = 0.0
