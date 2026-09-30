@@ -1894,17 +1894,34 @@ class ItemInteractionMixin:
         draw_lizard(p, self.atlas, lz, 1.0)
         p.restore()
 
+    def _pup_next_index(self) -> int:
+        """下一个要放的幼崽编号（最低空位）：预览和真正生成共用同一个。"""
+        used = {p.index for p in self.pets}
+        k = 0
+        while k in used:
+            k += 1
+        return k
+
     def _pup_hint_object(self):
-        """放置预览用的一次性幼崽：只有身体 + 图形，不建行为层、不进 self.pets。"""
+        """放置预览用的一次性幼崽：只有身体 + 图形，不建行为层、不进 self.pets。
+
+        身份用**即将生成的那一只**（``pup-{k}``，k = 预留编号）：体色 / 瞳色 /
+        体型都由 ``pup_appearance(_pers_seed(pet_id, ...))`` 决定，旧实现预览用
+        "pup-preview" ⇒ 预览和真正落下的那只必然不是同一只（用户报的「预览没有
+        显示真实会生成的猫崽外貌」）。
+        """
         got = getattr(self, "_pup_preview", None)
         if got is not None:
             return got
         from ..petunit import PetUnit
         from ..window import PUP_VARIANT
+        k = getattr(self, "_pup_pending", None)
+        if k is None:
+            k = self._pup_next_index()
         init_state = {"energy": 1.0, "temper": 0.0, "food": tuning.FOOD_INIT,
                       "karma": tuning.KARMA_INIT, "cold": 0.0}
         try:
-            pup = PetUnit(self, -99, "pup-preview", PUP_VARIANT, init_state,
+            pup = PetUnit(self, k, f"pup-{k}", PUP_VARIANT, init_state,
                           spawn_x=self._WL * 0.5, spawn_y=self._HL, preview=True)
         except Exception as exc:
             log_error("slugpup preview build failed: %r" % (exc,))
@@ -1954,10 +1971,11 @@ class ItemInteractionMixin:
         from ..window import PUP_VARIANT
         if not self.can_place_slugpup():
             return None
-        used = {p.index for p in self.pets}
-        k = 0
-        while k in used:
-            k += 1
+        k = getattr(self, "_pup_pending", None)
+        if k is None or any(p.index == k for p in self.pets):
+            k = self._pup_next_index()           # 预留编号被占用了就重挑
+        self._pup_pending = None
+        self._pup_preview = None
         init_state = {"energy": 1.0, "temper": 0.0, "food": tuning.FOOD_INIT,
                       "karma": tuning.KARMA_INIT, "cold": 0.0}
         pet = PetUnit(self, k, f"pup-{k}", PUP_VARIANT, init_state,
@@ -1972,6 +1990,9 @@ class ItemInteractionMixin:
     def enter_place_slugpup_mode(self):
         if not self.can_place_slugpup():
             return False
+        # 进放置模式就先定下这一只的身份：预览与最终生成共用，取消则丢弃。
+        self._pup_pending = self._pup_next_index()
+        self._pup_preview = None
         self._place_mode = True
         self._place_kind = "slugpup"
         self._begin_place_capture()
@@ -2005,6 +2026,8 @@ class ItemInteractionMixin:
         self._place_kind = None
         self._slime_preview = None
         self._pole_drag_start = None
+        self._pup_pending = None       # 取消放置：丢掉预留的幼崽身份
+        self._pup_preview = None
         hk = getattr(self, "_hotkey_filter", None)
         if hk is not None:
             hk.unregister(HK_PLACE_ESC)
@@ -2577,25 +2600,32 @@ class ItemInteractionMixin:
                 out.append((st, False))
         return out
 
+    def _prune_weapon_seen(self, weapons):
+        """每 tick 清一次「已经不在飞的武器」条目（旧实现每只虫各清一遍）。"""
+        seen = getattr(self, "_nw_weapon_seen", None)
+        if not seen:
+            return
+        live = {id(w) for w, _ in weapons}
+        for key in [k for k in seen if k not in live]:
+            del seen[key]                      # __slots__ 挂不了属性：用 id 字典
+
     def _needleworm_dodge(self, nw, weapons):
         """Weapon.cs:286-294：投掷物每 tick 通知成体（120px 内掠过记一次攻击事件）。"""
         seen = getattr(self, "_nw_weapon_seen", None)
         if seen is None:
             seen = self._nw_weapon_seen = {}
-        live = set()
+        r2 = NW_ATTEMPT_DIST * NW_ATTEMPT_DIST
         for w, lethal in weapons:
-            d = math.hypot(w.x - nw.x, w.y - nw.y)
-            if d > NW_ATTEMPT_DIST:
+            dx, dy = w.x - nw.x, w.y - nw.y
+            if dx * dx + dy * dy > r2:         # 平方比较：省掉每对一次 hypot
                 continue
-            key = id(w)
-            live.add(key)
-            logged = seen.setdefault(key, set())
+            logged = seen.get(id(w))
+            if logged is None:
+                logged = seen[id(w)] = set()
             if id(nw) not in logged:
                 logged.add(id(nw))
                 nw.weapon_attempt(_weapon_owner(w), lethal)
             nw.on_flying_weapon(w.x, w.y, w.vx, w.vy)
-        for key in [k for k in seen if k not in live]:
-            del seen[key]                      # __slots__ 挂不了属性：用 id 字典
 
     def _needleworm_hit(self, nw, ev, lethal):
         """成体獠牙命中结算：刺 = 1.22 必死；戳 = 0.05 眩晕 + 掉手上东西。"""
@@ -2649,6 +2679,7 @@ class ItemInteractionMixin:
         cats = self._needleworm_cats()
         adults = [nw for nw in self.needleworms if nw.age == AGE_BIG]
         weapons = self._flying_weapons()
+        self._prune_weapon_seen(weapons)
         born = []
         for nw in self.needleworms:
             nw._impact_cb = self._shake_impact
@@ -3415,7 +3446,8 @@ class ItemInteractionMixin:
                         fade=float(getattr(sp, "needle_fade", 0)) / NEEDLE_FADE_MAX,
                         live=bool(getattr(sp, "needle_live", False)),
                         pivot_at_tip=bool(sp._thrown or sp.stuck_to is not None),
-                        length=SPEAR_DRAW_LEN)
+                        length=SPEAR_DRAW_LEN,
+                        pinned=bool(getattr(sp, "pinned", False)))
         else:
             draw_spear(p, self.atlas, x, y, ang, length=SPEAR_DRAW_LEN)
 

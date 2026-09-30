@@ -68,8 +68,27 @@ def _dir(ax, ay, bx, by):
     return (dx / d, dy / d) if d > 1e-6 else (0.0, -1.0)
 
 
+_PAL_CACHE = {}
+
+
 def palette(nw):
-    """NeedleWormGraphics.cs:722-787 ApplyPalette → (body, highlight, details, eye)。"""
+    """NeedleWormGraphics.cs:722-787 ApplyPalette → (body, highlight, details, eye)。
+
+    结果只由 (hue, lightness, hue_div, cos_bools) 决定，而这四项在 __init__ 之后
+    就不再变 —— 缓存下来，别每帧每只虫把整条 HSL/RGB 重算一遍。
+    """
+    key = (nw.hue, nw.lightness, nw.hue_div, tuple(nw.cos_bools))
+    got = _PAL_CACHE.get(key)
+    if got is not None:
+        return got
+    out = _palette_calc(nw)
+    if len(_PAL_CACHE) > 512:
+        _PAL_CACHE.clear()
+    _PAL_CACHE[key] = out
+    return out
+
+
+def _palette_calc(nw):
     num = nw.hue + 0.478
     light = nw.lightness
     body = _rgb(num, _lerp_map(light, 0.5, 1.0, 0.9, 0.5), lerp(0.1, 0.8, light * light))

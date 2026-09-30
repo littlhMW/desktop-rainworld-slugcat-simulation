@@ -14,7 +14,7 @@ SIDE_OFF = 5.0
 TIP_ENTER_PAD = 3.0
 TIP_TIMEOUT = 1200
 DESCEND_TIMEOUT = 400
-ARC_R = 17.0
+ARC_R = 17.0        # 兜底值；真实值取 body._conn_stand（幼崽 12 / 成年 17）
 
 
 class PoleClimber:
@@ -143,6 +143,16 @@ class PoleClimber:
         self.phase = "tip"
         self.tip_ticks = 0
 
+    @property
+    def arc_r(self) -> float:
+        """杆顶支撑半径 = 这只猫真实的胸胯距离（幼崽 12 / 成年 17）。
+
+        旧实现把 ARC_R 硬写成 17：幼崽上杆后两个 chunk 被摆到 17px 间距，解钉
+        时距离约束又把这点误差当冲量吃下去 —— 身体被拉长 / 变形（用户报的
+        「竖杆让蛞蝓猫变形」）。
+        """
+        return float(getattr(self.body, "_conn_stand", ARC_R) or ARC_R)
+
     def _snap_axis(self):
         """两 chunk 摆回杆轴（上身顶端正上方 ARC_R 处）。
 
@@ -155,7 +165,7 @@ class PoleClimber:
         c1.y = self.pole.top_y
         c1.vx = c1.vy = 0.0
         c0.x = self.pole.x
-        c0.y = self.pole.top_y - ARC_R
+        c0.y = self.pole.top_y - self.arc_r
         c0.vx = c0.vy = 0.0
 
     def _drive_tip(self, want_dismount):
@@ -175,10 +185,11 @@ class PoleClimber:
         if self.balance_counter > tuning.BAL_COUNTER_WRAP:
             self.balance_counter -= tuning.BAL_COUNTER_WRAP
         sway = math.sin(self.balance_counter / tuning.BAL_COUNTER_WRAP * 2.0 * math.pi)
+        arc = self.arc_r
         lean = sway * (self.disbalance + 20.0) * tuning.BAL_SWAY_X
-        lean = max(-ARC_R + 1.0, min(ARC_R - 1.0, lean))
+        lean = max(-arc + 1.0, min(arc - 1.0, lean))
         c0.x = px + lean
-        c0.y = top - math.sqrt(max(1.0, ARC_R * ARC_R - lean * lean))
+        c0.y = top - math.sqrt(max(1.0, arc * arc - lean * lean))
         c0.vx = c1.vx = 0.0
         self.gfx.disbalance = self.disbalance
         self.gfx.balance_counter = self.balance_counter

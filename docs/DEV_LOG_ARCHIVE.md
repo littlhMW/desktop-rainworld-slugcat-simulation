@@ -4,6 +4,50 @@
 
 ## 2026-10-01
 
+### R132 · 地形分类断根 + 骨针/矛成杆/杆顶弧/竖直扫掠/蜥蜴比例/猫崽预览/面条蝇性能
+
+- **地形分类断根**（`world/terrain.py`）：以后任何 AI 都不许再「看起来像一条竖线就当杆」。
+  - `vpoles()` = 真竖杆 + **窗口自己的左右边缘** `(0,0,hl)` / `(wl,0,hl)`；不再把
+    `win.wall_surfaces` 塞进 pole —— 那是「墙壁被当成杆子爬」的根源（用户报）。
+  - `walls()` = 庇护所竖实心条 + `win.wall_surfaces` 的可见墙段：**背景墙是墙，不是杆**。
+  - `_build_graph`：竖线节点 `stand = can`（`caps.wall_climb / pole_climb`）——不会爬杆的
+    品种（绿 / 焦糖蜥）不再把竖线当落脚点（用户报「掉落时判定站在杆子上」）。
+- **骨针生命周期**：`needle_tick` 在针被拿起（CARRIED/MOUSE、held_by、stuck_to）时不再褪
+  ——旧实现褪尽那一 tick 会把**手里这根**直接标 GONE，就是「点一下（捡起来）就立刻消失」。
+  `draw_needle` 褪到 0 且不是杆时**直接不画**（旧实现 clamp 到 0.01，画成几乎纯黑 = 「隐形
+  但没有消失」）；钉成杆的针照旧留着（新增 `pinned` 参数）。
+- **矛扎墙按角度成杆**（`world/spear.py`）：`pinned` 与「这一撞算不算扎进去」拆开。判定改
+  用**矛轴（尾→尖）vs 表面法线**（`EMBED_AXIS_COS`，30° 锥，原版 `ContactPoint == throwDir`
+  口径）：尖头正对墙面 → `embed_in_bar` → 杆；横着拍 / 从上往下蹭到顶面 → 新增的
+  `lodge_in_surface()`（插住、保持撞上角度、**可拔出来**、不注册杆）。没掷出的矛蹭到墙
+  也只停住不成杆 —— 旧实现「顶面无条件插住 + 没掷出的也插住」才是「矛到墙必定成杆」。
+- **杆顶弧半径**（`behavior/pole_climb.py`）：删掉硬编码 `ARC_R=17`，改 `PoleClimber.arc_r`
+  读这只猫真实的 `body._conn_stand`（幼崽 12 / 成年 17）。旧实现把幼崽两个 chunk 摆到 17px
+  间距，解钉时距离约束把误差当冲量吃下去 → 变形。
+- **通用竖直扫掠**（`core/chunkphys.py`）：新增 `sweep_drop_top(...)`（任何圆点可复用），
+  `_solid_blocks` 的落顶补判改用**这一帧真实位移**（不再看 `vy`，位置被外部写过时 vy 可能
+  是 0）并补上「往上穿底边」的对称分支；蜥蜴 `_collide_solids(prev_y)` 与软体头
+  `_step_head_point` 接同一份扫掠 —— 修「从墙上方杆子落下来穿透壁」「从杆上摔下穿墙」。
+- **蜥蜴地面查询带能力**（`world/lizard.py::_ground_y` 传 `self.caps`）：无杆能力品种不再把
+  横杆杆面当成地面。
+- **蜥蜴视觉比例**（`world/lizard_gfx.py`）：新增 `BODY_VIS_SQUASH=0.90` /
+  `TAIL_VIS_STRETCH=1.22` / `TAIL_VIS_TAPER=0.14`，**只变形 spine**（躯干绕臀压短、尾巴从
+  臀后拉长、尾梢收细更慢）。物理长度 / 碰撞半径 / 咬合范围一律不动，腿按物理位置画。
+- **猫崽放置预览**（`world/items.py`）：进放置模式就先定下这一只的身份（`_pup_pending` =
+  最低空位 k），预览与 `place_slugpup()` 共用 `pup-{k}`（外观由
+  `pup_appearance(_pers_seed(pet_id, ...))` 决定，旧实现预览用 "pup-preview" ⇒ 必然不是同一只）；
+  取消放置丢弃预留身份。
+- **面条蝇性能**（`world/needleworm_gfx.py` / `world/needleworm.py` / `world/items.py`）：
+  - `palette(nw)` 按 `(hue, lightness, hue_div, cos_bools)` 缓存（这四项 `__init__` 后不再变），
+    不再每帧每只重算整条 HSL/RGB。
+  - `_nw_weapon_seen` 的清理从「每只虫各扫一遍」改成每 tick 一次 `_prune_weapon_seen()`；
+    距离判定改平方比较（省每对一次 `hypot`）。
+  - `_step_big` 同族扫描：平方距离 + 只有赢家才 `_cat_from_other()` 建目标字典。
+  - `even_out_temps` 新增 `_temp_moving` 计数：表里全部收敛就直接返回，不再每只虫每 tick
+    把整张会无限增长的表扫一遍（`influence_temp_like / influence_like` 置脏）。
+- 回归：口径更新 `e2e_r126`（矛扎墙必须设出手点 `_throw_x/_throw_y`；尖头朝墙里 = 90°），
+  新增 `e2e_r127`（本轮 7 组行为），全量 **116 个脚本 fails=0**。
+
 ### R129 · 蜥蜴身体拓扑重排（3 核心 body chunk + 视觉头）+ 白蜥伪装常态化
 
 - 蜥蜴身体拓扑改成原版形状：**3 个核心 body chunk 是驱动体**，头（含下颚 / 眼睛 / 牙）

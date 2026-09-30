@@ -424,19 +424,23 @@ class TerrainQuery:
         return out
 
     def vpoles(self):
-        """竖杆 + 窗口左右竖边：``(x, top, bot)``（top < bot）。
+        """竖杆 + 窗口左右边缘：``(x, top, bot)``（top < bot）。
 
-        用户口径：**窗口左右的边缘不应该被视作墙壁，应该被视作杆子** ——
-        它们和杆一样是可抓可爬的竖线，而不是「背景墙」。
+        用户口径：**窗口左右的边缘不是墙壁，是杆子** —— 它们和杆一样是可抓可爬的
+        竖线（旧实现没把它们算进来，于是「窗口边缘爬不了」）。反过来，**背景墙
+        （别人窗口露出来的竖边）不是杆**（那是 ``walls``）——旧实现把
+        ``wall_surfaces`` 也塞在这里，于是「墙壁被当成杆子爬」。
         """
+        wl = float(getattr(self.win, "_WL", 0.0) or 0.0)
+        hl = float(getattr(self.win, "_HL", 0.0) or 0.0)
         out = []
         for pl in self._poles():
             if getattr(pl, "kind", None) != VERTICAL:
                 continue
             out.append((float(pl.x), min(pl.ay, pl.by), max(pl.ay, pl.by)))
-        for ws in getattr(self.win, "wall_surfaces", ()) or ():
-            for top, bot in ws.segments:
-                out.append((float(ws.x), float(top), float(bot)))
+        if wl > 1.0 and hl > 1.0:
+            out.append((0.0, 0.0, hl))            # 左边缘
+            out.append((wl, 0.0, hl))             # 右边缘
         return tuple(out)
 
     def hpoles(self):
@@ -451,9 +455,11 @@ class TerrainQuery:
     def walls(self):
         """真正的竖直墙面：``(x, top, bot)``。
 
-        用户口径：窗口左右边缘改当杆（见 ``vpoles``）之后，这一族只剩庇护所
-        那几条**立着的**墙壁条（顶/底那两条扁平的实心条不算竖墙）。这样
-        蓝 / 白 / 鳗鱼蜥才有东西可爬，庇护所墙也同时成了所有生物的地形。
+        来源两类，都是**墙**不是杆：
+          ① 庇护所那几条**立着的**墙壁条（顶/底那两条扁平的实心条不算竖墙）；
+          ② 别人窗口左右竖边露出来的可见墙段（``world.walls.WallSurface``）。
+        只有 ``WallClimber`` 品种（蓝 / 白 / 鳗鱼蜥，``breed.climb_wall``）能把
+        它们当楼梯；不会爬墙的品种连站都不能站在它们上面。
         """
         from ..core import chunkphys
         out = []
@@ -462,6 +468,9 @@ class TerrainQuery:
                 continue                      # 扁平条（顶墙 / 底墙）：不是竖墙
             out.append((float(x0), float(y0), float(y1)))
             out.append((float(x1), float(y0), float(y1)))
+        for ws in getattr(self.win, "wall_surfaces", ()) or ():
+            for top, bot in ws.segments:
+                out.append((float(ws.x), float(top), float(bot)))
         return tuple(out)
 
     def climb_surfaces(self):
@@ -621,17 +630,23 @@ class TerrainQuery:
             if bot - top < 8.0:
                 continue
             can = (caps.wall_climb if kind == "wall" else caps.pole_climb)
-            nf = add_node(x, bot, stand=True, line=kind, top=top, bot=bot)
-            nh = add_node(x, top, stand=True, line=kind, top=top, bot=bot)
-            vnodes.append((nf, x, bot))
-            vnodes.append((nh, x, top))
+            # 竖线不是地板：只有「能抓住这条竖线」的品种才把它当可站面
+            # （原版竖杆/墙 tile 是 Climb / Wall accessibility，不是 Floor）。
+            # 旧实现无条件 stand=True —— 绿蜥等无杆能力品种在导航层把竖线当
+            # 落脚点，于是「掉下来还判定站在杆上」。
+            nf = add_node(x, bot, stand=can, line=kind, top=top, bot=bot)
+            nh = add_node(x, top, stand=can, line=kind, top=top, bot=bot)
+            vnodes.append((nf, x, bot, can))
+            vnodes.append((nh, x, top, can))
             if can:
                 c = (bot - top) / max(0.5, caps.climb_speed) + CLIMB_COST
                 link(nf, nh, "climb_" + kind, c, (top, bot, 1, x))
                 link(nh, nf, "climb_" + kind, c, (top, bot, -1, x))
 
         # ③ 面 ↔ 竖线端点：走过去就能抓（原版 Floor→Wall 那条连接）
-        for (nv, vx, vy) in vnodes:
+        for (nv, vx, vy, vcan) in vnodes:
+            if not vcan:
+                continue          # 不会爬这条竖线的品种：走不到「杆上 / 墙上」去
             for row in span_anchors:
                 for (na, ax) in row:
                     if abs(ax - vx) > caps.climb_reach:
@@ -645,9 +660,9 @@ class TerrainQuery:
         stand = []
         for row in span_anchors:
             stand.extend(row)
-        stand.extend((n, x) for (n, x, _y) in vnodes)
+        stand.extend((n, x) for (n, x, _y, vcan) in vnodes if vcan)
         sy = dict(node_y)
-        for (n, _x, _y) in vnodes:
+        for (n, _x, _y, _c) in vnodes:
             sy[n] = nodes[n].y
 
         # 粗筛（原版 MovementConnection 也是按 tile 层找，不是全场两两比）：
@@ -695,14 +710,16 @@ class TerrainQuery:
         if caps.pole_climb or caps.wall_climb or caps.wall_jump:
             vx_sorted = sorted(vnodes, key=lambda p: p[1])
             for i in range(len(vx_sorted)):
-                a, ax, ay = vx_sorted[i]
+                a, ax, ay = vx_sorted[i][0], vx_sorted[i][1], vx_sorted[i][2]
                 for j in range(i + 1, len(vx_sorted)):
-                    b, bx, by = vx_sorted[j]
+                    b, bx, by = vx_sorted[j][0], vx_sorted[j][1], vx_sorted[j][2]
                     d = bx - ax
                     if d > caps.hop_dx:
                         break                     # 再往后只会更远
                     if d < 1.0 or abs(by - ay) > HOP_DY:
                         continue
+                    if not (vx_sorted[i][3] and vx_sorted[j][3]):
+                        continue          # 用不了的竖线不参与「挪过去」的连接
                     link(a, b, HOP, 1.2, (None, None, 1, None), both=False)
                     link(b, a, HOP, 1.2, (None, None, -1, None), both=False)
 

@@ -1484,7 +1484,7 @@ class Lizard:
         tq = self.terrain
         if tq is None:
             return HL
-        return tq.support(self.x, self.y, HL)
+        return tq.support(self.x, self.y, HL, self.caps)
 
     def _route_tick(self, o, WL, HL) -> bool:
         """执行地形路线（MovementConnection 多段）的当前这一段。
@@ -1564,7 +1564,7 @@ class Lizard:
             return self._ground
         return self.terrain.floor_under(x, y, self.caps)
 
-    def _collide_solids(self) -> None:
+    def _collide_solids(self, prev_y=None) -> None:
         """庇护所墙壁（chunkphys.solids）对蜥蜴也是实心地形。
 
         用户口径：庇护所的墙要正确传给其它生物判定碰撞，尤其是蜥蜴。以前蜥蜴
@@ -1581,6 +1581,19 @@ class Lizard:
             return _push_out(px, py, r, rects, step_up)
 
         r = self.head_rad
+        # ① 竖直扫掠补判：这一帧整条身体从障碍顶边上方跨到下方时，先把它接回
+        #    顶面。单点 push-out 会因为「已经整个越过去」漏判 —— 用户报的
+        #    「从墙上方杆子落下来穿透壁」。
+        if prev_y is not None:
+            top = chunkphys.sweep_drop_top(self.x, r, prev_y, self.y, rects)
+            if top is not None:
+                dy = (top - r) - self.y
+                self.y = top - r
+                for s in self.seg:
+                    s.y += dy
+                if self.vy > 0.0:
+                    self.vy = 0.0
+                self._contact_floor = True
         nx_, ny_ = _push(self.x, self.y, r)
         if nx_ != self.x:
             if (nx_ - self.x) * self.vx < 0.0:
@@ -1644,10 +1657,11 @@ class Lizard:
             self.vy -= GRAVITY * 0.7 * self.room_gravity        # 浮力抵掉大部分重力
             self.vy *= 0.93
             self.vx *= 0.95
+        py = self.y
         self.x += self.vx
         self.y += self.vy
         self._collide_static_lines(WL)
-        self._collide_solids()
+        self._collide_solids(py)
 
         r = self.head_rad
         # 转身时上半身支起：支起量现在抬的是「挂在体前的头」（_step_head_point），
@@ -3130,6 +3144,11 @@ class Lizard:
         from ..core import chunkphys
         rects = chunkphys.solids()
         if rects:
+            top = chunkphys.sweep_drop_top(self.head_x, r, self.head_ly,
+                                          self.head_y, rects)
+            if top is not None:                  # 头也会穿透薄墙：同一份扫掠
+                self.head_y = top - r
+                self.head_vy = 0.0
             self.head_x, self.head_y = _push_out(
                 self.head_x, self.head_y, r, rects,
                 getattr(chunkphys, "STEP_UP", 8.0))

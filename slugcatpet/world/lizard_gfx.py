@@ -29,6 +29,12 @@ from ..rendering.primitives import _qcolor
 
 HEAD_KEY = "base"
 
+# 视觉变形系数（**只影响绘制**：物理长度 / 碰撞半径 / 咬合范围一律不动）
+# 用户口径：身体画短点、尾巴再长一点重一点。
+BODY_VIS_SQUASH = 0.90      # 躯干绕臀部沿体轴压短 10%
+TAIL_VIS_STRETCH = 1.22     # 尾巴从臀后延长 22%
+TAIL_VIS_TAPER = 0.14       # 尾梢收细系数（原 0.30 → 收细更慢 = 更粗更重）
+
 
 def head_row(lz, ts: float) -> int:
     """头片行号 num14（原版 LizardGraphics.DrawSprites：3 - int(|num| * 3.9)）。
@@ -190,8 +196,20 @@ def draw_lizard(p, atlas, lz, ts: float) -> None:
             r *= (0.94, 1.06, 1.00)[min(k, 2)]
         elif n_tail:                         # 尾梢收细（二次曲线，避免长楔形）
             t = (k - n_body + 1) / float(n_tail)
-            r *= 1.0 - 0.30 * t * t
+            r *= 1.0 - TAIL_VIS_TAPER * t * t
         rads.append(r)
+    # 视觉变形：躯干绕臀部沿体轴压短、尾巴从臀后拉长（见文件头常量）。
+    # 只动 spine —— 尾巴/躯干带和花纹都读 spine，腿按物理位置画（位移 ≤ 3px，
+    # 看不出来），头点跟着 spine[0] 一起走。
+    if n_body >= 1 and n_tail >= 1 and n_body < len(spine):
+        hipx, hipy = spine[n_body]
+        for k in range(len(spine)):
+            kk = BODY_VIS_SQUASH if k <= n_body else TAIL_VIS_STRETCH
+            px, py = spine[k]
+            spine[k] = (hipx + (px - hipx) * kk, hipy + (py - hipy) * kk)
+        hx, hy = spine[0]
+        if len(spine) > 1:
+            s0x, s0y = spine[1]
 
     jaw = lerp(lz.last_jaw, lz.jaw, ts)
     # 头片朝向 = AI 算出的注视角（原版 num12 = aim(颈→头)，头部由 head 绳索 + look 混合驱动）。

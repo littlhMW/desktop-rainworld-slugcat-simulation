@@ -256,7 +256,7 @@ class NeedleWorm:
                  "hue", "lightness", "hue_div", "fatness", "wings_size",
                  "legs_fac", "snout_len", "cos_bools",
                  # 关系（SocialMemory）
-                 "temp_like", "like", "close_flags", "hold_child",
+                 "temp_like", "like", "close_flags", "hold_child", "_temp_moving",
                  # 成体攻击
                  "attack_counter", "attack_ready", "charging_attack", "swish_dir",
                  "swish_counter", "stuck_pos", "stuck_dir", "stuck_time", "stuck_ticks",
@@ -321,6 +321,7 @@ class NeedleWorm:
         # ── 关系（SocialMemory）：key = 对方 uid ──
         self.temp_like = {}
         self.like = {}
+        self._temp_moving = 0               # tempLike 里还有几项没收敛（0=跳过整表扫描）
         self.close_flags = {}               # NeedleWormTrackState.close
         self.hold_child = {}                # NeedleWormTrackState.holdingChild
         # ── 成体攻击 ──
@@ -543,9 +544,11 @@ class NeedleWorm:
     # ── 关系（SocialMemory + BigNeedleWormAI.UpdateDynamicRelationship）──
     def influence_temp_like(self, uid, change: float) -> None:
         self.temp_like[uid] = clampf(self.temp_like.get(uid, 0.0) + change, -1.0, 1.0)
+        self._temp_moving = 1        # 有新值要收敛：让 even_out_temps 重新扫
 
     def influence_like(self, uid, change: float) -> None:
         self.like[uid] = clampf(self.like.get(uid, 0.0) + change, -1.0, 1.0)
+        self._temp_moving = 1        # like 变了：tempLike 要重新收敛
 
     def social_event(self, kind: str, subject_uid, victim_is_self: bool,
                      victim_dead: bool) -> None:
@@ -577,13 +580,27 @@ class NeedleWorm:
                           by, victim_is_self=True, victim_dead=False)
 
     def even_out_temps(self, speed: float = TEMP_EVEN_SPEED) -> None:
-        """SocialMemory.EvenOutAllTemps：tempLike 每 tick 朝 like 靠 speed。"""
+        """SocialMemory.EvenOutAllTemps：tempLike 每 tick 朝 like 靠 speed。
+
+        这张表会随「遇到过的对象」一直增长，旧实现每只虫每 tick 都要整表扫一遍
+        （几十只虫时是实打实的卡顿源）。已经收敛（temp_like == like）的项再扫也
+        不会有变化，于是用 _temp_moving 记「还有几项没收敛」：为 0 直接返回。
+        """
+        if self._temp_moving <= 0:
+            return
+        moving = 0
         for uid, tl in self.temp_like.items():
             lk = self.like.get(uid, 0.0)
             if tl < lk:
-                self.temp_like[uid] = min(lk, tl + speed)
+                tl2 = min(lk, tl + speed)
+            elif tl > lk:
+                tl2 = max(lk, tl - speed)
             else:
-                self.temp_like[uid] = max(lk, tl - speed)
+                continue
+            self.temp_like[uid] = tl2
+            if tl2 != lk:
+                moving += 1
+        self._temp_moving = moving
 
     def hostile_to(self, cat) -> bool:
         """BigNeedleWormAI.cs:378-410：持幼体/蛋 → Attacks 1.0；tempLike<-0.25 → Attacks。"""
@@ -916,12 +933,18 @@ class NeedleWorm:
                     best_t, threat = d, c
             elif d < best_p:
                 best_p, prey = d, c         # 静态 Eats 0.25：远远地就开始追
+        best_other = None
         for other in adults:            # StaticWorld.cs:4007 同族 Attacks 0.9
             if other is self or other.dead:
                 continue
-            d = math.hypot(other.x - self.x, other.y - self.y)
-            if d < best_p:
-                best_p, prey = d, _cat_from_other(other)
+            dx, dy = other.x - self.x, other.y - self.y
+            d2 = dx * dx + dy * dy
+            if d2 < best_p * best_p:        # 平方比较：省掉每对一次 hypot
+                best_p = math.sqrt(d2)
+                prey = None
+                best_other = other
+        if best_other is not None:
+            prey = _cat_from_other(best_other)   # 只有赢家才建目标字典
         self.threat, self.prey = threat, prey
 
         # attackCounter（BigNeedleWormAI.cs:148-212）

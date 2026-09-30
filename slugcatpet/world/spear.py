@@ -32,6 +32,7 @@ SPEAR_MOVE_MIN = 1.0     # 单 tick 位移小于此值＝这矛没在动，不�
 SPEAR_FLIGHT_TURN = 0.25  # 飞行中矛身朝向追随速度的速率（平飞段之后才生效）
 STUCK_SINK = 7.0         # 插进墙地的深度（原版 stuckInWall 取格心）
 FLOOR_EMBED_STEEP = 2.0  # 落地时竖向位移/横向位移超过此值 = 近乎垂直扎进地面（原版 ContactPoint == throwDir）
+EMBED_AXIS_COS = 0.866   # 成杆判定：矛轴（尾→尖）与表面法线夹角 < 30 度才算「尖头扎进去」（原版 ContactPoint == throwDir）
 
 SPEAR_SHAFT = (94, 78, 60)
 SPEAR_TIP = (206, 206, 198)
@@ -66,6 +67,22 @@ def _solid_sweep(x0, y0, x1, y1, r):
             nx = 0.0; ny = -1.0 if dy > 0.0 else 1.0
         best = (t, nx, ny)
     return best
+
+def _embed_steep(sp, nx: float, ny: float) -> bool:
+    """这根矛是不是「尖头正对着这个面扎进去」（原版 ContactPoint == throwDir）。
+
+    用矛自己的杆轴（杆尾 → 杆尖）跟表面法线比：只有轴线近乎垂直于表面（尖头
+    朝墙里）才允许钉成杆。横着拍上去、从上往下蹭到顶面的都不算 —— 旧实现是
+    「顶面无条件插住 + 没掷出的也插住」，于是矛碰到任何墙面都必定变成杆
+    （用户报的「矛到墙壁总是必定成为杆子」）。
+    """
+    a = math.radians(sp.stuck_angle if sp.stuck else sp.angle_deg)
+    tx, ty = math.sin(a), -math.cos(a)          # 杆尾 → 杆尖
+    nl = math.hypot(nx, ny)
+    if nl <= 1e-9:
+        return False
+    return abs(tx * nx + ty * ny) / nl >= EMBED_AXIS_COS
+
 
 def _ang_lerp(a: float, b: float, k: float) -> float:
     """角度插值（走最短弧）。"""
@@ -199,6 +216,11 @@ class Spear:
         """
         if not self.needle or self.needle_live:
             return
+        if (self.state in (ItemState.CARRIED, ItemState.MOUSE)
+                or self.held_by is not None or self.stuck_to is not None):
+            # 已经拿在手里的针不再褪：否则褪尽这一 tick 会把手上这根直接标成
+            # GONE —— 用户报的「点一下（捡起来）就立刻消失」。
+            return
         if self.needle_fade_wait > 0:
             self.needle_fade_wait -= 1
             return
@@ -293,6 +315,24 @@ class Spear:
         self.vx = self.vy = 0.0
         self.stuck = True
         self._seat_on_floor(HL)
+        self._sync_interp()
+
+    def lodge_in_surface(self) -> None:
+        """斜擦进墙：就地停住（保持撞上时的角度），不成杆、可以拔出来再投。
+
+        原版只有 ContactPoint == throwDir 的那一掷会把格子变成 beam；斜面掠过
+        的矛只是「插在上面」。这里 pinned 保持 False，所以不会有杆实体。
+        """
+        self.needle_disconnect()
+        self.stuck = True
+        self.pinned = False
+        self._thrown = False
+        self.toss_t = 0
+        self.vx = self.vy = 0.0
+        self.spin = 0.0
+        self.spinning = False
+        self._still = 0
+        self.stuck_angle = self.angle_deg
         self._sync_interp()
 
     def _sync_interp(self) -> None:
@@ -400,17 +440,23 @@ class Spear:
             t, nx, ny = solid_hit
             self.x = self.last_x + (self.x - self.last_x) * max(0.0, t - 1e-4)
             self.y = self.last_y + (self.y - self.last_y) * max(0.0, t - 1e-4)
-            # 墙壁条（庇护所框 / 窗台）可以被扎矛：
-            #  · 顶面（ny<0，从上落下）无条件插住收势 —— 旧实现没有这条路，
-            #    矛落在庇护所墙上就一直翻滚（用户报的「疯狂旋转」）；
-            #  · 侧面按原版概率插住（近处必插 / 远处 33%），插不住才弹开。
-            if ny < 0.0 or not self._thrown or wp.stick_roll(self, self._rng):
-                self.embed_in_bar(nx, ny, self.x, self.y)
-                return
             self._contact_x = int(nx) if nx else 0
             self._contact_floor = ny > 0.0
             self._contact_ceil = ny < 0.0
-            self.bounce_off(nx, ny)
+            # 墙壁条（庇护所框 / 窗台）可以被扎矛，但「钉成杆」要按角度判：
+            # 只有**掷出的矛尖头正对着**扎进这个面才算（原版 ContactPoint ==
+            # throwDir）。旧实现是「顶面无条件插住」+「没掷出的也插住」——于是
+            # 矛碰到任何墙面都必定变成杆（用户报的「矛到墙壁总是必定成为杆子」）。
+            if not self._thrown:
+                self.lodge_in_surface()      # 掉落 / 蹭上去的：贴着停住，不成杆
+                return
+            if not wp.stick_roll(self, self._rng):
+                self.bounce_off(nx, ny)      # 插不住：原版无效弹开 + 随机翻滚
+                return
+            if _embed_steep(self, nx, ny):
+                self.embed_in_bar(nx, ny, self.x, self.y)
+            else:
+                self.lodge_in_surface()      # 斜擦进墙：可拔出，不是杆
             return
         if self._thrown:
             if self._contact_floor:

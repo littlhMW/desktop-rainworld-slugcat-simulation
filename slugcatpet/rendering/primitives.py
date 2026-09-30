@@ -233,14 +233,21 @@ NEEDLE_FADE_MAX = 400       # Spear.spearmasterNeedle_fadecounter_max
 
 
 def draw_needle(painter, atlas, x, y, ang_deg, kind=0, fade=1.0, live=False,
-                pivot_at_tip=False, length=46.0) -> None:
+                pivot_at_tip=False, length=46.0, pinned=False) -> None:
     """矛大师的骨针（Spear.cs:1333-1356）。
 
     贴图 BioSpear{spearmasterNeedleType%3+1}；还连着尾巴时纯白，断线后按
     fadecounter/400 从白渐隐到矛的黑色（palette.blackColor）。锚点：
     掷出中／插在生物身上 anchorY 0.85，否则 0.5（Spear.cs:1283）。
+
+    褪到 0 = 这根针已经没了：视觉层直接不画（逻辑层同一 tick 也会 GONE）。
+    旧实现把 fade clamp 到 0.01，画出来是一条近乎纯黑的针：看着「已经消失」
+    实体却还在（用户报的「矛隐形但没有消失」）。钉成杆的针（pinned）是场景
+    物件，褪成黑色之后要一直留着。
     """
-    t = 1.0 if live else clampf(fade, 0.01, 1.0)
+    if not live and fade <= 0.0 and not pinned:
+        return
+    t = 1.0 if live else clampf(fade, 0.0, 1.0)
     col = _mix_rgb((255, 255, 255), SPEAR_RGB, 1.0 - t)
     k = length / NEEDLE_ART_LEN
     blit(painter, atlas, "BioSpear%d" % (int(kind) % 3 + 1), x, y, ang_deg,

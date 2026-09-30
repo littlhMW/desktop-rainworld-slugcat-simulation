@@ -363,12 +363,22 @@ def _solid_blocks(obj, r: float, table, impact=None, prev_floor: bool = False,
         # 就会直接穿过去（用户报的「猫从杆上掉下来穿透墙壁」）。这里按
         # 上一帧的底边补一次落顶判定。
         ly = getattr(obj, "last_y", obj.y)
-        if (ly + r <= y0 + 0.5 and obj.y - r > y0 and obj.vy > 0.0):
+        if ly + r <= y0 + 0.5 and obj.y - r > y0 and obj.y > ly:
+            # 往下穿过顶边。用这一帧的**真实位移**判，不看 vy：位置被外部直接
+            # 写过的（杆顶姿态、鼠标拖拽、脚本位移）vy 可能已经是 0，只看速度
+            # 会漏判 —— 薄墙 + 一帧大位移就穿过去了。
             obj.y = y0 - r
-            if impact is not None:
+            if obj.vy > 0.0 and impact is not None:
                 _fire_impact(obj, (0, 1), abs(obj.vy), True, impact)
             obj.vy = 0.0
             _set_floor(obj, y0)
+            hit = True
+            continue
+        if ly - r >= y1 - 0.5 and obj.y + r < y1 and obj.y < ly:
+            # 对称补判：往上穿过底边
+            obj.y = y1 + r
+            obj.vy = 0.0
+            _set_ceil(obj)
             hit = True
             continue
         if obj.y + r <= y0 or obj.y - r >= y1:
@@ -418,6 +428,27 @@ def _solid_blocks(obj, r: float, table, impact=None, prev_floor: bool = False,
                 obj.vx = abs(obj.vx) * bounce
             _set_contact_x(obj, -1)
     return hit
+
+
+def sweep_drop_top(x: float, r: float, prev_y: float, y: float, table) -> float | None:
+    """竖直扫掠：从 prev_y 落到 y 时，被穿过的**第一个**障碍顶边 y0。
+
+    通用 primitive（矛 / 蜥蜴 / 尸体 / 蛞蝓猫 / 任何圆点都复用）：单点圆-AABB
+    检测在「这一帧整个越过去」时会漏判，薄墙（庇护所壁厚 ~5.6px）+ 高速下落
+    就会直接穿过去。返回 None = 这一帧没有从上往下穿过任何顶边。
+    """
+    if table is None or y <= prev_y:
+        return None
+    best = None
+    for x0, y0, x1, y1 in table:
+        if x1 <= x0 or y1 <= y0:
+            continue
+        if x + r <= x0 or x - r >= x1:
+            continue
+        if prev_y + r <= y0 + 0.5 and y - r > y0:
+            if best is None or y0 < best:
+                best = y0
+    return best
 
 
 def _set_floor(obj, y0: float) -> None:
