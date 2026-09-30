@@ -1818,7 +1818,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             p.save()
             if self._shake[0] or self._shake[1]:
                 p.translate(-self._shake[0], -self._shake[1])
-            rain_draw.draw_rain_under(p, self.rain, self.shelters, self._WL, self._HL)
+            rain_draw.draw_rain_under(p, self.rain, self.shelters, self._WL, self._HL, self._shake)
             p.restore()
 
         if self.shelters:
@@ -1889,7 +1889,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             p.save()
             if self._shake[0] or self._shake[1]:
                 p.translate(-self._shake[0], -self._shake[1])
-            rain_draw.draw_rain_over(p, self.rain, self.shelters, self._WL, self._HL)
+            rain_draw.draw_rain_over(p, self.rain, self.shelters, self._WL, self._HL, self._shake)
             p.restore()
 
         if self.snow_on:
@@ -1905,7 +1905,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             p.save()
             if self._shake[0] or self._shake[1]:
                 p.translate(-self._shake[0], -self._shake[1])
-            rain_draw.draw_rain_darkness(p, self.rain, self.shelters, self._WL, self._HL)
+            rain_draw.draw_rain_darkness(p, self.rain, self.shelters, self._WL, self._HL, self._shake)
             p.restore()
 
         # 左下角固定 HUD：先抵消震屏平移，再画在屏幕（逻辑）坐标上
