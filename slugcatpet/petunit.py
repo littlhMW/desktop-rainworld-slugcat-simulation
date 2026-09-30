@@ -9,6 +9,7 @@ from .cats.personality import individualize
 from .cats.saint.tongue import Tongue
 from .control.vmath import dirvec
 from .core.creature import SlugcatBody
+from .core import chunkphys
 from .rendering.graphics import SlugcatGraphics
 from .rendering.layout import Layout
 from .core.tail import Tail
@@ -445,28 +446,55 @@ class PetUnit:
         hook(cat)
 
     def _ray_hit_edge(self, mx, my, cx, cy):
+        """舌头统一撞窗口边界 + 物理层 SOLIDS（含庇护所墙/门）。"""
         w = self.window
         WL, H = w._WL, w._HL
         dx, dy = cx - mx, cy - my
         d0 = math.hypot(dx, dy)
         ux, uy = (0.0, -1.0) if d0 < 1e-6 else (dx / d0, dy / d0)
-        eps = 1e-6
+        max_d = self.tongue.total
         best = None
-        if uy < -eps:
-            t = (0.0 - my) / uy
-            if t > 0 and 0 <= mx + ux * t <= WL:
-                best = t
-        if ux < -eps:
-            t = (0.0 - mx) / ux
-            if t > 0 and 0 <= my + uy * t <= H and (best is None or t < best):
-                best = t
-        if ux > eps:
-            t = (WL - mx) / ux
-            if t > 0 and 0 <= my + uy * t <= H and (best is None or t < best):
-                best = t
-        # 射程用 tongue.total
-        if best is not None and best <= self.tongue.total:
+
+        # 窗口上/左/右边缘：沿射线取最近正交点；底边仍由 Tongue.update 的 floor_y 处理。
+        eps = 1e-6
+        for edge_t in (
+            (-(my) / uy if uy < -eps else None),
+            (-(mx) / ux if ux < -eps else None),
+            ((WL - mx) / ux if ux > eps else None),
+        ):
+            if edge_t is None or edge_t <= 0.0 or edge_t > max_d:
+                continue
+            px, py = mx + ux * edge_t, my + uy * edge_t
+            if 0.0 <= px <= WL and 0.0 <= py <= H:
+                if best is None or edge_t < best:
+                    best = edge_t
+
+        # 与 BodyChunk / Spear 完全同源的 SOLIDS：庇护所四墙、关闭的门等。
+        # 使用射线-轴对齐矩形的 slab 求交，防止高速舌尖一帧跨过薄墙。
+        for x0, y0, x1, y1 in chunkphys.solids():
+            tx0, tx1 = -math.inf, math.inf
+            ty0, ty1 = -math.inf, math.inf
+            if abs(ux) < eps:
+                if not (x0 <= mx <= x1):
+                    continue
+            else:
+                a, b = (x0 - mx) / ux, (x1 - mx) / ux
+                tx0, tx1 = min(a, b), max(a, b)
+            if abs(uy) < eps:
+                if not (y0 <= my <= y1):
+                    continue
+            else:
+                a, b = (y0 - my) / uy, (y1 - my) / uy
+                ty0, ty1 = min(a, b), max(a, b)
+            t0, t1 = max(tx0, ty0), min(tx1, ty1)
+            if t1 >= max(0.0, t0) and t1 > 0.0 and t0 <= max_d:
+                hit_t = max(0.0, t0)
+                if best is None or hit_t < best:
+                    best = hit_t
+
+        if best is not None and best <= max_d:
             return mx + ux * best, my + uy * best, True
-        ex = clampf(mx + ux * self.tongue.total, 0.0, WL)
-        ey = clampf(my + uy * self.tongue.total, 0.0, H)
+
+        ex = clampf(mx + ux * max_d, 0.0, WL)
+        ey = clampf(my + uy * max_d, 0.0, H)
         return ex, ey, False
