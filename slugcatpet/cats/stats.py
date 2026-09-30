@@ -11,9 +11,12 @@ class SlugStats:
     runspeed_fac: float = 1.0        # 不乘加速度
     pole_fac: float = 1.0
     weight_fac: float = 1.0          # 不进跳跃公式
-    # 躯体尺寸：两个 bodyChunk 的间距倍率。
-    # 原版 Player.setPupStatus（Player.cs:4114-4131）：成年 17、幼崾 12。
+    # 躯体整体尺寸倍率：同时作用于物理碰撞半径、骨骼间距和相关姿态尺寸。
+    # 猫崽当前采用 0.65；原版 setPupStatus 的成年/幼崽胸胯间距约为 17/12，
+    # 但本项目需要让“视觉缩放”与真实碰撞体、骨骼同步，因此这里统一用 0.65。
+    body_scale: float = 1.0
     conn_fac: float = 1.0
+    rad_fac: float = 1.0
     # 体块质量倍率：同上函数，成年 0.75、幼崾 0.7（再乘 weight_fac）。
     mass_fac: float = 1.0
     # 隧道爬速因子留白：无对应玩法，趴行恒 2.5 不分种族
