@@ -1335,11 +1335,11 @@ class Lizard:
         return True
 
     def _apply_foot_support(self) -> None:
-        planted = [lg for lg in self.legs if lg.planted and not lg.disabled]
+        planted = [lg for lg in self.legs if lg.planted and not lg.disabled and lg.grip >= LEG_GRIP_DELAY]
         if not planted:
             if (self._contact_floor and not self.dead
                     and self.state == ItemState.FREE):
-                self.vx *= NO_GRIP_SPEED
+                self.vx = clampf(self.vx, -NO_GRIP_SPEED, NO_GRIP_SPEED)
             return
         corr = 0.0
         for lg in planted:
@@ -3106,14 +3106,14 @@ class Lizard:
                     gd = math.hypot(gdx, gdy)
                     rmax = joint - 1.0
                     if gd > rmax:
-                        # 原版 FindGrip 找不到 jointDist 范围内的地形时，
-                        # 不会生成一个虚假的悬空落点；本次伸脚直接失败，下一帧重算。
-                        lg.abs_x, lg.abs_y = lg.x, lg.y
                         lg.reaching = False
                         lg.snap = False
                         lg.grip = 0
+                        lg.planted = False
                     else:
-                        lg.abs_x, lg.abs_y = gx, gy
+                        reach_x = math.sqrt(max(0.0, rmax * rmax - (gy - hy) * (gy - hy)))
+                        lg.abs_x = hx + clampf(gx - hx, -reach_x, reach_x)
+                        lg.abs_y = gy
                 else:
                     if (num > joint * -0.5 * (b.step_length + 0.1)
                             and not _dist_less(lg.x, lg.y, hx, hy, joint - 1.0)
@@ -3151,10 +3151,13 @@ class Lizard:
             if dd >= joint and dd > 1e-6:
                 over = dd - joint
                 ux, uy = ddx / dd, ddy / dd
-                lg.x -= ux * over
-                lg.y -= uy * over
-                lg.vx -= ux * over
-                lg.vy -= uy * over
+                if not lg.planted:
+                    lg.x -= ux * over
+                    lg.y -= uy * over
+                    lg.vx -= ux * over
+                    lg.vy -= uy * over
+                else:
+                    lg.vx = lg.vy = 0.0
             # ── flip（原版 LizardGraphics.cs:1209-1215）──
             # num11 = DistanceToLine(脚, connection.pos, rotationChunk.pos)；
             # 本式算出的值 = -原版值（屏幕 y↓），所以符号规则与原版一致：i<2 取负。
@@ -3176,10 +3179,16 @@ class Lizard:
                     grounded = abs(lg.y - gy) <= 1.5
             if grounded:
                 lg.grip += 1
+                if not lg.planted:
+                    lg.planted = True
+                    lg.plant_dx = lg.x - hx
+                    lg.plant_dy = lg.y - hy
+                    lg.abs_x, lg.abs_y = lg.x, lg.y
                 if lg.grip >= LEG_GRIP_DELAY:
                     grip[2 if lg.pair >= 1 else 0] += 1
             else:
                 lg.grip = 0
+                lg.planted = False
         self._collide_chain_lines(room_hl)
         for lg in self.legs:
             if not lg.planted:
