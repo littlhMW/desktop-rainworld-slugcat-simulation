@@ -760,6 +760,28 @@ class BehaviorFSM:
         self._revive_timer = tuning.REINCARNATE_TICKS
         self._schedule_karma_flower(had_flower)
 
+    def kill_storm(self):
+        """暴雨致死：没赶上进庇护所。环境致死，转世复活，不计好感。
+
+        与 kill_cold / kill_drown 同一口径；只不过倒计时在暴雨期间被 _st_dead
+        冻结，雨停了才转世。
+        """
+        if self.state == "Dead":
+            return
+        had_flower = self.body.flower_karma
+        self._death_karma_settle()
+        self._break_active_controllers()
+        self.grab.force_release()
+        self.body.swim_target = None
+        self._hibernating = False
+        self._exhausted = False
+        self.body.die()
+        self.gfx.dead = True
+        self._transition("Dead")
+        self._reincarnate = True
+        self._revive_timer = tuning.REINCARNATE_TICKS
+        self._schedule_karma_flower(had_flower)
+
     def kill_drown(self):
         """溺死：环境致死，转世复活，不计好感。"""
         if self.state == "Dead":

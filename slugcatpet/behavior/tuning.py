@@ -775,3 +775,4 @@ STORM_ANXIETY_WANDER_BIAS = 0.55  # 焦虑时闲逛目标偏向庇护所附近�
 STORM_PRESSURE_LO = 0.35          # 不安档下沿
 STORM_PRESSURE_HI = 0.70          # 明显焦虑档下沿
 STORM_RETRY_TICKS = 120           # StormSeekShelter 放弃后的重试间隔
+STORM_LETHAL_INTENSITY = 0.85     # 雨强达到这个值，没进庇护所的生物开始死

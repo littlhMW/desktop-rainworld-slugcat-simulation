@@ -1957,6 +1957,17 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             return
         super().keyPressEvent(e)
 
+    def mouseMoveEvent(self, e):
+        # 放庇护所：按下 → 拖 → 松开。万一「按下」那一下没落到窗口上（工具栏抢了
+        # 鼠标），只要左键还按着，第一个移动事件就当作起点，拖动照样能框出矩形。
+        if self._place_mode and self._place_kind == "shelter":
+            if (self._shelter_drag_start is None
+                    and (e.buttons() & Qt.MouseButton.LeftButton)):
+                lx, ly = self.to_logical(e.position().x(), e.position().y())
+                self._shelter_drag_start = (lx, ly)
+            return
+        super().mouseMoveEvent(e)
+
     def mouseReleaseEvent(self, e):
         if self._place_mode and self._place_kind == "shelter":
             if e.button() == Qt.MouseButton.LeftButton:
@@ -2038,6 +2049,48 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                                     -SHAKE_MAX, SHAKE_MAX)
             self.add_shockwave(ix, iy, 96.0, flash=True)
         self._storm_flood_tick()
+        self._storm_lethal_tick()
+
+    def _sheltered(self, x, y):
+        """这一点在不在任一庇护所内腔里（避雨 / 变暗 / 暴雨致死共用一套几何）。"""
+        if x is None or y is None:
+            return False
+        for sh in (self.shelters or ()):
+            if sh.contains(x, y):
+                return True
+        return False
+
+    def _storm_lethal_tick(self):
+        """暴雨峰值：没躲进庇护所的生物一律死亡（原版在雨里就是这个下场）。
+
+        判据只看**雨强**（rain.intensity），所以集合期猫还在往屋里跑时不会被误杀，
+        雨势爬满才收人头。庇护所内部按 Shelter.contains 判定，和避雨挖洞同一套几何。
+        蛞蝓猫走环境致死（kill_storm：转世复活、暴雨期间冻结倒计时），
+        其他生物直接 die()。
+        """
+        if self.rain.intensity < tuning.STORM_LETHAL_INTENSITY:
+            return
+        for pet in list(self.pets):
+            beh = getattr(pet, "behavior", None)
+            body = getattr(pet, "body", None)
+            if beh is None or body is None:
+                continue
+            if beh.is_truly_dead():
+                continue
+            if self._sheltered(body.chunk1.x, body.chunk1.y):
+                continue
+            kill = getattr(beh, "kill_storm", None)
+            if kill is not None:
+                kill()
+        for e in (*self.lizards, *self.batflies, *self.squidcadas,
+                  *self.needleworms, *self.scavengers):
+            if getattr(e, "state", None) != ItemState.FREE:
+                continue
+            if getattr(e, "dead", False):
+                continue
+            if self._sheltered(getattr(e, "x", None), getattr(e, "y", None)):
+                continue
+            e.die()
 
     def _storm_flood_tick(self):
         """积水：只改既有 water_target，不重做 flood 系统。"""
@@ -2199,6 +2252,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
     def _finish_shelter_place(self):
         if not self._place_mode or self._place_kind != "shelter":
+            return None
+        if self._shelter_drag_start is None:
+            # 没有「按下」就没有框选出来的矩形。工具栏按钮那一下的松开有时会漏进
+            # 窗口（grabMouse 抢在按键中途），旧实现会把这种松开当成一次点击，
+            # 当场生成一个固定大小的庇护所 —— 表现就是「拖不动、大小固定」。
+            # 这里直接忽略，保持放置模式，等真正的按下-拖-松开。
             return None
         sh = self._shelter_drag_rect()
         self._shelter_drag_start = None
