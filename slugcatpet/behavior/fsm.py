@@ -417,6 +417,11 @@ class BehaviorFSM:
         self._social_press_down = False   # 本 tick 正在往下按（手也往目标里压）
         self._revive_gave_up = False      # 复活是「磨到超时放弃」还是被打断
         self._rescue_exec = None          # 救援赶路的执行器（复用觅食那套寻路）
+        self._cursor_exec = None           # 追鼠标的统一寻路执行器
+        self._cursor_goal = None           # 动态鼠标 Goal（位置每 tick 更新）
+        self._cursor_plan_pos = None       # 上次规划时的鼠标位置
+        self._cursor_replan_cd = 0
+        self._cursor_jump_cd = 0
         self._apology_target = None      # 误伤同伴 → 抱歉：面对它匍匐
         self._apology_t = 0
         self._thank_target = None        # 被同伴救活 → 去拍拍恩人
@@ -539,6 +544,8 @@ class BehaviorFSM:
         self._itemplay_left = 0
         self._itemplay_phase = 0
         self._itemplay_side = "r"
+        self._itemplay_mode = "inspect"
+        self._itemplay_mode_t = 0
         self._lick_cd = 0                # 圣徒舔生物玩耍的冷却
         self._play_face = 1              # 玩耍时的朝向倾向（进玩法时随机一次）
         # 觅食欲望：
@@ -6002,6 +6009,7 @@ class BehaviorFSM:
             self._fight_target = None
             self._fight_climber_release()
         elif st == "ChaseCursor":
+            self._cursor_plan_end()
             self._act_end()
         elif st == "EatCob":
             self.gfx.hand_aim["l"] = None
@@ -6160,46 +6168,138 @@ class BehaviorFSM:
             b.release_ceiling()
             self._transition("Airborne")
 
-    # ── 玩耍：追光标 / 试着抓鼠标 ──
+    # ── 玩耍：追光标 / 试着跳跃够鼠标 ──
+    def _cursor_plan_end(self):
+        ex = self._cursor_exec
+        self._cursor_exec = None
+        if ex is not None:
+            ex.cancel()
+        self._cursor_goal = None
+        self._cursor_plan_pos = None
+        self._cursor_replan_cd = 0
+        self._cursor_jump_cd = 0
+        self.body.stop_walk()
+
+    def _cursor_dynamic_goal(self):
+        """鼠标目标是动态 Goal：Planner 每次取 pos() 都拿当前光标，而不是起手那一帧的死坐标。"""
+        if self._cursor_goal is None:
+            self._cursor_goal = Goal(
+                lambda: self.cursor if self.cursor is not None else (0.0, 0.0),
+                lambda: self.cursor is not None,
+                ("cursor-play", id(self.win)))
+        return self._cursor_goal
+
+    def _cursor_nav_tick(self, cursor):
+        """追鼠标统一走 Planner：直走 / 跳 / 多段表面路线都由同一套导航选择。
+
+        鼠标本身不断移动，所以除了 Goal 动态位置，还会定期按位移主动重规划；
+        否则一条已经针对旧光标位置生成的跳弧/绕行路线会追到「旧鼠标」。
+        """
+        goal = self._cursor_dynamic_goal()
+        pos_changed = (self._cursor_plan_pos is None
+                       or math.hypot(cursor[0] - self._cursor_plan_pos[0],
+                                      cursor[1] - self._cursor_plan_pos[1]) >= 24.0)
+        if (self._cursor_exec is None or self._cursor_replan_cd <= 0 or pos_changed):
+            if self._cursor_exec is not None:
+                self._cursor_exec.cancel()
+            self._cursor_exec = PlanExecutor(self.win, self.planner, goal)
+            self._cursor_plan_pos = tuple(cursor)
+            self._cursor_replan_cd = 10
+        else:
+            self._cursor_replan_cd -= 1
+        status = self._cursor_exec.update()
+        if status == GIVEUP:
+            self._cursor_exec = None
+            return GIVEUP
+        return status
+
+    def _cursor_jump_attempt(self, cursor):
+        """只有 Planner 确认「当前鼠标确实存在可用跳跃候选」后，才主动尝试跳。
+
+        这样跳不是随机撞运气：墙后/够不到的鼠标不会反复空跳；能跳到的目标会
+        在平地、障碍边缘持续获得跳跃尝试。
+        """
+        b = self.body
+        if self._cursor_jump_cd > 0:
+            self._cursor_jump_cd -= 1
+            return False
+        if not b.on_floor() or b.on_pole or b.ceil_cling:
+            return False
+        dx = cursor[0] - b.chunk0.x
+        dy = b.chunk0.y - cursor[1]
+        if abs(dx) < 22.0 and dy <= 8.0:
+            return False
+        if abs(dy) > JUMPCUR_DY * JUMPCUR_DY_SLACK + 18.0:
+            return False
+        goal = self._cursor_dynamic_goal()
+        try:
+            jump_ok = any(c.ability_key == "jump"
+                           for c in self.planner.touch_candidates(goal))
+        except Exception:
+            jump_ok = False
+        if not jump_ok:
+            return False
+        activity = clampf(float(getattr(self.pers, "activity", 0.5)), 0.0, 1.0)
+        p = clampf(JUMPCUR_P * (0.75 + 0.7 * activity), 0.0, 0.95)
+        if self.rng.random() >= p:
+            return False
+        md = 1 if dx > 0.0 else -1
+        b.move_dir = md
+        b.request_jump("stand", hold_ticks=3)
+        self._cursor_jump_cd = JUMPCUR_CD
+        return True
+
     def _play_enter(self):
         self._play_left = self.rng.randint(tuning.PLAYCUR_TICKS_MIN,
                                            tuning.PLAYCUR_TICKS_MAX)
+        self._cursor_exec = None
+        self._cursor_goal = None
+        self._cursor_plan_pos = None
+        self._cursor_replan_cd = 0
+        self._cursor_jump_cd = 0
         self.body.set_posture(True)
 
     def _st_chasecursor(self, cursor, disturbed):
         b = self.body
         if self.grab.active:
+            self._cursor_plan_end()
             self._clear_hands()
             self._transition("Dragged")
             return
         self._play_left -= 1
         if cursor is None:
+            self._cursor_plan_end()
             self._clear_hands()
             self._transition("IdleStand")
             return
         cx, cy = cursor
         self.gfx.look_at = cursor
         d = math.hypot(cx - b.chunk0.x, cy - b.chunk0.y)
-        # 光标落在「差不多跳得够」的一层：有概率跳起来拿身子碰它（原版跳抓）。
-        # 竖直容差在光标偏高时放宽（用户规格：稍微高一点也会试一下），水平用 JUMPCUR_R；
-        # 这一条不要求在 ARRIVE 圈里 —— 边走边跳着够鼠标也算「追」。
-        up = b.chunk0.y - cy                       # >0：光标在猫上方
-        far = JUMPCUR_DY * JUMPCUR_DY_SLACK if up > 0.0 else JUMPCUR_DY
-        ok_dy = abs(up) <= far
-        if (b.on_floor() and abs(cx - b.chunk0.x) <= JUMPCUR_R and ok_dy
-                and self.timer % JUMPCUR_CD == 0
-                and self.rng.random() < JUMPCUR_P):
-            b.request_jump("protest")
-        if d > tuning.PLAYCUR_ARRIVE:
+
+        # 第一优先：真正调用统一 Planner。目标移动明显时立刻重算，普通情况下每 10 tick
+        # 更新一次；路线可能是 walk、jump 或多段 surface route。
+        status = self._cursor_nav_tick(cursor)
+
+        # 第二优先：Planner 已经确认能跳，再按性格做「够鼠标」的主动尝试。
+        # 这不替代 Planner，只是在它给出 jump 候选时把跳跃从「可能选中」提升成真正的行为。
+        self._cursor_jump_attempt(cursor)
+
+        if d <= tuning.PLAYCUR_ARRIVE:
+            self._cursor_plan_end()
+            b.stop_walk()
+            if not self._act_active() and self._cursor_point_ok():
+                # 追到鼠标后不总是立刻结束：随机选择指向 / 指指点点继续互动。
+                self._act_begin(self._cursor_social_kind(), cursor, mode="cursor")
+            self._act_tick()
+        elif status == GIVEUP:
+            # Planner 实在没有路线时才退回最简单的直奔；下一轮位置变化仍会重新走 Planner。
             b.walk_to(cx)
             self._act_end()
         else:
-            b.stop_walk()
-            if not self._act_active() and self._cursor_point_ok():
-                # 指着鼠标：指向（hold）或指指点点（scold），性格说了算
-                self._act_begin(self._cursor_social_kind(), cursor, mode="cursor")
-            self._act_tick()
+            self._act_end()
+
         if self._play_left <= 0 or d > tuning.PLAYCUR_R * 1.6:
+            self._cursor_plan_end()
             self._act_end()
             self._transition("IdleStand")
 
@@ -7825,11 +7925,22 @@ class BehaviorFSM:
         b.stop_walk()
         self._itemplay_phase = 0
         self._itemplay_left = 0
+        self._itemplay_mode_t = 0
         it = self._itemplay_target
         from ..world.spear import Spear
         self._itemplay_side = b.pick_hand(
             "spear" if isinstance(it, Spear) else "stone") or "r"
         self._play_face = 1 if self.rng.random() < 0.5 else -1
+        # 不是每只猫都用同一个「坐着拿着」模板；活跃度、脾气决定跳/拨弄/端详的比重。
+        act = clampf(float(getattr(self.pers, "activity", 0.5)), 0.0, 1.0)
+        temp = clampf(float(getattr(self.pers, "temper", 0.5)), 0.0, 1.0)
+        r = self.rng.random()
+        if r < 0.30 + 0.20 * act:
+            self._itemplay_mode = "paw"
+        elif r < 0.52 + 0.28 * act + 0.08 * temp:
+            self._itemplay_mode = "hop"
+        else:
+            self._itemplay_mode = "inspect"
 
     def _own_needle(self, sp) -> bool:
         """这根矛是不是「这只猫自己尾巴长出来的针」（Spear.spearmasterNeedle）。
@@ -7880,6 +7991,8 @@ class BehaviorFSM:
         self._itemplay_target = None
         self._itemplay_left = 0
         self._itemplay_phase = 0
+        self._itemplay_mode = "inspect"
+        self._itemplay_mode_t = 0
         self._itemplay_cd = tuning.ITEMPLY_RETRY
 
     def _lick_targets(self):
@@ -7951,28 +8064,56 @@ class BehaviorFSM:
             self._itemplay_end()
             self._transition("IdleStand")
             return
-        b.stop_walk()
         self._itemplay_left -= 1
+        self._itemplay_mode_t += 1
         t = self.timer
-        # 拿在手里就是玩（eat_raise 保持 0，手别乱晃）；姿态随性格
-        style = getattr(self.pers, "play_style", "sit")
-        b.facing = self._play_face                           # 玩耍时保持朝向倾向
-        if style == "crawl":
-            b.set_crawl(True)                                # 匍匐着玩
-            if t % tuning.ITEMPLY_PRANCE_CD == 0:
-                self._play_face = 1 if (t // tuning.ITEMPLY_PRANCE_CD) % 2 else -1
-                b.facing = self._play_face
-                b.walk_to(b.chunk1.x + self._play_face * 18.0)
-        elif style == "hop":
-            if t % tuning.ITEMPLY_PRANCE_CD == 0:
-                self._play_hop()                             # 带方向/距离的随机小跳
-        else:
+        self._play_face = 1 if self._play_face >= 0 else -1
+        b.facing = self._play_face
+
+        # 一个玩具内部也会换「微动作」，不再整段保持同一姿势。
+        if self._itemplay_mode_t >= self.rng.randint(34, 70):
+            old_mode = self._itemplay_mode
+            choices = ["inspect", "paw", "hop"]
+            choices.remove(old_mode)
+            self._itemplay_mode = self.rng.choice(choices)
+            self._itemplay_mode_t = 0
+
+        side = self._itemplay_side
+        hx, hy = b._carry_pos(side)
+        if self._itemplay_mode == "paw":
+            # 两只手轮流拨弄：手腕随时间做一个小弧线，视觉上像捏、拨、拍玩具。
+            other = "l" if side == "r" else "r"
+            phase = (self._itemplay_mode_t / 34.0) * math.tau
+            ox = math.sin(phase) * 8.0
+            oy = math.cos(phase) * 4.0
+            b.arm_aim[side] = (hx + self._play_face * ox, hy + oy)
+            b.arm_aim[other] = None
+            self.gfx.hand_aim[side] = b.arm_aim[side]
+            self.gfx.hand_aim[other] = None
+            if self._itemplay_mode_t % 17 == 0:
+                self._play_face = -self._play_face
+        elif self._itemplay_mode == "hop":
             b.set_crawl(False)
-            if t % tuning.ITEMPLY_PRANCE_CD == 0 and self.rng.random() < tuning.ITEMPLY_TURN_P:
-                self._play_face = -self._play_face           # 坐着玩也会换个朝向
+            # 活跃/急躁猫更容易带着玩具小跳，不是每个 tick 都跳。
+            if b.on_floor() and self._itemplay_mode_t % tuning.ITEMPLY_PRANCE_CD == 0:
+                self._play_hop()
+            self.gfx.look_at = (hx, hy)
+        else:
+            # 端详玩具：头跟着手中的物件扫，不时转身换朝向。
+            b.set_crawl(False)
+            sway = math.sin(self._itemplay_mode_t * 0.16) * 12.0
+            self.gfx.look_at = (hx + sway, hy - 3.0)
+            b.arm_aim[side] = (hx, hy)
+            b.arm_aim["l" if side == "r" else "r"] = None
+            self.gfx.hand_aim[side] = (hx, hy)
+            self.gfx.hand_aim["l" if side == "r" else "r"] = None
+            if self._itemplay_mode_t % tuning.ITEMPLY_PRANCE_CD == 0:
+                if self.rng.random() < tuning.ITEMPLY_TURN_P:
+                    self._play_face = -self._play_face
+
         if self._itemplay_left <= 0 or t > 2400:
             if self.rng.random() < getattr(self.pers, "temper", 0.5) * tuning.ITEMPLY_FLING_P:
-                self._itemplay_fling()                       # 暴躁的猫：玩完甩出去
+                self._itemplay_fling()
             self._itemplay_end()
             self._transition("IdleStand")
 
