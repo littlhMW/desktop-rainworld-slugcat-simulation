@@ -476,7 +476,6 @@ PEARL_SEEK_R        = 520.0    # 溪流找珍珠的搜索半径（隔着大半�
 ITEMPLY_REACH       = 22.0
 ITEMPLY_TICKS_MIN   = 150
 ITEMPLY_TICKS_MAX   = 320
-ITEMPLY_RETRY       = 480
 ITEMPLY_PRANCE_CD   = 55       # 玩得高兴时每隔这么久蹦一下
 ITEMPLY_HOP_DIST_MIN = 14.0    # 玩耍跳的横向落点距离（随机 → 方向、距离都不一样）
 ITEMPLY_HOP_DIST_MAX = 46.0
@@ -485,7 +484,18 @@ ITEMPLY_HOP_VY_K     = 0.80    # 玩耍跳比全力跳矮一点
 ITEMPLY_TURN_P      = 0.35     # 坐着玩时每隔 PRANCE_CD 换个朝向的概率
 ITEMPLY_FLING_P     = 0.55     # 收手时按 temper 加权，暴躁的猫把家伙甩出去
 ITEMPLY_TOSS_P      = 0.045    # 玩到一半主动甩一次，再追过去捡回
-ITEMPLY_P           = 0.55     # 闲下来时每次抽查愿意去玩的概率
+# 把玩小物件（矛/石头/水果/珍珠）：正式的心跳欲望，与追鼠标 / 爬杆 / 社交同级。
+# START/QUIT 是新鲜度滞回线：做的时候降、不做的时候回升 —— 取代旧的
+# 「ITEMPLY_P 单抽一次骰子」+「ITEMPLY_RETRY 独立冷却」两套机制。
+# 很久没玩 → freshness 高 → 更容易被抽中；刚玩完 → 降到 quit 以下 → 短时间不想玩。
+ITEMPLAY_BASE = 1.00
+ITEMPLAY_START = 0.62
+ITEMPLAY_QUIT = 0.30
+ITEMPLAY_INIT = 0.62          # 开局就够 START：与旧实现「cd=0 即可玩」一致
+ITEMPLAY_DECAY = 0.0042       # 玩的过程中每 tick 降
+ITEMPLAY_RECOVER = 0.00130    # 不玩时每 tick 回升（空槽约 480 tick 回满 START）
+ITEMPLAY_SF_FRESH = 1.25
+ITEMPLAY_SF_TIRED = 0.12
 
 # 觅食时拿矛打爆米花：没矛就去地上捡一根
 COB_SPEAR_FETCH_R   = 240.0

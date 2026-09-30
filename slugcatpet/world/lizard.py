@@ -778,7 +778,7 @@ class Lizard:
                  "depth_in", "rel",
                  "camo_target", "camo_color", "camo_mix",
                  "climb_kind", "climb_attached", "climb_side",
-                 "climb_top", "climb_bot", "caps", "terrain")
+                 "climb_top", "climb_bot", "caps", "terrain", "_ground")
 
     def __init__(self, x: float, y: float, breed: LizardBreed | None = None,
                  seed: int = 0, id: int = 0):
@@ -934,6 +934,7 @@ class Lizard:
             wall_jump=bool(getattr(b, "wall_jump", False)),
             climb_reach=CLIMB_WALK_R)
         self.terrain = None           # 这一帧的世界地形查询（items 每 tick 换一份）
+        self._ground = float(y)       # 这一 tick 脚下踩的那一层（屏幕地板 / 窗台 / 横杆）
         # 清场认领：哪只猫认领了这具尸体（尸体搬运只允许一只猫执行）
         self.hauler = None
 
@@ -1236,6 +1237,9 @@ class Lizard:
         for lg in self.legs:
             lg.lx, lg.ly = lg.x, lg.y
 
+        # 脚下的支撑面（原版 Floor tile 不止一种：屏幕地板 / 别的窗口顶边 /
+        # 横杆杆面都是可站立地形），链体与四足都踩在它上面。
+        self._ground = self._ground_y(HL)
         if self.hurt_flash > 0:
             self.hurt_flash -= 1
         # 被鼠标拎着的分支必须排在尸体之前：死蜥也要能被拖。
@@ -1256,8 +1260,8 @@ class Lizard:
             self._integrate(WL, HL)
 
         self.anim = self._intent()          # AI → 动画意图（这一帧的映射只发生一次）
-        self._step_chain(HL)
-        self._step_legs(HL)
+        self._step_chain(self._ground)
+        self._step_legs(self._ground)
         self._step_head()
         self._step_depth()
         self._step_cosmetics()
@@ -1282,6 +1286,44 @@ class Lizard:
         self.vx = clampf(dx, -MAX_SEG_SPEED, MAX_SEG_SPEED)
         self.vy = clampf(dy, -MAX_SEG_SPEED, MAX_SEG_SPEED)
 
+    def _ground_y(self, HL: float) -> float:
+        """这一 tick 脚下的支撑面 y：屏幕地板 / 别的窗口顶边 / 横杆杆面。
+
+        原版 Floor tile 本来就不止一种（LizardPather 拿到的是 AImap 里的可站立
+        tile），所以这里问共用的地形层，而不是一律把屏幕底边当地面。没有地形层
+        （单元测试直接造 Lizard）时退回屏幕地板。
+        """
+        tq = self.terrain
+        if tq is None:
+            return HL
+        return tq.support(self.x, self.y, HL)
+
+    def _route_tick(self, o, WL, HL) -> bool:
+        """执行地形路线（MovementConnection 多段）的当前这一段。
+
+        爬段与跳段不在这里：爬段由 ``_climb_plan`` 写进 climb_* 字段、交给
+        ``_step_wall`` 的附着物理；跳段由 ``_approach_tick`` 照旧处理。这里只管
+        「走过去」和「走下去」两段 —— 返回 True 表示这一帧的位移由本方法接管。
+        """
+        plan = self.plan
+        if plan is None:
+            return False
+        legs = getattr(plan, "legs", ())
+        if not legs:
+            return False
+        leg = legs[0]
+        if leg.mode in ("climb_wall", "climb_pole", "jump", "hop"):
+            return False                   # 爬 / 跳各有自己的执行器
+        if o is not None and o.visible:
+            self.look_at = (o.x, o.y)
+        goal_x, goal_y = leg.x, leg.y
+        if leg.mode == "drop" and leg.tx is not None:
+            goal_x, goal_y = leg.tx, leg.ty      # 掉下去：朝落点走，剩下交给重力
+        self.target, self.target_obj = (goal_x, goal_y), (o.obj if o else None)
+        want = clampf((goal_x - self.x) * 0.07, -2.4, 2.4)
+        self.vx += (want - self.vx) * WALK_TURN
+        return True
+
     def _integrate(self, WL, HL) -> None:
         """自由态：重力积分 + 地面 / 侧墙（攀爬中改用墙面附着物理）。"""
         if self.climb_x is not None and not self.dead:
@@ -1298,7 +1340,7 @@ class Lizard:
 
         r = self.head_rad
         # 转身时上半身支起：头的落点抬高 turn_lift（链体仍受各自的落地限制）
-        floor = HL - self.body_rad * HEAD_STAND_FAC - self.turn_lift
+        floor = self._ground - self.body_rad * HEAD_STAND_FAC - self.turn_lift
         self._contact_floor = False
         self.wall_dir = 0
         if self.y > floor:
@@ -1358,7 +1400,7 @@ class Lizard:
         sx = self.climb_x
         dx = sx - self.x
         r = self.head_rad
-        floor = HL - self.body_rad * HEAD_STAND_FAC - self.turn_lift
+        floor = self._ground - self.body_rad * HEAD_STAND_FAC - self.turn_lift
         if not self.climb_attached:
             if abs(dx) <= CLIMB_GRIP_R and self._climb_span_ok():
                 self.climb_attached = True
@@ -1593,6 +1635,13 @@ class Lizard:
                                      "InvestigatePos", "InvestigateSound",
                                      "PackCoordination") else None, HL)
         if st in ("", "Stunned", "CasualBite"):
+            return
+        # 地形路线的当前段是「走 / 掉」时由这里接管位移；「爬 / 跳」段交给
+        # 上面的 _climb_plan 与下面的 _approach_tick，互不打架。
+        if (self.plan is not None and self.plan.legs
+                and st in ("HuntPrey", "ApproachPrey", "InvestigatePos",
+                           "InvestigateSound", "PackCoordination")
+                and self._route_tick(o, WL, HL)):
             return
         if st == "FollowFriend":
             self._follow(WL, HL)

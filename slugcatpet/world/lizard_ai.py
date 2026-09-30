@@ -58,6 +58,7 @@ APPROACH_OK = 64.0            # 落点距目标这么近就算「跳过去够得
 JUMP_ACCEPT = 0.35            # 起跳评分门槛（再乘品种的 jump 倾向）
 JUMP_SLACK = 0.90
 LURK_MIN_R = 168.0            # 伏击型品种：猎物比这远就原地等
+ARRIVE_X = 14.0                # 地形路线的「这一段走到了」横向容差
 
 # 每个品种对「怎么靠近」的偏好：同一套 movement utility，只改权重。
 # travel=绕路代价 / land=落点误差 / wall=贴墙风险 / angle=接近角度
@@ -415,10 +416,11 @@ def flank_offset(lizard_id: int) -> float:
 class ApproachPlan:
     """「怎么过去」：直接冲 / 先走到起跳点再跳 / 原地伏击等它靠近。"""
 
-    __slots__ = ("mode", "target", "launch", "expires", "reason", "score", "climb")
+    __slots__ = ("mode", "target", "launch", "expires", "reason", "score", "climb",
+                 "legs")
 
     def __init__(self, mode, target, launch=None, expires=0, reason="", score=0.0,
-                 climb=None):
+                 climb=None, legs=()):
         self.mode = mode              # direct / jump / lurk / climb_wall / climb_pole
         self.target = target          # 这一帧要去的点
         self.launch = launch          # 起跳点（mode=jump 时）
@@ -427,6 +429,10 @@ class ApproachPlan:
         self.score = float(score)
         # mode=climb_* 时：(上墙点 x, 线顶, 线底, 向上=1/向下=-1)
         self.climb = climb
+        # 地形层给的整条多段路线（terrain.Leg 的元组）；当前段恒为 legs[0]。
+        # 有它时动作层照这一段走，走完下一 tick 重新问图 —— 于是「走到哪、
+        # 从哪起跳」永远按当前位置算，不会拿旧节点的坐标硬冲。
+        self.legs = tuple(legs or ())
 
     def alive(self, tick: int) -> bool:
         return int(tick) <= self.expires
@@ -451,15 +457,57 @@ def sim_arc(x0, y0, vx, vy, floor, gravity, air_friction, ticks=AIR_TICKS):
     return pts
 
 
+def _plan_from_legs(legs, my_x, tick, ttl, reason):
+    """把地形层给的多段路线折成动作层认识的 ApproachPlan（当前段 = legs[0]）。
+
+    反编译口径：原版蜥蜴拿到的是 LizardPather 给的 MovementConnection 序列，
+    它只执行当前那一条，走完再要下一条。这里照做：
+
+      walk / drop  → mode=direct + 目标点（动作层朝目标点走，落差交给重力）
+      climb_*      → mode=climb_* + climb=(x, top, bot, dir)（交给 _step_wall）
+      jump / hop   → mode=jump + launch=(起跳点)（交给 _approach_tick）
+
+    全是 walk 段时返回 None：那说明目标本来就在同一层，直冲那套更好，
+    也免得猫站在锚点（走完的终点）上不动。
+    """
+    if not legs:
+        return None
+    i = 0
+    while (i < len(legs) - 1 and legs[i].mode == "walk"
+           and abs(legs[i].x - my_x) <= ARRIVE_X):
+        i += 1                             # 已经站在这段走路的终点上：换下一段
+    legs = tuple(legs[i:])
+    if all(lg.mode == "walk" for lg in legs):
+        return None
+    leg = legs[0]
+    if leg.mode in ("climb_wall", "climb_pole"):
+        return ApproachPlan(leg.mode, (leg.x, leg.y), None, tick + ttl, reason,
+                            0.0, climb=(leg.x, leg.top, leg.bot, leg.up), legs=legs)
+    if leg.mode in ("jump", "hop"):
+        return ApproachPlan("jump", (leg.tx, leg.ty), (leg.x, leg.y),
+                            tick + ttl, reason, 0.0, legs=legs)
+    gx, gy = leg.x, leg.y
+    if leg.mode == "drop" and leg.tx is not None:
+        gx, gy = leg.tx, leg.ty           # 掉下去：朝落点走，剩下的交给重力
+    return ApproachPlan("direct", (gx, gy), None, tick + ttl, reason, 0.0,
+                        legs=legs)
+
+
 def _terrain_route(terrain, caps, my_x, my_y, prey_x, prey_y, tick, ttl):
-    """跳跃弧够不着时问地形层：有没有「走 → 上墙 / 上杆」这条正式路线。
+    """跳跃弧够不着时问地形层：有没有一条正式的移动连接（MovementConnection）。
 
     反编译口径：原版蜥蜴拿到的是 LizardPather 给的 MovementConnection
-    （Floor→Wall→Climb），不是动作层临时找一根竖线。这里把同一条连接交给
-    Planner 产出 mode=climb_* 的路线，动作层只负责执行（走 / 贴墙 / 爬）。
+    （Floor→Wall→Climb / Beam→Beam），不是动作层临时找一根竖线。这里先把
+    整条多段路线（走 / 爬 / 跳 / 掉 / 换杆，且「能去也能回」）折成 ApproachPlan；
+    图里没有可用路线时，退回旧的单段「走 → 上墙 / 上杆」提示，保证不丢能力。
     """
     if terrain is None or caps is None:
         return None
+    route = terrain.route(my_x, my_y, prey_x, prey_y, caps)
+    if route is not None:
+        plan = _plan_from_legs(route.legs, my_x, tick, ttl, "terrain:route")
+        if plan is not None:
+            return plan
     hint = terrain.route_hint(my_x, my_y, prey_x, prey_y, caps)
     if hint is None:
         return None

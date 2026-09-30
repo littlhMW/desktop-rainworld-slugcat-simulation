@@ -171,7 +171,8 @@ EN_DRAIN_LIGHT = 1.0 / 4800.0
 EN_REC_REST = 1.0 / 800.0
 EN_REC_IDLE = 1.0 / 1600.0
 
-_STATE_TO_MOOD = {"PoleClimb": "pole_climb",
+_STATE_TO_MOOD = {"ItemPlay": "item_play",
+                  "PoleClimb": "pole_climb",
                   "SeekHPole": "hpole", "HPole": "hpole",
                   "CeilingHang": "ceiling_hang",
                   "ChaseCursor": "play_cursor", "Socialize": "socialize"}
@@ -541,7 +542,6 @@ class BehaviorFSM:
         self._air_pole_cd = 0           # 刚离开杆：这段时间不把同一根杆又抓回来
         self._left_pole = None
         self._air_pole_target = None    # 空中想抓住的那根杆（带方向跳杆时记下）
-        self._itemplay_cd = 0
         self._back_spear_cd = 0
         self._tail_needle_cd = 0      # 矛大师：尾巴长针的间隔
         # 饕餮：体重坠落攻击（cats/gourmand_slam.py 的独占记账字段）
@@ -1070,7 +1070,6 @@ class BehaviorFSM:
         self._food_prev = self.body.food
         self._food_prev_q = food_now_q
         self.mood.tick_freshness(self._active_mood())
-        self.mood.tick_freshness(self._active_mood())
         self.timer += 1
 
     # ── 统一动作注册表：主 tick 的全部「决定」都登记在这里 ──
@@ -1148,9 +1147,6 @@ class BehaviorFSM:
         A(ActionSpec(key='CatchFly', band=BAND_NEED,
                     pre=self._act_catchfly_pre, gate=self._act_catchfly_gate, start=self._act_catchfly,
                     tags=frozenset({TAG_FOOD})))
-        A(ActionSpec(key='ItemPlay', band=BAND_NEED,
-                    pre=self._act_itemplay_pre, gate=self._act_itemplay_gate, start=self._act_itemplay,
-                    tags=frozenset({TAG_PERSONALITY})))
         A(ActionSpec(key='SaintLickPlay', band=BAND_NEED,
                     pre=self._act_saintlickplay_pre, gate=self._act_saintlickplay_gate, start=self._act_saintlickplay,
                     tags=frozenset({TAG_PERSONALITY})))
@@ -1535,24 +1531,6 @@ class BehaviorFSM:
             self._break_active_controllers()
             self._act_or_wake("CatchFly")
 
-    def _act_itemplay_pre(self, ctx):
-        if self._itemplay_cd > 0:
-            self._itemplay_cd -= 1
-    def _act_itemplay_gate(self, ctx):
-        return (self._fetch_check == 0 and self._itemplay_cd <= 0
-                and (self.body.food_satisfied() or self._food_urge < 1.0)
-                and not self.grab.active and not self._exhausted
-                and not self._cold_urgent() and not self._zerog()
-                and not self._hibernating and not self.body.swimming
-                and self.state in ("IdleStand", "PostThrowStand", "PostThrowWander")
-                and self.rng.random() < tuning.ITEMPLY_P)
-    def _act_itemplay(self, ctx):
-            it = self._nearest_play_item()
-            if it is not None:
-                self._itemplay_target = it
-                self._break_active_controllers()
-                self._act_or_wake("ItemPlay")
-
     def _act_saintlickplay_pre(self, ctx):
         if self._lick_cd > 0:
             self._lick_cd -= 1
@@ -1856,6 +1834,16 @@ class BehaviorFSM:
             self._play_enter()
             self._transition("ChaseCursor")
             return True
+        if name == "item_play":
+            it = self._nearest_play_item()
+            if it is None:
+                # 抽中的那一刻东西被别猫拿走了：发呆一拍再重抽
+                self._idle_hold = self._roll_idle_hold()
+                return True
+            self._itemplay_target = it
+            self._break_active_controllers()
+            self._act_or_wake("ItemPlay")
+            return True
         if name == "socialize":
             tgt = self._nearest_peer()
             if tgt is None:
@@ -1899,7 +1887,13 @@ class BehaviorFSM:
                           peer_near=self._peer_near(),
                           cursor_close=self._cursor_close(),
                           threat=self._threat_level(),
-                          social_urge=self._social_urge)
+                          social_urge=self._social_urge,
+                          has_play_item=self._nearest_play_item() is not None,
+                          exhausted=self._exhausted,
+                          hibernating=self._hibernating,
+                          cold_urgent=self._cold_urgent(),
+                          food_ok=self.body.food_satisfied(),
+                          food_urge=self._food_urge)
 
     def _mood_select(self):
         return self.mood.select(self._mood_ctx())
@@ -8236,7 +8230,6 @@ class BehaviorFSM:
             ex.cancel()
         self._itemplay_mode_t = 0
         self._itemplay_throw_count = 0
-        self._itemplay_cd = tuning.ITEMPLY_RETRY
 
     def _lick_targets(self):
         """能被舌头黏着玩的生物（活的、自由态的）。"""

@@ -15,12 +15,15 @@ class MoodContext:
     __slots__ = ("energy", "temper", "has_climbable_pole", "cold", "has_warm_lamp",
                  "has_hpole", "can_ceiling_play", "can_ceil_hang", "submerged",
                  "near_wall", "near_ceiling", "peer_near", "cursor_close", "threat",
-                 "social_urge")
+                 "social_urge", "has_play_item", "exhausted", "hibernating",
+                 "cold_urgent", "food_ok", "food_urge")
 
     def __init__(self, energy, temper, has_climbable_pole, cold=0.0, has_warm_lamp=False,
                  has_hpole=False, can_ceiling_play=True, can_ceil_hang=True, submerged=False,
                  near_wall=False, near_ceiling=False, peer_near=False,
-                 cursor_close=False, threat=0.0, social_urge=0.0):
+                 cursor_close=False, threat=0.0, social_urge=0.0,
+                 has_play_item=False, exhausted=False, hibernating=False,
+                 cold_urgent=False, food_ok=True, food_urge=0.0):
         self.energy = energy
         self.temper = temper
         self.has_climbable_pole = has_climbable_pole
@@ -37,6 +40,14 @@ class MoodContext:
         self.cursor_close = cursor_close
         self.threat = threat
         self.social_urge = social_urge
+        # item_play 判据：身边有没有能玩的物件 + 生理闸（这些是「环境允许
+        # 哪些欲望」的一部分；「我现在能不能抽心跳」由 FSM 的空闲态决定）
+        self.has_play_item = has_play_item
+        self.exhausted = exhausted
+        self.hibernating = hibernating
+        self.cold_urgent = cold_urgent
+        self.food_ok = food_ok
+        self.food_urge = food_urge
 
 
 def _one(_):
@@ -191,6 +202,24 @@ def build_arbiter(rng, personality=None):
                                       tuning.PLAYCUR_SF_FRESH),
         temper_factor=lambda t: 1.0,
         one_shot=True, init=tuning.PLAYCUR_INIT))
+    # 玩耍：把玩地上的小物件（矛 / 石头 / 水果 / 珍珠）。
+    # 以前它藏在 BAND_NEED 里：gate 自己掷一次 ITEMPLY_P，做完再吃 ITEMPLY_RETRY
+    # 的独立冷却 —— 同一个欲望抽两次骰子。现在它就是一个普通的心跳候选：
+    # 想不想玩 = base × energy × temper × personality，什么时候可以再玩 =
+    # freshness 的 decay/recover。真正玩什么（哪件东西）仍归 FSM 的
+    # _nearest_play_item()，这一层只判「环境里有没有可玩的东西」。
+    arb.add(Candidate(
+        "item_play", base=tuning.ITEMPLAY_BASE * _pm("item_play"),
+        start=tuning.ITEMPLAY_START, quit=tuning.ITEMPLAY_QUIT,
+        decay=tuning.ITEMPLAY_DECAY, recover=tuning.ITEMPLAY_RECOVER,
+        gate=lambda ctx: (ctx.has_play_item and ctx.energy >= _gate
+                          and not ctx.submerged and not ctx.exhausted
+                          and not ctx.cold_urgent and not ctx.hibernating
+                          and (ctx.food_ok or ctx.food_urge < 1.0)),
+        energy_factor=lambda e: _lerp(e, 0.0, 1.0, tuning.ITEMPLAY_SF_TIRED,
+                                      tuning.ITEMPLAY_SF_FRESH),
+        temper_factor=lambda t: 1.0,
+        one_shot=True, init=tuning.ITEMPLAY_INIT))
     # 社交欲望（第六类）：攒满才想找同伴做社交动作
     arb.add(Candidate(
         "socialize", base=tuning.SOCIAL_BASE * _pm("socialize"),
