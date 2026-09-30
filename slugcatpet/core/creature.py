@@ -1970,17 +1970,20 @@ class SlugcatBody:
         #   Hunter：1 手 + 1 背，共两支；
         #   Spearmaster：两只手各一支，不使用背槽；
         #   其他猫：全身最多一支。
-        total = len(self.hand_spears) + (1 if self.back_spear is not None else 0)
-        if not getattr(self.stats, "dual_spear", False) and total >= 1:
-            if not getattr(self.stats, "back_spear", False):
+        if not getattr(self.stats, "dual_spear", False):
+            # 非矛大师：手里已经有矛时，不允许第二支进入另一只手。
+            # Hunter 的第二支只能进入专属背槽；其他猫直接拒绝。
+            if self.hand_spears:
+                if getattr(self.stats, "back_spear", False) and self.back_spear is None:
+                    self.put_spear_on_back(spear)
+                    return True
                 return False
-            # Hunter 已有背矛时也不能再拿第三支。
-            if self.back_spear is not None:
+            # Hunter 已经背着一支时，仍可拿一支到手；总量正好两支。
+            if self.back_spear is not None and not getattr(self.stats, "back_spear", False):
                 return False
 
         side = self._take_hand("spear", side)
         if side is None:
-            # 只有 Hunter 能把矛放到背槽；Spearmaster 不再借用背槽。
             if getattr(self.stats, "back_spear", False) and self.back_spear is None:
                 self.put_spear_on_back(spear)
                 return True
