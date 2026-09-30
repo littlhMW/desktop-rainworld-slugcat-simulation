@@ -41,7 +41,6 @@ _STATES = {
     "RivSnatch": "st_snatch",
     "RivFlip": "st_flip",
     "EatCob": "st_hunt_live",
-    "SeedCob": "st_hunt_live",
     "ClearCorpse": "st_clear_corpse",
     "Sleep": "st_sleep",
     "LieDown": "st_lie",
@@ -112,10 +111,10 @@ _STATE_TARGET = {
     "FleeLizard": ("_flee_from",),
     "CrawlAway": ("_crawl_from",),
     "FightThreat": ("_fight_target",),
+    "RivFlip": ("_rf_pole",),
     "AngryStone": ("_fight_target",),
     "PyroMaul": ("_slam_target",),
     "PyroRomp": ("_fight_target",),
-    "RivSnatch": ("_fight_target",),
     "ClearCorpse": ("_clear_target",),
     "SeekWarmth": ("_warm_goal_obj",),
     "StormSeekShelter": ("_storm_goal_obj",),
@@ -128,7 +127,6 @@ _STATE_TARGET = {
     "RelocateToWall": ("_air_pole_target",),
     "Airborne": ("_air_pole_target", "_zerog_target"),
     "EatCob": ("_cob",),
-    "SeedCob": ("_cob",),
     "TongueClimb": (),
 }
 
@@ -140,7 +138,7 @@ _STATE_CTRL = {
 }
 
 # 光标类：目标不是实体，直接给词
-_CURSOR_STATES = ("ChaseCursor", "CursorLick")
+_CURSOR_STATES = ("ChaseCursor", "CursorLick", "RivSnatch")
 
 
 def _target_obj(beh):
@@ -188,8 +186,9 @@ def _describe(obj, beh, peers):
             and getattr(obj, "behavior", None) is not None):
         dead = bool(getattr(obj.body, "dead", False))
         name = _peer_name(obj, peers)
-        key = "tg_peer_dead" if dead else "tg_peer"
-        return t(key) + ((" · " + name) if name else "")
+        if dead:
+            return t("tg_peer_dead") + ((" · " + name) if name else "")
+        return name or t("tg_peer")
     from ..world.lizard import Lizard
     from ..world.batfly import BatFly
     from ..world.squidcada import Squidcada
@@ -216,7 +215,7 @@ def _describe(obj, beh, peers):
                      (Pearl, "tg_pearl"), (Spear, "tg_spear"), (Stone, "tg_stone"),
                      (Pole, "tg_pole"), (HPoleController, "tg_hpole")):
         if isinstance(obj, cls):
-            return t(key) + dead_suffix
+            return t(key) + ((" · " + t("tg_corpse")) if dead_suffix else "")
     return ""
 
 
