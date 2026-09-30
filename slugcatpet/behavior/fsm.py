@@ -4727,7 +4727,7 @@ class BehaviorFSM:
         if sh is None:
             return
         self._storm_goal_obj = sh
-        g = sh.entry_goal(tuning.SHELTER_ENTRY_RADIUS)
+        g = sh.interior_goal(tuning.SHELTER_ENTRY_RADIUS)
         if not self.planner.stay_candidates(g):
             self.planner.on_giveup(g)      # 够不到就登记冷却，别每 tick 重规划
             self._storm_cd = tuning.STORM_RETRY_TICKS
@@ -4753,7 +4753,9 @@ class BehaviorFSM:
             self._transition("Dragged")
             return
         self.gfx.look_at = (sh.center_x, sh.center_y)
-        if sh.contains(b.chunk1.x, b.chunk1.y):
+        gx, gy = sh.interior_goal(tuning.SHELTER_ENTRY_RADIUS).pos()
+        if sh.contains(b.chunk1.x, b.chunk1.y) and math.hypot(
+                b.chunk1.x - gx, b.chunk1.y - gy) <= tuning.SHELTER_ENTRY_RADIUS:
             self._storm_break()
             self._transition("IdleStand")
             return
