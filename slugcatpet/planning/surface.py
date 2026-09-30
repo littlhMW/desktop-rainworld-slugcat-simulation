@@ -461,9 +461,13 @@ class SurfaceGraph:
                 if i == j or b.kind not in kinds or a.sid == b.sid:
                     continue
                 up = a.y - b.y                 # >0：目标更高
-                if abs(up) <= 2.0:
-                    continue                   # 同高：walk 那条边在管
+                same_level_block = (abs(up) <= 2.0
+                                    and _walk_blocked(a.anchor, b.anchor, a.y))
+                if abs(up) <= 2.0 and not same_level_block:
+                    continue                   # 同高且没有墙：walk 已经负责
                 if up > rise_max + tuning.GRAB_REACH:
+                    continue
+                if same_level_block and a.sid == b.sid:
                     continue                   # 高过一个跳跃的极限（空间粗筛）
                 if abs(b.anchor - a.anchor) > span_pad + abs(up):
                     continue                   # 横向太远（空间粗筛）
@@ -472,6 +476,11 @@ class SurfaceGraph:
                                want=(b.anchor, b.y), land_off=off)
                 if r is None:
                     continue
+                if same_level_block:
+                    rk, rh, rmd, rlx, _rly, _rticks, _rlaunch = r
+                    if _arc_hits_solids(get_arc(stats, rh, rmd),
+                                        rlaunch, a.y - get_arc(stats, rh, rmd).takeoff_h):
+                        continue
                 kind, hold, md, land_x, _ly, ticks, launch_x = r
                 if not landing_safe(land_x, b.lo, b.hi):
                     continue                   # 落点贴着平台边：这只猫不愿意赌
@@ -697,159 +706,3 @@ class SurfaceRoute:
         if pers is None:
             pers = getattr(getattr(self.pet, "cat", None), "personality", None)
         return pers
-
-    def plan(self, goal):
-        pet = self.pet
-        body = pet.body
-        if getattr(body, "swimming", False) or getattr(body, "zerog", False):
-            return None
-        if getattr(body, "on_pole", False):
-            return None                       # 杆上另有杆间跳/落平台的路
-        gx, gy = goal.pos()
-        stats = pet.cat.stats
-        hy, hlo, hhi = self._here()
-        if surface_under(gx, gy) is not None:
-            return None                       # 目标就在某块顶边上：HopReach 直连即可
-        if _reach_from_surface(stats, hy, hlo, hhi, body.chunk1.x, gx, gy) is not None:
-            return None                       # 此刻就够得到：交给直连能力，别绕
-        if (not chunkphys.platforms() and not getattr(pet, "poles", ())
-                and not getattr(pet, "shelters", ())):
-            return None                       # 世界只有一块地板：没有别的面可去
-
-        # 缓存必须含**起点 x**：同一几何下从不同位置问同一目标，路线并不一样。
-        ck = (getattr(pet, "geometry_version", 0), getattr(pet, "world_version", 0),
-              round(hy, 1), round(body.chunk1.x, 1), round(gx, 1), round(gy, 1))
-        if ck != self._cache_key:
-            self._cache = {}
-            self._cache_key = ck
-        hit = self._cache.get("r")
-        if hit is not None:
-            return hit                      # 同一几何同一起点同一目标只解一次
-
-        start = SurfaceNode("floor", hy, hlo, hhi, here=True,
-                            anchor=body.chunk1.x, sid="here")
-        # 图缓存：只有「平台 / 杆 / 站在哪块面」变了才重建（猫移动不算）
-        gkey = (getattr(pet, "geometry_version", 0), getattr(pet, "world_version", 0),
-                stats, round(hy, 1), round(hlo, 1), round(hhi, 1))
-        if gkey != self._gkey:
-            self._graph = None
-            self._gkey = gkey
-        if self._graph is None:
-            self._graph = SurfaceGraph.build(pet, start)
-        graph = self._graph
-        graph.start_at(body.chunk1.x)
-        got = graph.route_to((gx, gy), stats, self._pers())
-        out = None
-        if got is not None:
-            legs, t, e = got
-            # 真实起点到「起始锚点」那一小段走路（锚点是固定的，误差 ≤ 半个锚点间距）
-            walk0 = (abs(body.chunk1.x - graph.nodes[graph.start].anchor)
-                     / tuning.PLAN_WALK_SPEED)
-            t += walk0 * OPTIMISM
-            e += walk0 * tuning.PLAN_EN_RATE_LIGHT
-            if legs[0].kind not in ("finish",) and len(legs) >= 2:
-                out = RoutePlan(goal, legs, t, e)
-        self._cache["r"] = out
-        return out
-
-    def make_controller(self, plan):
-        """按**当前 leg** 建既有控制器；落地后由 RouteExecutor 重新规划接下一段。"""
-        leg = plan.leg()
-        if leg is None or leg.kind == "finish":
-            return None
-        if leg.kind == "walk":
-            return WalkReach(self.pet).make_controller(leg.goal())
-        if leg.kind == "climb_pole":
-            return PoleJumpReach(self.pet).make_controller(leg.goal())
-        if leg.kind == "pole_beam":
-            return PoleJumpReach(self.pet).make_controller(leg.goal())
-        return _hop_controller(self.pet, leg)
-
-
-class RouteExecutor:
-    """多段路线执行器：跑当前 leg → 落地后重新规划 → 直到原目标被满足。
-
-    与 PlanExecutor 的关系：直连能力给不出方案时，PlanExecutor 会把「route」当
-    一个候选，控制器就是本类。本类在「没有多段路可走 / 只剩最后一伸」时转交给
-    PlanExecutor（allow_route=False，防递归），于是原目标始终是同一个。
-    """
-
-    MAX_REPLANS = 8
-
-    def __init__(self, pet, planner, goal, mode=MODE_TOUCH):
-        self.pet = pet
-        self.planner = planner
-        self.goal = goal
-        self.mode = mode
-        self.plan = planner.surface_route(goal)
-        self._ctrl = None
-        self._direct = None
-        self._replans = 0
-        self._cancelled = False
-
-    def update(self):
-        if self._cancelled:
-            return GIVEUP
-        if not self.goal.valid():
-            return GIVEUP
-        body = self.pet.body
-        if (getattr(body, "swimming", False) or getattr(body, "zerog", False)
-                or getattr(body, "on_pole", False)):
-            return GIVEUP
-        leg = self.plan.leg() if self.plan is not None else None
-        if leg is None or leg.kind == "finish":
-            return self._direct_tick()
-        if self._ctrl is None:
-            self._ctrl = self._build(leg)
-            if self._ctrl is None:
-                self.plan = None
-                return self._direct_tick()
-        status = self._ctrl.update()
-        if status == RUNNING:
-            return RUNNING
-        ctrl, self._ctrl = self._ctrl, None
-        if hasattr(ctrl, "cancel"):
-            ctrl.cancel()
-        # DONE（落地）或 GIVEUP（这一段没走通）：都重新规划，接着朝原目辵走
-        return self._replan()
-
-    def _direct_tick(self):
-        if self._direct is None:
-            from .executor import PlanExecutor
-            self._direct = PlanExecutor(self.pet, self.planner, self.goal,
-                                        mode=self.mode, allow_route=False)
-        st = self._direct.update()
-        if st == HOLDING:
-            return HOLD
-        if st == GIVEUP:
-            self._cancelled = True
-            return GIVEUP
-        return RUNNING
-
-    def _replan(self):
-        self._replans += 1
-        if self._replans > self.MAX_REPLANS:
-            self._cancelled = True
-            return GIVEUP
-        self.plan = self.planner.surface_route(self.goal)
-        leg = self.plan.leg() if self.plan is not None else None
-        if leg is None or leg.kind == "finish":
-            return self._direct_tick()
-        return RUNNING
-
-    def _build(self, leg):
-        if leg.kind == "walk":
-            return WalkReach(self.pet).make_controller(leg.goal())
-        if leg.kind == "climb_pole":
-            return PoleJumpReach(self.pet).make_controller(leg.goal())
-        if leg.kind == "pole_beam":
-            return PoleJumpReach(self.pet).make_controller(leg.goal())
-        return _hop_controller(self.pet, leg)
-
-    def cancel(self):
-        self._cancelled = True
-        if self._ctrl is not None and hasattr(self._ctrl, "cancel"):
-            self._ctrl.cancel()
-        self._ctrl = None
-        if self._direct is not None:
-            self._direct.cancel()
