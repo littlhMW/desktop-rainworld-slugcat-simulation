@@ -380,7 +380,8 @@ class FruitFetcher:
             self._deliver = None
             self.phase = "select"
             return False
-        hx, hy = lz.x, lz.y - lz.body_rad * 1.2      # 蜥蜴头侧
+        hx = getattr(lz, "head_x", lz.x)             # 蜥蜴头（挂在体前的软体末端）
+        hy = getattr(lz, "head_y", lz.y)
         c0 = self.body.chunk0
         d = math.hypot(hx - c0.x, hy - (c0.y - 8.0))
         self.win.gfx.look_at = (hx, hy)

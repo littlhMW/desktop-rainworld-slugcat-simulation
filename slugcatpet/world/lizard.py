@@ -55,6 +55,15 @@ BODY_STAND_FAC = 1.7          # 躯干节最低离地 = 自身半径 * 此值
 TAIL_SINK_FAC = 0.5           # 尾节可拖到接近地面
 TAIL_GRAV_FAC = 1.7           # 尾巴「更重」：尾节重力倍数（比躯干下坠更快、摆动更迟滞）
 TAIL_ALIGN_FAC = 0.72         # 尾巴顺直约束强度倍数（越软越像一条有重量的尾巴）
+# 头：原版 Lizard 的 head 是 ConnectToPoint(chunk0 + 12*headSize) 的软体末端，
+# 不是驱动质点。驱动权在 bodyChunks[0]（= self.x / self.y）。
+HEAD_SPRING = 0.26            # 头追「第 0 节前方 head_conn」的弹性
+HEAD_SPRING_SOFT = 0.10       # 晕 / 死 / 被拎：颈子不使劲，头只被轻轻拖着走
+HEAD_GRAV = 0.30              # 头自身重力（站定时垂在体前、跳起 / 急停时甩）
+HEAD_AIR_FRIC = 0.88          # 头空气阻力
+CHAIN_SEED_LERP = 0.22        # 链体朝向的低通：转身时 seed 会横穿 0（锚点正滑过头顶），
+                              # 一帧掉头 = 髋部瞬移几十像素、脚全变成坏锚点
+
 TURN_VX = 0.35                # 判定「真的转身」的横向速度阈值（避免停下时身体窜到头前面）
 LEG_SIDE_FAC = 0.55           # 腿根挂在躯干侧下方 = 半径 * 此值
 LEG_JOINT = 25.0              # 原版 LizardLimb.jointDist 基准（再 ×(sizeFac+1)/2）
@@ -62,7 +71,7 @@ LEG_LIMB_RAD = 2.5            # 原版 LizardLimb 构造里的 rad
 LEG_AIR_FRIC = 0.99           # 原版 Limb 的 airFriction
 LEG_AIM_AHEAD = 26.0          # limbsAimFor 替代：躯干前方这么多像素（原版是行进目标格中心）
 LEG_GRIP_DELAY = 1            # 原版 limbGripDelay（各品种都是 1）
-FLOOR_GRIP_TOL = 1.5          # 脚离真实地形 ≤ 这么多才算 grounded（原版 gripCounter 的贴合判定）
+FLOOR_GRIP_TOL = 2.5          # 脚离真实地形 ≤ 这么多才算 grounded（原版 gripCounter 的贴合判定）
 LEG_LAND_TOL = 3.5            # 自由脚离落点面 ≤ 这么多 → 直接吸附落地（原版 reachedSnapPosition）
 LEG_STEP_STAGGER = 2.5        # 每条腿「拉满就换步」的距离错开量：四只脚不会同时抬起（原版靠各腿髋位错开）
 LEG_MAX_STRETCH = 1.35        # 脚离髋超过 jointDist × 这个倍数：支点作废，直接放开
@@ -268,21 +277,19 @@ FOLLOW_GAP = 46.0              # 驯服后与朋友保持的距离
 
 BLACK_RGB = (27, 11, 33)       # 近似 RoomPalette.blackColor：绝大多数蜥蜴的体色
 WHITE_RGB = (255, 255, 255)    # 白蜥体色走纯白分支
-# 白蜥迷彩：低频采一圈「自己周围」的实时背景主色，整只体色平滑渐变过去，再按
-# 缓慢呼吸在白色 ↔ 迷彩色之间换。反编译对照：原版白蜥体色就是**房间背景色**
-# （LizardGraphics 的 camo 分支），头色在它和白色之间随叫声闪 —— 桌宠里「房间
-# 背景」＝蜥蜴周围的真实桌面。采样以自己为中心、挖掉身体所在椭圆，所以拿到的是
-# 「周边局部环境色」：不是整屏 dominant，也不是身体各部位各采一个色。
-CAMO_SAMPLE_TICKS = 100        # 每 ~2.5 s 采一次（低频率）
+# 白蜥迷彩：**每 tick** 采一圈「自己周围」的实时背景主色，整只（含头）渐变过去
+# 并一直保持。反编译对照：原版白蜥体色就是**房间背景色**（LizardGraphics 的 camo
+# 分支），潜伏时盯着背景一动不动，追逐 / 被攻击就垮掉。桌宠里「房间背景」＝蜥蜴
+# 周围的真实桌面；采样以自己为中心、挖掉身体所在区域，拿到的是「周边局部环境色」：
+# 不是整屏 dominant，也不是身体各部位各采一个色。不再有呼吸灯。
 CAMO_SAMPLE_RADIUS_X = 70.0    # 采样半宽下限（实际取 max(body_rad*4.5, 它)）
 CAMO_SAMPLE_RADIUS_Y = 55.0    # 采样半高下限（实际取 max(body_rad*3.5, 它)）
-CAMO_COLOR_RATE = 0.15         # 整只体色向新采样色渐变的速度（平滑、不跳色）
-# 呼吸节律：绝大部分时间停在「纯取色」不动，只在每周期末尾短暂退回体色再变回来。
-# 原来是一条正弦（一半时间卡在中间色），看起来像整只一直在变色。
-CAMO_BREATH_TICKS = 900        # 一个完整呼吸周期 ~22.5 s
-CAMO_PULSE_TICKS = 150         # 其中只有 ~3.75 s 真的退回体色
-CAMO_MIX_MAX = 1.0             # 保持段：整只＝取到的背景色
-CAMO_MIX_MIN = 0.0             # 换气到体色那一瞬
+CAMO_COLOR_RATE = 0.25         # 整只体色向新采样色渐变的速度（平滑、跟手）
+CAMO_FADE_IN = 0.10            # 进入伪装：体色/头色 → 采样色（~0.5 s 淡入）
+CAMO_FADE_OUT = 0.50           # 发起攻击 / 被攻击：伪装立刻垮掉（~4 tick）
+CAMO_HIDE_VX = 1.2             # 位移速度低于它 = 潜伏不动，伪装才成立
+CAMO_FLICKER_TICKS = 90        # 受伤后「不由自主胡乱变色」剩余 tick（原版受伤乱闪）
+CAMO_FLICKER_STEP = 3          # 乱闪期间每隔几 tick 换一个随机色
 SALAMANDER_RGB = (232, 232, 244)
 HUE_DEV_K = 0.6                # 原版体色色相偏差的 SCurve 参数（所有品种都是 0.6）
 WHITE_PALE_SAT = 0.45          # 白蜥随机色版本：低饱和 + 高亮度 = 淡彩色
@@ -352,6 +359,41 @@ def _wrapped_var(rng, base: float, max_dev: float, k: float) -> float:
     """原版 Custom.WrappedRandomVariation（色相环绕）。"""
     n = base + _random_deviation(rng, k) * max_dev + 1.0
     return n - math.floor(n)
+
+
+def _push_out(px, py, r, rects, step_up):
+    """把半径 r 的圆点按最小穿透轴推出所有矩形，返回新位置。
+
+    躯干链、头、庇护所墙体共用这一份 —— 原版本来就是同一个
+    PushOutOfTerrain，没必要每处各写一份 AABB。
+    """
+    for x0, y0, x1, y1 in rects:
+        if x1 <= x0 or y1 <= y0:
+            continue
+        if px + r <= x0 or px - r >= x1:
+            continue
+        if py + r <= y0 or py - r >= y1:
+            continue
+        p_left = (px + r) - x0
+        p_right = x1 - (px - r)
+        p_top = (py + r) - y0
+        p_bot = y1 - (py - r)
+        m = min(p_left, p_right, p_top, p_bot)
+        if m <= 0.0:
+            continue
+        # 台阶：横向被挡但障碍顶边离脚面不到一步 → 直接踩上去
+        if m in (p_left, p_right) and 0.0 <= (py + r) - y0 <= step_up:
+            py = y0 - r
+            continue
+        if m == p_top:
+            py = y0 - r
+        elif m == p_bot:
+            py = y1 + r
+        elif m == p_left:
+            px = x0 - r
+        else:
+            px = x1 + r
+    return px, py
 
 
 class LizardBreed:
@@ -843,7 +885,7 @@ class Lizard:
                  "walk_phase", "idle_timer", "goal_x", "hop_cd", "blink", "last_blink",
                  "chain_dir", "_ax_c",
                  "body_dir", "move_dir", "look_dir", "turn_mode", "turn_progress",
-                 "_turn_imp", "_last_body_dir", "_vx_intent",
+                 "_turn_imp", "_last_body_dir", "_vx_intent", "_want_vx",
                  "_body_imp_x", "_body_imp_y",
                  "held_by_hand", "water_y", "room_gravity", "_contact_floor",
                  "dead", "spacing", "spikes", "cosmetics", "cosmetic_pts", "like", "tamed", "friend_id",
@@ -862,7 +904,9 @@ class Lizard:
                  "depth", "last_depth", "head_depth", "last_head_depth", "turn_lift",
                  "head_driven", "anim", "_last_vx",
                  "depth_in", "rel",
-                 "camo_target", "camo_color", "camo_mix",
+                 "camo_target", "camo_color", "camo_mix", "camo_flicker",
+                 "head_x", "head_y", "head_lx", "head_ly", "head_vx", "head_vy",
+                 "_seed_prev",
                  "climb_kind", "climb_attached", "climb_side",
                  "climb_top", "climb_bot", "caps", "terrain", "_ground")
 
@@ -930,7 +974,8 @@ class Lizard:
         # 整只体色（每 tick 慢速渐变到 target）。None = 还没采到 / 采不到（保持白色）。
         self.camo_target = None
         self.camo_color = None
-        self.camo_mix = 0.0      # 体色在白色 ↔ 迷彩色之间的呼吸比例
+        self.camo_mix = 0.0      # 0＝本体色，1＝完全等于采样到的背景色（淡入淡出）
+        self.camo_flicker = 0    # 受伤后「不由自主胡乱变色」剩余 tick
         # 叼着死猫/昏迷猫回巢穴：carry_obj 是那只猫（PetUnit），carry_body 是
         # 它的身体（被钉住跟着嘴走）。carry_den 是**开始搬运时锁定的那个巢穴**
         # （原版 ReturnPrey 的 den：定了就不换），carry_corner 只是它的左右符号。
@@ -982,6 +1027,14 @@ class Lizard:
                                   is_back, bool(li % 2), pair_i))
         # 原版 limbsAimFor：蜥蜴行进目标点，腿朝它伸。宠物里取躯干前方一点。
         self.limbs_aim = (self.x, self.y)
+
+        # 头：挂在第 0 节躯干前方的软体末端（原版 head.ConnectToPoint(chunk0)）。
+        # 它不是 AI 驱动点 —— 驱动的是 bodyChunk[0]（= self.x / self.y），头只是
+        # 被连接约束拖在体前的一个点，所以会滞后、下垂、被甩。
+        self.head_x = self.head_lx = self.x + self.head_conn
+        self.head_y = self.head_ly = self.y
+        self.head_vx = self.head_vy = 0.0
+        self._seed_prev = None      # 上一帧的链体朝向（转身限速用，见 _step_chain）
 
         # 花纹（LizardCosmetics/*）：逐条照抄 LizardGraphics.cs:439-640 的生成链，
         # 见 world/lizard_cos.py。背刺（SpineSpikes）也在这条链里，不再是单独的
@@ -1047,6 +1100,9 @@ class Lizard:
         # AI 这一 tick 的行进意图速度（物理改 vx 之前先记下来：脚支撑会把 vx 清零，
         # 不能拿积分后的 vx 当「想往哪走」）
         self._vx_intent = 0.0
+        # AI 这一 tick 真正想走的速度（_drive_vx 记的 want）。脚支撑会把实际 vx
+        # 压到 TURN_VX 以下，转身状态机看的是意图而不是被压过的结果。
+        self._want_vx = 0.0
         # 原版 LizardGraphics 的 depthRotation / headDepthRotation（决定头取哪一行贴图）
         self.depth = self.last_depth = -1.0          # 原版初值：朝右 = -1
         self.head_depth = self.last_head_depth = -1.0
@@ -1118,24 +1174,45 @@ class Lizard:
         """
         return clampf(NOTICE_R * self.breed.visual_radius / 900.0, 52.0, NOTICE_R * 2.2)
 
+    def _camo_hide(self) -> bool:
+        """潜伏中：站着不动、没追东西、没被抓、没受伤 —— 伪装才成立。"""
+        if (self.dead or self.stun > 0 or self.held_by_hand or self.hauled
+                or self.state != ItemState.FREE or self.hurt_flash > 0):
+            return False
+        if self.target_obj is not None or self.carry_obj is not None:
+            return False
+        return math.hypot(self.vx, self.vy) < CAMO_HIDE_VX
+
     def camo_tick(self, win, tick: int) -> None:
-        """白蜥：低频采一次「自己身后」的**背景**主色，整只长时间保持它。
+        """白蜥：**每 tick** 采一次「自己周围」的**背景**主色，整只（含头）保持它。
 
         采样在 `platform.bgcolor` 里会把「我们自己画的前景」（猫 / 生物 / 物品 /
         HUD）挖掉，只留桌面背景 —— 别的猫从旁边走过不会带着白蜥一起变色。
-        每 `CAMO_SAMPLE_TICKS` 按 `self.id` 错开采样点，半径随身体大小放大；
-        采样失败就保持上次的颜色（一直失败则保持白色）。只有 `breed.camo`
-        的品种（白蜥）跑。
+        潜伏不动时持续采样（一直贴着背景走）；发起攻击 / 被攻击立刻淡出；受伤
+        期间还会不由自主地胡乱变色（原版白蜥受伤乱闪）。只有 `breed.camo`
+        的品种（白蜥）跑。采样本身按位置缓存，站着不动时几乎不花时间。
         """
         if not getattr(self.breed, "camo", False):
             return
-        if tick % CAMO_SAMPLE_TICKS == self.id % CAMO_SAMPLE_TICKS:
+        if self.camo_flicker > 0:
+            # 受伤乱闪：每隔几 tick 换一个随机色，体色和头色一起乱变
+            self.camo_flicker -= 1
+            if self.camo_flicker % CAMO_FLICKER_STEP == 0:
+                self.camo_color = (self.rng.randrange(256), self.rng.randrange(256),
+                                   self.rng.randrange(256))
+            self.camo_mix = 1.0
+            return
+        hide = self._camo_hide()
+        if hide:
             from ..platform.bgcolor import dominant_around
             rx = max(self.body_rad * 4.5, CAMO_SAMPLE_RADIUS_X)
             ry = max(self.body_rad * 3.5, CAMO_SAMPLE_RADIUS_Y)
             col = dominant_around(win, self.x, self.y, rx, ry)
             if col is not None:
                 self.camo_target = col
+        elif self.camo_mix <= 0.02:
+            # 已经完全垮掉：忘掉旧色，下次潜伏时重新采（淡出是渐近的，到不了 0.0）
+            self.camo_target = None
         if self.camo_target is not None:
             if self.camo_color is None:
                 self.camo_color = self.camo_target
@@ -1145,19 +1222,15 @@ class Lizard:
                     int(self.camo_color[0] + (self.camo_target[0] - self.camo_color[0]) * t),
                     int(self.camo_color[1] + (self.camo_target[1] - self.camo_color[1]) * t),
                     int(self.camo_color[2] + (self.camo_target[2] - self.camo_color[2]) * t))
-        # 呼吸：长时间停在取色，周期末尾才短暂退回体色再变回来（每只错开相位）
-        ph = (tick + int(self.seed * 0.13 * CAMO_BREATH_TICKS)) % CAMO_BREATH_TICKS
-        hold = CAMO_BREATH_TICKS - CAMO_PULSE_TICKS
-        if ph < hold:
-            self.camo_mix = CAMO_MIX_MAX
-        else:
-            v = (ph - hold) / float(max(1, CAMO_PULSE_TICKS))
-            breath = 0.5 - 0.5 * math.cos(v * math.tau)
-            self.camo_mix = CAMO_MIX_MAX - (CAMO_MIX_MAX - CAMO_MIX_MIN) * breath
+        # 淡入 / 淡出：潜伏时满值（不再呼吸），追猎或被攻击后迅速垮掉
+        tgt = 1.0 if hide else 0.0
+        rate = CAMO_FADE_IN if tgt > self.camo_mix else CAMO_FADE_OUT
+        self.camo_mix = clampf(self.camo_mix + (tgt - self.camo_mix) * rate, 0.0, 1.0)
 
     def bounding_pad(self):
         """脏矩形外扩半径。"""
-        return max(self.body_rad, self.head_rad) + 26.0 * self.breed.limb_size + 8.0
+        return (max(self.body_rad, self.head_rad) + self.head_conn
+                + 26.0 * self.breed.limb_size + 8.0)
 
     # ── 状态 ──
     def die(self) -> None:
@@ -1251,6 +1324,7 @@ class Lizard:
             self.vx += dvec[0] * f
             self.vy += dvec[1] * f
         self.hurt_flash = HURT_FLASH
+        self.camo_flicker = CAMO_FLICKER_TICKS    # 白蜥：受伤不由自主地胡乱变色
         if shielded:
             # 头甲把矛弹开：头部强烈白闪一下（用户口径：表示这次弹开无效）
             self.head_flash = HEAD_DEFLECT_FLASH
@@ -1376,7 +1450,9 @@ class Lizard:
         self._step_legs(HL)
         self._step_head()
         self._step_depth()
+        self._step_head_point(WL)     # 头是挂在第 0 节前方的软体末端（要在 turn_lift 之后）
         self._step_cosmetics()
+        self._want_vx = 0.0           # 这一 tick 的意图已经用完（下一 tick AI 再写）
 
         if self.bite_hold > 0:
             self.bite_hold -= 1
@@ -1433,7 +1509,7 @@ class Lizard:
             goal_x, goal_y = leg.tx, leg.ty      # 掉下去：朝落点走，剩下交给重力
         self.target, self.target_obj = (goal_x, goal_y), (o.obj if o else None)
         want = clampf((goal_x - self.x) * 0.07, -2.4, 2.4)
-        self.vx += (want - self.vx) * WALK_TURN
+        self._drive_vx(want, WALK_TURN)
         return True
 
     def _leg_joint(self) -> float:
@@ -1502,33 +1578,7 @@ class Lizard:
         step_up = getattr(chunkphys, "STEP_UP", 8.0)
 
         def _push(px, py, r):
-            for x0, y0, x1, y1 in rects:
-                if x1 <= x0 or y1 <= y0:
-                    continue
-                if px + r <= x0 or px - r >= x1:
-                    continue
-                if py + r <= y0 or py - r >= y1:
-                    continue
-                p_left = (px + r) - x0
-                p_right = x1 - (px - r)
-                p_top = (py + r) - y0
-                p_bot = y1 - (py - r)
-                m = min(p_left, p_right, p_top, p_bot)
-                if m <= 0.0:
-                    continue
-                # 台阶：横向被挡但障碍顶边离脚面不到一步 → 直接踩上去
-                if (m in (p_left, p_right) and 0.0 <= (py + r) - y0 <= step_up):
-                    py = y0 - r
-                    continue
-                if m == p_top:
-                    py = y0 - r
-                elif m == p_bot:
-                    py = y1 + r
-                elif m == p_left:
-                    px = x0 - r
-                else:
-                    px = x1 + r
-            return px, py
+            return _push_out(px, py, r, rects, step_up)
 
         r = self.head_rad
         nx_, ny_ = _push(self.x, self.y, r)
@@ -1600,8 +1650,9 @@ class Lizard:
         self._collide_solids()
 
         r = self.head_rad
-        # 转身时上半身支起：头的落点抬高 turn_lift（链体仍受各自的落地限制）
-        floor = self._ground - self.body_rad * HEAD_STAND_FAC - self.turn_lift
+        # 转身时上半身支起：支起量现在抬的是「挂在体前的头」（_step_head_point），
+        # 躯干驱动点自己仍然踏在这一层地面上。
+        floor = self._ground - self.body_rad * HEAD_STAND_FAC
         self._contact_floor = False
         self.wall_dir = 0
         if self.y > floor:
@@ -1970,7 +2021,7 @@ class Lizard:
             return
         self.look_at = (o.x, o.y)
         want = clampf((o.x - self.x) * 0.06, -2.2, 2.2)
-        self.vx += (want - self.vx) * WALK_TURN
+        self._drive_vx(want, WALK_TURN)
 
     def _climb_plan(self, o, HL) -> None:
         """要不要贴着一条竖线爬（原版 LizardPather 的 Climb / Wall 通行能力）。
@@ -2077,17 +2128,17 @@ class Lizard:
             # Planner 给的是地形路线：走到上墙点，剩下的交给 _step_wall 的附着物理
             wx = plan.target[0]
             want = clampf((wx - self.x) * 0.08, -2.6, 2.6)
-            self.vx += (want - self.vx) * WALK_TURN
+            self._drive_vx(want, WALK_TURN)
             return
         lx = plan.launch[0] if plan.launch else self.x
         if abs(self.x - lx) <= 10.0 and self._contact_floor and self.hop_cd <= 0:
             self._leap()
             self.hop_cd = HOP_CD
             want = clampf((o.x - self.x) * 0.05, -2.6, 2.6)
-            self.vx += (want - self.vx) * LUNGE_ACCEL
+            self._drive_vx(want, LUNGE_ACCEL)
             return
         want = clampf((lx - self.x) * 0.06, -2.4, 2.4)
-        self.vx += (want - self.vx) * WALK_TURN
+        self._drive_vx(want, WALK_TURN)
 
     def _warn_tick(self, o, WL, HL) -> None:
         """警告同族竞争者：站定、举头、张嘴（原版同族对峙的 warning）。"""
@@ -2285,7 +2336,7 @@ class Lizard:
         dx = tx - self.x
         if abs(dx) > FOLLOW_GAP:
             want = clampf(dx * 0.05, -2.2, 2.2)
-            self.vx += (want - self.vx) * WALK_TURN
+            self._drive_vx(want, WALK_TURN)
         else:
             self.vx -= self.vx * 0.22
 
@@ -2365,7 +2416,7 @@ class Lizard:
         dx, dy = self.x - tx, self.y - ty
         d = math.hypot(dx, dy) or 1.0
         sp = self.breed.base_speed * FLEE_SPEED
-        self.vx += (dx / d * sp - self.vx) * FLEE_ACCEL
+        self._drive_vx(dx / d * sp, FLEE_ACCEL)
         self.target = self.target_obj = None
         self.look_at = (tx, ty)
         if self._contact_floor and self.rng.random() < FLEE_HOP:
@@ -2450,7 +2501,7 @@ class Lizard:
         self.target = self.target_obj = None
         self.look_at = best
         want = clampf((best[0] - self.x) * 0.05, -2.0, 2.0) * INJURY_SPEED
-        self.vx += (want - self.vx) * WALK_TURN
+        self._drive_vx(want, WALK_TURN)
         return True
 
     def _noise_tick(self, WL, HL) -> bool:
@@ -2464,7 +2515,7 @@ class Lizard:
             return False
         self.look_at = (self.noise_x, self.noise_y)
         want = clampf(dx * 0.06, -2.0, 2.0)
-        self.vx += (want - self.vx) * WALK_TURN
+        self._drive_vx(want, WALK_TURN)
         return True
 
     def _pack_tick(self, WL, HL) -> bool:
@@ -2479,7 +2530,7 @@ class Lizard:
             if abs(gx - self.x) <= 10.0:
                 return False                       # 已经站到自己的位置了
             want = clampf((gx - self.x) * 0.05, -2.2, 2.2)
-            self.vx += (want - self.vx) * WALK_TURN
+            self._drive_vx(want, WALK_TURN)
             return True
         best, bd = None, 1e9
         for o in obs["pack"]:
@@ -2491,7 +2542,7 @@ class Lizard:
             return False
         self.look_at = (best.x, best.y)
         want = clampf((best.x - self.x) * 0.05, -2.0, 2.0)
-        self.vx += (want - self.vx) * WALK_TURN
+        self._drive_vx(want, WALK_TURN)
         return True
 
     def intent(self):
@@ -2542,7 +2593,7 @@ class Lizard:
             # 青蜥蓄力弹射：扑击整段更快更猛（wiki：爬墙 + 蓄力弹射跳跃）
             sp *= CHARGE_LEAP_SPD
             acc = min(1.0, LUNGE_ACCEL * CHARGE_LEAP_ACC)
-        self.vx += (kx * sp - self.vx) * acc
+        self._drive_vx(kx * sp, acc)
         reach = self.head_rad + (16.0 * self.breed.body_size_fac
                                  * (self.breed.attempt_bite_radius / 80.0))
         if d <= reach and self.bite_cd <= 0 and self.target_obj is not None:
@@ -2563,7 +2614,7 @@ class Lizard:
         """嘴前叼点：头轴正前方一个头半径。"""
         a = math.radians(self.head_angle)
         d = self.head_rad * CARRY_MOUTH_FAC
-        return self.x + math.sin(a) * d, self.y - math.cos(a) * d
+        return self.head_x + math.sin(a) * d, self.head_y - math.cos(a) * d
 
     def _best_carry(self, cats, WL=0.0, HL=None):
         """挑一只该叼的猫：昏迷优先于尸体，同档取最近的。
@@ -2741,7 +2792,7 @@ class Lizard:
                 return True                        # 这一 tick 用来放下
             hurry = self._carry_hurry(obs["rivals"])
             want = clampf((den.x - self.x) * 0.05, -1.8, 1.8) * CARRY_SPEED_FAC * hurry
-            self.vx += (want - self.vx) * WALK_TURN
+            self._drive_vx(want, WALK_TURN)
             self._hold_cat()
             self.look_at = (den.x, HL - 12.0)
             return True
@@ -2838,7 +2889,7 @@ class Lizard:
             self.vx -= self.vx * 0.22
             return
         want = clampf(dx * 0.06, -2.4, 2.4)
-        self.vx += (want - self.vx) * WALK_TURN
+        self._drive_vx(want, WALK_TURN)
 
     def stuck_frames(self):
         """给「扎在身上的矛」用的局部坐标系：头 + 每节 (x, y, 朝向角)。
@@ -2908,6 +2959,17 @@ class Lizard:
         return clampf(-dy / d, -1.0, 1.0)
 
     # ── 身体朝向 / 转身 ──
+    def _drive_vx(self, want: float, k: float) -> None:
+        """AI 想要的横向速度：既按老口径推 vx，也把「意图」单独记一份。
+
+        脚支撑相里踩住的脚是支点，身体不许把它拖走 —— 支撑逻辑会把 vx 压到
+        TURN_VX 以下。只看积分后的 vx，转身状态机就永远不转向（身体朝反方向
+        走、链体反向、四条腿全部够不到髋），支撑脚再反过来把身体刹住，成了
+        死循环。该往哪边转看 want（意图），不看被脚压过的结果。
+        """
+        self._want_vx = float(want)
+        self.vx += (want - self.vx) * k
+
     def _step_turn(self) -> None:
         """朝向状态机：Idle/Walk → DirectionChange → Turn → Reoriented → Walk。
 
@@ -2927,8 +2989,21 @@ class Lizard:
             # 贴在竖杆 / 背景墙上：横轴由表面切线接管（见 _step_head），
             # 身体轴保持进墙前的方向，不被左右速度乱翻。
             self.move_dir = 0.0
+        elif abs(self._want_vx) > TURN_VX:
+            # 用 AI 的意图速度（不是积分后的 vx：脚支撑会把 vx 压下去，方向会被
+            # 抖没 —— 压到 TURN_VX 以下时看起来就像「AI 不打算走了」）。
+            self.move_dir = 1.0 if self._want_vx > 0.0 else -1.0
+            # 例外：身体**实际**正朝反方向走，而且不是被压慢、是真有速度的
+            # （被外力推 / 被脚支撑顶回来 / 被猫拽着走）。这时以真实运动为准 ——
+            # 否则腿朝「想去的方向」迈步、身体却滑向另一边，没有一只脚踩得住，
+            # 唯一的支撑脚被一路拖到腿长之外（用户报的「脚黏在平面上 / 被拽走后
+            # 脚把蜥蜴拉回去」）。脚支撑把 vx 压到门槛以下时不会走到这里，
+            # 那种「AI 想走但被脚刹住」的死锁仍然按意图判。
+            if (abs(self._vx_intent) > TURN_VX
+                    and self._vx_intent * self._want_vx < 0.0):
+                self.move_dir = 1.0 if self._vx_intent > 0.0 else -1.0
         elif abs(self._vx_intent) > TURN_VX:
-            # 用 AI 的意图速度（不是积分后的 vx：脚支撑会把 vx 清零，方向会被抖没）
+            # 兜底：没走 _drive_vx 的路径（直接改 vx 的那些）照旧按实际意图速度判
             self.move_dir = 1.0 if self._vx_intent > 0.0 else -1.0
         else:
             self.move_dir = 0.0
@@ -2995,7 +3070,7 @@ class Lizard:
 
     def _step_head(self) -> None:
         if not self.dead:
-            nx, ny = self.seg[0].x, self.seg[0].y
+            nx, ny = self.head_x, self.head_y
             want = None
             if self.look_at is not None:
                 vx, vy = self.look_at[0] - nx, self.look_at[1] - ny
@@ -3027,6 +3102,56 @@ class Lizard:
         target = self.anim.jaw_open if self.anim is not None else self._jaw_target()
         rate = JAW_OPEN_RATE if target > self.jaw else JAW_CLOSE_RATE
         self.jaw = clampf(self.jaw + clampf(target - self.jaw, -rate, rate), 0.0, 1.0)
+
+    def _step_head_point(self, WL: float) -> None:
+        """头：挂在第 0 节躯干前方的软体末端（原版 head.ConnectToPoint）。
+
+        目标 = bodyChunk0 + 体轴 × head_conn（颈长），再叠上转身 / 抬头的支起量。
+        头是**被拖着**的：弹簧追目标 + 自身重力 + 空气阻力 —— 身体急停它还会往前
+        窜一点、跳起来会被甩到体后、被拎着时垂在体前。原版头本来就在 bodyChunks
+        物理系统里（不是游离的驱动质点），驱动权在躯干第 0 节。
+        """
+        self.head_lx, self.head_ly = self.head_x, self.head_y
+        tx = self.x + self._ax_c * self.head_conn
+        ty = self.y - self.turn_lift
+        if (self.dead or self.stun > 0 or self.held_by_hand
+                or self.state == ItemState.MOUSE):
+            k = HEAD_SPRING_SOFT          # 颈子不使劲：头只被轻轻拖着
+        else:
+            k = HEAD_SPRING
+        self.head_vx += (tx - self.head_x) * k
+        self.head_vy += (ty - self.head_y) * k + HEAD_GRAV * self.room_gravity
+        self.head_vx *= HEAD_AIR_FRIC
+        self.head_vy *= HEAD_AIR_FRIC
+        self.head_x += self.head_vx
+        self.head_y += self.head_vy
+        r = self.head_rad
+        # 头也不许穿过庇护所墙体（和躯干同一份 PushOutOfTerrain）
+        from ..core import chunkphys
+        rects = chunkphys.solids()
+        if rects:
+            self.head_x, self.head_y = _push_out(
+                self.head_x, self.head_y, r, rects,
+                getattr(chunkphys, "STEP_UP", 8.0))
+        # 竖杆 / 背景墙也是实体；只有攀爬状态才贴上去
+        tq = self.terrain
+        if tq is not None and not self.climb_attached and not self.dead:
+            for x, top, bot in list(tq.vpoles()) + list(tq.walls()):
+                rr = r + LINE_COLLIDE_PAD
+                if top - rr <= self.head_y <= bot + rr and abs(self.head_x - x) < rr:
+                    self.head_x = x + (rr if self.head_x >= x else -rr)
+                    self.head_vx = 0.0
+        lim = self._ground - r * HEAD_STAND_FAC
+        if self.head_y > lim:
+            self.head_y = lim
+            if self.head_vy > 0.0:
+                self.head_vy = 0.0
+        if self.head_x < r:
+            self.head_x = r
+            self.head_vx = 0.0
+        elif self.head_x > WL - r:
+            self.head_x = WL - r
+            self.head_vx = 0.0
 
     def _intent(self) -> LizardAnimIntent:
         """按当前 stage 生成动画意图 —— AI 与动画之间唯一的映射点（品种不进这层）。"""
@@ -3086,9 +3211,10 @@ class Lizard:
         self.last_head_depth = self.head_depth
         # f2 = InverseLerp(0, 0.6, |dot((lookPos - 躯干0), (头 - 躯干0))|)（原版同名量）
         s0 = self.seg[0]
-        hx, hy = self.x - s0.x, self.y - s0.y
+        hx, hy = self.head_x - s0.x, self.head_y - s0.y
         hl = math.hypot(hx, hy) or 1.0
-        lx, ly = self.look_at if self.look_at is not None else (self.x, self.y)
+        lx, ly = (self.look_at if self.look_at is not None
+                  else (self.head_x, self.head_y))
         vx, vy = lx - s0.x, ly - s0.y
         vl = math.hypot(vx, vy) or 1.0
         f2 = inv_lerp(0.0, 0.6, abs((hx / hl) * (vx / vl) + (hy / hl) * (vy / vl)))
@@ -3110,7 +3236,7 @@ class Lizard:
     def _head_dir(self):
         """颈→头的单位方向（原版 HeadRotation，花纹前段用）。"""
         s0 = self.seg[0]
-        dx, dy = self.x - s0.x, self.y - s0.y
+        dx, dy = self.head_x - s0.x, self.head_y - s0.y
         d = math.hypot(dx, dy)
         if d < 1e-6:
             return (1.0, 0.0)
@@ -3118,8 +3244,8 @@ class Lizard:
 
     def _cosmetic_spine(self):
         """渲染用的脊柱折线（与 lizard_gfx.draw_lizard 同一套几何）。"""
-        hx = self.x + (self.seg[0].x - self.x) * 0.2
-        hy = self.y + (self.seg[0].y - self.y) * 0.2
+        hx = self.head_x + (self.seg[0].x - self.head_x) * 0.2
+        hy = self.head_y + (self.seg[0].y - self.head_y) * 0.2
         spine = [(hx, hy)]
         rads = [self.body_rad * lizard_cos.NECK_RAD_K]
         n_body = sum(1 for s in self.seg if not s.tail)
@@ -3293,7 +3419,11 @@ class Lizard:
         c = getattr(self, "_ax_c", float(self.body_dir))
         c += (self.body_dir - c) * BODY_AX_LERP
         self._ax_c = c
-        anc_x = self.x - c * self.head_conn
+        # 链根 = 第 0 节躯干本身（= AI 驱动点 self.x / self.y）。原版就是
+        # bodyChunks[0] 被 AI 推着走、头挂在它前方 12*headSize；这里拓扑调成同一
+        # 形状：躯干是驱动体，头是挂在体前的软体末端（见 _step_head_point）。
+        self.seg[0].x, self.seg[0].y = self.x, self.y
+        anc_x = self.x
         anc_y = self.y
         # ② BodyChunkConnection + 顺直软约束：
         #    杆长约束只消掉径向误差，光靠它链子会自己折回来（两节各自满足距离但
@@ -3306,8 +3436,14 @@ class Lizard:
         # 而长度约束只消径向误差、方向本身是中性不动点 —— 整条躯干从此锁成
         # 一根竖条（脚永远够不到地 = 「脚没踩地但身体在滑」，渲染上就是竖棍）。
         # 用第 1 节当基线既不退化，又保留链子自己的弯曲（不强行摊平）。
+        # 种子的基线必须落在链子**外面**：驱动点 seg[0] 现在就是链根，下落 / 起跳
+        # 时它比链节跑得快得多，拿它当基线等于把驱动点的瞬时速度灌进「链子朝哪
+        # 边」——正反馈，链子会一路立起来（尾巴朝天，再也回不来）。和原版一样把
+        # 基线放在驱动点**前方 head_conn**（＝原版 head 挂点那一带，在链子外面、
+        # 不滞后），量到的才是链子自己的形状，不会把速度算成弯曲。
         _ref = self.seg[1] if len(self.seg) > 1 else self.seg[0]
-        seed_x, seed_y = _dirvec(_ref.x - anc_x, _ref.y - anc_y)
+        base_x = anc_x + self.chain_dir * self.head_conn
+        seed_x, seed_y = _dirvec(_ref.x - base_x, _ref.y - anc_y)
         w = 1.0 - abs(c)                       # 0＝没在转身，1＝锚点正滑过头顶
         if w > 0.0:
             #    转身半途把「头后方」的指令方向混进种子里：光靠平滑的锚点，链子会
@@ -3328,10 +3464,24 @@ class Lizard:
             seed_x, seed_y = trail_x, trail_y
         sn = math.hypot(seed_x, seed_y) or 1.0
         seed_x, seed_y = seed_x / sn, seed_y / sn
+        # 链体朝向低通（和 _ax_c 同一套「不许瞬移」的思路）：转身时 seed 会在 c 过 0
+        # 的那一帧整条掉头，等于把整条身体从一侧甩到另一侧 —— 髋部瞬移几十像素，
+        # 踩在地上的脚立刻变成 50px 外的坏锚点，把身体往回拽（用户报的「脚黏住 /
+        # 身体被拽回去」）。低通之后链体是绕过去的，不是被甩过去的。
+        ps = self._seed_prev
+        if ps is not None:
+            seed_x = ps[0] + (seed_x - ps[0]) * CHAIN_SEED_LERP
+            seed_y = ps[1] + (seed_y - ps[1]) * CHAIN_SEED_LERP
+            sn = math.hypot(seed_x, seed_y)
+            if sn < 1e-6:
+                seed_x, seed_y = -self.chain_dir, 0.0
+            else:
+                seed_x, seed_y = seed_x / sn, seed_y / sn
+        self._seed_prev = (seed_x, seed_y)
         for _ in range(SEG_SOLVER_ITER):
             prev_x, prev_y = anc_x, anc_y
             dir_x, dir_y = seed_x, seed_y
-            for s in self.seg:
+            for s in self.seg[1:]:      # 第 0 节是链根（驱动点），不被约束拉
                 al = align * (TAIL_ALIGN_FAC if s.tail else 1.0)
                 s.x += (prev_x + dir_x * s.dist - s.x) * al
                 s.y += (prev_y + dir_y * s.dist - s.y) * al
@@ -3369,6 +3519,8 @@ class Lizard:
             bend = clampf(turn * SEG_BEND_K, -SEG_BEND_MAX, SEG_BEND_MAX)
             n_seg = len(self.seg)
             for k, s in enumerate(self.seg):
+                if k == 0:
+                    continue            # 弯曲冲量只给后面的节（第 0 节是驱动点）
                 t = k / max(1, n_seg - 1)
                 s.y -= bend * (1.0 - t) ** 2
                 lim = HL - s.rad * (TAIL_SINK_FAC if s.tail else BODY_STAND_FAC)
@@ -3376,6 +3528,9 @@ class Lizard:
                     s.y = lim
         # ④ 速度 = 本 tick 的实际位移：约束消掉的只是径向分量，切向动量得以保留
         for k, s in enumerate(self.seg):
+            if k == 0:
+                s.vx, s.vy = self.vx, self.vy     # 驱动点的速度就是身体速度
+                continue
             s.vx = (s.x - ax0[k]) + imp_x * shares[k]
             s.vy = (s.y - ay0[k]) + imp_y * shares[k]
             spd = math.hypot(s.vx, s.vy)
@@ -3389,6 +3544,8 @@ class Lizard:
             amp = clampf(abs(self.vx) / max(0.5, self.breed.base_speed), 0.0, 1.0)
             n_seg = len(self.seg)
             for i, s in enumerate(self.seg):
+                if i == 0:
+                    continue
                 t = i / max(1, n_seg - 1)
                 ph = self.walk_phase * math.tau + i * 0.7
                 s.y -= math.sin(ph) * GAIT_WAVE * amp * (1.0 - 0.5 * t)
@@ -3401,6 +3558,9 @@ class Lizard:
                     s.y = lim
                     if s.vy > 0.0:
                         s.vy = 0.0
+        # 链根最后再钉一次：上面所有修正（弯曲 / 步态 / 落地）都不许把第 0 节
+        # 从驱动点上拽走
+        self.seg[0].x, self.seg[0].y = self.x, self.y
 
     # ── 腿 ──
     def _step_legs(self, room_hl) -> None:
@@ -3483,17 +3643,32 @@ class Lizard:
             # 原版 num = DistanceToLine(脚, 髋, 髋+Perp(a)) == -(脚-髋)·a
             num = -(ax * (lg.x - hx) + ay * (lg.y - hy))
 
-            if (lg.planted
-                    and math.hypot(lg.x - hx, lg.y - hy) > joint * LEG_MAX_STRETCH):
-                # 脚已经远到腿长的极限之外：它绝不可能还是支点（被拖拽 / 被挤飞 /
-                # 被瞬移）。直接放开，不要留下一个永远把身体拉回去的旧锚点。
-                lg.planted = False
-                lg.reaching = True
-                lg.airborne = False
-                lg.grip = 0
-                lg.plant_dx = lg.plant_dy = 0.0
-                if planted_n > 0:
-                    planted_n -= 1
+            if lg.planted:
+                sd = math.hypot(lg.x - hx, lg.y - hy)
+                if (sd > joint * LEG_MAX_STRETCH
+                        and (planted_n - 1 >= self._leg_min_support()
+                             or sd > joint * LEG_ANCHOR_MAX)):
+                    # 脚被拉到腿长极限之外：它已经不可能还是真的支点（被拖拽 /
+                    # 被挤飞 / 身体被窗口夹回来 / 被瞬移）。放开它、让它重新迈步。
+                    # 原地钉住就是用户报的「脚永远黏在这里」—— 身体走远了它还
+                    # 对着身体往回拉，而它自己永远不掉。
+                    #   · 还有别的支撑脚时（放开后仍 ≥ 最少支撑数）按普通换步放开；
+                    #   · 只剩它一只脚、且已远过 LEG_ANCHOR_MAX（_apply_foot_support
+                    #     本来就不再把它当支点的距离）时无条件放开 —— 那种脚
+                    #     本来就没有支撑作用，放开不会让身体失去真正的支撑。
+                    # airborne=True 是必须的：脚此刻还贴在地面上，若给 False，下面
+                    # 「没钉住的脚」那一段会在同一 tick 立刻把它按原位重新踩住 ——
+                    # 于是「放开→重踩→再放开」每帧循环，脚永远黏在原地。
+                    lg.planted = False
+                    lg.reaching = True
+                    lg.airborne = True
+                    lg.swing = 0
+                    lg.grip = 0
+                    lg.plant_dx = lg.plant_dy = 0.0
+                    if planted_n > 0:
+                        planted_n -= 1
+                    if support_now > 0:
+                        support_now -= 1
             if stunned:
                 lg.disabled = True
                 lg.reaching = False
@@ -3549,7 +3724,13 @@ class Lizard:
                     if lg.swing >= LEG_SWING_MAX:
                         # 摆太久还没落地：取消「必须先离地」的限制，让它随时能踩住。
                         lg.airborne = False
-                    if on_ground[i] and not lg.airborne:
+                    if (on_ground[i] and not lg.airborne
+                            and math.hypot(lg.x - hx, lg.y - hy)
+                            <= joint * LEG_MAX_STRETCH):
+                        # 达到腿长极限以外的脚不能被“重新踩住”：身体被拖走后松手，
+                        # 脚还在原来的地面上（on_ground 为真），旧实现会就地把它当成支点重新钉住 170px 外
+                        # —— 这就是用户报的「脚永远黏在这里」的来历。先让 ConnectToPoint
+                        # 把它拉回腿长以内，下一 tick 在合法位置重新落地。
                         lg.grip += 1
                         if lg.grip >= LEG_GRIP_DELAY:
                             lg.planted = True

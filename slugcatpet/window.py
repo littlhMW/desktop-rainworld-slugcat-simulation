@@ -1658,6 +1658,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             pr = lz.bounding_pad()
             put(lz.x - pr, lz.y - pr, lz.last_x - pr, lz.last_y - pr)
             put(lz.x + pr, lz.y + pr, lz.last_x + pr, lz.last_y + pr)
+            put(lz.head_x - pr, lz.head_y - pr, lz.head_lx - pr, lz.head_ly - pr)
+            put(lz.head_x + pr, lz.head_y + pr, lz.head_lx + pr, lz.head_ly + pr)
             for s_ in lz.seg:
                 put(s_.x - pr, s_.y - pr, s_.lx - pr, s_.ly - pr)
                 put(s_.x + pr, s_.y + pr, s_.lx + pr, s_.ly + pr)

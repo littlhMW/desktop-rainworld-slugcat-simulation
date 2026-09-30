@@ -91,6 +91,11 @@ def head_color(lz, ts: float):
     """
     b = lz.breed
     base = b.head_rgb if b.head_rgb is not None else lz.color
+    # 白蜥潜伏时头也跟着变成采到的背景色（原版 camo 连头一起隐形；只有眼 / 齿 /
+    # 口腔内侧保持原色 —— 那几片在 _draw_head 里单独用 BLACK_RGB）
+    camo = getattr(lz, "camo_color", None)
+    if camo is not None and getattr(lz, "camo_mix", 0.0) > 0.0:
+        base = _mix(base, camo, lz.camo_mix)
     if lz.head_flash > 0:
         # 头甲把矛弹开：头部打一层强烈的白（用户口径：弹开要看得出来）
         return _mix(base, (255, 255, 255),
@@ -164,9 +169,9 @@ def _blit(p, atlas, frame, tint, x, y, rot, sx, sy, ax, ay, key=HEAD_KEY,
 def draw_lizard(p, atlas, lz, ts: float) -> None:
     """绘制一只蜥蜴：躯干带 → 四肢 → 头。"""
     ts = clampf(ts, 0.0, 1.0)
-    # 头绘制点：头部 20% 拉向第 0 节（同游戏 vector9 / 体带起点 a）
-    hpx = lerp(lz.last_x, lz.x, ts)
-    hpy = lerp(lz.last_y, lz.y, ts)
+    # 头绘制点 = 挂在第 0 节躯干前方的软体末端（原版 head.ConnectToPoint(chunk0)）
+    hpx = lerp(lz.head_lx, lz.head_x, ts)
+    hpy = lerp(lz.head_ly, lz.head_y, ts)
     s0x = lerp(lz.seg[0].lx, lz.seg[0].x, ts)
     s0y = lerp(lz.seg[0].ly, lz.seg[0].y, ts)
     hx = hpx + (s0x - hpx) * 0.2

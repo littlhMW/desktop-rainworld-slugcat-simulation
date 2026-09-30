@@ -2,6 +2,40 @@
 
 此文件保留历史开发阶段的主要修复记录。README 只保留当前使用所需信息。
 
+## 2026-10-01
+
+### R129 · 蜥蜴身体拓扑重排（3 核心 body chunk + 视觉头）+ 白蜥伪装常态化
+
+- 蜥蜴身体拓扑改成原版形状：**3 个核心 body chunk 是驱动体**，头（含下颚 / 眼睛 / 牙）
+  降级为挂在驱动点前方的**软体末端**，不再是「AI 直接写的独立头点 + 拖在后面的链节」。
+  - `_step_chain` 的链根 = `seg[0]`（≡ `x/y`，AI 驱动点）：约束循环、弯曲 / 步态都在
+    `seg[1:]` 上跑，避免把驱动点当普通链节。
+  - 新增 `_step_head_point()`：头按弹簧追 `x + chain_dir * head_conn`，带 `HEAD_GRAV`
+    重力、空气阻力、地形 / 竖杆 / 背景墙碰撞与地面夹取；新增 `head_x / head_y /
+    head_lx / head_ly / head_vx / head_vy`。
+  - 嘴点（`_mouth_point`）、头部朝向（`_head_dir`）、外观脊线（`_cosmetic_spine`）、
+    深度（`_step_depth`）、脏矩形（`bounding_pad`）全部改读软体头点；渲染头点用
+    `head_lx/head_x` 插值，跟手但不抖。
+  - 连带修复：AI 意图不再被脚支撑压死（新增 `_want_vx` / `_drive_vx`，`_step_turn`
+    优先读它）；链体基线改用「锚点 → 第 1 节」，不再退化成一根竖直硬棍。
+- 白蜥伪装改回原版口径：**潜伏不动 = 每 tick 满频率提取周边背景主色**（整只，含头），
+  发起攻击 / 被攻击立刻垮掉，受伤期间不由自主地胡乱变色。
+  - 删除呼吸灯（`CAMO_SAMPLE_TICKS` / `CAMO_BREATH_TICKS` / `CAMO_PULSE_TICKS` /
+    `CAMO_MIX_MAX`）；新增 `CAMO_COLOR_RATE=0.25`、`CAMO_FADE_IN=0.10`、
+    `CAMO_FADE_OUT=0.50`、`CAMO_HIDE_VX=1.2`、`CAMO_FLICKER_TICKS=90`、
+    `CAMO_FLICKER_STEP=3`。
+  - 采样仍然只取**背景**（`bgcolor.dominant_around` 会把我们自己画的前景挖掉），
+    别的猫 / 生物路过不会带着白蜥一起变色；淡出到 ≈0 后忘掉旧色，下次潜伏重新采。
+  - `lizard_gfx.head_color` 也吃迷彩（眼 / 牙 / 口腔保持原色），即**伪装时头部也变色**。
+- 蜥蜴脚支撑死锁修复（用户报「脚黏在平面 / 被拽走时脚把蜥蜴无视障碍拽回去」）：
+  脚离髋超过上限时置 `airborne`（不再同一 tick 被重踩成支点）、未钉住的脚落地要过
+  `joint * LEG_MAX_STRETCH` 距离门、释放脚时留不可破的最少支撑数、超长锚点改为反推到
+  腿长边缘而不是放开。
+- 回归：口径更新 `e2e_r33 / r38 / r60 / r76 / r97 / r99 / r102 / r118 / r124`（都与
+  新拓扑或新伪装口径相关），全量 **115 个脚本 fails=0**。
+- 打包：重建 `dist/SlugcatPet`，重打 `outputs/SlugCatPet-win64.zip`（313 项，
+  71,814,871 B，SHA256 `300F319039FE10990E61FEE803BADE78BC243C3EEECEB51F7C75B0C7630D6F75`）。
+
 ## 2026-09-30
 
 - 修复蜥蜴身体链、转向、嘴部与地面约束。
