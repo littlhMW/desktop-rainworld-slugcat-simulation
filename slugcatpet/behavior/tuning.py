@@ -484,6 +484,7 @@ ITEMPLY_HOP_AIRTIME  = 7.0     # 一次小跳的滞空 tick（横速 = 落点距
 ITEMPLY_HOP_VY_K     = 0.80    # 玩耍跳比全力跳矮一点
 ITEMPLY_TURN_P      = 0.35     # 坐着玩时每隔 PRANCE_CD 换个朝向的概率
 ITEMPLY_FLING_P     = 0.55     # 收手时按 temper 加权，暴躁的猫把家伙甩出去
+ITEMPLY_TOSS_P      = 0.045    # 玩到一半主动甩一次，再追过去捡回
 ITEMPLY_P           = 0.55     # 闲下来时每次抽查愿意去玩的概率
 
 # 觅食时拿矛打爆米花：没矛就去地上捡一根
