@@ -59,6 +59,10 @@ LEG_LIMB_RAD = 2.5            # 原版 LizardLimb 构造里的 rad
 LEG_AIR_FRIC = 0.99           # 原版 Limb 的 airFriction
 LEG_AIM_AHEAD = 26.0          # limbsAimFor 替代：躯干前方这么多像素（原版是行进目标格中心）
 LEG_GRIP_DELAY = 1            # 原版 limbGripDelay（各品种都是 1）
+NO_GRIP_SPEED = 0.10            # 原版 noGripSpeed：失去脚支撑后只保留极低滑行速度
+FOOT_LEVERAGE = 0.045           # planted foot 对身体的反作用
+FOOT_LEVERAGE_MAX = 0.75        # 单 tick 最大反作用
+LINE_COLLIDE_PAD = 1.5          # 竖杆/背景墙碰撞余量
 LEG_DEPTH_MIN = 10.0          # 原版 LizardGraphics 里判定 |num11|>10 才计入 depthRotation
 
 # ── AI ──
@@ -423,8 +427,8 @@ class LizardBreed:
         # 品种差异：默认值在这里，具体每个品种在 BREED_TRAITS 里覆写
         self.spawn_weight = 1.0
         self.cosmetics = ()            # 品种花纹（BREED_COSMETICS，见文件末）
-        self.climb_wall = True         # 见 BREED_TRAITS：默认给，逐个品种覆写
-        self.climb_pole = True
+        self.climb_wall = False        # 必须由 BREED_TRAITS 显式开启
+        self.climb_pole = False
         self.wall_attach = True
         self.wall_detach = True
         self.wall_jump = False
@@ -657,20 +661,21 @@ BREED_BY_KEY = {b.key: b for b in BREEDS}
 BREED_TRAITS = {
     # climb_wall 只给 WallClimber（反编译 LizardBreedParams.cs:196-210）：
     # 蓝 / 白 / 鳗鱼（DLC）。其余品种「会爬杆但不攀爬背景墙」。
-    "pink":       dict(spawn_weight=1.00, climb_wall=False),
+    # 明确能力表：杆攀爬仅允许原版可爬杆品种；背景墙仅 WallClimber。
+    "pink":       dict(spawn_weight=1.00, climb_wall=False, climb_pole=True),
     "green":      dict(spawn_weight=0.90, climb_wall=False, climb_pole=False),
-    "blue":       dict(spawn_weight=0.90),
-    "yellow":     dict(spawn_weight=0.35, climb_wall=False),
-    "white":      dict(spawn_weight=0.30, camo=True),
-    "red":        dict(spawn_weight=0.02, climb_wall=False),
-    "black":      dict(spawn_weight=0.30, climb_wall=False),
-    "salamander": dict(spawn_weight=0.25, climb_wall=False),
-    "cyan":       dict(spawn_weight=0.25, charge_leap=True, climb_wall=False,
-                       wall_jump=True),
-    # DLC《倾盆大雨》：桌宠没有区域表，按「稀有 DLC 品种」折算权重
+    "blue":       dict(spawn_weight=0.90, climb_wall=True, climb_pole=True),
+    "yellow":     dict(spawn_weight=0.35, climb_wall=False, climb_pole=True),
+    "white":      dict(spawn_weight=0.30, climb_wall=True, climb_pole=True, camo=True),
+    "red":        dict(spawn_weight=0.02, climb_wall=False, climb_pole=True),
+    "black":      dict(spawn_weight=0.30, climb_wall=False, climb_pole=True),
+    "salamander": dict(spawn_weight=0.25, climb_wall=False, climb_pole=True),
+    "cyan":       dict(spawn_weight=0.25, climb_wall=False, climb_pole=True,
+                       wall_jump=True, charge_leap=True),
+    # DLC《倾盆大雨》
     "caramel":    dict(spawn_weight=0.03, climb_wall=False, climb_pole=False),
-    "zoop":       dict(spawn_weight=0.05, climb_wall=False),
-    "eel":        dict(spawn_weight=0.06),      # DlcEelLizard：WallClimber = true
+    "zoop":       dict(spawn_weight=0.05, climb_wall=False, climb_pole=True),
+    "eel":        dict(spawn_weight=0.06, climb_wall=True, climb_pole=True)
 }
 for _b in BREEDS:
     _t = BREED_TRAITS.get(_b.key, {})
@@ -725,8 +730,8 @@ class _Leg:
     """一条腿：脚点质点 + 速度 + 绝对猎点（原版 LizardLimb / Limb 的 2D 简化）。"""
 
     __slots__ = ("x", "y", "lx", "ly", "vx", "vy", "abs_x", "abs_y",
-                 "reaching", "snap", "grip", "flip", "disabled", "back", "near",
-                 "pair")
+                 "reaching", "snap", "grip", "planted", "plant_dx", "plant_dy",
+                 "flip", "disabled", "back", "near", "pair")
 
     def __init__(self, x, y, back: bool, near: bool, pair: int = None):
         self.x = self.lx = float(x)
@@ -738,6 +743,9 @@ class _Leg:
         self.reaching = False          # reachingForTerrain
         self.snap = False              # reachedSnapPosition
         self.grip = 0                  # gripCounter
+        self.planted = False            # 已真正抓住地形
+        self.plant_dx = 0.0             # 种植时：脚相对髋的偏移
+        self.plant_dy = 0.0
         self.flip = 0.0                # LizardLimb.flip（初值 0，逐帧 Lerp 到 ±1）
         self.disabled = False          # currentlyDisabled（眩晕/游泳时挂起）
         self.back = back
@@ -1326,11 +1334,63 @@ class Lizard:
         self.vx += (want - self.vx) * WALK_TURN
         return True
 
+    def _apply_foot_support(self) -> None:
+        planted = [lg for lg in self.legs if lg.planted and not lg.disabled]
+        if not planted:
+            if (self._contact_floor and not self.dead
+                    and self.state == ItemState.FREE):
+                self.vx *= NO_GRIP_SPEED
+            return
+        corr = 0.0
+        for lg in planted:
+            hip = self.seg[min(lg.pair, len(self.seg) - 1)]
+            corr += (lg.x - lg.plant_dx) - hip.x
+        corr /= len(planted)
+        self.vx += clampf(corr * FOOT_LEVERAGE,
+                          -FOOT_LEVERAGE_MAX, FOOT_LEVERAGE_MAX)
+
+    def _collide_static_lines(self, WL: float) -> None:
+        """竖杆与可见背景墙都是实体线；只有能力决定能否主动附着攀爬。"""
+        tq = self.terrain
+        if tq is None or self.climb_attached:
+            return
+        lines = [(x, top, bot) for x, top, bot in tq.vpoles()]
+        lines += [(x, top, bot) for x, top, bot in tq.walls()]
+        for x, top, bot in lines:
+            rr = self.head_rad + LINE_COLLIDE_PAD
+            if self.y < top - rr or self.y > bot + rr:
+                continue
+            dx = self.x - x
+            if abs(dx) >= rr:
+                continue
+            side = 1.0 if dx > 0.0 else (-1.0 if dx < 0.0 else self.chain_dir)
+            self.x = x + side * rr
+            if self.vx * side < 0.0:
+                self.vx = 0.0
+
+    def _collide_chain_lines(self, WL: float) -> None:
+        tq = self.terrain
+        if tq is None or self.climb_attached:
+            return
+        lines = [(x, top, bot) for x, top, bot in tq.vpoles()]
+        lines += [(x, top, bot) for x, top, bot in tq.walls()]
+        for s in self.seg:
+            rr = s.rad + LINE_COLLIDE_PAD
+            for x, top, bot in lines:
+                if s.y < top - rr or s.y > bot + rr:
+                    continue
+                dx = s.x - x
+                if abs(dx) >= rr:
+                    continue
+                side = 1.0 if dx > 0.0 else -1.0
+                s.x = x + side * rr
+
     def _integrate(self, WL, HL) -> None:
         """自由态：重力积分 + 地面 / 侧墙（攀爬中改用墙面附着物理）。"""
         if self.climb_x is not None and not self.dead:
             self._step_wall(WL, HL)
             return
+        self._apply_foot_support()
         self.vx *= AIR_FRICTION
         self.vy = (self.vy + GRAVITY * self.room_gravity) * AIR_FRICTION
         if self.water_y is not None and self.y + self.head_rad > self.water_y:
@@ -1339,6 +1399,7 @@ class Lizard:
             self.vx *= 0.95
         self.x += self.vx
         self.y += self.vy
+        self._collide_static_lines(WL)
 
         r = self.head_rad
         # 转身时上半身支起：头的落点抬高 turn_lift（链体仍受各自的落地限制）
@@ -3017,6 +3078,7 @@ class Lizard:
                 lg.disabled = True
                 lg.reaching = False
                 lg.grip = 0
+                lg.planted = False
                 lg.vy += 0.9                             # 原版 vel.y -= 0.9f（y↑）→ 屏幕 +
             else:
                 lg.disabled = False
@@ -3057,8 +3119,13 @@ class Lizard:
                             and not _dist_less(lg.x, lg.y, hx, hy, joint - 1.0)
                             and not _dist_less(lg.abs_x, lg.abs_y, hx, hy, joint)):
                         lg.reaching = False
+                        lg.planted = False
             # ── Limb.Update ──
-            if _dist_less(lg.abs_x, lg.abs_y, lg.x, lg.y, hunt):
+            if lg.planted:
+                lg.abs_x, lg.abs_y = lg.x, lg.y
+                lg.vx = lg.vy = 0.0
+                lg.snap = True
+            elif _dist_less(lg.abs_x, lg.abs_y, lg.x, lg.y, hunt):
                 lg.vx = lg.abs_x - lg.x
                 lg.vy = lg.abs_y - lg.y
                 lg.snap = True
@@ -3113,6 +3180,10 @@ class Lizard:
                     grip[2 if lg.pair >= 1 else 0] += 1
             else:
                 lg.grip = 0
+        self._collide_chain_lines(room_hl)
+        for lg in self.legs:
+            if not lg.planted:
+                lg.plant_dx = lg.plant_dy = 0.0
         self.depth_in = clampf(num8, -1.0, 1.0)
         self._step_bob(grip)
 
