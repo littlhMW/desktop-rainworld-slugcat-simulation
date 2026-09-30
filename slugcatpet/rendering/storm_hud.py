@@ -10,10 +10,12 @@
   （约 1:30）起顺时针排，随时间推移从起点开始变空心。
 
     征兆期与平静期在视觉上合并成同一个「平静期」环（整圈 = 整个专注期）；
-    暴雨期（集合段 + 雨眠段）单独一个环，一路走到雨停。只有征兆期那一圈会闪。
+    暴雨期（集合段 + 雨眠段）单独一个环，一路走到雨停。
+    只有征兆期那一圈会动 —— 而且是柔和呼吸式的明暗，不是硬闪。
 
   右 · 饥饿条：一排圆圈，竖线左侧是雨眠所需格数、右侧是总上限减去雨眠上限的格数；
   实心格 = 当前饱食度，最后一格按 ``food_quarter`` 画 1/4 扇形。固定只显示第一只猫。
+  饥饿条正下方是倒计时数字（``MM:SS``，分钟补零），和一圈圆点读同一个剩余时间。
 
 数据全部来自 ``StormCycle.hud_info()``；这一层只负责画，不推进任何逻辑
 （Starvation 不接 ``food_eat()``）。绘制坐标是屏幕（逻辑）坐标，不跟 ``window._shake`` 晃。
@@ -61,9 +63,12 @@ PIP_CORE = 11.0          # 实心圆直径（外径的一半）
 PIP_CY = 41.0            # 格圆心 y
 DIV_EXTRA = 15.0         # 分隔线额外占宽
 DIV_H = 33.0             # 分隔线高（比圆圈高一截，和参考图一致）
+TIME_FONT = 14.0         # 倒计时字号（参考单位，≈ 格直径的 0.64，和参考图一致）
+TIME_CY = 62.6           # 倒计时文字中心 y：饥饿条正下方
+TIME_TRACK = 1.0         # 字距（参考单位）
 DOT_START_DEG = -45.0   # 小圆点起点：右上角 1:30 方向，顺时针排
-BLINK_TICKS = 10         # 征兆期闪烁的半周期（40 tick/s → 0.25s 亮 / 0.25s 暗）
-BLINK_DIM = 0.2          # 闪暗时那圈圆点的透明度
+BLINK_TICKS = 28         # 征兆期「呼吸」的半周期（40 tick/s → 0.7s 呼气，整次呼吸 1.4s）
+BLINK_DIM = 0.25         # 呼吸最暗那一档的透明度（是变暗，不是熄灭）
 KARMA_MIN = 1
 KARMA_MAX = 10           # 最低 1 级、最高 10 级
 
@@ -165,21 +170,28 @@ def _draw_karma(p, win, info) -> None:
     p.drawText(box, int(Qt.AlignmentFlag.AlignCenter), "%d" % level)
 
 
-def _blink_on(info) -> bool:
-    """只有征兆期那一圈会闪；其余阶段常亮。"""
+def ring_opacity(info) -> float:
+    """征兆期那一圈的不透明度 0..1：柔和呼吸，不是方波开关。
+
+    ``tick % (2 * BLINK_TICKS)`` 走一个完整余弦：起点最亮、半周期最暗、再回来。
+    其余阶段（平静期 / 暴雨期）恒为 1.0。
+    """
     if not (info or {}).get("omen"):
-        return True
+        return 1.0
     try:
         tick = int((info or {}).get("tick") or 0)
     except (TypeError, ValueError):
-        return True
-    return (tick // BLINK_TICKS) % 2 == 0
+        return 1.0
+    phase = (tick % (2 * BLINK_TICKS)) / float(2 * BLINK_TICKS)
+    k = 0.5 + 0.5 * math.cos(2.0 * math.pi * phase)
+    return BLINK_DIM + (1.0 - BLINK_DIM) * k
 
 
 def _draw_ring(p, info) -> None:
     """主圆环外一圈小圆点：实心=剩余、空心=已消耗。
 
     从右上角（约 1:30）起顺时针排；随时间推移从起点那一颗开始变空心。
+    征兆期这一圈整体柔和呼吸（见 ``ring_opacity``）。
     """
     lit = ring_lit(info)
     step = 360.0 / float(DOTS)
@@ -188,8 +200,9 @@ def _draw_ring(p, info) -> None:
     hollow_pen = QPen(_INK)
     hollow_pen.setWidthF(DOT_PEN)
     p.save()
-    if not _blink_on(info):
-        p.setOpacity(BLINK_DIM)
+    _op = ring_opacity(info)
+    if _op < 1.0:
+        p.setOpacity(_op)        # 征兆期：整圈一起柔和呼吸
     for i in range(DOTS):
         a = math.radians(DOT_START_DEG + i * step)   # y 向下 = 顺时针
         c = QPointF(RING_CX + RING_R * math.cos(a), RING_CY + RING_R * math.sin(a))
@@ -233,6 +246,41 @@ def _draw_pips(p, info) -> None:
     if div_x is not None:
         p.setPen(ring_pen)
         p.drawLine(QPointF(div_x, PIP_CY - DIV_H * 0.5), QPointF(div_x, PIP_CY + DIV_H * 0.5))
+
+
+def fmt_countdown(seconds) -> str:
+    """倒计时文案：``MM:SS``，分钟补零（参考图是 ``06:42``）。"""
+    try:
+        s = max(0, int(float(seconds) + 0.5))
+    except (TypeError, ValueError):
+        s = 0
+    return "%02d:%02d" % (s // 60, s % 60)
+
+
+def countdown_box(info):
+    """倒计时文字的盒 (x, y, w, h)，参考单位；左沿对齐饥饿条第一格的左沿。"""
+    _n, hib, pitch, d, x0, _div = pip_geometry(info)
+    cx0 = _pip_cx(0, hib, pitch, x0)
+    h = TIME_FONT * 1.5
+    return (cx0 - d * 0.5, TIME_CY - h * 0.5, 200.0, h)
+
+
+def _draw_countdown(p, info) -> None:
+    """饥饿条下方的倒计时数字：和主圆环那一圈读同一个剩余时间。
+
+    不跟着征兆期闪烁 —— 圆点闪是「快到暴雨了」的提示，数字要一直读得清。
+    """
+    x, y, w, h = countdown_box(info)
+    f = QFont()
+    f.setPixelSize(max(1, int(round(TIME_FONT))))
+    f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, TIME_TRACK)
+    p.save()
+    p.setPen(_INK)
+    p.setFont(f)
+    p.drawText(QRectF(x, y, w, h),
+               int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter),
+               fmt_countdown((info or {}).get("seconds")))
+    p.restore()
 
 
 def _font_ok() -> bool:
@@ -315,4 +363,5 @@ def draw_storm_hud(p, win) -> None:
     _draw_ring(p, info)
     _draw_karma(p, win, info)
     _draw_pips(p, info)
+    _draw_countdown(p, info)
     p.restore()
