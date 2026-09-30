@@ -227,8 +227,12 @@ class Shelter:
         self.seed = int(seed)
         self.template = template if isinstance(template, ShelterTemplate) \
             else template_of(template)
-        self.door_side = door_side if door_side in ("left", "right") \
-            else self.template.door_side
+        # 入口方向不再由模板多数值决定：按整间庇护所相对屏幕中线决定。
+        # 左半屏入口朝右（屋内在右）；右半屏入口朝左（屋内在左）。
+        if door_side in ("left", "right"):
+            self.door_side = door_side
+        else:
+            self.door_side = "left" if (self.x + self.w * 0.5) >= self.WL * 0.5 else "right"
         self.door_ticks = int(door_ticks) if door_ticks \
             else int(self.template.close_ticks)
         self.open_ticks = max(1, int(self.template.open_ticks))
@@ -409,6 +413,16 @@ class Shelter:
         return point_goal(self.entry_x(), self.ground_y, radius=radius,
                           contact="body")
 
+    def interior_goal(self, radius=22.0):
+        """暴雨避难的真正终点：穿过门洞后再向屋内走一段，不把门口当安全点。"""
+        lo, hi = self.interior_span()
+        # 从入口向屋内推进到内腔约 35% 深处；不会贴侧墙。
+        if self.door_side == "left":
+            x = lo + (hi - lo) * 0.35
+        else:
+            x = hi - (hi - lo) * 0.35
+        return point_goal(x, self.ground_y, radius=radius, contact="body")
+
     def distance_to(self, px, py):
         r = self.safe_rect()
         dx = max(r[0] - px, 0.0, px - r[2])
@@ -543,8 +557,12 @@ def shelter_from_dict(d, WL, ground_y=None):
     except Exception:
         return None
     side = d.get("door_side")
-    if side in ("left", "right"):
+    if side in ("left", "right") and bool(d.get("legacy_fixed_door_side", False)):
         sh.door_side = side
+        sh._layout()
+    else:
+        # 新规则按屏幕中线重算；旧存档不再把历史模板方向当作硬约束。
+        sh.door_side = "left" if sh.center_x >= sh.WL * 0.5 else "right"
         sh._layout()
     st = d.get("door_state")
     if st in (OPEN, CLOSING, CLOSED, OPENING):
