@@ -28,7 +28,7 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/lingxiaojun/slugcatpet"
+Repository = "https://github.com/littlhMW/slugcatpet-extended"
 
 [project.gui-scripts]
 slugcatpet = "slugcatpet.main:main"
