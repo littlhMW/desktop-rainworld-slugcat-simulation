@@ -16,7 +16,8 @@ from ..core.chunkphys import aabb_wall_collide, apply_water
 from . import weaponphys as wp
 from .enums import ItemState
 
-NEEDLE_FADE_MAX = 400    # Spear.spearmasterNeedle_fadecounter_max
+NEEDLE_FADE_MAX = 400    # 断线后的渐隐时长（约 10 秒）
+NEEDLE_BLACK_HOLD = 240   # 先保持完整的黑矛约 6 秒，再开始渐隐
 LEN = 53.0               # 杆长（原版 SmallSpear 贴图可视长度）
 HALF_W = 1.6             # 杆的半宽（贴图实测 3px）
 RAD = 5.0                # Spear.cs:287 bodyChunks[0].rad
@@ -87,7 +88,7 @@ class Spear:
                  "collide_with_objects", "held_by", "embedded", "stuck_to", "stuck_local", "_still",
                  "thrower", "no_self_t", "pinned", "pole", "toss_t",
                  "aim_cursor", "cursor_pin", "needle", "needle_live",
-                 "needle_type", "needle_fade", "damage", "needle_thread_cut",
+                 "needle_type", "needle_fade", "needle_fade_wait", "damage", "needle_thread_cut",
                  "needle_world")
 
     def __init__(self, x: float, y: float, seed: int = 0, angle_deg: float = 90.0):
@@ -143,7 +144,8 @@ class Spear:
         self.needle_live = False
         self.damage = 1.0                     # spearDamageBonus（原版默认 1f）
         self.needle_type = 0                  # BioSpear1..3（Spear_makeNeedle 的 type）
-        self.needle_fade = NEEDLE_FADE_MAX    # fadecounter：断线后每 tick -1
+        self.needle_fade = NEEDLE_FADE_MAX    # 真正开始渐隐后的剩余计数
+        self.needle_fade_wait = 0             # 先完整保持黑色，再进入渐隐计时
         # 线必须**立刻**断（不等褪色）：二次被捡 / 扎中的宿主被删
         self.needle_thread_cut = False
         # 这根针有没有离过手（掷出去过）。刚长出来直接递到主人手里时是 False：
@@ -181,7 +183,10 @@ class Spear:
         cut=True 额外把尾巴上那条有机线**当场**剪断（二次被捡 / 宿主被删）。
         默认 False：线先跟着针一起褪色，等针真变黑（fade==0）才消失。
         """
-        self.needle_live = False
+        if self.needle_live:
+            self.needle_live = False
+            self.needle_fade = NEEDLE_FADE_MAX
+            self.needle_fade_wait = NEEDLE_BLACK_HOLD
         if cut:
             self.needle_thread_cut = True
 
@@ -193,6 +198,9 @@ class Spear:
         钉成竖/横杆的针保留为场景杆，不参加这条清除。
         """
         if not self.needle or self.needle_live or self.pinned:
+            return
+        if self.needle_fade_wait > 0:
+            self.needle_fade_wait -= 1
             return
         if self.needle_fade > 0:
             self.needle_fade -= 1
