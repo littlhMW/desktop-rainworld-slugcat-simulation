@@ -977,11 +977,16 @@ class BehaviorFSM:
             if self.body.food_satisfied() and food_now_q < self.body.food_max * 4:
                 missing_cells = int(math.ceil(
                     (self.body.food_max * 4 - food_now_q) / 4.0))
+                # 种族的 food_max / food_hibernate 已经由 SlugStats 定义；
+                # 这里仅计算“距离这个种族自己的满饱值还差几格”。
+                # 只有最后 3 个未满格进入减速区：
+                #   还差 3 → 0~10s；2 → 0~20s；1 → 0~30s；4+ → 0s。
+                slow_cells = tuning.FOOD_POST_HIBERNATE_SLOW_CELLS
                 max_wait_sec = max(
                     0.0,
                     min(
                         tuning.FOOD_POST_HIBERNATE_WAIT_MAX_SEC,
-                        (tuning.FOOD_POST_HIBERNATE_WAIT_CELLS - missing_cells)
+                        (slow_cells + 1 - missing_cells)
                         * tuning.FOOD_POST_HIBERNATE_CELL_SEC,
                     )
                 )
