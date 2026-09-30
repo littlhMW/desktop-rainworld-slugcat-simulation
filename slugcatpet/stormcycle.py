@@ -265,9 +265,14 @@ class StormCycle:
     def hud_info(self, pets=None):
         """雨眠计时器的原料（绘制在 rendering/storm_hud.py）。
 
-        ``ring_total`` / ``ring_remain`` 是主圆环外那一圈小方块的比例：平静期只算
-        预警之外的那段（预警那段单独算「征兆期」），征兆期从专注尾巴一直连到集合段，
-        暴雨期就是剩下的雨。环境面板手动放的那场仍然不给倒计时。
+        ``ring_total`` / ``ring_remain`` 是主圆环外那一圈小圆点的比例：
+
+        * 征兆期与平静期在视觉上合并成同一个「平静期」环
+          —— 整圈 = 整个专注期，进度 = 距这段合并阶段结束还有多久；
+          只有最后那段征兆期会闪（``omen``）。
+        * 暴雨期（集合段 + 雨眠段）单独一个环，进度 = 距暴雨结束还有多久。
+
+        环境面板手动放的那场仍然不给倒计时。
         """
         if not self.enabled and not self.manual:
             return None
@@ -276,21 +281,19 @@ class StormCycle:
         warn = self.warning_ticks
         if self.phase == FOCUS:
             left = max(0, self.focus_ticks - self.phase_t)
-            if left <= warn:
-                mode, ring_total, ring_remain = "rain", warn, left
-            else:
-                mode = "cycle"
-                ring_total = max(0, self.focus_ticks - warn)
-                ring_remain = left - warn
-        elif self.phase == GATHER:
-            mode = "rain"
-            ring_total = self.gather_timeout
-            ring_remain = max(0, ring_total - self.phase_t)
+            mode = "cycle"
+            ring_total = self.focus_ticks
+            ring_remain = left
+            omen = left <= warn
         else:
-            mode = "hibernation"
-            ring_total = self.sleep_ticks
-            ring_remain = max(0, ring_total - self.phase_t)
-        phase_left = max(0, self.focus_ticks - self.phase_t) if self.phase == FOCUS else ring_remain
+            # 暴雨期 = 集合段 + 雨眠段，一个环一路走到雨停
+            mode = "storm"
+            ring_total = self.gather_timeout + self.sleep_ticks
+            if self.phase == GATHER:
+                ring_remain = max(0, self.gather_timeout - self.phase_t) + self.sleep_ticks
+            else:
+                ring_remain = max(0, self.sleep_ticks - self.phase_t)
+            omen = False
         need = 0
         first = None
         for p in (pets or ()):
@@ -305,9 +308,10 @@ class StormCycle:
                 + int(getattr(body, "food_quarter", 0)))
             if miss > need:
                 need = miss
-        return {"mode": mode, "seconds": phase_left / TICK_HZ,
+        return {"mode": mode, "seconds": ring_remain / TICK_HZ,
                 "phase": self.phase,
                 "ring_total": ring_total, "ring_remain": ring_remain,
+                "omen": omen, "tick": int(self.phase_t),
                 "cycles": int(self.cycles_done),
                 "food": int(getattr(first, "food", 0)) if first is not None else 0,
                 "food_quarter": int(getattr(first, "food_quarter", 0)) if first is not None else 0,

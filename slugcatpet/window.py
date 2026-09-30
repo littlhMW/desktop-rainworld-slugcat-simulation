@@ -1780,10 +1780,16 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                             QPainter.CompositionMode.CompositionMode_SourceOver)
                     else:
                         buf.fill(Qt.GlobalColor.transparent)
-                    self._paint_world(bp, 1.0)
+                    self._paint_world(bp, 1.0, hud=False)
                 finally:
                     bp.end()
                 p.drawImage(QRect(0, 0, bw * s, bh * s), buf)
+                # 雨眠计时器画在放大**之后**：不参与像素化滤镜，
+                # 层级最高、且圆点/描边保持清晰
+                p.save()
+                p.scale(s, s)
+                storm_hud.draw_storm_hud(p, self)
+                p.restore()
                 if self._place_mode:
                     self._alpha_pad(p)
                 return
@@ -1793,7 +1799,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         finally:
             p.end()
 
-    def _paint_world(self, p, draw_scale=None):
+    def _paint_world(self, p, draw_scale=None, hud=True):
         # 图层序：果绳/烟 → 猫身 → 杆/手 → 果石黏菌蝠 → 水 → 灯 → 特效 → 雪
         # 像素模式下缓已是 1:1 逻辑像素，不再乘放大倍率
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
@@ -1909,9 +1915,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             p.restore()
 
         # 左下角固定 HUD：先抵消震屏平移，再画在屏幕（逻辑）坐标上
-        if self._shake[0] or self._shake[1]:
-            p.translate(-self._shake[0], -self._shake[1])
-        storm_hud.draw_storm_hud(p, self)
+        if hud:
+            if self._shake[0] or self._shake[1]:
+                p.translate(-self._shake[0], -self._shake[1])
+            storm_hud.draw_storm_hud(p, self)
 
     def _ground_clip(self):
         """地面线（HL）以下就是任务栏：生物/物体一律裁在线以上，脚踩在线上。

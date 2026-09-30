@@ -6,15 +6,22 @@
 
   左 · 主圆环：环 + 等级符号是同一张 45×45 精灵（``ui`` 图集的 ``smallKarma*``，
   与猫状态面板同一套业力图标）。等级 = 已完成的雨循环次数，1..10 夹紧。
-  环外一圈 17 个小方块 = 当前阶段剩余时间：实心=剩余、空心=已消耗，从 3 点钟方向起
-  顺时针排，剩余越少白段越短。
+  环外一圈 17 个小圆点 = 当前阶段剩余时间：实心=剩余、空心=已消耗，从右上角
+  （约 1:30）起顺时针排，随时间推移从起点开始变空心。
 
-  右 · 饥饿条：一排圆圈，竖线左侧是雨眠所需格数、右侧是距饥饿上限的格数；实心格 =
-  当前饱食度，最后一格按 ``food_quarter`` 画 1/4 扇形。固定显示第一只猫的数据。
+    征兆期与平静期在视觉上合并成同一个「平静期」环（整圈 = 整个专注期）；
+    暴雨期（集合段 + 雨眠段）单独一个环，一路走到雨停。只有征兆期那一圈会闪。
+
+  右 · 饥饿条：一排圆圈，竖线左侧是雨眠所需格数、右侧是总上限减去雨眠上限的格数；
+  实心格 = 当前饱食度，最后一格按 ``food_quarter`` 画 1/4 扇形。固定只显示第一只猫。
 
 数据全部来自 ``StormCycle.hud_info()``；这一层只负责画，不推进任何逻辑
 （Starvation 不接 ``food_eat()``）。绘制坐标是屏幕（逻辑）坐标，不跟 ``window._shake`` 晃。
+
+这一层不参与像素化滤镜：像素模式下由 ``window.paintEvent`` 在低分辨率缓冲放大**之后**
+再调它，层级最高，且圆点/描边用抗锯齿画，保持清晰。
 """
+
 from __future__ import annotations
 
 import math
@@ -54,6 +61,9 @@ PIP_CORE = 11.0          # 实心圆直径（外径的一半）
 PIP_CY = 41.0            # 格圆心 y
 DIV_EXTRA = 15.0         # 分隔线额外占宽
 DIV_H = 33.0             # 分隔线高（比圆圈高一截，和参考图一致）
+DOT_START_DEG = -45.0   # 小圆点起点：右上角 1:30 方向，顺时针排
+BLINK_TICKS = 10         # 征兆期闪烁的半周期（40 tick/s → 0.25s 亮 / 0.25s 暗）
+BLINK_DIM = 0.2          # 闪暗时那圈圆点的透明度
 KARMA_MIN = 1
 KARMA_MAX = 10           # 最低 1 级、最高 10 级
 
@@ -151,16 +161,34 @@ def _draw_karma(p, win, info) -> None:
     p.drawText(box, int(Qt.AlignmentFlag.AlignCenter), "%d" % level)
 
 
+def _blink_on(info) -> bool:
+    """只有征兆期那一圈会闪；其余阶段常亮。"""
+    if not (info or {}).get("omen"):
+        return True
+    try:
+        tick = int((info or {}).get("tick") or 0)
+    except (TypeError, ValueError):
+        return True
+    return (tick // BLINK_TICKS) % 2 == 0
+
+
 def _draw_ring(p, info) -> None:
-    """主圆环外一圈小圆点：实心=剩余、空心=已消耗，从 3 点钟起顺时针。"""
+    """主圆环外一圈小圆点：实心=剩余、空心=已消耗。
+
+    从右上角（约 1:30）起顺时针排；随时间推移从起点那一颗开始变空心。
+    """
     lit = ring_lit(info)
     step = 360.0 / float(DOTS)
+    hollow_from = DOTS - lit          # 第几颗开始已消耗
     hollow_pen = QPen(_INK)
     hollow_pen.setWidthF(DOT_PEN)
+    p.save()
+    if not _blink_on(info):
+        p.setOpacity(BLINK_DIM)
     for i in range(DOTS):
-        a = math.radians(i * step)          # y 向下 = 顺时针
+        a = math.radians(DOT_START_DEG + i * step)   # y 向下 = 顺时针
         c = QPointF(RING_CX + RING_R * math.cos(a), RING_CY + RING_R * math.sin(a))
-        if i < lit:
+        if i >= hollow_from:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(_INK)
             p.drawEllipse(c, DOT_R, DOT_R)
@@ -168,6 +196,7 @@ def _draw_ring(p, info) -> None:
             p.setPen(hollow_pen)
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawEllipse(c, DOT_HOLLOW_R, DOT_HOLLOW_R)
+    p.restore()
 
 
 def _draw_pips(p, info) -> None:
@@ -235,14 +264,8 @@ def hud_lines(info) -> list:
     """把 ``hud_info`` 翻成几行文案（第一行主色，其余警示色）。"""
     if not info:
         return []
-    mode = info.get("mode")
-    if mode == "rain":
-        head = "%s %s" % (_label("hud_rain"), _fmt_time(info.get("seconds", 0.0)))
-    elif mode == "hibernation":
-        head = "%s %s" % (_label("hud_hibernation"), _fmt_time(info.get("seconds", 0.0)))
-    else:
-        head = "%s %s" % (_label("hud_rain_cycle"), _fmt_time(info.get("seconds", 0.0)))
-    out = [head]
+    key = "hud_hibernation" if info.get("mode") == "storm" else "hud_rain_cycle"
+    out = ["%s %s" % (_label(key), _fmt_time(info.get("seconds", 0.0)))]
     if info.get("hungry"):
         out.append(_label("hud_starvation"))
     return out
@@ -278,6 +301,8 @@ def draw_storm_hud(p, win) -> None:
     p.drawRoundedRect(QRectF(x0, y0, x1 - x0, y1 - y0), 4.0, 4.0)
     # 参考图是硬边像素画：贴图放大用最近邻
     p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+    # 不参与像素化滤镜：圆点/描边开抗锯齿，保持清晰
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     p.translate(x0 + _PAD, y0 + (HUD_H - REF_H * s) * 0.5)
     p.scale(s, s)
     p.translate(-REF_X0, -REF_Y0)        # 参考坐标 -> 内容左上角
