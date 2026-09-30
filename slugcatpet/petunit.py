@@ -135,11 +135,14 @@ class PetUnit:
         margin = self.layout_data.canvas_w / 2.0
         self.body.walk_min = margin
         self.body.walk_max = w._WL - margin
-        # 原版 npcStats.Wideness / Size：个体固定，驱动幼崽的体/臀/头宽度与尾粗
-        self.body.wideness = ((_pers_seed(self.id, self.index, self.variant) % 997)
-                              / 996.0)
-        self.body.size = ((_pers_seed(self.id, self.index, self.variant) // 997 % 997)
-                          / 996.0)
+        # 原版 npcStats.Wideness / Size：幼崽按同一 ID 的 XorShift128 + pow(1.5)
+        # 分布生成；其他猫仍保留原有个体数值。
+        if self.is_pup and self._pup_visual is not None:
+            _, _, self.body.size, self.body.wideness = self._pup_visual
+        else:
+            seed = _pers_seed(self.id, self.index, self.variant)
+            self.body.wideness = (seed % 997) / 996.0
+            self.body.size = ((seed // 997) % 997) / 996.0)
         self.gfx = SlugcatGraphics(self.body, self.layout_data, w.atlas, cat=self.cat)
         # 让站姿先收敛
         for _ in range(40):
