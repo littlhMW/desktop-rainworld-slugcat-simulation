@@ -54,8 +54,8 @@ python run_slugcatpet.py
 
 移植规则见 `AGENTS.md`，详细逆向流程见 `docs/DECOMPILE_PROCESS.md`。
 
-## 来源与许可
+## 项目来源与许可
 
-本项目 fork 自 `lingxiaojun/slugcatpet`。
+本项目基于 `lingxiaojun/slugcatpet` 进行二次开发，在原项目基础上进行了较大范围的功能扩展与代码重构，目前作为独立维护的衍生项目继续开发。
 
-Rain World 及其素材归原权利人所有。本仓库不分发 Rain World 素材；源码许可见 `LICENSE`。
+Rain World 及其素材归原权利人所有。本仓库不分发 Rain World 素材；源码许可与版权信息见 `LICENSE`。
