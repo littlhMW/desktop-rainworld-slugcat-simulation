@@ -176,13 +176,12 @@ def _mount_cursorlick(fsm):
 
 
 def _ascend_ready(fsm):
-    """超度三门：业力满 + 饱食度满 + 好感疏远。
-
-    业力不满或没吃饱都不能超度（每次超度会立刻耗尽饱食度，见 Ascension._flash）。
+    """圣徒超度门槛：只要求业力花槽已满。
+    
+    业力花是这次超度的实际消耗品；食物和 temper 不再作为硬门槛。
     """
     b = fsm.body
-    return (b.karma >= b.karma_max and b.food >= b.food_max
-            and b.temper <= fsm.win.cat.tuning["temper_ascend_gate"])
+    return bool(b.flower_karma)
 
 
 def _mount_ascension(fsm):
