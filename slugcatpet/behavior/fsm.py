@@ -8062,9 +8062,7 @@ class BehaviorFSM:
         """玩耍：拿物、拨弄、端详、小跳、甩出去再追；目标使用统一寻路。"""
         b = self.body
         if self.grab.active:
-            self._itemplay_end()
-            self._transition("Dragged")
-            return
+            self._itemplay_end(); self._transition("Dragged"); return
         if self._itemplay_phase == 2:
             it = self._itemplay_target
             if it is None or getattr(it, "state", None) in ("gone", "eaten"):
@@ -8105,9 +8103,7 @@ class BehaviorFSM:
                 if is_spear: b.grab_spear(it, side)
                 elif is_fruit: b.grab_fruit(it, side)
                 else: b.grab_stone(it, side)
-                self._itemplay_phase = 1
-                self.timer = 0
-                self._itemplay_mode_t = 0
+                self._itemplay_phase = 1; self.timer = 0; self._itemplay_mode_t = 0
                 self._itemplay_left = self.rng.randint(tuning.ITEMPLY_TICKS_MIN, tuning.ITEMPLY_TICKS_MAX)
             elif self.timer > 240:
                 self._itemplay_end(); self._transition("IdleStand")
@@ -8117,32 +8113,24 @@ class BehaviorFSM:
             carried = b.carried_stone if b.carried_stone is not None else b.carried_fruit
         if carried is None:
             self._itemplay_end(); self._transition("IdleStand"); return
-        self._itemplay_left -= 1
-        self._itemplay_mode_t += 1
+        self._itemplay_left -= 1; self._itemplay_mode_t += 1
         t = self.timer
-        self._play_face = 1 if self._play_face >= 0 else -1
-        b.facing = self._play_face
+        self._play_face = 1 if self._play_face >= 0 else -1; b.facing = self._play_face
         from ..world.spear import Spear
         can_throw_toy = isinstance(carried, Spear) or carried is b.carried_stone
         if (can_throw_toy and b.item_ready() and self._itemplay_throw_count == 0
                 and self._itemplay_mode_t > 45 and self.rng.random() < tuning.ITEMPLY_TOSS_P):
             dir_x = 1 if self._play_face >= 0 else -1
-            if isinstance(carried, Spear):
-                thrown = self._launch_weapon(dir_x)
-            else:
+            thrown = self._launch_weapon(dir_x) if isinstance(carried, Spear) else True
+            if not isinstance(carried, Spear):
                 b.throw_stone(dir_x, weaponphys.frc(weak=self._exhausted), fling=True, recoil=0.25)
-                thrown = True
             if thrown:
-                self._itemplay_throw_count = 1
-                self._itemplay_phase = 2
-                self._itemplay_mode_t = 0
+                self._itemplay_throw_count = 1; self._itemplay_phase = 2; self._itemplay_mode_t = 0
                 return
         if self._itemplay_mode_t >= self.rng.randint(34, 70):
             old_mode = self._itemplay_mode
-            choices = ["inspect", "paw", "hop"]
-            choices.remove(old_mode)
-            self._itemplay_mode = self.rng.choice(choices)
-            self._itemplay_mode_t = 0
+            choices = ["inspect", "paw", "hop"]; choices.remove(old_mode)
+            self._itemplay_mode = self.rng.choice(choices); self._itemplay_mode_t = 0
         side = self._itemplay_side
         hx, hy = b._carry_pos(side)
         if self._itemplay_mode == "paw":
@@ -8150,8 +8138,7 @@ class BehaviorFSM:
             phase = (self._itemplay_mode_t / 34.0) * math.tau
             aim = (hx + self._play_face * math.sin(phase) * 8.0, hy + math.cos(phase) * 4.0)
             b.arm_aim[side] = aim; b.arm_aim[other] = None
-            self.gfx.hand_aim[side] = aim; self.gfx.hand_aim[other] = None
-            self.gfx.look_at = (hx, hy)
+            self.gfx.hand_aim[side] = aim; self.gfx.hand_aim[other] = None; self.gfx.look_at = (hx, hy)
         elif self._itemplay_mode == "hop":
             b.set_crawl(False); self.gfx.look_at = (hx, hy)
             if b.on_floor() and self._itemplay_mode_t % tuning.ITEMPLY_PRANCE_CD == 0: self._play_hop()
@@ -8164,8 +8151,7 @@ class BehaviorFSM:
             if self._itemplay_mode_t % tuning.ITEMPLY_PRANCE_CD == 0 and self.rng.random() < tuning.ITEMPLY_TURN_P:
                 self._play_face = -self._play_face
         if self._itemplay_left <= 0 or t > 2400:
-            if self.rng.random() < getattr(self.pers, "temper", 0.5) * tuning.ITEMPLY_FLING_P:
-                self._itemplay_fling()
+            if self.rng.random() < getattr(self.pers, "temper", 0.5) * tuning.ITEMPLY_FLING_P: self._itemplay_fling()
             self._itemplay_end(); self._transition("IdleStand")
 
     def _play_hop(self) -> float:
