@@ -4,6 +4,95 @@
 
 ## 2026-10-01
 
+### R135 · 双导航系统合并（蜥蜴 TerrainQuery ↔ 蛞蝓猫 SurfaceGraph 收成一套）
+
+- **背景**（用户：「那份文档全部实现。需要达成统一」，指「精简版：蜥蜴与蛞蝓猫双导航系统审计」）：
+  代码里已有两套完整但互相不认识的导航 —— `world/terrain.py`（蜥蜴：面/杆/墙 → TerrainGraph）与
+  `planning/surface.py`（蛞蝓猫：锚点图 SurfaceGraph）。同一件事（走过去 / 跳过去 / 爬上去）
+  在两边是两种数据结构、两套寻路、两套几何扫描。本轮把**几何、图、寻路器**三件事收成一套。
+
+**① 共用几何（`planning/navgeom.py`，上轮新建，本轮开始被两边真正共用）**
+- `SurfaceGraph.build()` 不再自己扫 `chunkphys.platforms()` / `win.poles` / `win.shelters`，
+  改成从 `navgeom.nav_geometry(pet.window)` 取面（文档 §21）。于是「这里有没有一块面 /
+  一根杆 / 一面墙」全世界只有一个答案，蜥蜴和猫看到的是同一批 `Surface` 对象。
+- 只剩「屋外走带」（按猫此刻站在哪一层把被庇护所挡住的地面切段）仍按猫自己算 ——
+  它本来就是每只猫自己的东西，但用的仍是同一份庇护所几何。
+
+**② 共用图与寻路器（`planning/navgraph.py`）**
+- `NavGraph` 不再只认「下标式终点」：新增 `edge_dst(e)` 收口（文档 §39），边的终点既可以是
+  节点下标（蜥蜴 `NavigationEdge`），也可以是节点对象（蛞蝓猫 `SurfaceEdge`，还带实测轨迹
+  `plan` / 落点 `land_x` / 终点姿态 `pose`）。`radj` / 反向可达 / Tarjan SCC / Dijkstra / A*
+  于是**只有一份实现**。
+- `NavGraph.edges(u)` 同时吃 `list[list]` 与 `dict` 两种邻接表形状，历史调用方和测试里的
+  `g.adj.get(i, ())` 照旧能用。
+- `SurfaceGraph` 继承 `NavGraph`：反向邻接 / SCC / `can_return` 全部复用；
+  `_returnable`（原版 accessibility「去了还回得来」）改成 `NavGraph._reachers(start)`，
+  删掉本地那份重写的反向 BFS。
+- `SurfaceGraph.idx()` 从 `list.index()` 的 O(N) 线性扫描改成 O(1)（节点自己记 `nid`）——
+  它在 `_compute_returnable` / `route_to` 的热路径里被调用 O(E) 次。
+- `route_to()` 的「每次取 min 扫一遍全部 best」改成 heapq 标准 Dijkstra（文档 §3），
+  语义不变（finish 仍是普通 terminal 边、仍然比较完才收尾），复杂度 O((V+E) log V)。
+
+**③ 缓存身份改成「导航几何版本」（文档 §24/§26）**
+- `SurfaceRoute` 的图缓存键 / 路线缓存键去掉了 `world_version`（世界每 tick 都在变：猫眨眼、
+  果子掉、鼠标动都算），改成 `NavGeometry.version`（只在平台 / 杆 / 墙 / 庇护所**内容**变化时 +1）。
+  于是「平台没动、猫也没动」时整张图不再每帧被丢掉重建。
+- 新增 `surface._nav_version(pet)`，没有 window 的单元测试退回旧的两个版本号。
+
+**④ 动作层不再自己挑竖线（文档 §6）**
+- `Lizard._climb_plan()` 旧版是「Planner 没给 climb 段就自己遍历 `climb_surfaces` 挑一根线」。
+  现在只要 `self.plan` 还活着（`alive(tick)`）就**只承接** Planner 的路线：是 `climb_*` 就照抄
+  `(上墙点, 线顶, 线底, 方向)`，是 `walk/drop/jump` 就什么都不做 —— 不再出现「规划说往右走、
+  动作层却抓了左边的窗口竖边一路爬上屏幕顶」。
+- 新增 `_CLIMB_MODES = {climb_wall: wall, climb_pole: pole, climb_edge: edge}`：`climb_edge`
+  （窗口左右竖边）第一次有了动作层承接路径，`_plan_from_legs` / `_route_tick` 也认得它。
+
+**⑤ 卡住检测接进路线执行（文档 §28）**
+- `Lizard` 新增 `_stuck = StuckDetector()`：手里有一条正式路线、却连着两个 24 tick 窗口都没挪窝，
+  就丢掉这条路线并 `_climb_release()`，下一 tick 重新问图 —— 而不是永远顶在一面爬不上去的墙上。
+  `owner` 取当前段的终点 x，段落推进/换目标时自动重新计时。
+
+**⑥ 视线遮挡改用共用几何（文档 §8/§9）**
+- `items._lizard_blockers()` 不再只发杆子：直接取 `NavGeometry.obstacles`（庇护所墙条、背景墙、
+  窗口竖边、杆——同一条 capsule 与 `seg_seg_dist2` 判交），于是「挡不挡视线」和「走不走得过去」
+  用的是同一份几何。没有几何层时退回只发杆子，至少不比旧版弱。
+
+**⑦ 黄蜥情报不再无限续命（文档 §16）**
+- `PackAlert.decayed()` 旧版把时间戳刷成「现在」，于是 `fresh()` 永远成立、一条早就过期的情报
+  能在群体里被无限转发。现在保留原始 `tick`，衰减只体现在 `confidence` 与新增的 `hops` 上，
+  `PACK_ALERT_TICKS` 的保鲜终于真的会到期。
+- `absorb_alert()` 的「哪条更新」判断同步改成（原始时间戳更新）或（同时间戳但转发次数更少）。
+
+**⑧ 调查类行为走地形路线（文档 §29/§30）**
+- 新增 `Lizard._vertical_detour(gx, gy)`：记忆里的位置（最后看见 / 最后听见）明显不在同一层时，
+  先向地形层要一条正式路线（爬杆 / 上墙 / 掉下去都算路）并装成 `self.plan`，由 `_route_tick` /
+  `_climb_plan` / `_approach_tick` 接管；同层或图里没路线时才退回直线趋近。
+- `_investigate_tick`（InvestigatePos）与 `_noise_tick`（InvestigateSound）都接上了它。
+
+**⑨ 逃 / 猎 改成效用 + 迟滞（文档 §40）**
+- `decide()` 的 ① 不再只问 `threat_t > 0`：新增 `_flee_outweighs_hunt()`，
+  `_flee_util()` 按威胁距离给分（贴到 30% 警觉半径 = `FLEE_UTIL`），
+  `_hunt_util()` 按目标距离给分（进咬合距离 = `HUNT_UTIL`，嘴里有肉直接满），
+  切换要拉开 `FLEE_HUNT_HYSTERESIS = 0.12`；已经在逃时反向要求猎明显更划算才回头。
+  于是「猎物已经在嘴边」不会再被一个远处的威胁打断，也不会在边界上每帧横跳。
+
+**测试**
+- 口径更新（都是本轮**有意**改掉的行为，不是放宽断言）：
+  - `e2e_r117`：「蓝蜥照多段路线走到墙脚并爬到墙顶」——这条**本来是 FAIL** 的
+    （蓝蜥一路向左抓住窗口竖边爬上去，永远到不了 x=700 的墙），④ 修好之后通过。
+  - `e2e_r83`：「缓存 key 含起点 x」的 key 形状断言跟着 ③ 改（`(nav_v, hy, x, gx, gy)`），
+    并补了一条「key 里没有 world_version」的正向断言。
+  - `e2e_r116`：「Planner 的 climb 路线被动作层照单执行（不依赖 climb_surfaces）」在旧口径下
+    靠「plan 是 climb_* 才 return」侥幸成立；④ 之后动作层对着任何活着的 plan 都不再自选，语义更严。
+- 全量 `run_all19.ps1`（119 脚本）：`fails=0`。
+
+**未做（明确记录，不是遗忘）**
+- §20「竖线的跨高度参数化搜索」：竖线目前仍只发「顶端 + 底端」两个节点。要加中间锚点，
+  会同时改动 `e2e_r117` 里「上墙段的 climb 槽 = 线顶」这条口径，需要单独一轮做。
+- §37「AI 时间片（感知 2~3 tick / 目标 4 / LOS 3~5 / Pack 10 / 声音 5）」：属纯性能项，
+  与行为正确性解耦，留到下一次性能轮（和面条蝇的空间索引一起做更划算）。
+- §17「PreyState 字段合并」/ §18「PreyTracker 改名」：纯内部重命名，无行为收益，
+  为避免与行为改动混在一个 diff 里，留到独立的重命名提交。
 ### R134 · 蜥蜴移动速度按状态分级（巡逻 / 追猎 / 叼东西）
 
 - **问题**（用户：「蜥蜴发呆巡逻，看见猎物，叼东西的速度应该做出区别」）：

@@ -387,23 +387,30 @@ class SocialMemory:
 class PackAlert:
     """一条「谁在哪看见了猎物」的情报（原版黄蜥群体通信）。"""
 
-    __slots__ = ("x", "y", "obj", "tick", "leader", "confidence")
+    __slots__ = ("x", "y", "obj", "tick", "leader", "confidence", "hops")
 
-    def __init__(self, x, y, obj, tick, leader=0, confidence=1.0):
+    def __init__(self, x, y, obj, tick, leader=0, confidence=1.0, hops=0):
         self.x = float(x)
         self.y = float(y)
         self.obj = obj
-        self.tick = int(tick)
+        self.tick = int(tick)      # **第一次被看见**的 tick（原始时间戳，不随转发刷新）
         self.leader = int(leader)
         self.confidence = float(confidence)
+        self.hops = int(hops)      # 被转发了多少次
 
     def fresh(self, tick: int) -> bool:
         return int(tick) - self.tick <= PACK_ALERT_TICKS
 
     def decayed(self, tick: int) -> "PackAlert":
-        """转发一次就旧一点：消息传得越远越模糊（原版通信也有衰减）。"""
-        return PackAlert(self.x, self.y, self.obj, int(tick), self.leader,
-                         max(0.2, self.confidence - 0.25))
+        """转发一次就旧一点：消息传得越远越模糊（原版通信也有衰减）。
+
+        `tick` 只用来兼容旧调用签名。**时间戳不再改成「现在」** —— 旧实现
+        每次转发都把 tick 刷成当前 tick，于是 `fresh()` 永远成立，一条早就过期
+        的情报能在群体里无限转发（文档 §16）。现在原始 tick 保留，衰减只体现在
+        confidence 与 hops 上。
+        """
+        return PackAlert(self.x, self.y, self.obj, self.tick, self.leader,
+                         max(0.2, self.confidence - 0.25), self.hops + 1)
 
 
 def flank_offset(lizard_id: int) -> float:
@@ -480,7 +487,7 @@ def _plan_from_legs(legs, my_x, tick, ttl, reason):
     if all(lg.mode == "walk" for lg in legs):
         return None
     leg = legs[0]
-    if leg.mode in ("climb_wall", "climb_pole"):
+    if leg.mode in ("climb_wall", "climb_pole", "climb_edge"):
         return ApproachPlan(leg.mode, (leg.x, leg.y), None, tick + ttl, reason,
                             0.0, climb=(leg.x, leg.top, leg.bot, leg.up), legs=legs)
     if leg.mode in ("jump", "hop"):

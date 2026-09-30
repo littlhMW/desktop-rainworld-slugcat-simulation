@@ -32,17 +32,22 @@
 """
 from __future__ import annotations
 
+import bisect
+import heapq
+
 from ..behavior import tuning
 from ..core import chunkphys
 from ..core.units import clampf
 from .ability import (DONE, GIVEUP, HOLD, HOLDING, MODE_TOUCH, RUNNING,
                       walk_band)
+from . import navgeom
 from .backflip_reach import takeoff_c0_h
 from .goal import point_goal
 from .hop_reach import HopReach, HopReachController, surface_under
 from .jump_arc import get_arc, sweep_hit
 from .jump_reach import _arc_hits_solids
 from .pole_hop import hop_plan, land_sweep, pole_hit
+from .navgraph import NavGraph
 from .pole_reach import PoleJumpReach
 from .route import edge_for, landing_safe, route_cost
 from .walk_reach import WalkReach
@@ -209,10 +214,11 @@ def _reach_from_surface(stats, y0, lo, hi, start_x, gx, gy):
 class SurfaceNode:
     """一个导航节点：某块支撑面上的一个锚点（NavNode = surf_id + x_anchor）。"""
 
-    __slots__ = ("kind", "y", "lo", "hi", "pole", "here", "anchor", "sid")
+    __slots__ = ("kind", "y", "lo", "hi", "pole", "here", "anchor", "sid", "nid")
 
     def __init__(self, kind, y, lo, hi, pole=None, here=False, anchor=None, sid=""):
         self.kind = kind          # floor / deck / pole_tip / pole_h
+        self.nid = -1             # 在本图里的下标（NavGraph 边指向它）
         self.y = float(y)
         self.lo = float(min(lo, hi))
         self.hi = float(max(lo, hi))
@@ -269,8 +275,21 @@ class SurfaceEdge:
         return "<%s→%s %.1ft>" % (self.kind, self.dst, self.time)
 
 
-class SurfaceGraph:
-    """锚点图：节点 + 有向边。懒构建，按几何版本缓存。"""
+class SurfaceGraph(NavGraph):
+    """锚点图：节点 + 有向边。懒构建，按几何版本缓存。
+
+    它是 `NavGraph` 的一份实例（文档 §7 / §21–§27：蜥蜴与蛞蝓猫共用同一套
+    移动图与寻路器）。蜥蜴那边的邻接表是 list[list]、边是 NavigationEdge；
+    这边邻接表是 dict（历史调用方 / 测试都用 `g.adj.get(i, ())`）、边是
+    SurfaceEdge（多带实测轨迹 plan、落点 land_x、终点姿态 pose）。形状不同，
+    算法同一份：反向邻接 radj、SCC、`can_return` 全部来自 NavGraph。
+
+    几何也不再自己扫一遍：面从 `planning.navgeom.NavGeometry`（与蜥蜴 / 猫
+    共用的那一份）取，于是「这里有没有一块面 / 一根杆 / 一面墙」全世界只有一个答案。
+    """
+
+    __slots__ = ("start", "_here_sid", "_surf", "_returnable", "geom",
+                 "nav_version")
 
     def __init__(self):
         self.nodes = []
@@ -279,17 +298,38 @@ class SurfaceGraph:
         self._here_sid = None
         self._surf = {}           # sid → dict(kind,y,lo,hi,pole,idx[])
         self._returnable = set()
+        self.geom = None          # 本图编译时用的 NavGeometry 快照
+        self.nav_version = 0
 
     def add_node(self, node):
+        node.nid = len(self.nodes)
         self.nodes.append(node)
-        self.adj[len(self.nodes) - 1] = []
-        return len(self.nodes) - 1
+        self.adj[node.nid] = []
+        return node.nid
 
     def add_edge(self, i, edge):
         self.adj[i].append(edge)
 
     def idx(self, node):
+        """O(1)：节点自己记着下标（旧实现是 list.index() 线性扫描，在
+        _compute_returnable / route_to 的热路径里被调用了 O(E) 次）。"""
+        nid = getattr(node, "nid", -1)
+        if 0 <= nid < len(self.nodes) and self.nodes[nid] is node:
+            return nid
         return self.nodes.index(node)
+
+    def _finish(self):
+        """边全部接好之后，把图交给 NavGraph：建反向邻接 + SCC + 反向可达。
+
+        `_returnable` = 「从哪些节点还能走回起点」= NavGraph 的反向可达集合，
+        与蜥蜴侧的 `can_return` 是同一份实现（原版 accessibility mapping 的
+        等价物），不再各写一个 BFS。
+        """
+        NavGraph.__init__(self, self.nodes, self.adj, version=self.nav_version,
+                          pos=lambda i: (self.nodes[i].anchor, self.nodes[i].y))
+        if self.start is not None:
+            self._returnable = self._reachers(self.start)
+        return self
 
     # ── 构建 ──
     def _add_surface(self, sid, kind, y, lo, hi, pole=None):
@@ -316,21 +356,13 @@ class SurfaceGraph:
                                idx=idxs)
         return idxs
 
-    def _add_shelter(self, k, sh, start_node, WL):
-        """庇护所 = 矩形障碍 + 一个门洞（不给它塞 chamber / tunnel）。
+    def _add_shelter_ground(self, k, sh, start_node, WL):
+        """屋外两侧的走带（floor）：只有这间屋子确实挡住猫脚下这条走道时才加，
+        于是「屋外 → 门洞 → 屋内」由 _link_gaps 的避墙检查连成一条 walk 链。
 
-        - 屋顶（deck）：跳上去、横穿、再从另一侧落下 —— 多段路里的「绕」；
-        - 屋里地面（shelter）：底墙顶边，只能**从门洞走进来**（jump 落点不给它）；
-        - 屋外两侧的走带（floor）：只有这间屋子确实挡住猫脚下这条走道时才加，
-          于是「屋外 → 门洞 → 屋内」由 _link_gaps 的避墙检查连成一条 walk 链。
+        屋顶（deck）与屋里地面（shelter）不在这里 —— 它们是全场共用的几何，
+        直接从 NavGeometry 取（见 build），免得同一条庇护所屋顶有两个定义。
         """
-        lo, hi = sh.interior_span()
-        if hi - lo >= 2.0:
-            self._add_surface("shell:%d" % k, "shelter", sh.interior_floor_y(),
-                              lo, hi)
-        rx0, rx1 = sh.roof_span()
-        if rx1 - rx0 >= 2.0 and sh.y > 4.0:
-            self._add_surface("sroof:%d" % k, "deck", sh.y, rx0, rx1)
         gy = start_node.y
         cuts = _merge_spans(sh.cut_span(gy))
         if not cuts:
@@ -365,7 +397,7 @@ class SurfaceGraph:
     @classmethod
     def build(cls, pet, start_node):
         g = cls()
-        WL = pet._WL
+        WL = float(pet._WL or 0.0)
         body = pet.body
         sx = clampf(getattr(body.chunk1, "x", 0.0), start_node.lo, start_node.hi)
         g._here_sid = "here"
@@ -373,40 +405,49 @@ class SurfaceGraph:
                        start_node.lo, start_node.hi)
         g.start = 0
 
-        for k, (x0, y0, x1) in enumerate(chunkphys.platforms()):
-            lo, hi = max(min(x0, x1), 0.0), min(max(x0, x1), WL)
-            if hi - lo < 2.0:
-                continue
-            if (abs(y0 - start_node.y) <= WALK_Y_EPS
-                    and lo >= start_node.lo - 1.0 and hi <= start_node.hi + 1.0):
-                continue                  # 就是猫脚下那块面，已经在图里了
-            g._add_surface("deck:%d" % k, "deck", y0, lo, hi)
-
-        for k, sh in enumerate(getattr(pet, "shelters", ()) or ()):
-            g._add_shelter(k, sh, start_node, WL)
-
-        for k, p in enumerate(getattr(pet, "poles", ())):
-            if getattr(p, "virtual", False):
-                continue                  # 光标虚杆不进表面图（它自己一套）
-            if getattr(p, "kind", None) == "vertical":
-                top = min(p.ay, p.by)
-                if top <= 0.0:
-                    continue
-                g._add_surface("vpole:%d" % k, "pole_tip", top,
-                               p.bx - POLE_TIP_PAD, p.bx + POLE_TIP_PAD, pole=p)
-            else:
-                lo, hi = max(min(p.ax, p.bx), 0.0), min(max(p.ax, p.bx), WL)
+        # 面从**共用几何**取（文档 §21：不再自己扫 platforms / poles / shelters）。
+        # NavGeometry 由 platform / pole / wall / shelter 编译一次，蜥蜴与蛞蝓猫
+        # 看到的是同一份 Surface 对象；这里只做「转成蛞蝓猫的 kind」的映射。
+        geom = navgeom.nav_geometry(pet.window)
+        g.geom = geom
+        g.nav_version = geom.version
+        for s in geom.surfaces:
+            if s.kind == navgeom.PLATFORM:
+                lo, hi = max(s.lo, 0.0), min(s.hi, WL)
                 if hi - lo < 2.0:
                     continue
-                g._add_surface("hpole:%d" % k, "pole_h", p.ay, lo, hi, pole=p)
+                if (abs(s.y - start_node.y) <= WALK_Y_EPS
+                        and lo >= start_node.lo - 1.0 and hi <= start_node.hi + 1.0):
+                    continue              # 就是猫脚下那块面，已经在图里了
+                g._add_surface("deck:%s" % s.sid, "deck", s.y, lo, hi)
+            elif s.kind == navgeom.SHELTER_ROOF:
+                if s.hi - s.lo >= 2.0 and s.y > 4.0:
+                    g._add_surface("sroof:%s" % s.sid, "deck", s.y, s.lo, s.hi)
+            elif s.kind == navgeom.SHELTER_FLOOR and not s.door:
+                if s.hi - s.lo >= 2.0:
+                    g._add_surface("shell:%s" % s.sid, "shelter", s.y, s.lo, s.hi)
+            elif s.kind == navgeom.VPOLE:
+                if s.top <= 0.0:
+                    continue              # 杆顶贴屏幕顶：站不住
+                g._add_surface("vpole:%s" % s.sid, "pole_tip", s.top,
+                               s.x - POLE_TIP_PAD, s.x + POLE_TIP_PAD, pole=s.pole)
+            elif s.kind == navgeom.HPOLE:
+                lo, hi = max(s.lo, 0.0), min(s.hi, WL)
+                if hi - lo < 2.0:
+                    continue
+                g._add_surface("hpole:%s" % s.sid, "pole_h", s.y, lo, hi, pole=s.pole)
+
+        # 屋外两侧的走带：按「猫脚下这一层」把被庇护所挡住的地面切成几段。
+        # 这是每只猫自己的东西（依赖它此刻站在哪一层），但用的仍是同一份庇护所几何。
+        for k, sh in enumerate(getattr(pet, "shelters", ()) or ()):
+            g._add_shelter_ground(k, sh, start_node, WL)
 
         g._link_gaps()
         g._link_jumps(pet)
         g._link_poles(pet)
         g._link_beams(pet)
         g.start_at(sx)
-        g._compute_returnable()
-        return g
+        return g._finish()
 
     def _link_gaps(self):
         """两块面同高、缝 ≤ STEP_X：走过去（旧版要求真重叠，8px 小缝直接判不连通）。"""
@@ -454,12 +495,20 @@ class SurfaceGraph:
         rise_max, dx_max = _envelope(stats)
         kinds = ("floor", "deck", "pole_h", "pole_tip")
         span_pad = dx_max + 4.0 * tuning.PLAN_WALK_X_PAD
-        for i, a in enumerate(self.nodes):
-            if a.kind not in kinds:
-                continue
+        # 空间粗筛（文档 §22/§36）：候选面按 x 排好，只在自己的横向窗口里取 ——
+        # 旧实现是节点两两比（40 块平台就是 2000+ 次 land_sweep 级别的判定）。
+        cand = [n for n in self.nodes if n.kind in kinds]
+        cand.sort(key=lambda n: n.anchor)
+        cx = [n.anchor for n in cand]
+        reach_x = span_pad + rise_max + tuning.GRAB_REACH
+        for a in cand:
+            i = a.nid
             launch_y = a.y - off
-            for j, b in enumerate(self.nodes):
-                if i == j or b.kind not in kinds or a.sid == b.sid:
+            k0 = bisect.bisect_left(cx, a.anchor - reach_x)
+            k1 = bisect.bisect_right(cx, a.anchor + reach_x)
+            for b in cand[k0:k1]:
+                j = b.nid
+                if i == j or a.sid == b.sid:
                     continue
                 up = a.y - b.y                 # >0：目标更高
                 same_level_block = (abs(up) <= 2.0
@@ -553,23 +602,15 @@ class SurfaceGraph:
         return [(x, launch_y) for x in xs[:5]]
 
     def _compute_returnable(self):
-        """反向可达：从哪些节点能走回起点（原版 accessibility 的「能不能再回来」）。"""
-        rev = {}
-        for i, edges in self.adj.items():
-            for e in edges:
-                if e.dst is None:
-                    continue
-                j = self.idx(e.dst)
-                rev.setdefault(j, []).append(i)
-        seen = {self.start}
-        stack = [self.start]
-        while stack:
-            cur = stack.pop()
-            for k in rev.get(cur, ()):
-                if k not in seen:
-                    seen.add(k)
-                    stack.append(k)
-        self._returnable = seen
+        """反向可达：从哪些节点能走回起点（原版 accessibility 的「能不能再回来」）。
+
+        保留旧名字；实现已经换成 NavGraph 的反向可达（`_reachers`，与蜥蜴侧
+        `can_return` 同一份）。旧版本是本地重写的一份反向 BFS，还要顺着
+        `self.nodes.index()` 线性找下标。
+        """
+        if self.start is not None:
+            self._returnable = self._reachers(self.start)
+        return self._returnable
 
     # ── 寻路 ──
     def route_to(self, goal_point, stats, pers=None):
@@ -578,44 +619,43 @@ class SurfaceGraph:
         finish 是一条普通的 terminal 边：所有可能路径按代价比较完才收尾，
         不再「一弹出就返回」（那样只保证看见了，不保证整条路最便宜）。
         """
+        if self.start is None or not self.nodes:
+            return None
         gx, gy = goal_point
-        best = {self.start: (0.0, 0.0, 0.0, [])}      # idx → (cost, time, energy, path)
-        seen = set()
+        best = {self.start: (0.0, 0.0, 0.0, ())}     # idx → (cost, time, energy, path)
+        done = set()
+        heap = [(0.0, self.start)]
         fin = None
-        while True:
-            cur = None
-            for idx, rec in best.items():
-                if idx in seen:
-                    continue
-                if cur is None or rec[0] < best[cur][0]:
-                    cur = idx
-            if cur is None:
-                break
-            c0 = best[cur][0]
+        while heap:
+            c0, cur = heapq.heappop(heap)
+            rec = best.get(cur)
+            if rec is None or c0 > rec[0] + 1e-9 or cur in done:
+                continue
             if fin is not None and fin[0] <= c0 + 1e-9:
                 break                            # 剩下的都比已知收尾贵
-            seen.add(cur)
-            _c, t0, e0, path = best[cur]
+            done.add(cur)
+            _c, t0, e0, path = rec
             node = self.nodes[cur]
             fin_est = _reach_from_surface(stats, node.y, node.lo, node.hi,
                                           node.anchor, gx, gy)
             if fin_est is not None and cur in self._returnable:
-                legs = path + [SurfaceEdge("finish", node, None, fin_est[0],
-                                           fin_est[1], node.anchor, "reach")]
+                legs = list(path) + [SurfaceEdge("finish", node, None, fin_est[0],
+                                                 fin_est[1], node.anchor, "reach")]
                 fcost = c0 + route_cost(edge_for("finish", fin_est[0], fin_est[1]), pers)
                 if fin is None or fcost < fin[0]:
                     fin = (fcost, legs, (t0 + fin_est[0]) * OPTIMISM,
                            (e0 + fin_est[1]) * OPTIMISM)
-            for e in self.adj[cur]:
+            for e in self.edges(cur):
                 if e.dst is None:
                     continue
                 j = self.idx(e.dst)
-                if j in seen:
+                if j in done:
                     continue
                 nc = c0 + route_cost(edge_for(e.kind, e.time, e.energy), pers)
                 old = best.get(j)
                 if old is None or nc < old[0] - 1e-9:
-                    best[j] = (nc, t0 + e.time, e0 + e.energy, path + [e])
+                    best[j] = (nc, t0 + e.time, e0 + e.energy, path + (e,))
+                    heapq.heappush(heap, (nc, j))
         if fin is None:
             return None
         return (fin[1], fin[2], fin[3])
@@ -670,6 +710,24 @@ class RoutePlan:
 
     def __repr__(self):
         return "<RoutePlan %s>" % (self.kinds(),)
+
+
+def _nav_version(pet):
+    """本帧的**导航几何版本**：平台 / 杆 / 墙 / 庇护所真的变了才 +1。
+
+    旧缓存键里塞了 `world_version` —— 世界每 tick 都在变（猫眨眼、果子掉、
+    鼠标动都算），于是「平台没动、猫也没动」的整张图每帧被丢掉重建。文档
+    §24/§26：图与路线的身份只跟导航几何（NavGeometry.version）走。
+    """
+    win = getattr(pet, "window", None)
+    if win is None:
+        return (getattr(pet, "geometry_version", 0),
+                getattr(pet, "world_version", 0))
+    try:
+        return navgeom.nav_geometry(win).version
+    except Exception:
+        return (getattr(pet, "geometry_version", 0),
+                getattr(pet, "world_version", 0))
 
 
 class SurfaceRoute:
@@ -728,8 +786,8 @@ class SurfaceRoute:
             return None                       # 世界只有一块地板：没有别的面可去
 
         # 缓存必须含**起点 x**：同一几何下从不同位置问同一目标，路线并不一样。
-        ck = (getattr(pet, "geometry_version", 0), getattr(pet, "world_version", 0),
-              round(hy, 1), round(body.chunk1.x, 1), round(gx, 1), round(gy, 1))
+        nav_v = _nav_version(pet)
+        ck = (nav_v, round(hy, 1), round(body.chunk1.x, 1), round(gx, 1), round(gy, 1))
         if ck != self._cache_key:
             self._cache = {}
             self._cache_key = ck
@@ -740,8 +798,7 @@ class SurfaceRoute:
         start = SurfaceNode("floor", hy, hlo, hhi, here=True,
                             anchor=body.chunk1.x, sid="here")
         # 图缓存：只有「平台 / 杆 / 站在哪块面」变了才重建（猫移动不算）
-        gkey = (getattr(pet, "geometry_version", 0), getattr(pet, "world_version", 0),
-                stats, round(hy, 1), round(hlo, 1), round(hhi, 1))
+        gkey = (nav_v, stats, round(hy, 1), round(hlo, 1), round(hhi, 1))
         if gkey != self._gkey:
             self._graph = None
             self._gkey = gkey

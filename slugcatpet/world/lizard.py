@@ -14,10 +14,11 @@ from ..behavior.relationship import Relations
 from .enums import ItemState
 from .terrain import Caps
 from . import lizard_cos
+from ..planning.navgraph import StuckDetector
 from .lizard_ai import (CARRY_HURRY, DEN_ARRIVE_R, DOMINANCE_DEFER, WARN_R,
                         ApproachPlan, Memory, Observation, PackAlert, PreyTracker,
-                        SocialMemory, choose_den, flank_offset, los_blocked,
-                        plan_approach, prefs_for, virtual_dens)
+                        SocialMemory, _terrain_route, choose_den, flank_offset,
+                        los_blocked, plan_approach, prefs_for, virtual_dens)
 
 # ── 物理 ──
 GRAVITY = 0.9                 # 同石头/蝙蝠量级
@@ -121,6 +122,11 @@ CLIMB_APPROACH_PENALTY = 90.0 # 要「走过去」的墙，打分加上这个（
 CLIMB_GRIP_SPRING = 0.30      # 贴上后把身体吸向墙面的弹性（不是每帧硬钉 x）
 CLIMB_GRIP_DAMP = 0.60        # 贴墙时的横向阻尼
 CLIMB_JUMP_PUSH = 4.6         # wall_jump 品种从墙上蹬出去的水平初速
+# Planner 给的攀爬段 mode → 动作层的竖线种类（climb_edge = 窗口左右竖边，它同时
+# 是碰撞体、可攀爬竖线、顶端可站面，和普通竖杆 / 背景墙是三种东西）。
+_CLIMB_MODES = {"climb_wall": "wall", "climb_pole": "pole", "climb_edge": "edge"}
+# 地形路线（MovementConnection 序列）的保鲜：走完一段、或者过期了就重新问图。
+ROUTE_TTL = 20
 # 青蜥蓄力弹射（wiki：爬墙 + 蓄力弹射）：扑击整段的顶速与加速都上调一档
 CHARGE_LEAP_SPD = 1.9
 CHARGE_LEAP_ACC = 0.55
@@ -249,6 +255,12 @@ ANGER_UP = 0.001              # 原版 angerSpeedUp
 ANGER_DOWN = 0.001            # 原版 angerSpeedDown
 ANGER_FIGHT = 0.35            # 原版 Utility() = InverseLerp(0.35,1,anger) 的下限
 ANGER_W = 0.5                 # 原版 utilityComparer 里 agressionTracker 的权重（LizardAI.cs:648）
+# 逃 / 猎 的效用仲裁（文档 §40）：旧版是硬优先级「有威胁就一律逃」，于是
+# 「猎物已经叼在嘴里 / 就在嘴边」也会被一个远处的威胁打断。现在两个效用各算
+# 一份，差值必须超过迟滞带才切换，避免在边界上每帧横跳。
+FLEE_UTIL = 1.0               # 逃的效用上限（威胁贴脸时取到）
+HUNT_UTIL = 0.72              # 猎的效用上限（目标进咬合距离时取到）
+FLEE_HUNT_HYSTERESIS = 0.12   # 切换需要拉开的效用差
 PREY_W = 0.6                  # 原版 preyTracker 权重（LizardAI.cs:644）
 CASUAL_BITE_CHANCE = 0.5      # 原版 LizardAI.cs:1092 / DoIWantToBiteThisCreature:1678
 CASUAL_PANIC_CHANCE = 0.1     # 原版 DoIWantToBiteThisCreature 第一行：残血时乱咬
@@ -918,7 +930,8 @@ class Lizard:
                  "head_x", "head_y", "head_lx", "head_ly", "head_vx", "head_vy",
                  "_seed_prev",
                  "climb_kind", "climb_attached", "climb_side",
-                 "climb_top", "climb_bot", "caps", "terrain", "_ground")
+                 "climb_top", "climb_bot", "caps", "terrain", "_ground",
+                 "_stuck")
 
     def __init__(self, x: float, y: float, breed: LizardBreed | None = None,
                  seed: int = 0, id: int = 0):
@@ -1075,6 +1088,7 @@ class Lizard:
         self.climb_top = None         # 当前这条线的上下端（到头上/底下就脱墙）
         self.climb_bot = None
         self.climb_surfaces = ()      # 这一帧可攀爬的面 [(x, y_top, y_bot, kind)]
+        self._stuck = StuckDetector()  # 跟着地形路线走却挪不动窝的检测（文档 §28）
         # 地形能力表（原版 CreatureTemplate / LizardBreedParams）：
         # 地形图全场共用，但「这张图里我能用哪些连接」逐品种过滤。
         self.caps = Caps(
@@ -1510,7 +1524,16 @@ class Lizard:
         if not legs:
             return False
         leg = legs[0]
-        if leg.mode in ("climb_wall", "climb_pole", "jump", "hop"):
+        # 卡住检测（文档 §28）：手里有一条正式路线、却连着几个窗口都没挪窝 ——
+        # 说明这条路走不通（贴着爬不上去的墙、卡在门口）。丢掉它，下一 tick
+        # 重新问图，而不是永远顶在同一面墙上。
+        if self._stuck.update(self.x, self.y, self._tick, owner=leg.x) >= 2:
+            self.plan = None
+            self._climb_release()
+            self._stuck.reset(self.x, self.y, self._tick)
+            return False
+        if leg.mode in ("climb_wall", "climb_pole", "climb_edge",
+                        "jump", "hop"):
             return False                   # 爬 / 跳各有自己的执行器
         if o is not None and o.visible:
             self.look_at = (o.x, o.y)
@@ -1903,7 +1926,7 @@ class Lizard:
         self._pick_threat(obs["threats"])
         if self.threat is not None:
             self.threat_t = max(self.threat_t, 10)      # 看得见就续上逃跑计时
-        if self.threat_t > 0:
+        if self.threat_t > 0 and self._flee_outweighs_hunt(obs):
             self._release_carry()
             return self._stage("Flee")
         # ② 原版 Behavior.ReturnPrey：把咬倒的猎物拖回巢穴
@@ -2041,13 +2064,44 @@ class Lizard:
             self._lunge(dx / d, dy / d, d, HL)
 
     def _investigate_tick(self, o, WL, HL) -> None:
-        """中置信度：去最后看见它的位置找（原版 Investigate，不亮牙）。"""
+        """中置信度：去最后看见它的位置找（原版 Investigate，不亮牙）。
+
+        记忆里的位置经常不在同一层（猎物上过窗口顶边 / 杆顶）：这时不再「对着
+        那个 x 一路撞墙」，而是先向地形层要一条正式路线（文档 §29/§30）。
+        """
         if o is None:
             return
         self.look_at = (o.x, o.y)
+        if self._vertical_detour(o.x, o.y):
+            return
         sp = self._state_speed(SNIFF_SPEED)
         want = clampf((o.x - self.x) * 0.06, -sp, sp)
         self._drive_vx(want, WALK_TURN)
+
+    def _vertical_detour(self, gx, gy) -> bool:
+        """目标明显不在同一层时，向地形层要一条正式路线并安装成 self.plan。
+
+        返回 True 表示这一帧改由路线层驱动（_route_tick 走 / _climb_plan 爬 /
+        _approach_tick 跳）。原版蜥蜴拿到的是 LizardPather 的 MovementConnection
+        序列，不是「动作层临时发现一根竖线就爬」—— 这里照那个口径先问图
+        （文档 §6/§29/§30）。
+        """
+        if self.terrain is None or self.caps is None or self.dead:
+            return False
+        if abs(gy - self.y) <= CLIMB_MIN_DY:
+            return False                       # 差不多在同一层：直线趋近更省
+        plan = self.plan
+        if (plan is not None and plan.alive(self._tick) and plan.legs
+                and plan.mode != "lurk"):
+            return True                        # 已经有一条还活着的路线，继续照它走
+        route = _terrain_route(self.terrain, self.caps, self.x, self.y, gx, gy,
+                               self._tick, ROUTE_TTL)
+        if route is None or not route.legs:
+            return False
+        if all(lg.mode == "walk" for lg in route.legs):
+            return False                       # 全程平地：不必抢直线趋近
+        self.plan = route
+        return True
 
     def _climb_plan(self, o, HL) -> None:
         """要不要贴着一条竖线爬（原版 LizardPather 的 Climb / Wall 通行能力）。
@@ -2063,20 +2117,20 @@ class Lizard:
         if o is None or self.dead:
             return
         plan = self.plan
-        if (plan is not None and plan.alive(self._tick)
-                and plan.mode in ("climb_wall", "climb_pole")):
+        if plan is not None and plan.alive(self._tick) and plan.mode != "lurk":
+            # Planner（Terrain ↔ Capability 过滤）已经给了这一帧的正式路线：
+            # 动作层不再自己挑线（文档 §6）—— 它只承接「去哪个上墙点 / 往哪个
+            # 方向爬」，走路段落归 _route_tick，跳 / 掉段落归 _approach_tick。
             climb = getattr(plan, "climb", None)
-            if climb is not None:
-                # Planner（Terrain ↔ Capability 过滤）选出来的正式路线：
-                # 动作层不再自己挑线，只承接「去哪个上墙点 / 往哪个方向爬」。
+            if climb is not None and plan.mode in _CLIMB_MODES:
                 sx, top, bot, up = climb
                 self.climb_x = float(sx)
                 self.climb_dir = 1 if up else -1
-                self.climb_kind = "wall" if plan.mode == "climb_wall" else "pole"
+                self.climb_kind = _CLIMB_MODES[plan.mode]
                 self.climb_top = float(top)
                 self.climb_bot = float(bot)
                 self.climb_attached = False
-                return
+            return
         up = o.y < self.y - CLIMB_MIN_DY
         down = o.y > self.y + CLIMB_MIN_DY
         if not (up or down):
@@ -2265,7 +2319,11 @@ class Lizard:
             return
         if self.carry_body is not None or alert.obj is None:
             return
-        if self.alert is None or alert.tick >= self.alert.tick:
+        # 「哪条更新」看原始时间戳；同一条被转发到第二次（hops 更大）不该覆盖
+        # 更早收到的那份更清晰版本（文档 §16：转发不刷新 TTL）。
+        if (self.alert is None or alert.tick > self.alert.tick
+                or (alert.tick == self.alert.tick
+                    and alert.hops < self.alert.hops)):
             self.alert = alert
 
     def _as_obs(self, seq, kind) -> tuple:
@@ -2437,6 +2495,52 @@ class Lizard:
                 best, bestscore, bestobj = (o.x, o.y), score, o.obj
         self.threat, self.threat_obj = best, bestobj
 
+    # ── 逃 / 猎 的效用（文档 §40：Utility + Hysteresis，不是硬优先级）──
+    def _flee_util(self, obs) -> float:
+        """Flee 效用：威胁越近越高（原版 ThreatTracker 的 utility 口径）。
+
+        用**当前实际观察到的**威胁算强度，而不是 threat_t —— 后者只是「还在怕」
+        的计时器，不是强度。
+        """
+        notice = self.notice_r * THREAT_NOTICE_FAC
+        inner = notice * 0.30                      # 贴到这个距离 = 满效用
+        best = 0.0
+        for o in self._as_obs(obs.get("threats"), "threat"):
+            if o.dead or not o.los or o.dist > notice:
+                continue
+            u = inv_lerp(notice, inner, o.dist) * FLEE_UTIL
+            if u > best:
+                best = u
+        return best
+
+    def _hunt_util(self, obs) -> float:
+        """Hunt 效用：嘴里有肉最高；目标越近越高，出了视野半径就没有。"""
+        if self.carry_obj is not None or self.carry_body is not None:
+            return HUNT_UTIL
+        reach = max(8.0, self._bite_reach() * 1.5)
+        best = 0.0
+        for key, w in (("cats", 1.0), ("prey", 0.8)):
+            for o in self._as_obs(obs.get(key), key):
+                if o.dead or (key == "cats" and not o.los):
+                    continue
+                u = HUNT_UTIL * w * inv_lerp(self.notice_r, reach, o.dist)
+                if u > best:
+                    best = u
+        return best
+
+    def _flee_outweighs_hunt(self, obs) -> bool:
+        """逃是不是明显比猎更划算（文档 §40 的迟滞带）。
+
+        还在猎：逃的效用要**超过**猎 + 迟滞带才切过去；
+        已经在逃：反过来，猎要超过逃 + 迟滞带才回头。
+        两边都要求「明显」，于是不会在边界上每帧横跳。
+        """
+        flee = self._flee_util(obs)
+        hunt = self._hunt_util(obs)
+        if self.stage == "Flee":
+            return flee + FLEE_HUNT_HYSTERESIS >= hunt
+        return flee > hunt + FLEE_HUNT_HYSTERESIS
+
     def _threat_tick(self, HL) -> bool:
         """原版 Behavior.Flee（LizardAI.cs:797-822）：背对威胁全速逃、闭颌、不咬任何人。"""
         if self.threat_t <= 0:
@@ -2536,7 +2640,10 @@ class Lizard:
         return True
 
     def _noise_tick(self, WL, HL) -> bool:
-        """原版 Behavior.InvestigateSound（LizardAI.cs:1038-1042）：朝最后听到的响声走。"""
+        """原版 Behavior.InvestigateSound（LizardAI.cs:1038-1042）：朝最后听到的响声走。
+
+        响声在上面 / 下面时走正式地形路线（文档 §30），而不是对着 x 一直撞。
+        """
         if self.noise_t <= 0:
             return False
         self.noise_t -= 1
@@ -2545,6 +2652,8 @@ class Lizard:
             self.noise_t = 0
             return False
         self.look_at = (self.noise_x, self.noise_y)
+        if self._vertical_detour(self.noise_x, self.noise_y):
+            return True
         sp = self._state_speed(SNIFF_SPEED)
         want = clampf(dx * 0.06, -sp, sp)
         self._drive_vx(want, WALK_TURN)

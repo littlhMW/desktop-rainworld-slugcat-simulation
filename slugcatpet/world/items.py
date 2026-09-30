@@ -1692,16 +1692,29 @@ class ItemInteractionMixin:
         return TerrainQuery(self).climb_surfaces()
 
     def _lizard_blockers(self):
-        """蜥蜴的视线遮挡物：杆子（线段）与体型够大的生物（圆）。
+        """蜥蜴的视线遮挡物：地形（线段）与体型够大的生物（圆）。
 
-        原版蜥蜴的视觉会被环境影响；桌宠里能挡视线的就是杆子和别的生物。每 tick
-        建一次快照，整场蜥蜴共用同一份（「同一份世界快照」这件事也就顺带保证了）。
+        原版蜥蜴的视觉会被环境影响；桌宠里能挡视线的就是杆、庇护所墙、背景墙、
+        窗口竖边和别的生物。线段直接取**共用的 NavGeometry.obstacles**（文档
+        §8/§9：旧实现只发了杆子，庇护所墙 / 背景墙 / 窗口竖边在蜥蜴眼里是空气），
+        于是「挡不挡视线」和「走不走得过去」用的是同一份几何、同一套 capsule 判交。
+        每 tick 建一次快照，整场蜥蜴共用同一份（「同一份世界快照」也就顺带保证了）。
         """
         segs = []
-        for pl in self.poles:
-            if getattr(pl, "state", None) != ItemState.FREE or getattr(pl, "virtual", False):
-                continue
-            segs.append((pl.ax, pl.ay, pl.bx, pl.by, 3.0))
+        try:
+            geom = TerrainQuery(self).geom
+        except Exception:
+            geom = None
+        if geom is not None and geom.obstacles:
+            for ob in geom.obstacles:
+                segs.append((ob.x0, ob.y0, ob.x1, ob.y1, max(ob.r, 1.0)))
+        else:
+            # 极端兜底（没有几何层时）：杆子照旧，至少不比旧版弱
+            for pl in self.poles:
+                if (getattr(pl, "state", None) != ItemState.FREE
+                        or getattr(pl, "virtual", False)):
+                    continue
+                segs.append((pl.ax, pl.ay, pl.bx, pl.by, 3.0))
         circles = [(lz.x, lz.y, lz.body_rad) for lz in self.lizards
                    if not lz.dead and lz.state == ItemState.FREE]
         for sc in self.scavengers:
