@@ -82,6 +82,11 @@ class StormCycle:
         self.fade_ticks = max(1, int(tuning.STORM_RAIN_FADE_TICKS))
         self.rise_ticks = max(1, int(tuning.STORM_RAIN_RISE_TICKS))
         self.gather_timeout = _minutes_to_ticks(tuning.STORM_GATHER_TIMEOUT_MINUTES)
+        # 同一场暴雨只允许结算一次死亡业力；记录暴雨开始前已经死亡的猫。
+        self._storm_dead_ids = set()
+        self._storm_penalty_applied = False
+        self._storm_watch_ready = False
+        self._storm_display_hold = 0
 
     # ── 时长 ──
     @property
@@ -125,6 +130,10 @@ class StormCycle:
         self.settle_t = 0
         self.rain_drive = 0.0
         self.pressure = 0.0
+        self._storm_dead_ids.clear()
+        self._storm_penalty_applied = False
+        self._storm_watch_ready = False
+        self._storm_display_hold = 0
 
     def trigger_storm(self):
         """环境面板手动放雨：立刻进入集合相位，优先级第一就是进庇护所。
@@ -142,6 +151,10 @@ class StormCycle:
         self.pressure = 1.0
         self.rain_drive = max(self.rain_drive, 1.0 / self.rise_ticks)
         self.cycle_id += 1          # 新一轮雨：window 会据此复位 first_drop_done
+        self._storm_dead_ids.clear()
+        self._storm_penalty_applied = False
+        self._storm_watch_ready = False
+        self._storm_display_hold = 0
         return True
 
     def cancel_manual(self):
@@ -154,7 +167,31 @@ class StormCycle:
         self.phase_t = 0
         self.settle_t = 0
         self.pressure = 0.0
+        self._storm_dead_ids.clear()
+        self._storm_penalty_applied = False
+        self._storm_watch_ready = False
+        self._storm_display_hold = 0
         return True
+
+    def _track_storm_deaths(self, pets):
+        """暴雨期间检测新死亡；同一场暴雨全局最多扣 1 级业力。"""
+        adults = [p for p in (pets or ()) if not getattr(p, "is_pup", False)]
+        if not self._storm_watch_ready:
+            self._storm_dead_ids = {
+                id(p) for p in adults
+                if getattr(getattr(p, "behavior", None), "is_truly_dead", lambda: False)()
+            }
+            self._storm_watch_ready = True
+            return
+        current = {
+            id(p) for p in adults
+            if getattr(getattr(p, "behavior", None), "is_truly_dead", lambda: False)()
+        }
+        newly_dead = current - self._storm_dead_ids
+        self._storm_dead_ids = current
+        if newly_dead and not self._storm_penalty_applied:
+            self.cycles_done = max(0, int(self.cycles_done) - 1)
+            self._storm_penalty_applied = True
 
     # ── 推进 ──
     def step(self, pets, shelters):
