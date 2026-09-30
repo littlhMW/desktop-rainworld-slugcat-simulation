@@ -208,9 +208,19 @@ def draw_lizard(p, atlas, lz, ts: float) -> None:
 
 
 def _draw_body(p, lz, spine, rads):
-    """躯干+尾：单条带，垂向渐变受光，尾梢按游戏曲线染尾色。"""
+    """躯干+尾：单条带，垂向渐变受光，尾梢按游戏曲线染尾色。
+
+    白蜥（``body_rgb`` 有值的个体色/迷彩品种）不叠受光阴影：原版这一类整只是
+    均匀的 palette 色，加渐变会把它从「背景色块」变成「有体积感的亮块」，反而
+    破坏迷彩效果。
+    """
     rgb = body_color(lz)
     path = _strip_path(spine, rads)
+    if lz.body_rgb is not None:           # 白蜥：纯色，无渐变无描边
+        p.setBrush(QColor(*rgb))
+        p.drawPath(path)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        return
     x0, y0 = spine[0]
     x1, y1 = spine[-1]
     dx, dy = x1 - x0, y1 - y0

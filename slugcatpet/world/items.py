@@ -20,6 +20,7 @@ from ..rendering.primitives import (blit, draw_fruit, draw_rope, draw_stone,
                                     draw_scavenger, draw_scavenger_spear,
                                     PEARL_ART_RAD)
 from .enums import ItemState
+from .terrain import TerrainQuery
 from ..behavior.board import board_for
 from ..behavior import events as EV
 from .slimemold import (SlimeMold, _dirvec as _slime_dir, _lerp_map as _slime_lerp_map,
@@ -1592,7 +1593,9 @@ class ItemInteractionMixin:
             targets.append((pet, pet.body.chunk0.x, pet.body.chunk0.y,
                             beh.is_dead(), beh.state == "Stunned"))
         blockers = self._lizard_blockers()
-        surfaces = self._climb_surfaces()
+        # 地形查询：这一帧一份，全场蜥蜴共用（地面 / 墙 / 竖杆 / 横杆 / 背景墙）
+        terrain = self.terrain = TerrainQuery(self)
+        surfaces = terrain.climb_surfaces()
         live = [lz for lz in self.lizards
                 if not lz.dead and lz.state == ItemState.FREE]
         # ① 感知：所有蜥蜴看同一份世界快照
@@ -1601,7 +1604,7 @@ class ItemInteractionMixin:
             lz.perceive(self._WL, self._HL, targets=targets, prey=prey,
                         threats=threats, others=others, pack=pack,
                         lizards=live, blockers=blockers,
-                        surfaces=surfaces, tick=tick)
+                        surfaces=surfaces, terrain=terrain, tick=tick)
         # ② 决策；黄蜥在这一步之后广播猎物情报，同伴按自己的序号去包夹
         for lz in self.lizards:
             lz.decide(self._WL, self._HL)
@@ -1628,28 +1631,12 @@ class ItemInteractionMixin:
         """这一帧可以攀爬的竖线：竖直杆 + 背景墙（非全屏窗口）的左右竖边。
 
         原版蜥蜴靠 Climb / Wall tile 上下移动；桌宠里这两种 tile 的替身就是
-        「立着的杆」和「别人窗口的侧边」。每 tick 建一次，整场蜥蜴共用同一份。
+        「立着的杆」和「别人窗口的侧边」。**定义只有一份**，在 world/terrain.py
+        的 TerrainQuery 里（和蛞蝓猫侧 planning/surface.py 读的是同一批几何），
+        这里退化成门面，供外部（测试 / 探针）调用。
         返回 [(x, y_top, y_bot, kind)]（y_top < y_bot）。
         """
-        out = []
-        for pl in self.poles:
-            if getattr(pl, "state", None) != ItemState.FREE:
-                continue
-            if getattr(pl, "virtual", False):
-                continue              # 鼠标那截虚杆：不算攀爬面
-            out.append((float(pl.x), min(pl.ay, pl.by), max(pl.ay, pl.by), "pole"))
-        walls = getattr(self, "wall_surfaces", None)
-        if walls:
-            for ws in walls:
-                for top, bot in ws.segments:      # 只发「露出来的」可见墙段
-                    out.append((float(ws.x), float(top), float(bot), "wall"))
-        else:                                     # 兜底：还没建 surface 时按整条边算
-            for rect in getattr(self, "walls", ()):
-                x0, y0, x1, y1 = rect[0], rect[1], rect[2], rect[3]
-                top, bot = min(y0, y1), max(y0, y1)
-                out.append((float(x0), top, bot, "wall"))
-                out.append((float(x1), top, bot, "wall"))
-        return tuple(out)
+        return TerrainQuery(self).climb_surfaces()
 
     def _lizard_blockers(self):
         """蜥蜴的视线遮挡物：杆子（线段）与体型够大的生物（圆）。
@@ -3129,6 +3116,30 @@ class ItemInteractionMixin:
         for sp in self.spears:
             sp._seg_new = False          # 这段位移判过了
 
+    def _step_spear_clash(self):
+        """空中两矛相撞：两边一起无效弹开（原版 Weapon 之间的碰撞）。
+
+        不插任何东西、不造成伤害，各自进翻滚继续飞 —— 用户点名的
+        「在空中与另一只矛相撞」这一条。
+        """
+        live = [sp for sp in self.spears
+                if sp.state == ItemState.FREE and sp.stuck_to is None
+                and not sp.stuck and (sp._thrown or sp._seg_new) and sp.moving()]
+        for i, a in enumerate(live):
+            for b in live[i + 1:]:
+                r = a.rad + b.rad + SPEAR_HIT_PAD
+                if _seg_dist(a.last_x, a.last_y, a.x, a.y, b.x, b.y) > r:
+                    continue
+                if _seg_dist(b.last_x, b.last_y, b.x, b.y, a.x, a.y) > r:
+                    continue
+                dx, dy = a.x - b.x, a.y - b.y
+                d = math.hypot(dx, dy) or 1.0
+                ux, uy = dx / d, dy / d
+                a.bounce_off(ux, uy)
+                b.bounce_off(-ux, -uy)
+                self._shake[0] += 0.5 * (1.0 if ux >= 0.0 else -1.0)
+                self._shake[1] += 0.3
+
     def _tick_spears(self):
         self._step_spear_drag()
         self._needle_thread_tick()
@@ -3158,6 +3169,7 @@ class ItemInteractionMixin:
                         and self._cursor_pin_try(sp)):
                     continue
             self._step_spear_hit()
+            self._step_spear_clash()
             self.spears = [sp for sp in self.spears if sp.state != ItemState.GONE]
         self._sync_spear_poles()
 

@@ -272,6 +272,21 @@ class Spear:
         self.last_y = self.y
         self.last_angle = self.angle_deg
 
+    def bounce_off(self, nx, ny, k: float = 0.45) -> None:
+        """撞到「无法刺入的东西」：沿法线原速反弹并进入翻滚（原版 Weapon.HitWall
+        的无效弹开）。两矛空中相撞也走这条：不插任何东西，各自弹开继续飞。
+        """
+        spd = math.hypot(self.vx, self.vy)
+        d = self.vx * nx + self.vy * ny
+        if d < 0.0:                              # 只在「正撞上去」时反射
+            self.vx -= 2.0 * d * nx
+            self.vy -= 2.0 * d * ny
+        self.vx *= k
+        self.vy *= k
+        if self._impact_cb is not None and spd > 0.0:
+            self._impact_cb(self, (nx, ny), spd, 1.0, 0.0, 0.0)
+        self._enter_free()
+
     def _flight_far(self) -> bool:
         """是否已飞出「平飞段」（出手后先抵消重力飞一段，之后自然下落）。"""
         return math.hypot(self.x - self._throw_x, self.y - self._throw_y) >= wp.SPEAR_FLIGHT_FLAT_PX
@@ -344,8 +359,10 @@ class Spear:
         # 刚出手/正在飞/这一帧刚插住的都算；躺地上漂移的、被捡起来的不算 → 不伤人。
         self._seg_new = bool(self._thrown) and self.moving()
         step_x, step_y = self.x - self.last_x, self.y - self.last_y   # 本 tick 落地方向
-        aabb_wall_collide(self, WL, HL, impact=self._impact_cb)
+        # 实心体扫掠必须在 aabb_wall_collide 之前算：它会把矛推出墙面，推出去以后
+        # 就再也扫不到「撞上了」这件事，会被当成撞屏幕边去走 stick()（把矛瞬移到边上）。
         solid_hit = _solid_sweep(self.last_x, self.last_y, self.x, self.y, self.rad)
+        aabb_wall_collide(self, WL, HL, impact=self._impact_cb)
         if solid_hit is not None:
             t, nx, ny = solid_hit
             self.x = self.last_x + (self.x - self.last_x) * max(0.0, t - 1e-4)
@@ -353,6 +370,11 @@ class Spear:
             self._contact_x = int(nx) if nx else 0
             self._contact_floor = ny > 0.0
             self._contact_ceil = ny < 0.0
+            if self._thrown:
+                # 庇护所墙这一类实心地形刺不进去：原版「击中了无法刺入的地形」→
+                # 无效弹开 + 翻滚，绝不去走 stick(WL)（那是屏幕左右边的插法）。
+                self.bounce_off(nx, ny)
+                return
         if self._thrown:
             if self._contact_floor:
                 # 撞到地面平面即停止物理（原地收势插地）；捡起时 unstuck() 恢复正常。

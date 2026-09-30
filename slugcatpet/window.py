@@ -1410,11 +1410,11 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         pet.behavior.kill()
 
     def _storm_kill_click(self, pos) -> bool:
-        """暴雨中点击庇护所外：随机杀死一只仍活着的成年蛞蝓猫。"""
+        """暴雨中点击：随机杀死一只仍活着的成年蛞蝓猫（**不管在不在庇护所**）。
+
+        只跟「暴雨在不在下 + 点杀开关开没开」有关；庇护所不免疫点击。
+        """
         if not self.storm.active or not self.storm_lethal_clicks:
-            return False
-        lx, ly = pos
-        if any(sh.contains(lx, ly) for sh in (self.shelters or ())):
             return False
         candidates = [
             p for p in self.pets
@@ -2194,7 +2194,11 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 continue
             if self._sheltered(getattr(e, "x", None), getattr(e, "y", None)):
                 continue
-            e.die()
+            # 蛞蝓猫之外：**留尸**（蜥蜴走 kill()，瘫软在地），不是直接 die() 抹掉。
+            # 暴雨只是杀死庇护所外的生物，不该让尸体当场消失。
+            k = getattr(e, "kill", None) or getattr(e, "die", None)
+            if k is not None:
+                k()
 
     def _storm_flood_tick(self):
         """积水：只改既有 water_target，不重做 flood 系统。"""

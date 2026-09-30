@@ -415,15 +415,18 @@ def flank_offset(lizard_id: int) -> float:
 class ApproachPlan:
     """「怎么过去」：直接冲 / 先走到起跳点再跳 / 原地伏击等它靠近。"""
 
-    __slots__ = ("mode", "target", "launch", "expires", "reason", "score")
+    __slots__ = ("mode", "target", "launch", "expires", "reason", "score", "climb")
 
-    def __init__(self, mode, target, launch=None, expires=0, reason="", score=0.0):
-        self.mode = mode              # direct / jump / lurk
+    def __init__(self, mode, target, launch=None, expires=0, reason="", score=0.0,
+                 climb=None):
+        self.mode = mode              # direct / jump / lurk / climb_wall / climb_pole
         self.target = target          # 这一帧要去的点
         self.launch = launch          # 起跳点（mode=jump 时）
         self.expires = int(expires)
         self.reason = reason
         self.score = float(score)
+        # mode=climb_* 时：(上墙点 x, 线顶, 线底, 向上=1/向下=-1)
+        self.climb = climb
 
     def alive(self, tick: int) -> bool:
         return int(tick) <= self.expires
@@ -448,9 +451,26 @@ def sim_arc(x0, y0, vx, vy, floor, gravity, air_friction, ticks=AIR_TICKS):
     return pts
 
 
+def _terrain_route(terrain, caps, my_x, my_y, prey_x, prey_y, tick, ttl):
+    """跳跃弧够不着时问地形层：有没有「走 → 上墙 / 上杆」这条正式路线。
+
+    反编译口径：原版蜥蜴拿到的是 LizardPather 给的 MovementConnection
+    （Floor→Wall→Climb），不是动作层临时找一根竖线。这里把同一条连接交给
+    Planner 产出 mode=climb_* 的路线，动作层只负责执行（走 / 贴墙 / 爬）。
+    """
+    if terrain is None or caps is None:
+        return None
+    hint = terrain.route_hint(my_x, my_y, prey_x, prey_y, caps)
+    if hint is None:
+        return None
+    mode, sx, top, bot, up, reason = hint
+    return ApproachPlan(mode, (sx, my_y), None, tick + ttl, reason, 0.0,
+                        climb=(sx, top, bot, up))
+
+
 def plan_approach(prey_x, prey_y, my_x, my_y, floor_y, WL, reach, prefs,
                   gravity, hop, air_friction, sprint=1.0, base_speed=4.0,
-                  tick=0, ttl=20):
+                  tick=0, ttl=20, terrain=None, caps=None):
     """给「想吃的那个东西」规划一条接近路线。
 
     同层直接冲（原版也是直线扑），够高就先找起跳点：遍历目标两侧的落点，
@@ -497,9 +517,15 @@ def plan_approach(prey_x, prey_y, my_x, my_y, floor_y, WL, reach, prefs,
             best, best_score = (px, floor_y), score
         lx += LAUNCH_STEP
     if best is None:
+        route = _terrain_route(terrain, caps, my_x, my_y, prey_x, prey_y, tick, ttl)
+        if route is not None:
+            return route
         return ApproachPlan("direct", (prey_x, prey_y), None, tick + ttl, "no arc")
     limit = JUMP_ACCEPT + JUMP_SLACK * prefs.get("jump", 0.55)
     if best_score > limit:
+        route = _terrain_route(terrain, caps, my_x, my_y, prey_x, prey_y, tick, ttl)
+        if route is not None:
+            return route
         return ApproachPlan("direct", (prey_x, prey_y), None, tick + ttl,
                             "arc too costly %.2f > %.2f" % (best_score, limit))
     return ApproachPlan("jump", best, best, tick + ttl, "launch search", best_score)

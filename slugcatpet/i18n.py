@@ -148,11 +148,11 @@ _STR = {
     "settings_storm_block_tip": {
         "zh": "开启后暴雨期间点击不穿透；底部任务栏区域不受影响。",
         "en": "On: storm clicks do not pass through; the bottom taskbar area is unaffected."},
-    "settings_storm_lethal":    {"zh": "暴雨中点击杀死庇护所外的猫",
-                                 "en": "Storm clicks kill a cat outside a shelter"},
+    "settings_storm_lethal":    {"zh": "暴雨中点击随机杀死一只猫",
+                                 "en": "Storm clicks kill a random cat"},
     "settings_storm_lethal_tip": {
-        "zh": "开启后，暴雨期间点击庇护所外会杀死一只猫。",
-        "en": "On: clicking outside a shelter during a storm kills a cat."},
+        "zh": "开启后，暴雨期间点击会随机杀死一只猫（不管它在不在庇护所里）。",
+        "en": "On: a click during a storm kills a random cat (shelter or not)."},
     "settings_storm_focus_minutes":   {"zh": "平静期（分钟）", "en": "Calm (minutes)"},
     "settings_storm_warning_minutes": {"zh": "征兆期（分钟）", "en": "Omen (minutes)"},
     "settings_storm_sleep_minutes":   {"zh": "暴雨期（分钟）", "en": "Storm (minutes)"},

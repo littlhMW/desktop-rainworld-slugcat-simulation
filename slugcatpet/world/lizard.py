@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from ..core.units import clampf, lerp, inv_lerp
 from ..behavior.relationship import Relations
 from .enums import ItemState
+from .terrain import Caps
 from . import lizard_cos
 from .lizard_ai import (CARRY_HURRY, DEN_ARRIVE_R, DOMINANCE_DEFER, WARN_R,
                         ApproachPlan, Memory, Observation, PackAlert, PreyTracker,
@@ -38,6 +39,10 @@ SEG_BEND_MAX = 2.4            # 单节最大弯曲位移（防甩飞）
 SEG_BEND_MIN_VX = 0.30        # 触发弯曲的最小速度变化
 GAIT_WAVE = 0.50              # 步态波浪幅度（躯干随步频起伏）
 SEG_CONN_HELD = 0.35          # 同上的杆长约束强度（原版 BodyChunkConnection 0.95 太硬，拖动时像根棍）
+SEG_SOLVER_ITER = 3           # 杆长约束迭代次数（原版 chunk 之间有质量互顶，等价于多次收敛）
+SEG_SMOOTH_ITER = 2           # 连接平滑迭代：把每节往相邻两节中点拉，消掉折角
+SEG_SMOOTH_K = 0.18           # 每次平滑拉过去的比例（太大就变成一根软绳）
+TAIL_LEN_BOOST = 1.12         # 尾节距整体略微加长（原版尾比躯干松弛，宠物里偏短）
 DEPTH_LERP = 0.1              # 原版 depthRotation 的插值系数（LizardGraphics.Update）
 HEAD_DEPTH_LERP = 0.5         # 原版 headDepthRotation 的插值系数
 TURN_LIFT = 6.0               # 转身时上半身支起的高度（原版靠头部绳索，这里直接抬驱动点）
@@ -773,7 +778,7 @@ class Lizard:
                  "depth_in", "rel",
                  "camo_target", "camo_color", "camo_mix",
                  "climb_kind", "climb_attached", "climb_side",
-                 "climb_top", "climb_bot")
+                 "climb_top", "climb_bot", "caps", "terrain")
 
     def __init__(self, x: float, y: float, breed: LizardBreed | None = None,
                  seed: int = 0, id: int = 0):
@@ -874,7 +879,8 @@ class Lizard:
             prev_x, prev_y, prev_d = segs[-1].x, segs[-1].y, self.spacing
         for j in range(n_tail):
             rad = 8.0 * b.body_size_fac * (n_tail - j) / float(n_tail) * BODY_SCALE
-            conn = ((16.0 if j == 0 else 8.0) * BODY_SCALE + rad) / 2.0 * b.tail_len_fac
+            conn = (((16.0 if j == 0 else 8.0) * BODY_SCALE + rad) / 2.0
+                    * b.tail_len_fac * TAIL_LEN_BOOST)
             segs.append(_Seg(prev_x - conn, prev_y, rad, conn, SEG_STIFF_TAIL, True))
             prev_x, prev_y, prev_d = segs[-1].x, segs[-1].y, conn
         self.seg = segs
@@ -919,6 +925,15 @@ class Lizard:
         self.climb_top = None         # 当前这条线的上下端（到头上/底下就脱墙）
         self.climb_bot = None
         self.climb_surfaces = ()      # 这一帧可攀爬的面 [(x, y_top, y_bot, kind)]
+        # 地形能力表（原版 CreatureTemplate / LizardBreedParams）：
+        # 地形图全场共用，但「这张图里我能用哪些连接」逐品种过滤。
+        self.caps = Caps(
+            walk=True, jump=True,
+            wall_climb=bool(b.climb_wall and b.wall_attach),
+            pole_climb=bool(b.climb_pole),
+            wall_jump=bool(getattr(b, "wall_jump", False)),
+            climb_reach=CLIMB_WALK_R)
+        self.terrain = None           # 这一帧的世界地形查询（items 每 tick 换一份）
         # 清场认领：哪只猫认领了这具尸体（尸体搬运只允许一只猫执行）
         self.hauler = None
 
@@ -1408,7 +1423,7 @@ class Lizard:
     # ── AI ──
     # ══ 第一层：感知（同一份世界快照，不做任何决策）══
     def perceive(self, WL, HL, targets=(), prey=(), threats=(), others=(), pack=(),
-                 lizards=(), blockers=(), surfaces=(), tick=None) -> dict:
+                 lizards=(), blockers=(), surfaces=(), terrain=None, tick=None) -> dict:
         """这一 tick 看见 / 听见什么。
 
         每条记录都带上距离、关系权重、视野锥得分、**可见性**（锥内且没被挡）、
@@ -1419,6 +1434,8 @@ class Lizard:
             self._tick = int(tick)
         self._blockers = blockers or ()
         self.climb_surfaces = tuple(surfaces or ())   # 这一帧可攀爬的竖线
+        if terrain is not None:
+            self.terrain = terrain                    # 全场共用的一份地形快照
         self.peers = tuple(lizards)
         cats, preys, thrs, rivs, pk = [], [], [], [], []
         for row in targets:
@@ -1658,6 +1675,21 @@ class Lizard:
         self._climb_release()
         if o is None or self.dead:
             return
+        plan = self.plan
+        if (plan is not None and plan.alive(self._tick)
+                and plan.mode in ("climb_wall", "climb_pole")):
+            climb = getattr(plan, "climb", None)
+            if climb is not None:
+                # Planner（Terrain ↔ Capability 过滤）选出来的正式路线：
+                # 动作层不再自己挑线，只承接「去哪个上墙点 / 往哪个方向爬」。
+                sx, top, bot, up = climb
+                self.climb_x = float(sx)
+                self.climb_dir = 1 if up else -1
+                self.climb_kind = "wall" if plan.mode == "climb_wall" else "pole"
+                self.climb_top = float(top)
+                self.climb_bot = float(bot)
+                self.climb_attached = False
+                return
         up = o.y < self.y - CLIMB_MIN_DY
         down = o.y > self.y + CLIMB_MIN_DY
         if not (up or down):
@@ -1710,7 +1742,7 @@ class Lizard:
         return plan_approach(o.x, o.y, self.x, self.y, floor, WL, self._bite_reach(),
                              prefs_for(self.breed.key), GRAVITY, hop, AIR_FRICTION,
                              sprint=self.sprint, base_speed=self.breed.base_speed,
-                             tick=self._tick)
+                             tick=self._tick, terrain=self.terrain, caps=self.caps)
 
     def _approach_tick(self, o, WL, HL) -> None:
         """去起跳点 → 起跳 → 空中继续修正（旧版缺的就是「去起跳点」这一步）。"""
@@ -1724,6 +1756,12 @@ class Lizard:
             self._lunge_toward(o, WL, HL)
             return
         self.look_at = (o.x, o.y)
+        if plan.mode in ("climb_wall", "climb_pole"):
+            # Planner 给的是地形路线：走到上墙点，剩下的交给 _step_wall 的附着物理
+            wx = plan.target[0]
+            want = clampf((wx - self.x) * 0.08, -2.6, 2.6)
+            self.vx += (want - self.vx) * WALK_TURN
+            return
         lx = plan.launch[0] if plan.launch else self.x
         if abs(self.x - lx) <= 10.0 and self._contact_floor and self.hop_cd <= 0:
             self.vy = self._hop_vy()
@@ -2776,7 +2814,7 @@ class Lizard:
             seed_x, seed_y = -self.chain_dir, 0.0
         sn = math.hypot(seed_x, seed_y) or 1.0
         seed_x, seed_y = seed_x / sn, seed_y / sn
-        for _ in range(2):
+        for _ in range(SEG_SOLVER_ITER):
             prev_x, prev_y = anc_x, anc_y
             dir_x, dir_y = seed_x, seed_y
             for s in self.seg:
@@ -2795,6 +2833,25 @@ class Lizard:
                 if s.y > lim:
                     s.y = lim
                 prev_x, prev_y = s.x, s.y
+        # ②b 连接平滑：原版 chunk 之间有质量互顶，链子不会出现尖角；杆长约束
+        #     只保证「相邻节距离对」，留下的小折角在这里抹平（拖动时不抹，保住手感）。
+        if not held:
+            pts = [(anc_x, anc_y)] + [(s.x, s.y) for s in self.seg]
+            for _ in range(SEG_SMOOTH_ITER):
+                nxt = [pts[0]]
+                for i in range(1, len(pts) - 1):
+                    ox_, oy_ = pts[i]
+                    ax_, ay_ = pts[i - 1]
+                    bx_, by_ = pts[i + 1]
+                    nxt.append((ox_ + (0.5 * (ax_ + bx_) - ox_) * SEG_SMOOTH_K,
+                                oy_ + (0.5 * (ay_ + by_) - oy_) * SEG_SMOOTH_K))
+                nxt.append(pts[-1])
+                pts = nxt
+            for s, (qx, qy) in zip(self.seg, pts[1:]):
+                s.x, s.y = qx, qy
+                lim = HL - s.rad * (TAIL_SINK_FAC if s.tail else BODY_STAND_FAC)
+                if s.y > lim:
+                    s.y = lim
         # ③ 转向惯性：速度突变（转身/扑出）时身体往转向侧甩 ——
         #    头一节弯得最多、后面依次减少、尾巴最后才跟过来（原版靠 chunk 质量惯性）。
         turn = self.vx - self._last_vx
