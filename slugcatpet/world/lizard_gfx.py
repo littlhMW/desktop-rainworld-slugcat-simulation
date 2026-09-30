@@ -125,10 +125,13 @@ def _strip_path(pts, halfw) -> QPainterPath:
         left.append(QPointF(cx + nx * hw, cy + ny * hw))
         right.append(QPointF(cx - nx * hw, cy - ny * hw))
     path.moveTo(left[0])
-    for q in left[1:]:
-        path.lineTo(q)
-    for q in reversed(right):
-        path.lineTo(q)
+    for i in range(1, len(left)):
+        p0 = left[i-1]; p1 = left[i]
+        mid = QPointF((p0.x()+p1.x())*0.5,(p0.y()+p1.y())*0.5)
+        path.quadTo(p0, mid)
+    path.lineTo(left[-1])
+    for i in range(len(right)-1,-1,-1):
+        path.lineTo(right[i])
     path.closeSubpath()
     path.setFillRule(Qt.FillRule.WindingFill)
     return path
