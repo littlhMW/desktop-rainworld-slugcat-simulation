@@ -15,8 +15,21 @@ from .pixelmode import aa_hint, pen_width
 
 class GraphicsDrawMixin:
     def draw_sprites(self, p, atlas, timeStacker=1.0):
-        """按 z 序绘制全部 sprite。幼崽按原版规则只对 BodyA 缩 Y。"""
-        self._draw_sprites_body(p, atlas, timeStacker)
+        """按 z 序绘制全部 sprite（幼崽按 draw_scale 整只缩小）。"""
+        s = float(getattr(self, "draw_scale", 1.0) or 1.0)
+        if s == 1.0:
+            self._draw_sprites_body(p, atlas, timeStacker)
+            return
+        # 以「当前脚下那块地」为支点整只缩放：脚不动，身高按比例缩短。
+        px, py = self.draw1[0], self.body.support_y()
+        p.save()
+        p.translate(px, py)
+        p.scale(s, s)
+        p.translate(-px, -py)
+        try:
+            self._draw_sprites_body(p, atlas, timeStacker)
+        finally:
+            p.restore()
 
     def _draw_sprites_body(self, p, atlas, timeStacker=1.0):
         """按 z 序绘制全部 sprite。"""
