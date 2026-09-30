@@ -98,10 +98,14 @@ def ring_lit(info) -> int:
         remain = float((info or {}).get("ring_remain") or 0.0)
     except (TypeError, ValueError):
         return 0
-    if total <= 0.0 or remain <= 0.0:
+    if total <= 0.0:
         return 0
-    r = min(1.0, remain / total)
-    return max(1, min(DOTS, int(math.ceil(r * DOTS - 1e-6))))
+    remain = max(0.0, min(total, remain))
+    progress = 1.0 - remain / total
+    if (info or {}).get("mode") == "storm":
+        return max(0, min(DOTS, int(math.ceil(progress * DOTS - 1e-6))))
+    consumed = max(0, min(DOTS, int(math.floor(progress * DOTS + 1e-6))))
+    return DOTS - consumed
 
 
 def pip_geometry(info):
@@ -179,7 +183,8 @@ def _draw_ring(p, info) -> None:
     """
     lit = ring_lit(info)
     step = 360.0 / float(DOTS)
-    hollow_from = DOTS - lit          # 第几颗开始已消耗
+    hollow_from = DOTS - lit
+    storm_mode = (info or {}).get("mode") == "storm"
     hollow_pen = QPen(_INK)
     hollow_pen.setWidthF(DOT_PEN)
     p.save()
@@ -188,7 +193,8 @@ def _draw_ring(p, info) -> None:
     for i in range(DOTS):
         a = math.radians(DOT_START_DEG + i * step)   # y 向下 = 顺时针
         c = QPointF(RING_CX + RING_R * math.cos(a), RING_CY + RING_R * math.sin(a))
-        if i >= hollow_from:
+        solid = (i < lit) if storm_mode else (i >= hollow_from)
+        if solid:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(_INK)
             p.drawEllipse(c, DOT_R, DOT_R)
