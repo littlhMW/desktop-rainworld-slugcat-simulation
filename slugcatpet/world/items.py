@@ -1936,13 +1936,10 @@ class ItemInteractionMixin:
                       "_dragged_karmaflower"):
             if getattr(self, attr, None) is obj:
                 setattr(self, attr, None)
-        for pet in self.pets:                  # 猫手里/嘴里的引用一并放开
-            b = pet.body
-            for slot, rel in (("carried_fruit", "release_fruit"),
-                              ("carried_stone", "release_stone"),
-                              ("carried_spear", "release_spear")):
-                if getattr(b, slot, None) is obj:
-                    getattr(b, rel)()
+        for pet in self.pets:                  # 猫手里 / 背上 / 嘴里的引用一并放开
+            release = getattr(pet.body, "release_object", None)
+            if release is not None:
+                release(obj)
         self.world_version += 1
         self.geometry_version += 1
         self.update()
@@ -2032,9 +2029,6 @@ class ItemInteractionMixin:
 
     def _draw_place_hint(self, p):
         from PySide6.QtGui import QPen
-
-        if self._place_kind == "shelter":
-            return                        # 只留光标：拖出来的矩形不预览
 
         if self._place_kind == "erase":
             self._draw_erase_hint(p)

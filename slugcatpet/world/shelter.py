@@ -11,8 +11,9 @@
   关门时把 ``closeTiles[n] = 入口tile + dir*(n+2)``（n=0..3）这 4 个 tile 变成
   Solid —— 也就是**门封住的是走廊**，不是 chamber 的墙。
 * 墙体不是贴图：原版墙就是 ``Room.Tile.Terrain == Solid``，由房间 tile 渲染器
-  用材质/调色板画出来；庇护所**没有**"墙的 PNG"。所以桌宠这边墙用实心矩形画，
-  门的 42 张 sprite 才是真贴图（见 ``rendering/shelter_gate.py``）。
+  用材质/调色板画出来；庇护所**没有**"墙的 PNG"。所以桌宠这边墙用实心矩形画；
+  入口就是**一格口子**（原版 42 张 ``ShelterGate_*`` 大门动画暂时不渲染，素材
+  仍留在 ``rendering/shelter_gate.py`` 备查），开门时留空、关门时从下往上封死。
 * 门开合：``Close()`` → ``closeSpeed = 0.003125``（320 tick 关到底）；
   开场 ``openUpTicks = 350``（350 tick 开到底）。
 
@@ -210,9 +211,9 @@ class Shelter:
     """一间庇护所：``(x, y, w, h)`` 就是真矩形，底边 ``y + h`` 是它自己的地板（地板上铺一条底墙）。"""
 
     MIN_W = 60.0
-    MAX_W = 760.0
+    MAX_W = 4096.0      # 上限只做防呆：真实大小由拖出来的矩形决定（窗口层已夹到画布内）
     MIN_H = 44.0
-    MAX_H = 340.0
+    MAX_H = 4096.0
 
     def __init__(self, x, y, w, h, ground_y=None, WL=0.0, seed=0, door_ticks=None,
                  template=None, door_side=None):
@@ -464,16 +465,6 @@ class Shelter:
             if self.close_fac <= 0.0:
                 self.door_state = OPEN
 
-    def panel_rects(self):
-        """两块门板的当前矩形 (left, right)。开着时缩在门框两侧，关时合成一扇。"""
-        dx0, dy0, dx1, dy1 = self.entrance
-        pw = (dx1 - dx0) * 0.5
-        dcx = (dx0 + dx1) * 0.5
-        t = ease(self.close_fac)
-        lx = _lerp(dx0 - pw, dcx - pw, t)
-        rx = _lerp(dx1, dcx, t)
-        return ((lx, dy0, lx + pw, dy1), (rx, dy0, rx + pw, dy1))
-
     # ── 绘制：拆三层（后墙 / 生物 / 前墙+门） ──
     def draw(self, p):
         """兼容旧接口：整间一次画完（= back + front）。"""
@@ -500,19 +491,19 @@ class Shelter:
             p.drawRect(QRectF(dx0, dy0, dx1 - dx0, dy1 - dy0))
 
     def draw_front(self, p, atlas=None):
-        """猫身前：原版 ShelterGate_* 大门。图集缺失时退回一块纯黑门板。"""
-        if atlas is not None:
-            from ..rendering import shelter_gate
-            if shelter_gate.draw_door(p, atlas, self):
-                return
+        """猫身前：入口那一格口子。开着留空，关的时候从下往上封，关满即封死。"""
+        if self.close_fac <= 0.0:
+            return
         from PySide6.QtGui import QColor
         from PySide6.QtCore import QRectF, Qt
 
+        dx0, dy0, dx1, dy1 = self.entrance
+        fh = (dy1 - dy0) * ease(self.close_fac)
+        if fh <= 0.5:
+            return
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(0, 0, 0, 255))
-        for (px0, py0, px1, py1) in self.panel_rects():
-            if px1 - px0 > 0.5:
-                p.drawRect(QRectF(px0, py0, px1 - px0, py1 - py0))
+        p.drawRect(QRectF(dx0, dy1 - fh, dx1 - dx0, fh))
 
     # ── 存档 ──
     def to_dict(self):

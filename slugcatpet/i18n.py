@@ -57,9 +57,9 @@ _STR = {
     "tip_erase":   {"zh": "删除模式（点谁删谁）", "en": "Erase mode (click to delete)"},
 
     # —— 左下角暴雨 HUD ——
-    "hud_rain_cycle":  {"zh": "雨循环", "en": "Rain Cycle"},
-    "hud_rain":        {"zh": "降雨", "en": "Rain"},
-    "hud_hibernation": {"zh": "雨眠", "en": "Rain sleep"},
+    "hud_rain_cycle":  {"zh": "平静期", "en": "Calm"},
+    "hud_rain":        {"zh": "征兆期", "en": "Omen"},
+    "hud_hibernation": {"zh": "暴雨期", "en": "Storm"},
     "hud_starvation":  {"zh": "饥饿", "en": "Starvation"},
 
 
@@ -139,9 +139,9 @@ _STR = {
     # —— settings：雨循环 ——
     "settings_storm_section":   {"zh": "雨循环", "en": "Rain cycle"},
     "settings_storm_enable":    {"zh": "开启雨循环", "en": "Enable rain cycle"},
-    "settings_storm_focus_minutes":   {"zh": "专注（分钟）", "en": "Focus (minutes)"},
-    "settings_storm_warning_minutes": {"zh": "预警（分钟）", "en": "Warning (minutes)"},
-    "settings_storm_sleep_minutes":   {"zh": "睡眠（分钟）", "en": "Sleep (minutes)"},
+    "settings_storm_focus_minutes":   {"zh": "平静期（分钟）", "en": "Calm (minutes)"},
+    "settings_storm_warning_minutes": {"zh": "征兆期（分钟）", "en": "Omen (minutes)"},
+    "settings_storm_sleep_minutes":   {"zh": "暴雨期（分钟）", "en": "Storm (minutes)"},
     "settings_storm_apply":     {"zh": "应用时长", "en": "Apply durations"},
     "settings_show_hud":     {"zh": "显示状态面板", "en": "Show status panel"},
     "settings_pick_title":   {"zh": "选择皮", "en": "Pick a variant"},

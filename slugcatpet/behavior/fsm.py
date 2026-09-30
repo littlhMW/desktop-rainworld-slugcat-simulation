@@ -3103,7 +3103,7 @@ class BehaviorFSM:
         if self._shake_cd > 0:
             self._shake_cd -= 1
         ch = self.grab.chunk
-        if ch is None or not self.body.hand_of:
+        if ch is None or not self.body.hand_items():
             self._shake_flips = 0
             self._shake_hold = 0
             return
@@ -3133,10 +3133,12 @@ class BehaviorFSM:
     def _shake_drop_one(self, ch):
         """甩掉优先级最低的一件，并带走摆动速度（同原版丢物品）。"""
         b = self.body
-        kind = min(b.hand_of, key=lambda k: b.ITEM_PRIO.get(k, 0))
-        item = {"fruit": b.carried_fruit, "stone": b.carried_stone,
-                "spear": b.carried_spear}.get(kind)
-        b._release_item(kind, to_free=True)
+        items = b.hand_items()               # 两只手各一支矛也算两件
+        if not items:
+            return
+        side = min(items, key=lambda s: b.ITEM_PRIO.get(b.held_kind(s), 0))
+        item = items[side]
+        b._release_item_at(side, to_free=True)
         if item is not None:
             item.vx = ch.vx * tuning.DRAG_SHAKE_THROW
             item.vy = ch.vy * tuning.DRAG_SHAKE_THROW - 1.0
@@ -3148,9 +3150,7 @@ class BehaviorFSM:
         b = self.body
         if self._drag_cd > 0:
             self._drag_cd -= 1
-        free_hands = (b.carried_fruit is None and b.carried_stone is None
-                      and b.carried_spear is None)
-        if free_hands and self._drag_cd <= 0 and self._drag_grab_item():
+        if b.has_free_hand() and self._drag_cd <= 0 and self._drag_grab_item():
             self._drag_cd = tuning.DRAG_REACH_CD
             return
         p = self._drag_reach_pole()
@@ -5009,14 +5009,14 @@ class BehaviorFSM:
         return int(HUNT_CD * (1.4 - 0.8 * self._meat_zeal()))
 
     def _flyhunt_release(self):
-        """收尾：松手、清瞄准、清控制器。"""
-        for o in (self.body.carried_spear, self.body.carried_stone):
-            if o is not None and o.state == "carried":
-                o.state = "free"
-        if self.body.carried_spear is not None:
-            self.body.release_spear(to_free=True)
-        if self.body.carried_stone is not None:
-            self.body.release_stone(to_free=True)
+        """收尾：松手、清瞄准、清控制器（矛大师自己尾巴长的活白针继续拿着）。"""
+        b = self.body
+        if b.carried_spear is not None and not self._own_needle(b.carried_spear):
+            b.carried_spear.state = "free"
+            b.release_spear(to_free=True)
+        if b.carried_stone is not None:
+            b.carried_stone.state = "free"
+            b.release_stone(to_free=True)
         self.body.stop_walk()
         self.flyhunt = None
         self.body.arm_aim["l"] = None
@@ -6125,7 +6125,8 @@ class BehaviorFSM:
             self._social_left = tuning.REVIVE_APPROACH_TICKS
         elif kind == "protest":
             self._social_left = tuning.PROTEST_TICKS
-            b.drop_all()             # 丢掉手上的东西，腾出手来扒拉
+            if not self._needle_only():
+                b.drop_all()         # 丢掉手上的东西，腾出手来扒拉
         elif kind == "gift":
             self._social_left = tuning.GIFT_TRY_TICKS   # 送礼：磨到交出去或放弃
         elif kind == "pat":
@@ -7092,7 +7093,7 @@ class BehaviorFSM:
                 b.stop_walk()
                 side = b.pick_hand("spear")
                 if side is None:                 # 手里攥着果子之类：腾出手再拔
-                    b.drop_all()
+                    b.drop_one_item()
                     side = b.pick_hand("spear")
                     if side is None:
                         self._fight_end()
@@ -7119,7 +7120,7 @@ class BehaviorFSM:
                 b.stop_walk()
                 side = b.pick_hand("spear")
                 if side is None:                 # 手里攥着果子之类：腾出手再捡
-                    b.drop_all()
+                    b.drop_one_item()
                     side = b.pick_hand("spear")
                     if side is None:
                         self._fight_end()
@@ -7499,23 +7500,29 @@ class BehaviorFSM:
         self._catch_cd = tuning.CATCH_RETRY
 
     def _needle_slot(self):
-        """这根尾针长好后接在哪：``"hand"`` / ``"back"`` / ``None``＝真的没位置。
+        """这根尾针长好后落在哪：``"r"`` / ``"l"``（那只手空着）/ ``"back"``
+        （两只手都攥着自己的活针 → 先挪一支到背上腾出手）/ ``None``＝真没位置。
 
-        矛大师永远优先自己的活针（``Spear.spearmasterNeedle``）：手里或背上占着的
-        如果「不是自己连线的活针」，就会被顶掉让位。手和背都已经是自己的活针时
-        不再长针。
+        原版 Player.cs:9993 的长针条件就是「至少一只手空着」
+        （``grasps[0] == null || grasps[1] == null``），成针时 10053 交给
+        ``FreeHand()`` 那只手；背上那格（``spearOnBack.spear``）另算 —— 所以
+        「两手各一支 + 背上一支」才是这只猫的上限。
 
-        旧实现只数「手里/背上已连线的活针」，于是「手里握着一根普通矛（或一根
-        已断线的死针）、背上又插着一根」时，每长一根都无处安放，立刻掉在地上，
-        而且不走冷却 —— 表现就是无限刷白针。这里把「有地方接」提前判掉。
+        矛大师永远优先自己的活针（``Spear.spearmasterNeedle``）：那只手上占着的
+        如果「不是自己连线的活针」就顶掉让位。旧实现是「两只手都攥着矛就不再长」，
+        于是手里一根、背上又一根时每根新针都无处安放、直接掉在地上。
         """
         b = self.body
-        hand, back = b.carried_spear, b.back_spear
-        if hand is None or not self._own_needle(hand):
-            return "hand"                # 手空 / 手里不是自己的活针：拿到手里
-        if back is None or not self._own_needle(back):
-            return "back"                # 手里已是自己的活针：第二根背到背上
-        return None                      # 手 + 背都是自己的活针
+        free = b.free_hand()
+        if free is not None:
+            return free                  # 有手空着：直接进那只手（原版 FreeHand()）
+        if self._own_needle_count() >= tuning.SPEARMASTER_NEEDLE_HOLD:
+            return None                  # 两手 + 背上都是自己的活针：不再长
+        if not any(self._own_needle(sp) for sp in b.hand_spears.values()):
+            return None                  # 两只手里都不是自己的活针：不让位
+        if self._own_needle(b.back_spear):
+            return None                  # 背上已经是自己的活针
+        return "back"
 
     def _tail_needle_tick(self):
         """矛大师：尾巴自己长针（原版 SpearMaster 的独占能力）。
@@ -7531,9 +7538,9 @@ class BehaviorFSM:
             self._tail_needle_grow()
             return
         if self._own_needle_count() >= tuning.SPEARMASTER_NEEDLE_HOLD:
-            return                       # 双手都有白针了：先不长下一根
+            return                       # 两手 + 背上都是白针了：先不长下一根
         if self._needle_slot() is None:
-            return                       # 手和背都被自己的活针占着：没地方接新针
+            return                       # 手上没地方接新针：先不长
         if self._tail_needle_cd > 0:
             self._tail_needle_cd -= 1
             return
@@ -7613,6 +7620,16 @@ class BehaviorFSM:
             # 长到一半手被占死（正好抓到东西）：按原版缩回，别把针丢在地上
             self._tail_needle_cd = tuning.TAIL_NEEDLE_CD
             return
+        if slot == "back":
+            # 两手都攥着自己的活针：先把一支挪到背上腾出手（原版 SpearToBack），
+            # 新针还是落进腾出来的那只手。
+            side = next((s for s in ("r", "l")
+                         if self._own_needle(b.hand_spears.get(s))), None)
+            if side is None:
+                self._tail_needle_cd = tuning.TAIL_NEEDLE_CD
+                return
+            b.put_spear_on_back(b.hand_spears[side])
+            slot = side
         self._tail_needle_burst()          # 拔出那一瞬的溅射（Player.cs:10025-10035）
         tx, ty = b.chunk1.x, b.chunk1.y
         segs = getattr(getattr(self.win, "tail", None), "segs", None)
@@ -7627,16 +7644,13 @@ class BehaviorFSM:
         win._spear_seed += 1
         win.spears.append(sp)
         win.world_version += 1
-        if slot == "hand":
-            if b.carried_spear is not None and not self._own_needle(b.carried_spear):
-                b.release_spear(to_free=True)    # 手里不是自己的活针：放下腾出手
-            if not b.grab_spear(sp):
-                win.spears.remove(sp)             # 真接不住就别丢一地
-                win.world_version += 1
-                self._tail_needle_cd = tuning.TAIL_NEEDLE_CD
-                return
-        else:
-            b.put_spear_on_back(sp)      # 手上已经有自己的针：第二根背到背上
+        if b.held_kind(slot) is not None and not self._own_needle(b.held_kind(slot)):
+            b._release_item_at(slot, to_free=True)   # 那只手不是自己的活针：放下腾出手
+        if not b.grab_spear(sp, side=slot):
+            win.spears.remove(sp)             # 真接不住就别丢一地
+            win.world_version += 1
+            self._tail_needle_cd = tuning.TAIL_NEEDLE_CD
+            return
         self._tail_needle_cd = tuning.TAIL_NEEDLE_CD
         self.gfx.blink = 12
 
@@ -7739,9 +7753,9 @@ class BehaviorFSM:
                 and bool(self.win.cat.tuning.get("tail_needle")))
 
     def _own_needle_count(self) -> int:
-        """手握 + 背背「还连着的白针」有几根（矛大师尽量保持双手各一根）。"""
+        """「两手 + 背上」还连着的白针有几根（上限＝两只手各一支 + 背上一支）。"""
         b = self.body
-        return sum(1 for sp in (b.carried_spear, b.back_spear)
+        return sum(1 for sp in list(b.hand_spears.values()) + [b.back_spear]
                    if self._own_needle(sp))
 
     def _itemplay_fling(self):

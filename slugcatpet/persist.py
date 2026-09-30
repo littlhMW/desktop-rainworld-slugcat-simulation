@@ -121,6 +121,12 @@ def snapshot(win) -> dict:
         sp = getattr(b, "carried_spear", None)
         if sp is not None and id(sp) in idx:
             held["spear"] = idx[id(sp)]
+        hands = {}
+        for side, hs in (getattr(b, "hand_spears", None) or {}).items():
+            if hs is not None and id(hs) in idx:
+                hands[side] = idx[id(hs)]        # 两手各一支矛时两支都要记
+        if hands:
+            held["hands"] = hands
         bk = getattr(b, "back_spear", None)
         if bk is not None and id(bk) in idx:
             held["back"] = idx[id(bk)]
@@ -245,6 +251,26 @@ def _rehand(body, row, made):
             return objs[i]
         return None
 
+    def _pick_i(kind, i):
+        objs = made.get(kind) or []
+        i = int(i)
+        return objs[i] if 0 <= i < len(objs) else None
+
+    hands = row.get("hands")
+    has_hands = isinstance(hands, dict) and bool(hands)
+    if has_hands:
+        for side in ("r", "l"):
+            got = hands.get(side)
+            if not isinstance(got, (list, tuple)) or len(got) != 2:
+                continue
+            hs = _pick_i("spear", got[1])
+            if hs is None:
+                continue
+            try:
+                body.grab_spear(hs, side=side)
+            except Exception:
+                pass
+
     fr = _pick("fruit", "fruit")
     if fr is not None:
         try:
@@ -259,12 +285,13 @@ def _rehand(body, row, made):
                 grab(st)
         except Exception:
             pass
-    sp = _pick("spear", "spear")
-    if sp is not None:
-        try:
-            body.grab_spear(sp)
-        except Exception:
-            pass
+    if not has_hands:                    # 旧档（只有一支矛）走这条；新档上面已经接过了
+        sp = _pick("spear", "spear")
+        if sp is not None:
+            try:
+                body.grab_spear(sp)
+            except Exception:
+                pass
     bk = _pick("spear", "back")
     if bk is not None:
         try:

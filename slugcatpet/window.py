@@ -1421,15 +1421,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         return True
 
     def _drop_carried(self, pet):
-        """持有物原地转 free。"""
-        b = pet.body
-        if b.carried_fruit is not None:
-            b.carried_fruit.stalk = None
-            b.carried_fruit.state = "free"
-            b.carried_fruit.held_by_hand = None
-            b.release_fruit()
-        if b.carried_stone is not None:
-            b.release_stone(to_free=True)
+        """持有物原地转 free —— 果子 / 石头 / 两手各一支的矛 / 背上的矛全都算。"""
+        pet.body.drop_all()
 
     def _after_pets_changed(self):
         hud = self._hud
@@ -2150,8 +2143,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         cx, cy = cur
         x0, x1 = min(sx, cx), max(sx, cx)
         y0, y1 = min(sy, cy), max(sy, cy)
-        return Shelter(x0, y0, max(x1 - x0, Shelter.MIN_W),
-                       max(y1 - y0, Shelter.MIN_H), None, self._WL,
+        # 拖多大就是多大（不再被 760×340 裁掉），只夹到画布内并保底
+        dw = min(max(x1 - x0, Shelter.MIN_W), max(Shelter.MIN_W, self._WL))
+        dh = min(max(y1 - y0, Shelter.MIN_H), max(Shelter.MIN_H, self._HL))
+        return Shelter(x0, y0, dw, dh, None, self._WL,
                        seed=self._shelter_seed, door_ticks=ticks, template=tpl)
 
     def _finish_shelter_place(self):

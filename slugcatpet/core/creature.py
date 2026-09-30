@@ -240,8 +240,11 @@ class SlugcatBody:
 
         self.impact_cb = None           # 地形撞击回调，None=不触发
         self.carried_fruit = None
-        self.hand_of = {}           # 物品种类 -> 手(l/r)
+        self.hand_of = {}           # 物品种类 -> 「主手」(l/r)；一只手一件，矛可以两只手各一支
         self.carried_stone = None
+        # 双手就是两个容器（原版 Player.grasps[2]）。矛是唯一能同种占两格的物件，
+        # 所以单独记 side -> spear；carried_spear 只是 hand_of["spear"] 那只手的快照。
+        self.hand_spears = {}
         self.carried_spear = None
         self.back_spear = None        # 背后的备用矛（原版 Player.spearOnBack）
         self.stun = 0
@@ -624,8 +627,9 @@ class SlugcatBody:
             old.held_by = None
             old.stuck = False
             old.stuck_to = None
-        if self.carried_spear is spear:   # 从手里挪到背上：手要腾出来，
-            self.release_spear(to_free=False)   # 不然同一根矛会占两个槽
+        side = self.spear_side(spear)
+        if side is not None:              # 从手里挪到背上：那只手要腾出来，
+            self.release_spear(to_free=False, side=side)   # 不然同一根矛会占两个槽
         self.back_spear = spear
         spear.state = ItemState.CARRIED
         spear.held_by = self
@@ -651,8 +655,19 @@ class SlugcatBody:
             self.back_spear.state = ItemState.FREE
             self.back_spear.held_by = None
             self.back_spear = None
+        for side in list(self.hand_spears):
+            self.release_spear(to_free=True, side=side)
         for kind in list(self.hand_of):
             self._release_item(kind, to_free=True)
+
+    def drop_one_item(self, to_free=True):
+        """放掉手上优先级最低的一件（两只手都攥着同级东西时用来腾地方）。返回那只手。"""
+        items = self.hand_items()
+        if not items:
+            return None
+        side = min(items, key=lambda s: self.ITEM_PRIO.get(self.held_kind(s), 0))
+        self._release_item_at(side, to_free=to_free)
+        return side
 
     def set_control_input(self, pkg):
         """push 当前帧进控制输入历史环。"""
@@ -1578,16 +1593,73 @@ class SlugcatBody:
     # --- 双手：每只手最多拿一件；优先级更高的东西会顶掉手里的低优先级物品 ---
     ITEM_PRIO = {"stone": 1, "fruit": 2, "spear": 3}
 
+    def _carried_of(self, kind):
+        """这一种类此刻在手上的那件（矛取主手那支）。"""
+        if kind == "fruit":
+            return self.carried_fruit
+        if kind == "stone":
+            return self.carried_stone
+        return self.carried_spear if kind == "spear" else None
+
     def held_kind(self, side):
+        """这只手拿的是哪一类（两只手各一支矛时两只手都返回 "spear"）。"""
+        if self.hand_spears.get(side) is not None:
+            return "spear"
         for k, s in self.hand_of.items():
             if s == side:
                 return k
         return None
 
+    def free_hand(self, hint=None):
+        """空着的那只手：``"r"`` / ``"l"`` / None（两只手都占着）。原版 FreeHand()。
+
+        hint 只在它确实空着时生效（给「顺目标方向伸手」的调用方留口子）。
+        """
+        if hint in ("l", "r") and self.held_kind(hint) is None:
+            return hint
+        if self.held_kind("r") is None:
+            return "r"
+        if self.held_kind("l") is None:
+            return "l"
+        return None
+
+    def has_free_hand(self) -> bool:
+        return self.free_hand() is not None
+
+    def hand_items(self):
+        """两手此刻的持有物 ``{side: item}`` —— 原版 grasps[2] 的真身。"""
+        out = {s: sp for s, sp in self.hand_spears.items() if sp is not None}
+        for kind, side in self.hand_of.items():
+            if kind == "spear":
+                continue
+            it = self._carried_of(kind)
+            if it is not None:
+                out[side] = it
+        return out
+
+    def spear_side(self, spear):
+        """这根矛在哪只手上（不在手上就 None）。"""
+        for side, sp in self.hand_spears.items():
+            if sp is spear:
+                return side
+        return None
+
+    def _sync_spear_slots(self):
+        """把「主手那支矛」的视图重算一遍：主手＝右手，右手空了才退到左手。"""
+        self.hand_spears = {s: sp for s, sp in self.hand_spears.items()
+                            if sp is not None}
+        for side in ("r", "l"):
+            if side in self.hand_spears:
+                self.hand_of["spear"] = side
+                self.carried_spear = self.hand_spears[side]
+                return
+        self.hand_of.pop("spear", None)
+        self.carried_spear = None
+
     def _aim_hand(self, side, tx=None, ty=None):
         self.arm_aim[side] = None if tx is None else (tx, ty)
         other = "l" if side == "r" else "r"
-        if other not in self.hand_of.values():
+        if self.held_kind(other) is None:
             self.arm_aim[other] = None
 
     def pick_hand(self, kind, hint=None):
@@ -1599,12 +1671,9 @@ class SlugcatBody:
         纯查询；_take_hand 用同一套规则落地，两边必须一致（不然瞄准的手会错）。
         hint 只在指定的那只手确实空着时生效，给「顺目标方向伸手」的调用方留口子。
         """
-        if hint in ("l", "r") and self.held_kind(hint) is None:
-            return hint
-        if self.held_kind("r") is None:
-            return "r"
-        if self.held_kind("l") is None:
-            return "l"
+        free = self.free_hand(hint)
+        if free is not None:
+            return free
         prio = self.ITEM_PRIO.get(kind, 0)
         victim = None
         for s in ("r", "l"):
@@ -1622,12 +1691,39 @@ class SlugcatBody:
         side = self.pick_hand(kind, hint=side)
         if side is None:
             return None
-        old = self.held_kind(side)
-        if old is not None:
-            self._release_item(old, to_free=True)
+        if self.held_kind(side) is not None:
+            self._release_item_at(side, to_free=True)
         return side
 
-    def _release_item(self, kind, to_free=False):
+    def _release_item_at(self, side, to_free=False):
+        """放下**这只手**里的东西（两只手各一支矛时，放的是那一支）。"""
+        kind = self.held_kind(side)
+        if kind is None:
+            return None
+        if kind == "spear":
+            return self.release_spear(to_free=to_free, side=side)
+        return self._release_item(kind, to_free=to_free)
+
+    def release_object(self, obj, to_free=False) -> bool:
+        """把**这件具体的东西**从手上 / 背上放开（对象被删掉时清引用）。"""
+        if obj is None:
+            return False
+        side = self.spear_side(obj)
+        if side is not None:
+            self.release_spear(to_free=to_free, side=side)
+            return True
+        if obj is self.carried_fruit:
+            self.release_fruit()
+            return True
+        if obj is self.carried_stone:
+            self.release_stone(to_free=to_free)
+            return True
+        if obj is self.back_spear:
+            self.back_spear = None
+            return True
+        return False
+
+    def _release_item(self, kind, to_free=False, side=None):
         if kind == "fruit":
             f = self.carried_fruit
             side = self.hand_of.get("fruit")
@@ -1641,7 +1737,7 @@ class SlugcatBody:
         if kind == "stone":
             return self.release_stone(to_free=to_free)
         if kind == "spear":
-            return self.release_spear(to_free=to_free)
+            return self.release_spear(to_free=to_free, side=side)
         return None
 
     def _carry_pos(self, side):
@@ -1869,12 +1965,18 @@ class SlugcatBody:
             spear.unstuck()
         side = self._take_hand("spear", side)
         if side is None:
+            # 原版 Player.cs:10605-10609 CanPutSpearToBack：两只手都腾不出来时，
+            # 捡起的矛**直接甩到背上**（背上还空着才行），而不是接不住 —— 这就是
+            # 「两手 + 背」三个容器能被真正填满的入口。
+            if self.back_spear is None:
+                self.put_spear_on_back(spear)
+                return True
             return False
         # 带线针被二次捡起（已经离过手）：尾巴上那条线当场断掉
         if getattr(spear, "needle_world", False):
             spear.needle_disconnect(cut=True)
-        self.carried_spear = spear
-        self.hand_of["spear"] = side
+        self.hand_spears[side] = spear
+        self._sync_spear_slots()
         spear.state = ItemState.CARRIED
         spear.stuck = False
         spear.stuck_to = None
@@ -1884,11 +1986,15 @@ class SlugcatBody:
             self.arm_item_cd(False)
         return True
 
-    def release_spear(self, to_free=False):
-        """Release grip on spear; optionally convert back to free. 返回腾出来的手。"""
-        side = self.hand_of.pop("spear", None)
-        sp = self.carried_spear
-        self.carried_spear = None
+    def release_spear(self, to_free=False, side=None):
+        """Release grip on spear; optionally convert back to free. 返回腾出来的手。
+
+        side 给了就放**那只手**里的矛（两只手各一支时分得清），没给就放主手那支。
+        """
+        if side not in ("l", "r"):
+            side = self.hand_of.get("spear")
+        sp = self.hand_spears.pop(side, None) if side is not None else None
+        self._sync_spear_slots()
         self.eat_raise = 0.0
         if sp is not None:
             sp.held_by = None
@@ -2013,25 +2119,29 @@ class SlugcatBody:
                 c0.y + (c1.y - c0.y) * 0.25 + 2.0, ang)
 
     def _apply_carry_spear(self):
-        """Each tick: write carried spear to hand position, aim arm."""
-        sp = self.carried_spear
-        if sp is None:
-            bs = self.back_spear
-            if bs is None:
-                return
+        """Each tick: 两只手各把自己那支搬到手上（物跟手）+ 背上的矛始终贴背。
+
+        两条通道是**并列**的：手里握着矛和背上背着矛互不排斥。旧版把背上的
+        摆放写成了「手里没矛时才走」的分支，于是矛大师手里一有白针，背上那根
+        就再也不跟身体走 —— 停在原地像一根掉在地上的白针（用户报的那个 bug）。
+        """
+        for side in ("l", "r"):
+            sp = self.hand_spears.get(side)
+            if sp is None:
+                continue
+            cx, cy, aimed = self._carry_anchor(side)
+            sp.last_x, sp.last_y = sp.x, sp.y
+            sp.x, sp.y = cx, cy
+            sp.last_angle = sp.angle_deg
+            sp.angle_deg = self.spear_hold_angle()
+            self._aim_hand(side, cx if aimed else None, cy if aimed else None)
+        bs = self.back_spear
+        if bs is not None:
             bx, by, bang = self._back_spear_pose()
             bs.last_x, bs.last_y = bs.x, bs.y
             bs.last_angle = bs.angle_deg
             bs.x, bs.y = bx, by
             bs.angle_deg = bang
-            return
-        side = self.hand_of.get("spear")
-        cx, cy, aimed = self._carry_anchor(side)
-        sp.last_x, sp.last_y = sp.x, sp.y
-        sp.x, sp.y = cx, cy
-        sp.last_angle = sp.angle_deg
-        sp.angle_deg = self.spear_hold_angle()
-        self._aim_hand(side, cx if aimed else None, cy if aimed else None)
 
 
 def _dot_norm(vx, vy, ux, uy):

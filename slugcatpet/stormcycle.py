@@ -6,7 +6,7 @@
 ShelterSleep —— 雨循环自己不碰任何动画。
 
 反编译口径：原版暴雨不是「切到下雨」，而是一段可预期的连续过程 —— 先是长时间
-的专注，最后一小段世界开始不安，接着雨落下来，所有人躲进庇护所。所以这里唯一
+的平静期，最后一小段（征兆期）世界开始不安，接着雨落下来，所有人躲进庇护所。所以这里唯一
 推进的就是一条 0→1 的 ``rain_drive`` 曲线，外加「全员进庇护才关门」这条判据。
 """
 from __future__ import annotations
@@ -126,7 +126,7 @@ class StormCycle:
     def trigger_storm(self):
         """环境面板手动放雨：立刻进入集合相位，优先级第一就是进庇护所。
 
-        手动的这一场跑完（睡眠结束回到 FOCUS）会把 ``enabled`` 还原成触发前的值
+        手动的这一场跑完（暴雨期结束回到 FOCUS）会把 ``enabled`` 还原成触发前的值
         —— 临时下一场雨不会顺手把整个雨循环打开。
         """
         if self.phase in (GATHER, SLEEP):
@@ -241,8 +241,8 @@ class StormCycle:
     def hud_info(self, pets=None):
         """返回 {mode, seconds, starvation, hungry}；关掉暴雨时 None。
 
-        mode: ``cycle``（Rain Cycle M:SS）/ ``rain``（预警 Rain M:SS）/
-        ``hibernation``（暴雨期 雨眠 + 睡眠剩余）。
+        mode: ``cycle``（平静期 M:SS）/ ``rain``（征兆期 M:SS）/
+        ``hibernation``（暴雨期 M:SS，即暴雨期剩余）。
         """
         if not self.enabled and not self.manual:
             return None

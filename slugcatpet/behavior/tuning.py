@@ -713,7 +713,7 @@ PEARL_CARRY_TICKS   = 240       # 把玩珍珠多久才放下（放下后进 PEA
 SAINT_LICK_HOLD_DRAIN = 1.0 / 200.0   # 每 tick；满体力约 200 tick（≈3.3 s）拉空
 
 # ── 矛大师：尾巴长针（原版 SpearMaster 用尾针；桌宠里给一个间隔，别无限刷）──
-SPEARMASTER_NEEDLE_HOLD = 2     # 矛大师尽量保持「手握 + 背背」两根活针
+SPEARMASTER_NEEDLE_HOLD = 3     # 矛大师尽量保持「两手各一支 + 背上一支」三根活针
 # 矛大师拿白针把扎根的业力花打下来（用户口径：只此一家，打落即视作食用）
 KARMA_SHOOT_R = 260.0           # 站着出手的射程
 KARMA_SHOOT_NEAR = 26.0         # 比这还近就别浪费针了，走过去连根拔
@@ -741,9 +741,9 @@ INTEREST_JITTER   = 0.40        # 每只猫对每件目标的个体偏好系数 
 INTEREST_TAKEN_MUL = 1.55       # 已经有同伴把它当目标 → 打分乘这个数（让位）
 
 # ── 雨循环 + 庇护所（第 89 轮）──
-STORM_FOCUS_MINUTES = 40.0        # 专注时长（雨循环主段）
-STORM_WARNING_MINUTES = 5.0       # 专注最后 N 分钟开始「雨前焦虑」
-STORM_SLEEP_MINUTES = 10.0        # 躲进庇护所后的睡眠时长
+STORM_FOCUS_MINUTES = 40.0        # 平静期时长（雨循环主段）
+STORM_WARNING_MINUTES = 5.0       # 平静期最后 N 分钟进入征兆期（雨前焦虑）
+STORM_SLEEP_MINUTES = 10.0        # 暴雨期时长（躲进庇护所之后）
 STORM_GATHER_TIMEOUT_MINUTES = 3.0  # 集合阶段兜底：这么久还没全进屋就先关门
 STORM_SETTLE_TICKS = 40           # 全员进庇护 → 关门后再稳定 1s 才入睡
 STORM_RAIN_RISE_TICKS = 1200      # 暴雨起势：雨强 0→1 的连续爬升耗时（30s）

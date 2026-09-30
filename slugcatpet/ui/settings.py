@@ -202,7 +202,7 @@ class SettingsWindow(QWidget):
             w.trigger_storm()
 
     def _section_storm(self, v):
-        """雨循环：开关 + 三个时长（专注 / 预警 / 睡眠）。"""
+        """雨循环：开关 + 三个时长（平静期 / 征兆期 / 暴雨期）。"""
         v.addWidget(self._header(t("settings_storm_section")))
         st = self._window.storm
         chk = QCheckBox(t("settings_storm_enable"))
