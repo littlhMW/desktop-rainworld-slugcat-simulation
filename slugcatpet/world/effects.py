@@ -23,8 +23,9 @@ class EffectsMixin:
                             restore_on_land=False):
         if not getattr(self, "cursor_hijack_allowed", True):
             return None
-        from ..platform.cursorfx import CursorHijack
+        from ..platform.cursorfx import CursorHijack, release_others
 
+        release_others()          # 顶掉旧劫持前先清场，别留孤儿夹着光标
         dpr = self.devicePixelRatioF()
         dev_x, dev_y = self._cursor_to_device(logical_x, logical_y)
         kw = {} if lock_ticks is None else {"lock_ticks": lock_ticks}
@@ -36,8 +37,9 @@ class EffectsMixin:
     def start_cursor_hold(self, logical_x, logical_y, max_ticks):
         if not getattr(self, "cursor_hijack_allowed", True):
             return None
-        from ..platform.cursorfx import CursorHijack
+        from ..platform.cursorfx import CursorHijack, release_others
 
+        release_others()          # 同上：任何时刻只留一个活动劫持
         dpr = self.devicePixelRatioF()
         dev_x, dev_y = self._cursor_to_device(logical_x, logical_y)
         self.cursor_hijack = CursorHijack(
@@ -93,6 +95,10 @@ class EffectsMixin:
 
         if self.cursor_hijack is not None and not self.cursor_hijack.update():
             self.cursor_hijack = None
+        if self.cursor_hijack is None:
+            # 兜底：没有当前劫持时，任何残留 / 孤儿劫持都不该继续夹着光标
+            from ..platform.cursorfx import release_others
+            release_others()
 
     def _draw_fx_under(self, p):
         # 焦痕/烟层，画在猫身体之下

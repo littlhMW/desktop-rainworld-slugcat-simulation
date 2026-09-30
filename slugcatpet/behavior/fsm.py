@@ -7498,6 +7498,25 @@ class BehaviorFSM:
         self.gfx.hand_aim["r"] = None
         self._catch_cd = tuning.CATCH_RETRY
 
+    def _needle_slot(self):
+        """这根尾针长好后接在哪：``"hand"`` / ``"back"`` / ``None``＝真的没位置。
+
+        矛大师永远优先自己的活针（``Spear.spearmasterNeedle``）：手里或背上占着的
+        如果「不是自己连线的活针」，就会被顶掉让位。手和背都已经是自己的活针时
+        不再长针。
+
+        旧实现只数「手里/背上已连线的活针」，于是「手里握着一根普通矛（或一根
+        已断线的死针）、背上又插着一根」时，每长一根都无处安放，立刻掉在地上，
+        而且不走冷却 —— 表现就是无限刷白针。这里把「有地方接」提前判掉。
+        """
+        b = self.body
+        hand, back = b.carried_spear, b.back_spear
+        if hand is None or not self._own_needle(hand):
+            return "hand"                # 手空 / 手里不是自己的活针：拿到手里
+        if back is None or not self._own_needle(back):
+            return "back"                # 手里已是自己的活针：第二根背到背上
+        return None                      # 手 + 背都是自己的活针
+
     def _tail_needle_tick(self):
         """矛大师：尾巴自己长针（原版 SpearMaster 的独占能力）。
 
@@ -7513,6 +7532,8 @@ class BehaviorFSM:
             return
         if self._own_needle_count() >= tuning.SPEARMASTER_NEEDLE_HOLD:
             return                       # 双手都有白针了：先不长下一根
+        if self._needle_slot() is None:
+            return                       # 手和背都被自己的活针占着：没地方接新针
         if self._tail_needle_cd > 0:
             self._tail_needle_cd -= 1
             return
@@ -7587,6 +7608,11 @@ class BehaviorFSM:
         if g.tail_needle_prog < 1.0:
             return
         g.tail_needle_prog = 0.0
+        slot = self._needle_slot()
+        if slot is None:
+            # 长到一半手被占死（正好抓到东西）：按原版缩回，别把针丢在地上
+            self._tail_needle_cd = tuning.TAIL_NEEDLE_CD
+            return
         self._tail_needle_burst()          # 拔出那一瞬的溅射（Player.cs:10025-10035）
         tx, ty = b.chunk1.x, b.chunk1.y
         segs = getattr(getattr(self.win, "tail", None), "segs", None)
@@ -7601,15 +7627,16 @@ class BehaviorFSM:
         win._spear_seed += 1
         win.spears.append(sp)
         win.world_version += 1
-        if b.carried_spear is None:
+        if slot == "hand":
+            if b.carried_spear is not None and not self._own_needle(b.carried_spear):
+                b.release_spear(to_free=True)    # 手里不是自己的活针：放下腾出手
             if not b.grab_spear(sp):
-                sp.state = "free"
+                win.spears.remove(sp)             # 真接不住就别丢一地
+                win.world_version += 1
+                self._tail_needle_cd = tuning.TAIL_NEEDLE_CD
                 return
-        elif b.back_spear is None:
-            b.put_spear_on_back(sp)      # 手上已经有针：第二根背到背上
         else:
-            sp.state = "free"
-            return
+            b.put_spear_on_back(sp)      # 手上已经有自己的针：第二根背到背上
         self._tail_needle_cd = tuning.TAIL_NEEDLE_CD
         self.gfx.blink = 12
 

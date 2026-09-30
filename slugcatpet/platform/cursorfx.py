@@ -2,6 +2,7 @@
 from __future__ import annotations
 import sys
 import atexit
+import threading
 
 _IS_WIN = sys.platform == "win32"
 
@@ -9,6 +10,10 @@ _IS_WIN = sys.platform == "win32"
 T_FALL_GRAV = 1.6
 T_CURSOR_LOCK = 200
 WATCHDOG_MAX = 400
+# 墙钟兜底：一次劫持最多把系统光标夹住这么久。主循环一旦停摆（全屏让位会
+# freeze_tick + 隐藏窗口），update() 不再被调用，ClipCursor 就会一直夹着 ——
+# 那正是「鼠标位置被重置到屏幕某一点」。超过这个秒数由后台线程强制交还。
+CLIP_WATCHDOG_SECONDS = 45.0
 
 _ACTIVE = []             # 活动劫持列表
 
@@ -28,9 +33,6 @@ if _IS_WIN:
 
     def _unclip():
         _user32.ClipCursor(None)
-
-    def _setpos(x, y):
-        _user32.SetCursorPos(int(x), int(y))
 
     _OCR_IDS = (32512, 32513, 32649)   # OCR_NORMAL/IBEAM/HAND
     _IDC_APPSTARTING = 32650           # 系统"忙"光标
@@ -68,9 +70,6 @@ else:
     def _unclip():
         pass
 
-    def _setpos(x, y):
-        pass
-
     def _set_busy_cursor():
         return False
 
@@ -100,11 +99,21 @@ class CursorHijack:
         self.watchdog = 0
         self.watchdog_max = int(watchdog_max)
         self.restore_on_land = bool(restore_on_land)   # 落到屏幕底边即恢复系统光标
-        self.use_setpos = False     # ClipCursor 失败降级标志
         self.active = True
+        self._wd = None
         _ACTIVE.append(self)
         if not self.mock:
+            self._arm_watchdog()
             _set_busy_cursor()
+
+    def _arm_watchdog(self):
+        """后台墙钟兜底：主循环停摆时也能把光标交还（见 CLIP_WATCHDOG_SECONDS）。"""
+        try:
+            self._wd = threading.Timer(CLIP_WATCHDOG_SECONDS, _watchdog_fire, (self,))
+            self._wd.daemon = True
+            self._wd.start()
+        except Exception:
+            self._wd = None
 
     def hold_at(self, dev_x, dev_y):
         self.x = float(dev_x)
@@ -140,27 +149,19 @@ class CursorHijack:
         return True
 
     def _apply(self):
-        if self.mock:
+        """把系统光标夹在当前落点（ClipCursor）。
+
+        绝不 SetCursorPos：那会把用户的鼠标**物理拽走**，正是「鼠标位置被重置到
+        屏幕某一点」的来源。ClipCursor 失败就只是效果打了折扣，位置不动。
+        """
+        if self.mock or not self.active:
             return
         x = min(max(self.x, self.x0), self.x0 + self.W - 1)
         y = min(max(self.y, self.y0), self.y0 + self.H - 1)
-        if not self.use_setpos:
-            ok = False
-            try:
-                ok = _clip(x, y)           # 失败则降级 SetCursorPos
-            except Exception:
-                ok = False
-            if not ok:
-                try:
-                    _unclip()                      # 先释放旧 clip
-                except Exception:
-                    pass
-                self.use_setpos = True
-        if self.use_setpos:
-            try:
-                _setpos(x, y)
-            except Exception:
-                pass
+        try:
+            _clip(x, y)
+        except Exception:
+            pass
 
     def release(self):
         """释放 ClipCursor。幂等。"""
@@ -168,6 +169,12 @@ class CursorHijack:
             return
         self.active = False
         self.phase = "done"
+        wd, self._wd = self._wd, None
+        if wd is not None:
+            try:
+                wd.cancel()
+            except Exception:
+                pass
         if not self.mock:
             try:
                 _unclip()
@@ -196,6 +203,24 @@ def abort_all():
             _restore_cursors()                     # 兜底
         except Exception:
             pass
+
+
+def _watchdog_fire(hj):
+    """后台兜底触发：无条件把这次劫持交还。"""
+    try:
+        hj.release()
+    except Exception:
+        pass
+
+
+def release_others(keep=None):
+    """释放除 keep 以外所有活动劫持。
+
+    换新劫持前先清场，免得被顶掉的旧劫持留在 _ACTIVE 里再没人 update / release。
+    """
+    for h in list(_ACTIVE):
+        if h is not keep:
+            h.release()
 
 
 atexit.register(abort_all)

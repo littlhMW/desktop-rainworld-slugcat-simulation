@@ -790,13 +790,35 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
     # ── 环境让位 ──
     def freeze_tick(self):
-        """冻结物理 tick。"""
+        """冻结物理 tick（全屏让位）。
+
+        必须先交还系统光标：tick 一停，``_update_fx`` 里的光标劫持就不再被 update，
+        ``ClipCursor`` 会一直夹着 —— 表现就是「鼠标被钉在屏幕上某一点」。
+        """
+        self._drop_cursor_clip()
         self.anim.stop()
 
     def resume_tick(self):
         """解冻，重启 tick。"""
         self._last_ms = self._clock.elapsed()
         self.anim.start()
+
+    def _drop_cursor_clip(self):
+        """交还系统光标（释放 ClipCursor + 恢复系统光标形状）。幂等。"""
+        try:
+            self.stop_cursor_hijack()
+        except Exception:
+            pass
+        try:
+            from .platform import cursorfx
+            cursorfx.abort_all()
+        except Exception:
+            pass
+
+    def hideEvent(self, e):
+        """窗口不可见时 tick 不再推进：任何活动劫持都要当场交还。"""
+        self._drop_cursor_clip()
+        super().hideEvent(e)
 
     # ── 环境适应 ──
     def apply_workspace(self, area, geo):
