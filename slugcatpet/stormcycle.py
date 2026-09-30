@@ -156,8 +156,9 @@ class StormCycle:
     # ── 推进 ──
     def step(self, pets, shelters):
         shelters = [sh for sh in (shelters or ()) if sh is not None]
-        if not (self.enabled or self.manual) or not shelters:
-            # 关掉 / 还没放庇护所：雨收回、门打开，但相位不前进
+        if not (self.enabled or self.manual):
+            # 关掉：雨收回、门打开，但相位不前进。
+            # 没有庇护所不再冻结相位 —— 雨照跑，只是没门可关、没安全区可躲。
             self.pressure = 0.0
             self.rain_drive = max(0.0, self.rain_drive - 1.0 / self.fade_ticks)
             for sh in shelters:
@@ -194,6 +195,14 @@ class StormCycle:
         self.phase_t += 1
         self.pressure = 1.0
         self.rain_drive = min(1.0, self.rain_drive + 1.0 / self.rise_ticks)
+        if not shelters:
+            # 没有庇护所：没有门可关，也不该靠 all([]) == True 侥幸过闸。
+            # 等雨势爬满（或兜底超时）就直接进雨眠相位，绝不卡死在集合段。
+            if self.rain_drive >= 1.0 or self.phase_t >= self.gather_timeout:
+                self.phase = SLEEP
+                self.phase_t = 0
+                self.settle_t = 0
+            return
         if all(sh.door_closed for sh in shelters):
             self.settle_t += 1
             if self.settle_t >= self.settle_ticks:
@@ -235,7 +244,7 @@ class StormCycle:
         mode: ``cycle``（Rain Cycle M:SS）/ ``rain``（预警 Rain M:SS）/
         ``hibernation``（暴雨期 雨眠 + 睡眠剩余）。
         """
-        if not self.enabled:
+        if not self.enabled and not self.manual:
             return None
         if self.phase == FOCUS:
             remain = max(0, self.focus_ticks - self.phase_t)

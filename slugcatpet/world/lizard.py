@@ -80,8 +80,15 @@ TARGET_HOLD_POINT = 10 ** 9   # 纯坐标目标（光标）仍按距离判定
 LUNGE_ACCEL = 0.20            # 扑咬时朝目标的加速度比例
 CLIMB_HOP = -6.4              # 目标在上方时的蹬地（y↓ 取负）
 CLIMB_SPEED = 2.6             # 贴着竖杆 / 背景墙往上爬的速度（原版 Climb tile 的爬速）
-CLIMB_GRIP_R = 15.0           # 离竖线这么近才抓得住
+CLIMB_GRIP_R = 15.0           # 离竖线这么近才抓得住（抓附判定半径）
 CLIMB_MIN_DY = 26.0           # 目标至少要比自己高/低这么多才值得爬
+CLIMB_WALK_R = 150.0          # 没贴上去时，最多走这么远去找上墙点（Floor→Wall 那条连接）
+CLIMB_WALK_TOL = 44.0         # 墙底 / 杆底离我这层楼这么近 = 这里就是上墙点
+CLIMB_APPROACH_SPEED = 1.7    # 朝墙面挪的速度（还没有附着之前）
+CLIMB_APPROACH_PENALTY = 90.0 # 要「走过去」的墙，打分加上这个（优先已经贴着的）
+CLIMB_GRIP_SPRING = 0.30      # 贴上后把身体吸向墙面的弹性（不是每帧硬钉 x）
+CLIMB_GRIP_DAMP = 0.60        # 贴墙时的横向阻尼
+CLIMB_JUMP_PUSH = 4.6         # wall_jump 品种从墙上蹬出去的水平初速
 # 青蜥蓄力弹射（wiki：爬墙 + 蓄力弹射）：扑击整段的顶速与加速都上调一档
 CHARGE_LEAP_SPD = 1.9
 CHARGE_LEAP_ACC = 0.55
@@ -209,12 +216,16 @@ FOLLOW_GAP = 46.0              # 驯服后与朋友保持的距离
 
 BLACK_RGB = (27, 11, 33)       # 近似 RoomPalette.blackColor：绝大多数蜥蜴的体色
 WHITE_RGB = (255, 255, 255)    # 白蜥体色走纯白分支
-# 白蜥迷彩：低频抓一次「身后实时背景」的主色，体色按缓慢呼吸在白色 ↔ 它之间换。
-# 反编译对照：原版白蜥体色就是**房间背景色**（LizardGraphics 的 camo 分支），
-# 头色在它和白色之间随叫声闪 —— 桌宠里「房间背景」＝蜥蜴背后的真实桌面。
+# 白蜥迷彩：低频采一圈「自己周围」的实时背景主色，整只体色平滑渐变过去，再按
+# 缓慢呼吸在白色 ↔ 迷彩色之间换。反编译对照：原版白蜥体色就是**房间背景色**
+# （LizardGraphics 的 camo 分支），头色在它和白色之间随叫声闪 —— 桌宠里「房间
+# 背景」＝蜥蜴周围的真实桌面。采样以自己为中心、挖掉身体所在椭圆，所以拿到的是
+# 「周边局部环境色」：不是整屏 dominant，也不是身体各部位各采一个色。
 CAMO_SAMPLE_TICKS = 100        # 每 ~2.5 s 采一次（低频率）
+CAMO_SAMPLE_RADIUS_X = 70.0    # 采样半宽下限（实际取 max(body_rad*4.5, 它)）
+CAMO_SAMPLE_RADIUS_Y = 55.0    # 采样半高下限（实际取 max(body_rad*3.5, 它)）
+CAMO_COLOR_RATE = 0.15         # 整只体色向新采样色渐变的速度（平滑、不跳色）
 CAMO_BREATH_TICKS = 260        # 呼吸周期 ~6.5 s
-CAMO_SAMPLE_UP = 60.0          # 取样块放在身体上方这么多像素（免得抓到蜥蜴自己）
 CAMO_MIX_MIN = 0.0             # 换气到最白那一瞬也留一点迷彩
 SALAMANDER_RGB = (232, 232, 244)
 HUE_DEV_K = 0.6                # 原版体色色相偏差的 SCurve 参数（所有品种都是 0.6）
@@ -314,6 +325,7 @@ class LizardBreed:
                  "lounge_tendency",
                  # 品种差异（见文件末 BREED_TRAITS）
                  "spawn_weight", "cosmetics", "can_climb", "camo", "charge_leap",
+                 "climb_wall", "climb_pole", "wall_attach", "wall_detach", "wall_jump",
                  # DLC 品种（LizardBreeds.cs：SpitLizard / ZoopLizard / EelLizard）
                  "spit", "swim_speed", "leg_pairs", "lizard_spit_immune")
 
@@ -400,7 +412,12 @@ class LizardBreed:
         # 品种差异：默认值在这里，具体每个品种在 BREED_TRAITS 里覆写
         self.spawn_weight = 1.0
         self.cosmetics = ()            # 品种花纹（BREED_COSMETICS，见文件末）
-        self.can_climb = True
+        self.climb_wall = True         # 见 BREED_TRAITS：默认给，逐个品种覆写
+        self.climb_pole = True
+        self.wall_attach = True
+        self.wall_detach = True
+        self.wall_jump = False
+        self.can_climb = True          # = climb_wall or climb_pole（兼容旧调用点）
         self.camo = False
         self.charge_leap = False
         # DLC：喷唾液 / 免疫爆炸 / 水生速度 / 腿的挂点（(躯干节下标, 是否后腿)）
@@ -611,8 +628,14 @@ BREED_BY_KEY = {b.key: b for b in BREEDS}
 # ── 品种差异（反编译 LizardBreeds.cs + wiki）──────────────────────────────
 # spawn_weight = 自然生成权重。原版由各区域的 spawn 表决定（绿/粉/蓝最常见，
 #                红/青/白/黄/蝾螈稀有）；桌宠没有区域表，折算成这张固定权重表。
-# can_climb    = 能不能爬墙/杆。原版绿蜥的 Climb/Wall tile 不在 Allowed 名单里
-#                （LizardBreeds.cs GreenLizard 段只登记 Floor/Corridor）→ 不能爬。
+# can_climb    = 「会不会爬」的合并口径（climb_wall or climb_pole），旧调用点还在用。
+#                LizardBreeds.cs GreenLizard 段没登记 Climb/Wall → 绿蜥不能爬。
+# climb_wall   = 能不能攀爬背景墙。反编译 LizardBreedParams.WallClimber
+#                （LizardBreedParams.cs:196-210）：只有 BlueLizard / WhiteLizard /
+#                DlcEelLizard 为 true。
+# climb_pole   = 能不能沿竖杆上下（AItile.Accessibility.Climb，原版竖杆＝beam）。
+# wall_attach  = 能不能主动贴到墙面上；wall_detach = 能不能主动脱墙。
+# wall_jump    = 能不能从墙面蹬跳出去（青蜥的蓄力弹射系，见 LizardAI 的 jump 逻辑）。
 # camo         = 环境伪装。白蜥（wiki：环境伪装 + 长舌伏击）：蛞蝓猫更晚注意到它。
 # charge_leap  = 蓄力弹射。青蜥（wiki：爬墙 + 蓄力弹射跳跃）：扑击瞬间更快更猛。
 # cosmetics    = LizardCosmetics/* 的品种花纹（反编译 LizardGraphics.cs:440-620）。
@@ -621,24 +644,32 @@ BREED_BY_KEY = {b.key: b for b in BREEDS}
 #                whisker=Whiskers（黑蜥固有）、antenna=Antennae（黄蜥固有）、
 #                gill=AxolotlGills（蝾螈/鳗鱼蜥）、fin=TailFin（尾鳍）。
 BREED_TRAITS = {
-    "pink":       dict(spawn_weight=1.00),
-    "green":      dict(spawn_weight=0.90, can_climb=False),
+    # climb_wall 只给 WallClimber（反编译 LizardBreedParams.cs:196-210）：
+    # 蓝 / 白 / 鳗鱼（DLC）。其余品种「会爬杆但不攀爬背景墙」。
+    "pink":       dict(spawn_weight=1.00, climb_wall=False),
+    "green":      dict(spawn_weight=0.90, climb_wall=False, climb_pole=False),
     "blue":       dict(spawn_weight=0.90),
-    "yellow":     dict(spawn_weight=0.35),
+    "yellow":     dict(spawn_weight=0.35, climb_wall=False),
     "white":      dict(spawn_weight=0.30, camo=True),
-    "red":        dict(spawn_weight=0.02),
-    "black":      dict(spawn_weight=0.30),
-    "salamander": dict(spawn_weight=0.25),
-    "cyan":       dict(spawn_weight=0.25, charge_leap=True),
+    "red":        dict(spawn_weight=0.02, climb_wall=False),
+    "black":      dict(spawn_weight=0.30, climb_wall=False),
+    "salamander": dict(spawn_weight=0.25, climb_wall=False),
+    "cyan":       dict(spawn_weight=0.25, charge_leap=True, climb_wall=False,
+                       wall_jump=True),
     # DLC《倾盆大雨》：桌宠没有区域表，按「稀有 DLC 品种」折算权重
-    "caramel":    dict(spawn_weight=0.03),
-    "zoop":       dict(spawn_weight=0.05),
-    "eel":        dict(spawn_weight=0.06),
+    "caramel":    dict(spawn_weight=0.03, climb_wall=False, climb_pole=False),
+    "zoop":       dict(spawn_weight=0.05, climb_wall=False),
+    "eel":        dict(spawn_weight=0.06),      # DlcEelLizard：WallClimber = true
 }
 for _b in BREEDS:
     _t = BREED_TRAITS.get(_b.key, {})
     _b.spawn_weight = float(_t.get("spawn_weight", 1.0))
-    _b.can_climb = bool(_t.get("can_climb", True))
+    _b.climb_wall = bool(_t.get("climb_wall", True))
+    _b.climb_pole = bool(_t.get("climb_pole", True))
+    _b.wall_jump = bool(_t.get("wall_jump", False))
+    _b.wall_attach = bool(_t.get("wall_attach", _b.climb_wall))
+    _b.wall_detach = bool(_t.get("wall_detach", True))
+    _b.can_climb = bool(_b.climb_wall or _b.climb_pole)
     _b.camo = bool(_t.get("camo", False))
     _b.charge_leap = bool(_t.get("charge_leap", False))
 
@@ -736,7 +767,9 @@ class Lizard:
                  "depth", "last_depth", "head_depth", "last_head_depth", "turn_lift",
                  "head_driven", "anim", "_last_vx",
                  "depth_in", "rel",
-                 "camo_bg", "camo_mix")
+                 "camo_target", "camo_color", "camo_mix",
+                 "climb_kind", "climb_attached", "climb_side",
+                 "climb_top", "climb_bot")
 
     def __init__(self, x: float, y: float, breed: LizardBreed | None = None,
                  seed: int = 0, id: int = 0):
@@ -797,8 +830,10 @@ class Lizard:
         self.bob = [0.0, 0.0, 0.0]
         self.bob_front = 0.0
         self.bob_hind = 0.0
-        # 白蜥迷彩：camo_bg = 身后背景主色（低频采样，None = 还没采到 / 采不到）
-        self.camo_bg = None
+        # 白蜥迷彩：camo_target = 最近一次采到的周边环境主色；camo_color = 平滑后的
+        # 整只体色（每 tick 慢速渐变到 target）。None = 还没采到 / 采不到（保持白色）。
+        self.camo_target = None
+        self.camo_color = None
         self.camo_mix = 0.0      # 体色在白色 ↔ 迷彩色之间的呼吸比例
         # 叼着死猫/昏迷猫回巢穴：carry_obj 是那只猫（PetUnit），carry_body 是
         # 它的身体（被钉住跟着嘴走）。carry_den 是**开始搬运时锁定的那个巢穴**
@@ -869,9 +904,16 @@ class Lizard:
              if c.kind in lizard_cos.PHYS_KINDS else None)
             for c in self.cosmetics]
 
-        # 攀爬（原版 LizardPather 的 Climb/Wall tile）：贴在竖杆或背景墙竖边上
-        self.climb_x = None           # 抓住的那条竖线的 x；None＝没在爬
+        # 攀爬（原版 LizardPather 的 Climb/Wall tile）：贴在竖杆或背景墙竖边上。
+        # climb_x/climb_dir = 这一 tick 的攀爬意图；climb_attached = 是否已经真的
+        # 贴到墙面上（没贴上就先走过去 —— 原版 Floor→Wall 那条 MovementConnection）。
+        self.climb_x = None           # 要抓的那条竖线的 x；None＝不去爬
         self.climb_dir = 0            # +1 向上、-1 向下
+        self.climb_kind = None        # "wall" / "pole"
+        self.climb_attached = False   # 已经附着在墙面上（横向用弹簧吸住）
+        self.climb_side = 0           # 贴在墙的哪一侧（-1 左 / +1 右）；杆为 0
+        self.climb_top = None         # 当前这条线的上下端（到头上/底下就脱墙）
+        self.climb_bot = None
         self.climb_surfaces = ()      # 这一帧可攀爬的面 [(x, y_top, y_bot, kind)]
         # 清场认领：哪只猫认领了这具尸体（尸体搬运只允许一只猫执行）
         self.hauler = None
@@ -952,18 +994,30 @@ class Lizard:
         return clampf(NOTICE_R * self.breed.visual_radius / 900.0, 52.0, NOTICE_R * 2.2)
 
     def camo_tick(self, win, tick: int) -> None:
-        """白蜥：低频吸一次身后背景主色，体色按缓慢呼吸在白色 ↔ 它之间换。
+        """白蜥：低频采一圈「自己周围」的环境主色，整只体色平滑渐变过去。
 
-        只有 `breed.camo` 的品种（白蜥）跑；采样失败就保持白色（camo_bg 不动）。
+        每 `CAMO_SAMPLE_TICKS` 按 `self.id` 错开采样点，半径随身体大小放大；
+        采样失败就保持上次的颜色（一直失败则保持白色）。只有 `breed.camo`
+        的品种（白蜥）跑。
         """
         if not getattr(self.breed, "camo", False):
             return
         if tick % CAMO_SAMPLE_TICKS == self.id % CAMO_SAMPLE_TICKS:
-            from ..platform.bgcolor import dominant_behind
-            col = dominant_behind(win, self.x, self.y - CAMO_SAMPLE_UP,
-                                  self.body_rad * 6.0, self.body_rad * 3.0)
+            from ..platform.bgcolor import dominant_around
+            rx = max(self.body_rad * 4.5, CAMO_SAMPLE_RADIUS_X)
+            ry = max(self.body_rad * 3.5, CAMO_SAMPLE_RADIUS_Y)
+            col = dominant_around(win, self.x, self.y, rx, ry)
             if col is not None:
-                self.camo_bg = col
+                self.camo_target = col
+        if self.camo_target is not None:
+            if self.camo_color is None:
+                self.camo_color = self.camo_target
+            else:
+                t = CAMO_COLOR_RATE
+                self.camo_color = (
+                    int(self.camo_color[0] + (self.camo_target[0] - self.camo_color[0]) * t),
+                    int(self.camo_color[1] + (self.camo_target[1] - self.camo_color[1]) * t),
+                    int(self.camo_color[2] + (self.camo_target[2] - self.camo_color[2]) * t))
         ph = tick / float(CAMO_BREATH_TICKS) + self.seed * 0.13
         breath = 0.5 + 0.5 * math.sin(ph * math.tau)
         self.camo_mix = CAMO_MIX_MIN + (1.0 - CAMO_MIX_MIN) * breath
@@ -1202,25 +1256,9 @@ class Lizard:
         self.vy = clampf(dy, -MAX_SEG_SPEED, MAX_SEG_SPEED)
 
     def _integrate(self, WL, HL) -> None:
-        """自由态：重力积分 + 地面 / 侧墙（攀爬中则关掉重力、钉在竖线上）。"""
+        """自由态：重力积分 + 地面 / 侧墙（攀爬中改用墙面附着物理）。"""
         if self.climb_x is not None and not self.dead:
-            # 原版贴墙 / 爬杆：水平速度清零、x 钉在竖线上、vy 变成爬速
-            self.x = self.climb_x
-            self.vx = 0.0
-            self.vy = -CLIMB_SPEED * self.climb_dir
-            self.y += self.vy
-            self._contact_floor = False
-            self.wall_dir = 0
-            r = self.head_rad
-            floor = HL - self.body_rad * HEAD_STAND_FAC - self.turn_lift
-            if self.y < r:
-                self.y, self.vy = r, 0.0
-            elif self.y > floor:                # 爬到底：落地并松手
-                self.y = floor
-                self.vy = 0.0
-                self._contact_floor = True
-                self.climb_x = None
-                self.climb_dir = 0
+            self._step_wall(WL, HL)
             return
         self.vx *= AIR_FRICTION
         self.vy = (self.vy + GRAVITY * self.room_gravity) * AIR_FRICTION
@@ -1257,6 +1295,103 @@ class Lizard:
             self.x = WL - r
             self.vx = -abs(self.vx) * WALL_BOUNCE
             self.wall_dir = 1         # 窗口右边缘＝墙
+
+    # ── 墙面附着（原版 Floor→Wall→Climb 那条移动链的桌宠替身）──
+    def _climb_release(self) -> None:
+        """脱墙 / 放弃攀爬：清掉这一 tick 的攀爬意图与附着状态。"""
+        self.climb_x = None
+        self.climb_dir = 0
+        self.climb_kind = None
+        self.climb_attached = False
+        self.climb_side = 0
+        self.climb_top = None
+        self.climb_bot = None
+
+    def _climb_span_ok(self) -> bool:
+        """现在这条线还抓得住吗：线还在这一帧的清单里、我也还在它的高度范围内。"""
+        top, bot = self.climb_top, self.climb_bot
+        if top is None or bot is None:
+            return True
+        if not (top - 12.0 <= self.y <= bot + 12.0):
+            return False
+        if not self.climb_surfaces:
+            return True
+        for surf in self.climb_surfaces:
+            if abs(float(surf[0]) - self.climb_x) <= 1.0:
+                return True
+        return False
+
+    def _step_wall(self, WL, HL) -> None:
+        """贴墙：先走过去抓附（保留重力），贴上后用弹簧吸在墙面上再纵向爬。
+
+        反编译对照：原版「上墙」= Floor→Wall 的 MovementConnection + Wall/Climb
+        移动，不是把身体每帧硬钉在 x 上。旧实现 `x = climb_x` 会让蜥蜴瞬移贴墙、
+        墙顶/窗口交界处弹跳；这里拆成「靠近 → 抓附 → 沿墙运动 → 到头上/底下脱墙」。
+        """
+        sx = self.climb_x
+        dx = sx - self.x
+        r = self.head_rad
+        floor = HL - self.body_rad * HEAD_STAND_FAC - self.turn_lift
+        if not self.climb_attached:
+            if abs(dx) <= CLIMB_GRIP_R and self._climb_span_ok():
+                self.climb_attached = True
+                if dx > 0.0:
+                    self.climb_side = -1
+                elif dx < 0.0:
+                    self.climb_side = 1
+            else:
+                # 走过去：朝墙挪（墙体不挡身体，与「窗口顶边可站」同一口径）
+                want = CLIMB_APPROACH_SPEED * (1.0 if dx > 0.0 else -1.0)
+                self.vx += (want - self.vx) * 0.5
+                self.vx *= 0.85
+                self.vy = (self.vy + GRAVITY * self.room_gravity) * AIR_FRICTION
+                self.x += self.vx
+                self.y += self.vy
+                self._contact_floor = False
+                self.wall_dir = 0
+                if self.y > floor:
+                    self.y = floor
+                    self.vy = 0.0
+                    self._contact_floor = True
+                    self.vx *= GROUND_FRICTION
+                elif self.y < r:
+                    self.y, self.vy = r, 0.0
+                return
+        # wall_jump（青蜥的蓄力弹射系）：目标就在旁边但不在正上/正下 → 蹬墙出去
+        o = getattr(self, "stage_obj", None)
+        if (self.breed.wall_jump and o is not None
+                and abs(o.y - self.y) < CLIMB_MIN_DY
+                and CLIMB_GRIP_R < abs(o.x - self.x) <= CLIMB_WALK_R):
+            self._climb_release()
+            self.vx = CLIMB_JUMP_PUSH * (1.0 if o.x > self.x else -1.0)
+            self.vy = CLIMB_HOP * 0.7
+            return
+        # 已经贴上：横向用弹簧吸住（不是硬钉 x），纵向按爬速走
+        self.vx += dx * CLIMB_GRIP_SPRING
+        self.vx *= CLIMB_GRIP_DAMP
+        self.x += self.vx
+        self.vy = -CLIMB_SPEED * self.climb_dir
+        self.y += self.vy
+        self._contact_floor = False
+        self.wall_dir = self.climb_side
+        top, bot = self.climb_top, self.climb_bot
+        if bot is not None and self.y > bot:
+            self.y = min(bot, floor)              # 爬到底 / 线到头：站住并脱墙
+            self.vy = 0.0
+            self._contact_floor = True
+            self._climb_release()
+        elif self.y > floor:
+            self.y = floor
+            self.vy = 0.0
+            self._contact_floor = True
+            self._climb_release()
+        elif self.y < r:
+            self.y, self.vy = r, 0.0
+        elif top is not None and self.y < top + 4.0:
+            self.y = max(r, top + 4.0)            # 到墙头：脱墙，站到墙沿上
+            self.vy = 0.0
+            if self.breed.wall_detach:
+                self._climb_release()
 
     # ── AI ──
     # ══ 第一层：感知（同一份世界快照，不做任何决策）══
@@ -1501,14 +1636,15 @@ class Lizard:
     def _climb_plan(self, o, HL) -> None:
         """要不要贴着一条竖线爬（原版 LizardPather 的 Climb / Wall 通行能力）。
 
-        竖线＝竖直杆的轴，或一块非全屏窗口的左右竖边。判定很直接：自己能贴到
-        这条线上（x 差在 CLIMB_GRIP_R 内、当前高度落在线的范围内），而且目标
-        在线够得到的另一端（比我高 / 比我低 CLIMB_MIN_DY 以上）。命中就写
-        climb_x / climb_dir，真正的位移交给 _integrate（那一段关掉重力）。
+        ``surfaces`` 每项 ``(x, y_top, y_bot, kind)``：kind == "wall" 是背景墙
+        的可见墙段，只有会爬墙的品种（WallClimber：蓝/白/鳗鱼蜥）才考虑；
+        kind == "pole" 是竖杆，会爬杆的品种都能用。选中条件不再要求「已经贴到
+        线上」，而是「线够得着目标那一端」且「我够得着这条线」—— 线还在我这一层
+        就抓上去，否则墙底/杆底落在我这层就走过去（原版 Floor→Wall 那条连接）。
+        真正的位移交给 _step_wall（附着物理），不再每帧硬钉 x。
         """
-        self.climb_x = None
-        self.climb_dir = 0
-        if not self.breed.can_climb or o is None or self.dead:
+        self._climb_release()
+        if o is None or self.dead:
             return
         up = o.y < self.y - CLIMB_MIN_DY
         down = o.y > self.y + CLIMB_MIN_DY
@@ -1516,20 +1652,36 @@ class Lizard:
             return
         best = None
         for surf in self.climb_surfaces:
-            sx, top, bot = surf[0], surf[1], surf[2]
-            if abs(self.x - sx) > CLIMB_GRIP_R:
+            sx, top, bot = float(surf[0]), float(surf[1]), float(surf[2])
+            kind = surf[3] if len(surf) > 3 else "pole"
+            if kind == "wall":
+                if not (self.breed.climb_wall and self.breed.wall_attach):
+                    continue                    # 不会爬墙的品种：背景墙不是它的地形
+            elif not self.breed.climb_pole:
                 continue
-            if self.y < top - 12.0 or self.y > bot + 12.0:
-                continue                        # 线不在我这一层
             if up and top > o.y + 10.0:
                 continue                        # 线不够高，爬上去也够不着
             if down and bot < o.y - 10.0:
                 continue                        # 线不够低
+            on_line = top - 12.0 <= self.y <= bot + 12.0
+            # 墙底/杆底落在我这一层：走过去就能上墙
+            foot_here = (bot >= self.y - CLIMB_WALK_TOL
+                         and bot <= self.y + CLIMB_WALK_TOL)
+            if not (on_line or foot_here):
+                continue
             d = abs(self.x - sx)
-            if best is None or d < best[0]:
-                best = (d, sx, 1 if up else -1)
+            if d > CLIMB_WALK_R:
+                continue                        # 太远：走不到这个上墙点
+            score = d + (0.0 if d <= CLIMB_GRIP_R else CLIMB_APPROACH_PENALTY)
+            if best is None or score < best[0]:
+                best = (score, sx, 1 if up else -1, kind, top, bot)
         if best is not None:
-            self.climb_x, self.climb_dir = best[1], best[2]
+            self.climb_x = best[1]
+            self.climb_dir = best[2]
+            self.climb_kind = best[3]
+            self.climb_top = best[4]
+            self.climb_bot = best[5]
+            self.climb_attached = False
 
     def _hop_vy(self) -> float:
         """蹬地起跳初速：不会爬的品种（绿蜥）压根不往上蹿。焦糖蜥跳跃也靠它。"""

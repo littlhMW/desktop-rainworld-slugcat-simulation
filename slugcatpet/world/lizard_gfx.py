@@ -74,9 +74,10 @@ def body_color(lz):
     于是「深色区域」被染成了深绿/深粉；按反编译改成纯黑。
     """
     rgb = lz.body_rgb or lz.breed.body_rgb      # 白蜥随机色版：整只走个体色
-    camo = getattr(lz, "camo_bg", None)
+    # 白蜥：整只统一用「周边局部采样」平滑出的迷彩色，再按呼吸在白色 ↔ 它之间换
+    camo = getattr(lz, "camo_color", None)
     if camo is not None and getattr(lz, "camo_mix", 0.0) > 0.0:
-        rgb = _mix(rgb, camo, lz.camo_mix)      # 白蜥：体色按呼吸在白色 ↔ 背景迷彩色之间换
+        rgb = _mix(rgb, camo, lz.camo_mix)
     if lz.hurt_flash > 0:                 # 受击白闪（同游戏被创瞬间整体发白）
         rgb = _mix(rgb, (255, 255, 255), 0.45 * lz.hurt_flash / 8.0)
     return rgb

@@ -236,7 +236,9 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._hotkey_filter = None
         self._control_hud = None         # 非 None 即有受控会话
 
-        self.walls = []                        # 非全屏窗口的矩形＝可攀爬背景墙
+        self.walls = []                        # 非全屏窗口的矩形（原始几何）
+        self.wall_surfaces = []                # 露出来的可见墙段（world.walls.WallSurface）
+        self.wall_version = 0                  # 墙几何变化计数（蜥蜴导航用）
         self.world_version = 0                 # 放/清道具、环境变化时 +1
         self.geometry_version = 0              # 路径前提变更（杆/灯/工作区）时 +1
 
@@ -874,6 +876,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             walls = []
         if walls != getattr(self, "walls", None):
             self.walls = walls
+            # 原始矩形 -> 「露出来的」可见墙段：被前面窗口挡住的段不算地形。
+            from .world.walls import build_wall_surfaces
+            self.wall_surfaces = build_wall_surfaces(walls)
+            # 墙面几何变了：单独记一个版本号 —— geometry_version 的既有语义是
+            # 「猫的寻路前提」（平台/杆/工作区），不要被蜥蜴的墙几何冲掉缓存。
+            self.wall_version = getattr(self, "wall_version", 0) + 1
 
     def _cursor_half_len(self) -> float:
         """光标虚杆半长（逻辑单位）＝系统光标高度折算成世界坐标的一半。
@@ -2024,10 +2032,9 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
     def trigger_storm(self):
         """环境面板「暴雨」：立刻放雨 —— 一旦开始，猫的第一优先级就是进庇护所。
 
-        没屋子不放（否则猫只会淋着雨乱跑）；已经在暴雨里再点一次直接忽略。
+        没有庇护所也能放：雨照常跑完整套（变暗→第一滴→雨幕→震动→积水），只是
+        没有安全区可躲，猫不会进庇护所。已经在暴雨里再点一次直接忽略。
         """
-        if not self.shelters:
-            return False
         if not self.storm.trigger_storm():
             return False
         self._prev_dirty = None

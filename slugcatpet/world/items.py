@@ -1584,11 +1584,17 @@ class ItemInteractionMixin:
             if getattr(pl, "virtual", False):
                 continue              # 鼠标那截虚杆：不算攀爬面
             out.append((float(pl.x), min(pl.ay, pl.by), max(pl.ay, pl.by), "pole"))
-        for rect in getattr(self, "walls", ()):
-            x0, y0, x1, y1 = rect[0], rect[1], rect[2], rect[3]
-            top, bot = min(y0, y1), max(y0, y1)
-            out.append((float(x0), top, bot, "wall"))
-            out.append((float(x1), top, bot, "wall"))
+        walls = getattr(self, "wall_surfaces", None)
+        if walls:
+            for ws in walls:
+                for top, bot in ws.segments:      # 只发「露出来的」可见墙段
+                    out.append((float(ws.x), float(top), float(bot), "wall"))
+        else:                                     # 兜底：还没建 surface 时按整条边算
+            for rect in getattr(self, "walls", ()):
+                x0, y0, x1, y1 = rect[0], rect[1], rect[2], rect[3]
+                top, bot = min(y0, y1), max(y0, y1)
+                out.append((float(x0), top, bot, "wall"))
+                out.append((float(x1), top, bot, "wall"))
         return tuple(out)
 
     def _lizard_blockers(self):

@@ -964,9 +964,9 @@ class BehaviorFSM:
         if self.body.food > self._food_prev:
             self._food_urge = 0.0          # 吃到东西：觅食欲望归 0
             self._social_urge_boost(tuning.SOCIAL_URGE_BOOST_EAT)   # 吃到东西：想社交
-            if (self.body.food >= self.body.food_max
-                    and self._food_prev < self.body.food_max):
-                self._social_urge_boost(tuning.SOCIAL_URGE_BOOST_FULL)   # 吃饱了
+            if (self.body.food_satisfied()
+                    and self._food_prev < self.body.food_hibernate):
+                self._social_urge_boost(tuning.SOCIAL_URGE_BOOST_FULL)   # 够冬眠了
         self._food_prev = self.body.food
         self.mood.tick_freshness(self._active_mood())
         self.timer += 1
@@ -5468,7 +5468,7 @@ class BehaviorFSM:
                 self._transition("Socialize")
                 return
         # 2) 自己饱了、别的猫没饱 → 帮它取食送过去
-        if (self._help_cd <= 0 and b.food >= b.food_max
+        if (self._help_cd <= 0 and b.food_satisfied()
                 and b.carried_fruit is None):
             hp = self._hungriest_peer()
             if hp is not None:
@@ -5804,7 +5804,7 @@ class BehaviorFSM:
             b.release_spear(to_free=True)
 
     def _sleep_urge_tick(self):
-        full = (self.body.food >= self.body.food_max
+        full = (self.body.food_satisfied()
                 and not self._too_cold_to_sleep() and not self._hibernating)
         if full:
             self._sleep_urge = min(1.0, self._sleep_urge + tuning.SLEEP_URGE_RATE)
@@ -5813,7 +5813,7 @@ class BehaviorFSM:
 
     def _sleep_roll(self) -> bool:
         """每隔 SLEEP_CHECK_TICKS 掷一次骰，概率 = 当前睡意。"""
-        if self.body.food < self.body.food_max or self._sleep_urge <= 0.0:
+        if not self.body.food_satisfied() or self._sleep_urge <= 0.0:
             return False
         if self._threat_present():          # 场上还有活威胁 → 睡不着
             return False
@@ -6644,7 +6644,7 @@ class BehaviorFSM:
         tgt = self._help_target
         self._help_left -= 1
         if (self._help_left <= 0 or tgt is None or tgt.body.dead
-                or tgt.body.food >= tgt.body.food_max):
+                or tgt.body.food_satisfied()):
             self._help_end()
             return
         fruit = b.carried_fruit
