@@ -2816,6 +2816,13 @@ class Lizard:
                 s.y -= math.sin(ph) * GAIT_WAVE * amp * (1.0 - 0.5 * t)
                 if s.tail:
                     s.y -= math.sin(ph) * (0.16 * s.rad * 0.5) * (0.4 + 0.6 * amp)
+                # 步态波浪在约束之后仍可能把尾节重新推入地面；最后再封一次，
+                # 保证每个身体 chunk 返回时都在真实窗口地板之上。
+                lim = HL - s.rad * (TAIL_SINK_FAC if s.tail else BODY_STAND_FAC)
+                if s.y > lim:
+                    s.y = lim
+                    if s.vy > 0.0:
+                        s.vy = 0.0
 
     # ── 腿 ──
     def _step_legs(self, HL) -> None:
