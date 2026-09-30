@@ -292,7 +292,8 @@ class StormCycle:
         else:
             self.rain_drive = min(1.0, self.rain_drive + 1.0 / self.rise_ticks)
         if self.phase_t >= self.sleep_ticks:
-            self.cycles_done += 1          # 一场雨安全过去：番茄钟 +1 级
+            if not self._storm_penalty_applied:
+                self.cycles_done += 1          # 暴雨无人死亡：安全过去 +1 级
             self.phase = FOCUS
             self.phase_t = 0
             self.settle_t = 0
