@@ -7491,8 +7491,12 @@ class BehaviorFSM:
         return None
 
     def _avoid_friendly(self) -> bool:
-        """AI 是否启用「别把同伴打进弹道」这一层（设置里的全局开关，默认开）。"""
-        return bool(getattr(self.win, "ai_avoid_friendly_fire", True))
+        """AI 始终启用「别把同伴打进弹道」这一层。
+
+        设置里的开关只管伤害结算（友军伤害豁免），不再管 AI，所以这里恒为真：
+        无论设置怎么调，猫出手前都会先预演弹道、绕开同伴。
+        """
+        return True
 
     def _shot_path_clear(self, dir_x, tgt=None, force=False) -> bool:
         """这一掷打出去，弹道上有没有同伴。tgt 给了就只看自己到目标那一段。

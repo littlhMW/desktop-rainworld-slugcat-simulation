@@ -252,6 +252,22 @@ def _spear_should_protect_pet(sp, victim) -> bool:
         return True
 
 
+def _friendly_throw_protected(win, thrower) -> bool:
+    """设置里开了「友军伤害豁免」时：蛞蝓猫投出的矛/石头不伤同伴。
+
+    只有**桌宠**投出的武器被免掉；非桌宠投掷者（拾荒者之类）维持原版结算。
+    这只改伤害层，AI 该避让还是避让。
+    """
+    if not bool(getattr(win, "friendly_fire_protect", False)):
+        return False
+    if thrower is None:
+        return False
+    for pet in getattr(win, "pets", ()):
+        if getattr(pet, "body", None) is thrower:
+            return True
+    return False
+
+
 def _weapon_owner(w):
     """投掷物的掷出者 uid（原版 Weapon.thrownBy；成体面条蝇的 tempLike 记账用）。"""
     owner = getattr(w, "thrower", None)
@@ -655,7 +671,11 @@ class ItemInteractionMixin:
                 for c in (b.chunk0, b.chunk1):
                     if _seg_dist(s.last_x, s.last_y, s.x, s.y,
                                  c.x, c.y) < s.rad + c.rad:
-                        if pet.behavior.apply_stun(int(STONE_STUN_TICKS * STUN_SCALE)):
+                        if _friendly_throw_protected(self, getattr(s, "thrower", None)):
+                            # 友军伤害豁免：不眩晕也不击退，石头自己弹开。
+                            s.deflect(self._stun_rng)
+                            s.fling = False
+                        elif pet.behavior.apply_stun(int(STONE_STUN_TICKS * STUN_SCALE)):
                             self._friendly_fire(getattr(s, "thrower", None), pet)
                             c.vx += s.vx * STONE_KNOCKBACK
                             c.vy += s.vy * STONE_KNOCKBACK
@@ -2957,16 +2977,19 @@ class ItemInteractionMixin:
                         # 原版 Spear.HitSomething：Violence(Stab, spearDamageBonus=1, 20)
                         # 蛞蝓猫 num = 1.0 ≥ 即死阈值 1 ⇒ 被矛扎中即死。
                         dmg = float(getattr(sp, "damage", SPEAR_DMG))
-                        self._friendly_fire(getattr(sp, "thrower", None), pet)
                         died, stun = _pet_stun_death(dmg, SPEAR_STUN_BONUS)
                         stun = int(stun * STUN_SCALE)
-                        if _spear_should_protect_pet(sp, pet):
+                        if _friendly_throw_protected(self, getattr(sp, "thrower", None)):
+                            pass          # 友军伤害豁免：伤害与眩晕都不给
+                        elif _spear_should_protect_pet(sp, pet):
                             # 玩耍/同伴命中仍有撞击与眩晕反馈，但禁止即死。
+                            self._friendly_fire(getattr(sp, "thrower", None), pet)
                             self._spear_needle_feed(sp, pet, False)
                             pet.behavior.apply_stun(max(12, min(stun, 70)))
                             sp.vx *= -0.25
                             sp.vy *= 0.25
                         else:
+                            self._friendly_fire(getattr(sp, "thrower", None), pet)
                             self._spear_needle_feed(sp, pet, bool(b.dead))
                             if died:
                                 pet.behavior.kill()

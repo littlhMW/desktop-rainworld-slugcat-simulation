@@ -388,12 +388,20 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self.storm_active = False        # 暴雨进行中（StormSeekShelter 的闸）
         self._storm_cycle_seen = 0       # StormCycle.cycle_id 的哨兵：变了就复位第一滴重雨
         self._storm_rng = random.Random(0x57071)   # 私有流：不搅动全局随机数
-        # 暴雨是否接管真实点击（默认关）：关着的时候暴雨期间照样穿透，
-        # 不挡用户干活；开着才是「暴雨里点一下杀一只猫」。任务栏那一条
-        # （地板线以下的下延带）永远不接管，见 _passthrough_want。
-        self.storm_capture_clicks = bool(self._params.get("storm_capture_clicks", False))
-        # AI 是否主动绕开同伴的弹道（默认开）：只改 AI 走位，矛的伤害一点没动。
-        self.ai_avoid_friendly_fire = bool(self._params.get("ai_avoid_friendly_fire", True))
+        # 暴雨鼠标拆成两个独立开关（默认都关，不挡用户干活）：
+        #   storm_block_clicks  —— 暴雨期间拦住真实点击（不穿透）
+        #   storm_lethal_clicks —— 暴雨里点一下杀一只猫
+        # 任务栏那一条（地板线以下的下延带）永远不接管，见 _passthrough_want。
+        # 旧版只有一个 storm_capture_clicks，读档时按同一个值迁移过来。
+        _old_cap = self._params.get("storm_capture_clicks")
+        if _old_cap is not None:
+            for _k in ("storm_block_clicks", "storm_lethal_clicks"):
+                self._params.setdefault(_k, bool(_old_cap))
+        self.storm_block_clicks = bool(self._params.get("storm_block_clicks", False))
+        self.storm_lethal_clicks = bool(self._params.get("storm_lethal_clicks", False))
+        # 友军伤害：默认关＝保持原本的真实友伤。开着时蛞蝓猫投出的矛/石头
+        # 不再对同伴造成伤害与眩晕；只改伤害结算，一点不碰 AI。
+        self.friendly_fire_protect = bool(self._params.get("friendly_fire_protect", False))
         self._shelter_drag_start = None
         self._shelter_seed = 0
 
@@ -560,7 +568,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             and is_over(pet.body, pet.gfx, cur, pad=6.0)
             for pet in self.pets)
         storm_capture = (bool(getattr(self.storm, "active", False))
-                         and bool(self.storm_capture_clicks))
+                         and bool(self.storm_block_clicks))
         dragging_fruit = self._dragged_fruit is not None
         over_fruit = self._fruit_at(cur) is not None
         dragging_stone = self._dragged_stone is not None
@@ -1403,7 +1411,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
     def _storm_kill_click(self, pos) -> bool:
         """暴雨中点击庇护所外：随机杀死一只仍活着的成年蛞蝓猫。"""
-        if not self.storm.active or not self.storm_capture_clicks:
+        if not self.storm.active or not self.storm_lethal_clicks:
             return False
         lx, ly = pos
         if any(sh.contains(lx, ly) for sh in (self.shelters or ())):
@@ -2222,19 +2230,26 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 e.vy += f
 
     # ── 暴雨设置 / 存档 ──
-    def set_storm_capture_clicks(self, on) -> None:
-        """暴雨是否接管真实点击（写进 params，存档时一并落盘）。"""
-        self.storm_capture_clicks = bool(on)
-        self._params["storm_capture_clicks"] = self.storm_capture_clicks
+    def set_storm_block_clicks(self, on) -> None:
+        """暴雨是否拦住真实点击（写进 params，存档时一并落盘）。"""
+        self.storm_block_clicks = bool(on)
+        self._params["storm_block_clicks"] = self.storm_block_clicks
+        self._params.pop("storm_capture_clicks", None)   # 已迁移到新键，清掉旧的
         self._passthrough = None          # 下一帧重算穿透
 
-    def set_ai_avoid_friendly_fire(self, on) -> None:
-        """AI 是否主动避开同伴的弹道（写进 params，存档时一并落盘）。
+    def set_storm_lethal_clicks(self, on) -> None:
+        """暴雨中点击是否杀猫（与「拦住点击」互相独立）。"""
+        self.storm_lethal_clicks = bool(on)
+        self._params["storm_lethal_clicks"] = self.storm_lethal_clicks
+        self._params.pop("storm_capture_clicks", None)
 
-        这只是 AI 走位：关掉后猫不再让位，矛的伤害与即死规则完全不变。
+    def set_friendly_fire_protect(self, on) -> None:
+        """友军伤害豁免：开着时蛞蝓猫投出的矛/石头不伤同伴。
+
+        写进 params，存档时一并落盘。只影响伤害/眩晕结算，AI 走位照旧。
         """
-        self.ai_avoid_friendly_fire = bool(on)
-        self._params["ai_avoid_friendly_fire"] = self.ai_avoid_friendly_fire
+        self.friendly_fire_protect = bool(on)
+        self._params["friendly_fire_protect"] = self.friendly_fire_protect
 
     def set_storm_enabled(self, on):
         """开/关雨循环。**不会**自动放庇护所 —— 屋子由工具栏自己框选出来。"""

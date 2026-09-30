@@ -1,7 +1,7 @@
 """状态面板 HUD：每猫一行体征，可拖动可隐藏。"""
 from __future__ import annotations
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel,
-                               QLayout, QScrollArea, QSizePolicy, QToolButton)
+                               QScrollArea, QSizeGrip, QSizePolicy, QToolButton)
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 
@@ -22,12 +22,37 @@ _PANEL_QSS = (
     "#hudClose:hover{color:#ffffff;background:rgba(190,90,80,180);border-radius:4px;}")
 
 
+class _ResizeGrip(QSizeGrip):
+    """右下角把手：只有**真的拖它**才算用户改过大小。
+
+    窗口第一次 show() 也会发 resizeEvent，如果照单全收，面板就会把自己
+    自适应出来的尺寸记成「用户尺寸」，以后再也不会跟着行数长缩了。
+    """
+
+    def __init__(self, hud):
+        super().__init__(hud)
+        self._hud = hud
+
+    def mousePressEvent(self, ev):
+        self._hud._user_dragging = True
+        super().mousePressEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        super().mouseReleaseEvent(ev)
+        self._hud._user_dragging = False
+
+
 class HudPanel(QWidget):
     def __init__(self, pet, params=None):
         super().__init__()
         self.pet = pet    # PetWindow
         self.params = params if params is not None else {}
         self._drag = None
+        self._building = True
+        self._auto_fitting = False
+        self._user_dragging = False
+        # 用户自己拖过大小就一直沿用它；从没拖过就按行数自适应
+        self._user_size = self._load_size()
 
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint
                             | Qt.WindowType.WindowStaysOnTopHint
@@ -36,13 +61,27 @@ class HudPanel(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
 
         self._build()
+        if self._user_size is not None:
+            self.resize(self._user_size[0], self._user_size[1])
         self._place()
+        self._building = False
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
         # 定时器由 toggle_visible 控制启停
 
         self.hide()
+
+    def _load_size(self):
+        """读回用户拖出来的面板尺寸（没存过 → None＝跟着内容自适应）。"""
+        try:
+            w = int(self.params.get("hud_w") or 0)
+            h = int(self.params.get("hud_h") or 0)
+        except (TypeError, ValueError):
+            return None
+        if w <= 0 or h <= 0:
+            return None
+        return (max(180, w), max(90, h))
 
     def _pets(self):
         # 猫崽的身份是非蛞蝓猫生物：不进状态面板（它们仍在场景里活动）。
@@ -52,7 +91,6 @@ class HudPanel(QWidget):
     def _build(self):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSizeConstraint(QLayout.SizeConstraint.SetFixedSize)   # 尺寸随内容自适应
         self._panel = QWidget()
         self._panel.setObjectName("hudPanel")
         # 普通 QWidget 不画 QSS 背景 → 必须开 WA_StyledBackground，否则面板是透的
@@ -73,7 +111,7 @@ class HudPanel(QWidget):
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self._scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         # 滚动区视口/内容默认用调色板底色（浅灰）铺满，会把面板底色盖掉 → 全部透明
         self._rows_host.setAutoFillBackground(False)
         self._scroll.setAutoFillBackground(False)
@@ -107,12 +145,35 @@ class HudPanel(QWidget):
         self._rows = []
         self._build_rows()
         self._fit_scroll()
+        # 右下角拉伸手柄：面板能自己拖大小（没拖过时仍按行数自适应）
+        self._grip = _ResizeGrip(self)
+        self._grip.setFixedSize(16, 16)
+        self._grip.setToolTip(t("hud_resize_tip"))
+        self._sync_grip()
+        self._grip.raise_()
 
     def _fit_scroll(self):
-        """行区高度跟着行数走，直到撞上屏高上限才变滚动。"""
+        """行区高度：没拖过大小就跟着行数走，拖过就让它填满面板。"""
         self._vbox.activate()
         want = self._rows_host.sizeHint().height() + 4
+        if self._user_size is not None:
+            self._scroll.setMinimumHeight(40)
+            self._scroll.setMaximumHeight(self._max_view_h())
+            return
         self._scroll.setFixedHeight(min(max(want, 40), self._max_view_h()))
+        self._auto_fitting = True
+        try:
+            self.adjustSize()
+        finally:
+            self._auto_fitting = False
+
+    def _sync_grip(self):
+        """把手贴住右下角。"""
+        grip = getattr(self, "_grip", None)
+        if grip is None:
+            return
+        grip.move(max(0, self.width() - grip.width()),
+                  max(0, self.height() - grip.height()))
 
     @staticmethod
     def _max_view_h() -> int:
@@ -127,6 +188,7 @@ class HudPanel(QWidget):
             row = PetRow(pet_unit, self)
             self._vbox.addWidget(row)
             self._rows.append(row)
+        self._vbox.addStretch(1)          # 面板拉大时行不跟着摊开
 
     @staticmethod
     def _divider():
@@ -150,9 +212,9 @@ class HudPanel(QWidget):
         self._place()
 
     def _place(self):
-        # 只做屏内定位（尺寸已自适应）
+        # 只做屏内定位（尺寸自己管：没拖过＝内容自适应，拖过＝用户尺寸）
         self._panel.layout().activate()
-        size = self.sizeHint()
+        size = self.size()
         screen = QGuiApplication.primaryScreen().availableGeometry()
         x = self.params.get("hud_x")
         y = self.params.get("hud_y")
@@ -185,7 +247,24 @@ class HudPanel(QWidget):
         for row in self._rows:
             replot = row.refresh() or replot
         if replot:
+            self._fit_scroll()
             self._place()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self._sync_grip()
+        if self._building or self._auto_fitting:
+            return
+        size = (self.width(), self.height())
+        if self._user_size == size:
+            return
+        if self._user_size is None and not self._user_dragging:
+            return          # 自动贴合 / 首次显示给的尺寸：不算用户拖的
+        # 用户拉过之后：按这个尺寸走，行区改成填满面板（装不下就滚动）
+        self._user_size = size
+        self.params["hud_w"], self.params["hud_h"] = size
+        self._scroll.setMinimumHeight(40)
+        self._scroll.setMaximumHeight(self._max_view_h())
 
     # 面板背景拖动整窗，行内由 PetRow 自理
     def mousePressEvent(self, ev):

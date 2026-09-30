@@ -51,7 +51,7 @@ class SettingsWindow(QWidget):
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
         self.setWindowTitle(t("settings_title"))
         self.setStyleSheet(_QSS)
-        self.setMinimumWidth(280)
+        self.setMinimumWidth(520)          # 两列：矮一点、宽一点
         self._outer = QVBoxLayout(self)
         self._outer.setContentsMargins(16, 14, 16, 14)
         self._outer.setSpacing(10)
@@ -77,20 +77,29 @@ class SettingsWindow(QWidget):
             self._body.setParent(None)
             self._body.deleteLater()
         self._body = QWidget()
-        v = QVBoxLayout(self._body)
-        v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(8)
-        self._section_cats(v)
-        v.addWidget(self._divider())
-        self._section_spawn(v)
-        v.addWidget(self._divider())
-        self._section_env(v)
-        v.addWidget(self._divider())
-        self._section_storm(v)
-        v.addWidget(self._divider())
-        self._section_ai(v)
-        v.addWidget(self._divider())
-        self._section_hud(v)
+        cols = QHBoxLayout(self._body)
+        cols.setContentsMargins(0, 0, 0, 0)
+        cols.setSpacing(20)
+        left = QVBoxLayout()
+        right = QVBoxLayout()
+        for col in (left, right):
+            col.setContentsMargins(0, 0, 0, 0)
+            col.setSpacing(8)
+        cols.addLayout(left, 1)
+        cols.addLayout(right, 1)
+        # 左列：猫名单 + 自然生成；右列：环境 + 雨循环 + 友军伤害 + 状态面板
+        self._section_cats(left)
+        left.addWidget(self._divider())
+        self._section_spawn(left)
+        left.addStretch(1)
+        self._section_env(right)
+        right.addWidget(self._divider())
+        self._section_storm(right)
+        right.addWidget(self._divider())
+        self._section_ai(right)
+        right.addWidget(self._divider())
+        self._section_hud(right)
+        right.addStretch(1)
         self._outer.addWidget(self._body)
         self.adjustSize()
 
@@ -225,11 +234,16 @@ class SettingsWindow(QWidget):
             grid.addWidget(sp, row, 1)
             self._storm_spins[key] = sp
         v.addLayout(grid)
-        cap = QCheckBox(t("settings_storm_capture"))
-        cap.setChecked(bool(getattr(self._window, "storm_capture_clicks", False)))
-        cap.setToolTip(t("settings_storm_capture_tip"))
-        cap.toggled.connect(self._on_storm_capture_toggled)
+        cap = QCheckBox(t("settings_storm_block"))
+        cap.setChecked(bool(getattr(self._window, "storm_block_clicks", False)))
+        cap.setToolTip(t("settings_storm_block_tip"))
+        cap.toggled.connect(self._on_storm_block_toggled)
         v.addWidget(cap)
+        lethal = QCheckBox(t("settings_storm_lethal"))
+        lethal.setChecked(bool(getattr(self._window, "storm_lethal_clicks", False)))
+        lethal.setToolTip(t("settings_storm_lethal_tip"))
+        lethal.toggled.connect(self._on_storm_lethal_toggled)
+        v.addWidget(lethal)
         btn = QPushButton(t("settings_storm_apply"))
         btn.clicked.connect(self._on_storm_apply)
         v.addWidget(btn)
@@ -237,9 +251,13 @@ class SettingsWindow(QWidget):
     def _on_storm_toggled(self, checked):
         self._window.set_storm_enabled(checked)
 
-    def _on_storm_capture_toggled(self, checked):
-        """暴雨是否接管真实点击：关着的时候暴雨照样穿透，不挡用户干活。"""
-        self._window.set_storm_capture_clicks(checked)
+    def _on_storm_block_toggled(self, checked):
+        """暴雨是否拦住真实点击：关着的时候暴雨照样穿透，不挡用户干活。"""
+        self._window.set_storm_block_clicks(checked)
+
+    def _on_storm_lethal_toggled(self, checked):
+        """暴雨中点击是否杀猫（与「拦住点击」分开的第二个开关）。"""
+        self._window.set_storm_lethal_clicks(checked)
 
     def _on_storm_apply(self):
         spins = getattr(self, "_storm_spins", None)
@@ -251,21 +269,22 @@ class SettingsWindow(QWidget):
             sleep_minutes=spins["sleep"].value())
 
     def _section_ai(self, v):
-        """AI 行为：只影响 AI 自己的选择，不改任何伤害数值。"""
+        """友军伤害：只决定矛/石头要不要伤到同伴，一点不碰 AI。"""
         v.addWidget(self._header(t("settings_ai_section")))
-        chk = QCheckBox(t("settings_ai_avoid_friendly"))
-        chk.setChecked(bool(getattr(self._window, "ai_avoid_friendly_fire", True)))
-        chk.setToolTip(t("settings_ai_avoid_friendly_tip"))
-        chk.toggled.connect(self._on_ai_avoid_toggled)
+        chk = QCheckBox(t("settings_friendly_fire_protect"))
+        chk.setChecked(bool(getattr(self._window, "friendly_fire_protect", False)))
+        chk.setToolTip(t("settings_friendly_fire_protect_tip"))
+        chk.toggled.connect(self._on_friendly_fire_toggled)
         v.addWidget(chk)
 
-    def _on_ai_avoid_toggled(self, checked):
-        """AI 避开友军弹道：关掉后 AI 不再让位，误伤（含致死）照常可能发生。"""
-        self._window.set_ai_avoid_friendly_fire(checked)
+    def _on_friendly_fire_toggled(self, checked):
+        """勾选＝同伴免疫矛/石头的伤害与眩晕（纯伤害结算，AI 照旧避让）。"""
+        self._window.set_friendly_fire_protect(checked)
 
     def _section_hud(self, v):
         if self._hud is None:
             return                        # 没有 HUD 就别读它的可见性
+        v.addWidget(self._header(t("settings_hud_section")))
         chk = QCheckBox(t("settings_show_hud"))
         chk.setChecked(self._hud.isVisible())
         chk.toggled.connect(self._on_hud_toggled)

@@ -143,29 +143,38 @@ _STR = {
     # —— settings：雨循环 ——
     "settings_storm_section":   {"zh": "雨循环", "en": "Rain cycle"},
     "settings_storm_enable":    {"zh": "开启雨循环", "en": "Enable rain cycle"},
-    "settings_storm_capture":   {"zh": "暴雨时接管鼠标点击（点一下杀一只猫）",
-                                 "en": "Let the storm take mouse clicks (click kills a cat)"},
-    "settings_storm_capture_tip": {
-        "zh": "默认关闭：暴雨期间照样鼠标穿透，不挡你干活。开启后暴雨中点击庇护所外会随机杀一只猫；"
+    "settings_storm_block":     {"zh": "暴雨时拦住鼠标点击（不穿透）",
+                                 "en": "Storm blocks mouse clicks (no click-through)"},
+    "settings_storm_block_tip": {
+        "zh": "默认关闭：暴雨期间照样鼠标穿透，不挡你干活。开启后暴雨里点击不再落到桌面上（用来配合下一项点杀）。"
               "屏幕最底下那一条（任务栏 / 托盘）任何时候都不会被挡。",
         "en": "Off by default: the window stays click-through during a storm, so your work is never blocked. "
-              "When on, clicking outside a shelter during a storm kills a random cat. The strip at the very "
-              "bottom of the screen (taskbar / tray) is never blocked either way."},
+              "When on, clicks during a storm no longer reach the desktop (this is what makes the next option work). "
+              "The strip at the very bottom of the screen (taskbar / tray) is never blocked either way."},
+    "settings_storm_lethal":    {"zh": "暴雨中点击杀死庇护所外的猫",
+                                 "en": "Storm clicks kill a cat outside a shelter"},
+    "settings_storm_lethal_tip": {
+        "zh": "与上一项互相独立：这一项只管「点了会不会死猫」。开启后，暴雨期间点击庇护所外会随机杀一只猫；"
+              "关掉就只是拦住点击，不会死猫。",
+        "en": "Independent of the option above: this one only decides whether a click kills. When on, clicking "
+              "outside a shelter during a storm kills a random cat; off means clicks are only blocked."},
     "settings_storm_focus_minutes":   {"zh": "平静期（分钟）", "en": "Calm (minutes)"},
     "settings_storm_warning_minutes": {"zh": "征兆期（分钟）", "en": "Omen (minutes)"},
     "settings_storm_sleep_minutes":   {"zh": "暴雨期（分钟）", "en": "Storm (minutes)"},
     "settings_storm_apply":     {"zh": "应用时长", "en": "Apply durations"},
 
     # —— settings：AI 行为 ——
-    "settings_ai_section":        {"zh": "AI 行为", "en": "AI behaviour"},
-    "settings_ai_avoid_friendly": {"zh": "AI 避免友军误伤",
-                                   "en": "AI avoids friendly fire"},
-    "settings_ai_avoid_friendly_tip": {
-        "zh": "默认开启：猫出手前会预演弹道、绕到不会打到同伴的位置；同伴看到有人朝自己这边瞄，也会主动让开。"
-              "这只改 AI 走位，矛的伤害和即死规则完全不变。关掉后 AI 不再避让，真的可能误杀同伴。",
-        "en": "On by default: a cat probes its throw arc before firing and repositions so no ally is in the line, "
-              "and an ally that finds a shot aimed through it steps aside. This only changes AI positioning - "
-              "spear damage and instant-kill rules are untouched. Turn it off and friendly kills really can happen."},
+    "settings_ai_section":        {"zh": "友军伤害", "en": "Friendly fire"},
+    "settings_friendly_fire_protect": {"zh": "友军伤害计算（同伴免疫）",
+                                       "en": "Friendly-fire protection"},
+    "settings_friendly_fire_protect_tip": {
+        "zh": "勾选后：蛞蝓猫丢出的矛 / 石头不会对同伴造成伤害或眩晕（砸中只弹开）。取消勾选就是真实友伤，"
+              "高伤害的矛照样一下打死同伴。这只决定伤害结算，完全不影响 AI —— 猫出手前永远会先避让同伴的弹道。",
+        "en": "When ticked, spears and rocks thrown by slugcats deal no damage and no stun to fellow slugcats "
+              "(they just bounce off). Unticked means real friendly fire: a strong spear still kills an ally "
+              "outright. This only decides the damage maths and never changes AI - cats still probe their throw "
+              "arc and avoid allies before firing."},
+    "settings_hud_section":       {"zh": "状态面板", "en": "Status panel"},
     "settings_show_hud":     {"zh": "显示状态面板", "en": "Show status panel"},
     "settings_pick_title":   {"zh": "选择皮", "en": "Pick a variant"},
     "settings_pick_cat":     {"zh": "选择要添加的蛞蝓猫", "en": "Choose a slugcat to add"},
@@ -175,6 +184,8 @@ _STR = {
 
     # —— HUD：面板标题与关闭按钮 ——
     "hud_title":     {"zh": "蛞蝓猫状态", "en": "Slugcat status"},
+    "hud_resize_tip": {"zh": "拖动右下角可调整面板大小",
+                       "en": "Drag the corner to resize the panel"},
     "hud_close_tip": {"zh": "关闭面板（Ctrl+Alt+H 可再打开）",
                       "en": "Close panel (reopen with Ctrl+Alt+H)"},
 
