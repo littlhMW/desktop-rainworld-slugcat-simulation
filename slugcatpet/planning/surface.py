@@ -461,8 +461,10 @@ class SurfaceGraph:
                 if i == j or b.kind not in kinds or a.sid == b.sid:
                     continue
                 up = a.y - b.y                 # >0：目标更高
-                if abs(up) <= 2.0:
-                    continue                   # 同高：walk 那条边在管
+                same_level_block = (abs(up) <= 2.0
+                                    and _walk_blocked(a.anchor, b.anchor, a.y))
+                if abs(up) <= 2.0 and not same_level_block:
+                    continue                   # 同高且没有墙：walk 已经负责
                 if up > rise_max + tuning.GRAB_REACH:
                     continue                   # 高过一个跳跃的极限（空间粗筛）
                 if abs(b.anchor - a.anchor) > span_pad + abs(up):
@@ -472,6 +474,11 @@ class SurfaceGraph:
                                want=(b.anchor, b.y), land_off=off)
                 if r is None:
                     continue
+                if same_level_block:
+                    _rk, rh, rmd, rlx, _rly, _rticks, _rlaunch = r
+                    arc = get_arc(stats, rh, rmd)
+                    if _arc_hits_solids(arc, rlx, a.y - arc.takeoff_h):
+                        continue
                 kind, hold, md, land_x, _ly, ticks, launch_x = r
                 if not landing_safe(land_x, b.lo, b.hi):
                     continue                   # 落点贴着平台边：这只猫不愿意赌
@@ -797,8 +804,7 @@ class RouteExecutor:
                 or getattr(body, "on_pole", False)):
             return GIVEUP
         leg = self.plan.leg() if self.plan is not None else None
-        if leg is None or leg.kind == "finish":
-            return self._direct_tick()
+        if leg is None or leg.kind == "finish":            return self._direct_tick()
         if self._ctrl is None:
             self._ctrl = self._build(leg)
             if self._ctrl is None:

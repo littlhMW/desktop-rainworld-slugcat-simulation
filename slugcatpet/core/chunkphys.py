@@ -287,6 +287,35 @@ def cat_solids() -> list:
     return CAT_SOLIDS
 
 
+def terrain_obstacle_ahead(x: float, foot_y: float, direction: int,
+                           radius: float = RAD1, body_h: float = 14.0,
+                           look_ahead: float = 10.0, step_up: float = STEP_UP) -> bool:
+    """预测猫当前行进方向前方的高于可跨步高度的统一实心障碍。
+
+    与 _solid_blocks / cat_solids 共用同一份几何；寻路、物理和自动越障
+    不再各自维护一份「墙」。
+    """
+    direction = 1 if direction > 0 else (-1 if direction < 0 else 0)
+    if direction == 0 or not CAT_SOLIDS:
+        return False
+    r = max(1.0, float(radius))
+    foot = float(foot_y)
+    top = foot - max(1.0, float(body_h))
+    if direction > 0:
+        x0, x1 = float(x), float(x) + r + max(0.0, look_ahead)
+    else:
+        x0, x1 = float(x) - r - max(0.0, look_ahead), float(x)
+    if x0 > x1:
+        x0, x1 = x1, x0
+    for a0, b0, a1, b1 in CAT_SOLIDS:
+        if a1 <= a0 or b1 <= b0 or a1 <= x0 or a0 >= x1:
+            continue
+        if b1 <= top or b0 >= foot - max(0.0, step_up):
+            continue
+        return True
+    return False
+
+
 def _solid_blocks(obj, r: float, table, impact=None, prev_floor: bool = False,
                   prev_ceil: bool = False, prev_x: float = 0.0,
                   step_up: float = 0.0) -> bool:

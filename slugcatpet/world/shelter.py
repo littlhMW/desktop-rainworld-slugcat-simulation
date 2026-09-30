@@ -410,7 +410,7 @@ class Shelter:
         return mid + (1.0 if self.door_side == "left" else -1.0) * (hi - lo) * 0.15
 
     def entry_goal(self, radius=26.0):
-        return point_goal(self.entry_x(), self.ground_y, radius=radius,
+        return point_goal(self.entry_x(), self.interior_floor_y(), radius=radius,
                           contact="body")
 
     def interior_goal(self, radius=22.0):
@@ -421,7 +421,7 @@ class Shelter:
             x = lo + (hi - lo) * 0.35
         else:
             x = hi - (hi - lo) * 0.35
-        return point_goal(x, self.ground_y, radius=radius, contact="body")
+        return point_goal(x, self.interior_floor_y(), radius=radius, contact="body")
 
     def distance_to(self, px, py):
         r = self.safe_rect()
