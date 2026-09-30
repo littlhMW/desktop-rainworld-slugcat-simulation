@@ -35,6 +35,36 @@ SPEAR_SHAFT = (94, 78, 60)
 SPEAR_TIP = (206, 206, 198)
 
 
+def _solid_sweep(x0, y0, x1, y1, r):
+    """扫过物理 SOLIDS，返回最近 (t, nx, ny)。"""
+    dx, dy = x1 - x0, y1 - y0
+    best = None
+    eps = 1e-9
+    for ax0, ay0, ax1, ay1 in chunkphys.solids():
+        ax0 -= r; ay0 -= r; ax1 += r; ay1 += r
+        tx0, tx1 = -math.inf, math.inf
+        ty0, ty1 = -math.inf, math.inf
+        if abs(dx) < eps:
+            if not (ax0 <= x0 <= ax1): continue
+        else:
+            a, b = (ax0 - x0) / dx, (ax1 - x0) / dx
+            tx0, tx1 = min(a, b), max(a, b)
+        if abs(dy) < eps:
+            if not (ay0 <= y0 <= ay1): continue
+        else:
+            a, b = (ay0 - y0) / dy, (ay1 - y0) / dy
+            ty0, ty1 = min(a, b), max(a, b)
+        t0, t1 = max(tx0, ty0), min(tx1, ty1)
+        if t1 < max(0.0, t0) or t0 > 1.0: continue
+        t = max(0.0, t0)
+        if best is not None and t >= best[0]: continue
+        if abs(t - tx0) < abs(t - ty0):
+            nx = -1.0 if dx > 0.0 else 1.0; ny = 0.0
+        else:
+            nx = 0.0; ny = -1.0 if dy > 0.0 else 1.0
+        best = (t, nx, ny)
+    return best
+
 def _ang_lerp(a: float, b: float, k: float) -> float:
     """角度插值（走最短弧）。"""
     d = (b - a + 180.0) % 360.0 - 180.0
@@ -292,6 +322,14 @@ class Spear:
         self._seg_new = bool(self._thrown) and self.moving()
         step_x, step_y = self.x - self.last_x, self.y - self.last_y   # 本 tick 落地方向
         aabb_wall_collide(self, WL, HL, impact=self._impact_cb)
+        solid_hit = _solid_sweep(self.last_x, self.last_y, self.x, self.y, self.rad)
+        if solid_hit is not None:
+            t, nx, ny = solid_hit
+            self.x = self.last_x + (self.x - self.last_x) * max(0.0, t - 1e-4)
+            self.y = self.last_y + (self.y - self.last_y) * max(0.0, t - 1e-4)
+            self._contact_x = int(nx) if nx else 0
+            self._contact_floor = ny > 0.0
+            self._contact_ceil = ny < 0.0
         if self._thrown:
             if self._contact_floor:
                 # 撞到地面平面即停止物理（原地收势插地）；捡起时 unstuck() 恢复正常。
