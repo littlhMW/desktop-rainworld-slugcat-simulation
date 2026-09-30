@@ -545,6 +545,7 @@ class BehaviorFSM:
         self._food_urge = 1.0
         self._food_prev = self.body.food
         self._karma_cd = 0            # 业力花（独立行动）的冷却
+        self._karma_shoot_cd = 0      # 矛大师「用白针打落业力花」的短冷却
         self._fetch_karma = False     # 下一次 FetchFruit 是去拔业力花（独立目标链）
         self.anger = 0
         self.cursorlick = None
@@ -1250,6 +1251,8 @@ class BehaviorFSM:
     def _act_karmaflower_pre(self, ctx):
         if self._karma_cd > 0:
             self._karma_cd -= 1
+        if self._karma_shoot_cd > 0:
+            self._karma_shoot_cd -= 1
     def _act_karmaflower_gate(self, ctx):
         return (self._fetch_check == 0 and self._karma_cd <= 0
                 and self.win.karmaflowers and not self.body.flower_karma
@@ -1259,10 +1262,44 @@ class BehaviorFSM:
                 and self.state in _WANTS_FROM
                 and self.rng.random() < tuning.KARMA_SEEK_P)
     def _act_karmaflower(self, ctx):
+            if self._shoot_karma_flower():
+                return
             if self._karma_flowers_reachable():
                 self._break_active_controllers()
                 self._fetch_karma = True
                 self._act_or_wake("FetchFruit")
+
+    def _shoot_karma_flower(self) -> bool:
+        """矛大师：站在射程内用白针把扎根的业力花打下来（用户口径，仅此一家）。
+
+        它没有嘴，又只有尾针能喂饱自己，所以看到业力花不走去啃，而是抬手一针
+        把花钉下来 —— 命中结算在 items._step_spear_hit（花被打落 + 业力花槽填满）。
+        手里不是活白针、已经离根、或超出射程时返回 False，交回普通链路。
+        """
+        if self._karma_shoot_cd > 0 or not self._needle_only():
+            return False
+        b = self.body
+        if not self._own_needle(b.carried_spear):
+            return False
+        c1 = b.chunk1
+        best, bd = None, tuning.KARMA_SHOOT_R
+        for f in self.win.karma_targets():
+            if getattr(f, "grow_pos", None) is None:
+                continue                        # 已经离根：这针打不出花来了
+            d = math.hypot(f.x - c1.x, f.y - c1.y)
+            if d < bd:
+                best, bd = f, d
+        if best is None or abs(best.x - c1.x) < tuning.KARMA_SHOOT_NEAR:
+            return False                        # 射程外 / 贴脸：走过去连根拔更划算
+        b.facing = 1 if best.x >= c1.x else -1
+        b.stop_walk()
+        self.gfx.look_at = (best.x, best.y)
+        self._aim_target(best)
+        fired = self._launch_weapon(b.facing, best)   # 平着打：花就悬在地面上方一点
+        self._karma_shoot_cd = tuning.KARMA_SHOOT_CD
+        if fired:
+            self._karma_cd = tuning.KARMA_SEEK_CD     # 打完了，短时间不再惦记
+        return True
 
     def _act_pearlhoard_pre(self, ctx):
         if self._pearl_cd > 0:
@@ -1331,7 +1368,7 @@ class BehaviorFSM:
             from .huntfly import FlyHunter
             probe = FlyHunter(self.win, self.rng, self)
             if probe._flies() and (self._spear_rage()
-                                   or probe._ground_stones() or probe._ground_spears()
+                                   or probe.ground_pool()
                                    or self.body.carried_stone is not None
                                    or self.body.carried_spear is not None):
                 self._break_active_controllers()
@@ -2256,8 +2293,14 @@ class BehaviorFSM:
 
     # ── 面敌逻辑（合并旧「威胁」+「害怕」两套）──
     def _armed_in_hand(self) -> bool:
-        """手上/背上**已经**有家伙（区别于「附近有得捡」）。"""
+        """手上/背上**已经**有家伙（区别于「附近有得捡」）。
+
+        矛大师只认「手里/背上的活白针」：普通矛、石头对它不是武器。
+        """
         b = self.body
+        if self._needle_only():
+            return (self._own_needle(b.carried_spear)
+                    or self._own_needle(b.back_spear))
         return (b.carried_spear is not None or b.carried_stone is not None
                 or b.back_spear is not None)
 
@@ -2603,6 +2646,8 @@ class BehaviorFSM:
                 continue
             if lz is not None and host is not lz:
                 continue
+            if self._needle_only() and not self._own_needle(sp):
+                continue                    # 矛大师：不拔别人（或已变黑）的矛当武器
             d = math.hypot(sp.x - c1.x, sp.y - c1.y)
             if d < bd:
                 best, bd = sp, d
@@ -5269,6 +5314,15 @@ class BehaviorFSM:
                 best, bd = f, d
         return best
 
+    def _needle_only(self) -> bool:
+        """这只猫是不是「只用自己的活白针」动手（矛大师，tail_needle）。
+
+        用户口径：矛大师只拿尾巴长出来、还连着细绳的白针攻击 —— 地上捡的普通矛、
+        石头一律不当武器（白针扎中活物才回饱食度，别的家伙喂不了它）。
+        这条闸统管「算不算持械 / 去捡什么 / 掷什么」，别的猫完全不受影响。
+        """
+        return bool(self.win.cat.tuning.get("tail_needle"))
+
     def _weapon_ready(self) -> bool:
         """手里拿着家伙、脚边有能马上捡的，或（猎手）背上还备着一支。
 
@@ -5277,13 +5331,17 @@ class BehaviorFSM:
         """
         b = self.body
         if b.carried_spear is not None or b.carried_stone is not None:
-            return True
+            if not self._needle_only():
+                return True
+            if self._own_needle(b.carried_spear):
+                return True                  # 矛大师：手里得是活白针才算持械
         w = self._nearest_ground_weapon()
         if w is not None and math.hypot(w.x - b.chunk1.x,
                                         w.y - b.chunk1.y) < tuning.FIGHT_ARM_R:
             return True
         if b.back_spear is not None:
-            return True
+            if not self._needle_only() or self._own_needle(b.back_spear):
+                return True
         return False
 
     def _needle_pref(self, sp) -> float:
@@ -5300,11 +5358,16 @@ class BehaviorFSM:
         return bool(getattr(self.body.stats, "is_artificer", False))
 
     def _nearest_ground_weapon(self):
-        """地上能捡的石头/矛（原版捡起投掷物）；肯不肯捡矛看用矛意愿。"""
+        """地上能捡的石头/矛（原版捡起投掷物）；肯不肯捡矛看用矛意愿。
+
+        矛大师（tail_needle）例外：地上这些一概不算 —— 石头和普通矛都换不来
+        饱食度，捡了还白占一只手，挡着尾巴长下一根白针。
+        """
         sfac = clampf(float(getattr(self.pers, "spear_like", 1.0)), 0.05, 2.0)
+        needle_only = self._needle_only()
         best, bd = None, 260.0
         c1 = self.body.chunk1
-        for s in self.win.stones:
+        for s in (self.win.stones if not needle_only else ()):
             if s.state != ItemState.FREE or getattr(s, "unfetchable", False):
                 continue
             if not s.at_rest_on_ground(self.HL):
@@ -5317,6 +5380,8 @@ class BehaviorFSM:
                 continue
             if not self._spear_usable(s):        # 钉成杆的矛：只有工匠拔得动
                 continue
+            if needle_only and not self._own_needle(s):
+                continue                         # 矛大师：地上只有自己的活白针值得捡
             if not (getattr(s, "stuck", False) or (abs(s.vx) < 0.4 and abs(s.vy) < 0.4)):
                 continue
             d = math.hypot(s.x - c1.x, s.y - c1.y) / sfac * self._needle_pref(s)
@@ -7038,8 +7103,10 @@ class BehaviorFSM:
                     if b.grab_spear(rip, side):        # 拔出来（grab_spear 清 stuck）
                         self._fight_throw_t = tuning.FIGHT_THROW_CD
                 return
-            if b.back_spear is not None:
+            if b.back_spear is not None and (not self._needle_only()
+                                             or self._own_needle(b.back_spear)):
                 # 原版 CanRetrieveSpearFromBack：手空了但背上还备着矛 → 抽到主手
+                # （矛大师：背上那根得是活白针才抽，变黑的针不算武器）
                 if b.take_back_spear("r") is not None:
                     self._fight_throw_t = tuning.FIGHT_THROW_CD
                     return
@@ -7129,6 +7196,8 @@ class BehaviorFSM:
         b = self.body
         if not b.item_ready():
             return False                 # 上手冷却没走完：先攥着不扔
+        if self._needle_only() and not self._own_needle(b.carried_spear):
+            return False                 # 矛大师：白针以外的家伙一律不出手（用户口径）
         if self._throw_line_blocked(dir_x, tgt):
             return False                     # 同伴挡在掷出线上：不出手
         spear = b.carried_spear

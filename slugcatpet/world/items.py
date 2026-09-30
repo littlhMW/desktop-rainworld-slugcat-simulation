@@ -140,6 +140,7 @@ SPEAR_TRAIL_COLOR = (196, 176, 138)   # 木质杆身的拖尾色
 SCAVENGER_GRAB_PAD = 14.0
 SPEAR_HIT_SPEED = 7.0            # （保留）飞矛最低速度；现按原版只认 Mode.Thrown
 SPEAR_HIT_PAD = 6.0
+KARMA_HIT_R = 13.0       # 业力花：花瓣最远 13.5，按整个花冠（花头）判命中
 SPEAR_COB_PAD = 5.0      # 原版 Weapon.cs:416 thrownBy is Player ⇒ 判定半径 +5f
 SPEAR_DMG = 1.0                   # Spear.HitSomething: Violence(Stab, spearDamageBonus=1f, 20f)
 SPEAR_STUN_BONUS = 20.0           # 上句里的 stunBonus = 20f
@@ -2945,6 +2946,32 @@ class ItemInteractionMixin:
                 sp.stuck_angle = sp.angle_deg
                 sp.stuck_to = (cb, hit[0] - cb.x, hit[1] - cb.y)
                 self._shake[0] += 0.4 * kx
+                break
+            for kf in (self.karmaflowers if thrown else ()):
+                # 矛扎中「还扎根的业力花」＝把花从根上打下来（用户口径，只算矛大师）：
+                # 花带着这一矛的力飞出去，掷出者当场记「吃过一朵」——业力花槽直接填满。
+                if (getattr(kf, "grow_pos", None) is None
+                        or kf.state not in (ItemState.FREE, ItemState.HANGING)):
+                    continue                     # 已经离根/被吃掉的：不再判
+                if _seg_dist(sp.last_x, sp.last_y, sp.x, sp.y,
+                             kf.x, kf.y) >= sp.rad + KARMA_HIT_R:
+                    continue
+                tp = self._thrower_pet(getattr(sp, "thrower", None))
+                if tp is None or not getattr(getattr(tp, "cat", None),
+                                             "tuning", {}).get("tail_needle"):
+                    continue                     # 只有矛大师打得到（别的猫穿过去）
+                kd = math.hypot(sp.vx, sp.vy) or 1.0
+                kf.pluck(sp.vx / kd * 4.5, min(sp.vy / kd * 4.5 - 2.0, -1.5))
+                tp.body.flower_karma = True      # 视作已食用：业力花槽填满
+                for _ in range(6):               # 打落那一下的金色火星
+                    a = self._stun_rng.random() * 2.0 - 1.0
+                    c = self._stun_rng.random() * 2.0 - 1.0
+                    s2 = 2.0 + 8.0 * self._stun_rng.random()
+                    self.add_spark(kf.x + a * 4.0, kf.y + c * 4.0,
+                                   a * s2, c * s2 - 1.0, True, 22)
+                self._shake[0] += 0.5 * (1.0 if sp.vx >= 0.0 else -1.0)
+                sp.vx *= 0.4
+                sp.vy *= 0.4
                 break
             for small in ((*self.batflies, *self.squidcadas,
                            *self.needleworms) if thrown else ()):   # 小生物：一矛带走

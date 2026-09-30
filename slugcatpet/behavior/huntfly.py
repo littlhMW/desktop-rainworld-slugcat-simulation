@@ -112,6 +112,15 @@ class FlyHunter:
         """能不能拔出「钉进墙地成了杆的矛」（工匠专属）。"""
         return bool(getattr(getattr(self.body, "stats", None), "is_artificer", False))
 
+    def ground_pool(self):
+        """地上「这猫肯捡的家伙」。矛大师（tail_needle）只认自己的活白针：
+        石头和普通矛换不来饱食度，捡了白占手（用户口径）。"""
+        if bool(self.win.cat.tuning.get("tail_needle")):
+            return [o for o in self._ground_spears()
+                    if getattr(o, "needle", False)
+                    and getattr(o, "needle_live", False)]
+        return [*self._ground_spears(), *self._ground_stones()]
+
     def _ground_spears(self):
         """可取用的矛：插在地上的（原版可拔出）或刚停下的。"""
         out = []
@@ -174,7 +183,7 @@ class FlyHunter:
             return "running"
         best, bestd = None, 1e9
         want_needle = bool(self.win.cat.tuning.get("tail_needle"))
-        for o in (*self._ground_spears(), *self._ground_stones()):
+        for o in self.ground_pool():
             d = math.hypot(c0.x - o.x, c0.y - o.y)
             if want_needle and getattr(o, "needle_live", False):
                 d *= 0.05            # 矛大师永远优先用白针

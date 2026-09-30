@@ -54,8 +54,6 @@ _STR = {
 
     # —— settings：自然生成生物列表 ——
     "settings_spawn_section": {"zh": "自然生成", "en": "Natural spawn"},
-    "settings_spawn_hint":    {"zh": "勾选的会自己出现在窗口里（不限数量）",
-                               "en": "Checked kinds show up on their own (no limit)"},
     "tip_erase":   {"zh": "删除模式（点谁删谁）", "en": "Erase mode (click to delete)"},
 
     # —— 左下角暴雨 HUD ——

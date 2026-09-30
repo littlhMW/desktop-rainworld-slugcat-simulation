@@ -135,10 +135,6 @@ class SettingsWindow(QWidget):
     def _section_spawn(self, v):
         """自然生成：勾哪几种，窗口里就自己长出哪几种（列表按代码自动生成）。"""
         v.addWidget(self._header(t("settings_spawn_section")))
-        hint = QLabel(t("settings_spawn_hint"))
-        hint.setObjectName("dim")
-        hint.setWordWrap(True)
-        v.addWidget(hint)
         grid = QGridLayout()
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(2)

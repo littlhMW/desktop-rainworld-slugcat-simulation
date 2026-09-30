@@ -712,6 +712,10 @@ SAINT_LICK_HOLD_DRAIN = 1.0 / 200.0   # 每 tick；满体力约 200 tick（≈3.
 
 # ── 矛大师：尾巴长针（原版 SpearMaster 用尾针；桌宠里给一个间隔，别无限刷）──
 SPEARMASTER_NEEDLE_HOLD = 2     # 矛大师尽量保持「手握 + 背背」两根活针
+# 矛大师拿白针把扎根的业力花打下来（用户口径：只此一家，打落即视作食用）
+KARMA_SHOOT_R = 260.0           # 站着出手的射程
+KARMA_SHOOT_NEAR = 26.0         # 比这还近就别浪费针了，走过去连根拔
+KARMA_SHOOT_CD = 30             # 一次出手后的短冷却（≈0.75 s）
 TAIL_NEEDLE_CD = 150            # 长出下一根尾针的间隔 tick（≈3.75 s）
 
 # ── 饕餮：体重坠落攻击（原版 Gourmand 的砸击；把跳跃动能压在目标身上）──
