@@ -616,6 +616,8 @@ class SlugcatBody:
             self.standing = False
 
     def put_spear_on_back(self, spear):
+        if not getattr(self.stats, "back_spear", False):
+            return False
         """把一支矛背到背上（原版 Player.spearOnBack）。
 
         背上只能挂一支：被顶替的旧矛归还地面（state=FREE），
@@ -1963,12 +1965,23 @@ class SlugcatBody:
             if not getattr(self.stats, "is_artificer", False):
                 return False
             spear.unstuck()
+
+        # 槽位规则：
+        #   Hunter：1 手 + 1 背，共两支；
+        #   Spearmaster：两只手各一支，不使用背槽；
+        #   其他猫：全身最多一支。
+        total = len(self.hand_spears) + (1 if self.back_spear is not None else 0)
+        if not getattr(self.stats, "dual_spear", False) and total >= 1:
+            if not getattr(self.stats, "back_spear", False):
+                return False
+            # Hunter 已有背矛时也不能再拿第三支。
+            if self.back_spear is not None:
+                return False
+
         side = self._take_hand("spear", side)
         if side is None:
-            # 原版 Player.cs:10605-10609 CanPutSpearToBack：两只手都腾不出来时，
-            # 捡起的矛**直接甩到背上**（背上还空着才行），而不是接不住 —— 这就是
-            # 「两手 + 背」三个容器能被真正填满的入口。
-            if self.back_spear is None:
+            # 只有 Hunter 能把矛放到背槽；Spearmaster 不再借用背槽。
+            if getattr(self.stats, "back_spear", False) and self.back_spear is None:
                 self.put_spear_on_back(spear)
                 return True
             return False
