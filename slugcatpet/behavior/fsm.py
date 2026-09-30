@@ -546,6 +546,10 @@ class BehaviorFSM:
         self._itemplay_side = "r"
         self._itemplay_mode = "inspect"
         self._itemplay_mode_t = 0
+        self._itemplay_chase_exec = None
+        self._itemplay_throw_count = 0
+        self._itemplay_chase_exec = None
+        self._itemplay_throw_count = 0
         self._lick_cd = 0                # 圣徒舔生物玩耍的冷却
         self._play_face = 1              # 玩耍时的朝向倾向（进玩法时随机一次）
         # 觅食欲望：
@@ -7879,11 +7883,17 @@ class BehaviorFSM:
 
     # ── 平时把玩地上的小物件（矛/石头）──
     def _nearest_play_item(self):
-        """挑一样地上的家伙玩；挑哪样看性格（暴躁爱矛，温顺爱石）。"""
+        """寻找「可以拿来玩」的小物件：矛、石头、水果、珍珠。
+
+        食物在玩耍阶段不会被吃掉；它只是一件会被端详、拨弄、带跳的东西。
+        目标评分仍走 interest board，避免所有猫同时抢同一个玩具。
+        """
         b = self.body
-        if b.carried_spear is not None or b.carried_stone is not None:
+        if (b.carried_spear is not None or b.carried_stone is not None
+                or b.carried_fruit is not None):
             return None
         from ..world.spear import Spear
+        from ..world.pearl import Pearl
         c0 = b.chunk0
         cands = []
         for o in self.win.stones:
@@ -7891,16 +7901,26 @@ class BehaviorFSM:
                 continue
             if not o.at_rest_on_ground(self.HL):
                 continue
-            cands.append((o, math.hypot(o.x - c0.x, o.y - c0.y)))
+            cands.append((o, math.hypot(o.x - c0.x, o.y - c0.y), "stone"))
         for sp in self.win.spears:
             if sp.state != "free" or sp.stuck_to is not None:
                 continue
-            if getattr(sp, "pinned", False):      # 钉成杆的矛：拔不动也捡不走
+            if getattr(sp, "pinned", False):
                 continue
             if not (sp.stuck or (abs(sp.vx) < 0.4 and abs(sp.vy) < 0.4)):
                 continue
             cands.append((sp, math.hypot(sp.x - c0.x, sp.y - c0.y)
-                          * self._needle_pref(sp)))
+                          * self._needle_pref(sp), "spear"))
+        for f in self.win.fruits:
+            if f.state not in ("free", "hanging") or getattr(f, "is_edible", True) is False:
+                # 非食物水果/特殊果实也可以玩；这里只跳过已经被别猫拿走的
+                if f.state not in ("free", "hanging"):
+                    continue
+            cands.append((f, math.hypot(f.x - c0.x, f.y - c0.y), "fruit"))
+        for pr in self.win.pearls:
+            if pr.state != "free":
+                continue
+            cands.append((pr, math.hypot(pr.x - c0.x, pr.y - c0.y), "pearl"))
         cands = [c for c in cands if c[1] < tuning.ITEMPLY_SEEK_R]
         if not cands:
             return None
@@ -7908,12 +7928,18 @@ class BehaviorFSM:
         pref = getattr(self.pers, "toy_pref", {})
 
         def score(c):
-            o, d = c
-            spear = isinstance(o, Spear)
-            w = pref.get("spear_play" if spear else "stone_play", 1.0)
-            w *= 1.0 + (temper - 0.5) * (0.8 if spear else -0.8)
-            if spear:                        # 用矛意愿：圣徒几乎不玩矛
+            o, d, kind = c
+            if kind == "spear":
+                w = pref.get("spear_play", 1.0) * (
+                    1.0 + (temper - 0.5) * 0.8)
                 w *= clampf(float(getattr(self.pers, "spear_like", 1.0)), 0.0, 2.0)
+            elif kind == "stone":
+                w = pref.get("stone_play", 1.0) * (
+                    1.0 - (temper - 0.5) * 0.8)
+            elif kind == "pearl":
+                w = 1.10
+            else:
+                w = 0.95
             return _interest_key(self.win, o, d / max(0.05, w),
                                  tuning.INTEREST_JITTER, tuning.INTEREST_TAKEN_MUL,
                                  kind="play")
@@ -7928,8 +7954,14 @@ class BehaviorFSM:
         self._itemplay_mode_t = 0
         it = self._itemplay_target
         from ..world.spear import Spear
-        self._itemplay_side = b.pick_hand(
-            "spear" if isinstance(it, Spear) else "stone") or "r"
+        from ..world.pearl import Pearl
+        if isinstance(it, Spear):
+            kind = "spear"
+        elif isinstance(it, (Pearl,)):
+            kind = "fruit"
+        else:
+            kind = "fruit" if it in getattr(self.win, "fruits", ()) else "stone"
+        self._itemplay_side = b.pick_hand(kind) or "r"
         self._play_face = 1 if self.rng.random() < 0.5 else -1
         # 不是每只猫都用同一个「坐着拿着」模板；活跃度、脾气决定跳/拨弄/端详的比重。
         act = clampf(float(getattr(self.pers, "activity", 0.5)), 0.0, 1.0)
@@ -7992,7 +8024,12 @@ class BehaviorFSM:
         self._itemplay_left = 0
         self._itemplay_phase = 0
         self._itemplay_mode = "inspect"
+        ex = self._itemplay_chase_exec
+        self._itemplay_chase_exec = None
+        if ex is not None:
+            ex.cancel()
         self._itemplay_mode_t = 0
+        self._itemplay_throw_count = 0
         self._itemplay_cd = tuning.ITEMPLY_RETRY
 
     def _lick_targets(self):
@@ -8030,12 +8067,20 @@ class BehaviorFSM:
             return
         if self._itemplay_phase == 0:
             it = self._itemplay_target
-            if it is None or it.state != "free":
+            if it is None or it.state not in ("free", "hanging"):
                 self._itemplay_end()
                 self._transition("IdleStand")
                 return
             from ..world.spear import Spear
-            side = b.pick_hand("spear" if isinstance(it, Spear) else "stone")
+            from ..world.pearl import Pearl
+            is_spear = isinstance(it, Spear)
+            is_fruit = it in getattr(self.win, "fruits", ()) or isinstance(it, Pearl)
+            kind = "spear" if is_spear else ("fruit" if is_fruit else "stone")
+            side = b.pick_hand(kind)
+            if side is None:
+                self._itemplay_end()
+                self._transition("IdleStand")
+                return
             if side is None:
                 side = "r"            # 两手都塞着更重要的东西：这次抓不动，下次再来
             self._itemplay_side = side
@@ -8048,8 +8093,10 @@ class BehaviorFSM:
                 b.reach_for(it, side)
             if d < tuning.GRAB_REACH:
                 b.stop_walk()
-                if isinstance(it, Spear):
+                if is_spear:
                     b.grab_spear(it, side)
+                elif is_fruit:
+                    b.grab_fruit(it, side)
                 else:
                     b.grab_stone(it, side)
                 self._itemplay_phase = 1
@@ -8060,15 +8107,67 @@ class BehaviorFSM:
                 self._itemplay_end()
                 self._transition("IdleStand")
             return
-        if b.carried_spear is None and b.carried_stone is None:
+        carried = b.carried_spear
+        if carried is None:
+            carried = b.carried_stone if b.carried_stone is not None else b.carried_fruit
+        if carried is None:
             self._itemplay_end()
             self._transition("IdleStand")
+            return
+
+        # 「甩出去后追」是独立的一段玩法：物件飞出去后，猫用统一 Planner 追回，
+        # 追不到才放弃。只对能真正投掷的石头/矛启用。
+        if self._itemplay_phase == 2:
+            it = self._itemplay_target
+            if it is None or getattr(it, "state", None) == "gone":
+                self._itemplay_end()
+                self._transition("IdleStand")
+                return
+            if self._itemplay_chase_exec is None:
+                goal = obj_goal(it,
+                                valid=lambda o: getattr(o, "state", None) == "free",
+                                radius=tuning.ITEMPLY_REACH,
+                                contact="travel")
+                self._itemplay_chase_exec = PlanExecutor(
+                    self.win, self.planner, goal, mode=MODE_TOUCH)
+            self.gfx.look_at = (it.x, it.y)
+            status = self._itemplay_chase_exec.update()
+            if math.hypot(it.x - b.chunk1.x, it.y - b.chunk1.y) <= tuning.ITEMPLY_REACH:
+                self._itemplay_end()
+                self._transition("IdleStand")
+                return
+            if status == GIVEUP:
+                self._itemplay_end()
+                self._transition("IdleStand")
             return
         self._itemplay_left -= 1
         self._itemplay_mode_t += 1
         t = self.timer
         self._play_face = 1 if self._play_face >= 0 else -1
         b.facing = self._play_face
+
+        # 上手冷却结束后，活跃猫有机会把玩具甩出去，再用 Planner 追回；
+        # 追一次后本轮不再连续投，避免「循环扔-追-扔」变成死循环。
+        from ..world.spear import Spear
+        can_throw_toy = (isinstance(carried, Spear) or carried is b.carried_stone)
+        if (can_throw_toy and self.body.item_ready()
+                and self._itemplay_phase == 1
+                and self._itemplay_throw_count == 0
+                and self._itemplay_mode_t > 45
+                and self.rng.random() < tuning.ITEMPLY_TOSS_P):
+            dir_x = 1 if self._play_face >= 0 else -1
+            thrown = False
+            if isinstance(carried, Spear):
+                thrown = self._launch_weapon(dir_x)
+            elif b.carried_stone is carried:
+                b.throw_stone(dir_x, weaponphys.frc(weak=self._exhausted),
+                              fling=True, recoil=0.25)
+                thrown = True
+            if thrown:
+                self._itemplay_throw_count = 1
+                self._itemplay_phase = 2
+                self._itemplay_mode_t = 0
+                return
 
         # 一个玩具内部也会换「微动作」，不再整段保持同一姿势。
         if self._itemplay_mode_t >= self.rng.randint(34, 70):

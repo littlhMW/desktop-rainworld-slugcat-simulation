@@ -186,9 +186,23 @@ class Spear:
             self.needle_thread_cut = True
 
     def needle_tick(self) -> None:
-        """Spear.Update：断线后 fadecounter 每 tick -1（Spear.cs:382-385）。"""
-        if self.needle and not self.needle_live and self.needle_fade > 0:
+        """断线骨针：先由白渐成黑，褪尽后实体真正消失。
+
+        原版 fadecounter 用来控制 SpearGraphics 的消退；这里把生命周期也收口到
+        同一个计数器：只有没有钉成杆（pinned=False）的骨针才会最终 GONE。
+        钉成竖/横杆的针保留为场景杆，不参加这条清除。
+        """
+        if not self.needle or self.needle_live or self.pinned:
+            return
+        if self.needle_fade > 0:
             self.needle_fade -= 1
+        if self.needle_fade <= 0:
+            self.needle_fade = 0
+            self.state = ItemState.GONE
+            self.stuck_to = None
+            self.stuck_local = None
+            self.held_by = None
+            self.vx = self.vy = 0.0
 
     def stick(self, WL: float, wall: int) -> None:
         """掷进左右墙（wall=±1）：杆横着插住、杆尖埋进墙里，成为一截同长的横杆。
