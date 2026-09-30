@@ -73,6 +73,8 @@ CARRY_CORNER_MARGIN = 34.0    # 角落落点距屏幕边缘
 CARRY_ARRIVE_R = 22.0         # 距角落多近算「到了」
 CARRY_MOUTH_FAC = 1.1         # 嘴前叼点 = 头半径 * 此值
 CARRY_STUN_KEEP = 90          # 被叼住期间保持的昏迷 tick
+CARRY_LOSE_DIST = 70.0        # 原版 Lizard.cs:1386：猎物被抓的那一截离嘴前锚点超过
+                              # 「70 + 该截 rad」就 LoseAllGrasps（玩家能把它拽出来）
 FAINT_BITE_BONUS = 2.2        # 昏迷的猫在选目标时的权重加成（优先咬死）
 CARRY_DEN_ARRIVE_R = DEN_ARRIVE_R   # 巢穴落点判定（world/lizard_ai.py）
 GUARD_PREY_TICKS = 1200       # 把猎物送回巢穴后守一会儿（原版回巢进食）
@@ -2328,8 +2330,12 @@ class Lizard:
         obs = self.obs
         if self.carry_body is not None:
             o = next((c for c in obs["cats"] if c.obj is self.carry_obj), None)
-            if o is None or (not o.dead and not o.fainted):
+            if o is None:
                 self._release_carry()
+                return None
+            if not self._carry_keep(o):
+                # 被玩家拽脱手（Lizard.cs:1386）或它自己醒了：松口
+                self._release_carry(yanked=self._carry_lost(o))
                 return None
             return "ReturnPrey"
         return "CarryPrey" if self._best_carry(obs["cats"], WL, HL) else None
@@ -2385,17 +2391,57 @@ class Lizard:
         chunk.y = my
         chunk.vx = chunk.vy = 0.0
 
-    def _release_carry(self) -> None:
-        """松口（放下 / 被击晕 / 自己死了）。"""
+    def _release_carry(self, yanked: bool = False) -> None:
+        """松口（放下 / 被击晕 / 自己死了 / 玩家把猎物拽出来）。
+
+        yanked=True 是原版 LoseAllGrasps 那条路（Lizard.cs:1386）：除了解钉，还要
+        撤掉「叼住＝挣不开」那点强制昏迷 —— 原版靠 pacifying grasp 压住玩家，桌宠
+        用 CARRY_STUN_KEEP 顶替，松口就得一起收掉（只收这一档，真被咬狠了的长眩晕留着）。
+        """
         body = self.carry_body
         chunk = None if body is None else getattr(body, "chunk0", None)
         if chunk is not None:
             chunk.pinned = False
             chunk.vx = self.vx * 0.5
             chunk.vy = 0.0
+        if yanked and body is not None:
+            if 0 < getattr(body, "stun", 0) <= CARRY_STUN_KEEP:
+                body.stun = 0
         self.carry_obj = None
         self.carry_body = None
         self.carry_corner = 0
+
+    def _carry_grab_chunk(self, o):
+        """这只猎物身上正被鼠标抓着的那一截（没人抓 → None）。"""
+        beh = getattr(getattr(o, "obj", None), "behavior", None)
+        grab = getattr(beh, "grab", None)
+        chunk = getattr(grab, "chunk", None)
+        body = self.carry_body
+        if grab is None or chunk is None or body is None:
+            return None
+        if not grab.active or chunk not in (body.chunk0, body.chunk1):
+            return None
+        return chunk
+
+    def _carry_lost(self, o) -> bool:
+        """原版 Lizard.cs:1386：猎物被抓的那一截离嘴前锚点超过 70 + 该截 rad → 脱手。"""
+        chunk = self._carry_grab_chunk(o)
+        if chunk is None:
+            return False
+        mx, my = self._mouth_point()
+        return (math.hypot(chunk.x - mx, chunk.y - my)
+                > CARRY_LOSE_DIST + float(getattr(chunk, "rad", 0.0)))
+
+    def _carry_keep(self, o) -> bool:
+        """这一 tick 还该继续叼着吗（原版 CarryObject 的 grasps[0] 还在不在）。
+
+        尸体 / 昏迷：一路叼回巢穴。玩家用鼠标抓着的：没拽过距离上限就继续叼
+        （`_hold_cat` 会把它拽回嘴边），拽过头就按 Lizard.cs:1386 脱手；
+        真醒过来的（既没昏迷也没被鼠标抓着）照样松口。
+        """
+        if self._carry_lost(o):
+            return False
+        return bool(o.dead or o.fainted) or self._carry_grab_chunk(o) is not None
 
     def _carry_tick(self, WL: float, HL: float) -> bool:
         """Behavior.ReturnPrey：把咬倒的猎物叼回**锁定的那个巢穴**。
@@ -2411,8 +2457,9 @@ class Lizard:
             if o is None:
                 self._release_carry()             # 目标没了（被清场 / 转世）
                 return False
-            if not o.dead and not o.fainted:
-                self._release_carry()             # 醒了：松口，回去当普通猎物
+            if not self._carry_keep(o):
+                # 被玩家拽脱手（Lizard.cs:1386）或醒了：松口，回去当普通猎物
+                self._release_carry(yanked=self._carry_lost(o))
                 return False
             self.prey.refresh(self._tick)
             if self.carry_den is None:
