@@ -2311,7 +2311,8 @@ class ItemInteractionMixin:
         for sc in self.squidcadas:
             sc._impact_cb = self._shake_impact
             sc.step(self._WL, self._HL, threats=threats,
-                    look_at=self._squid_look_at(sc))
+                    look_at=self._squid_look_at(sc),
+                    prey=self.batflies)       # 蝉乌贼捕食蝠蝇
         self._cull_flung_corpses()
         self.squidcadas = [sc for sc in self.squidcadas if sc.state != ItemState.EATEN]
 

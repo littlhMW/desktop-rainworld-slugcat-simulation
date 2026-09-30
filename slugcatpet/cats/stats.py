@@ -83,12 +83,16 @@ class SlugStats:
 
     # 原版 throwingSkill：滑铲抛物增距要 > 0 才生效（Player.cs:11278）
     throwing_skill: int = 1
-    # 矛槽能力：猎手可用背槽；只有矛大师可双手同时持矛
+    # 矛槽能力：猎手可用背槽（额外备一支）、双手都能持矛；
+    # 矛大师两只手都能持矛且不用背槽（dual_spear）
     back_spear: bool = False
     dual_spear: bool = False
+    hand_spear_max: int = 1         # 双手能同时持几支矛（猎手/矛大师＝2）
     # 掷矛伤害倍率区间（太弱才写）：原版 Spear.HitSomething 的 spearDamageBonus
     # throwingSkill == 0 时是 0.6 + 0.3*rand^4（Player.cs:11526-11575），下限 0.6 上限 0.9
     spear_dmg_range: tuple[float, float] | None = None
+    # 掷矛伤害倍率（wiki 单矛伤害表）：猎手/工匠/矛大师 1.25、饕餮 3
+    spear_dmg_mul: float = 1.0
 
     # 0-based，HUD 显示 +1；None=用全局 KARMA_MAX
     karma_cap: int | None = None

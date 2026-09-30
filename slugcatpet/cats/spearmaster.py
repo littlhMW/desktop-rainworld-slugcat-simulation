@@ -32,7 +32,8 @@ SPEARMASTER_DEF = CatDef(
     atlas_keys=("base",),
     caps=CatCaps(tongue=False, ascension=False),
     stats=replace(DEFAULT_STATS, runspeed_fac=1.2, weight_fac=0.85, pole_fac=1.25,
-                  max_food=10, food_hibernate=5, throwing_skill=2, dual_spear=True),
+                  max_food=10, food_hibernate=5, throwing_skill=2, dual_spear=True,
+                  hand_spear_max=2, spear_dmg_mul=1.25),
     # 矛大师：性格很好、极其耐心、极其勇敢善良；没嘴所以从不吃地上的东西
     personality=replace(DEFAULT_PERSONALITY, activity=0.7, stamina=1.1,
                         sociability=0.7, temper=0.35, crawl_like=0.3,

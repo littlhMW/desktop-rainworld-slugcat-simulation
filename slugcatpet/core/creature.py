@@ -87,6 +87,8 @@ ZEROG_POLE_LEAN = 5.0
 
 CARRY_OFF_X = 20.0
 CARRY_OFF_Y = 12.0
+# 持矛倾角：矛尖朝前上方，杆离竖直 25°（原版 PlayerGraphics 持矛贴图 / 用户参考图）
+SPEAR_HOLD_TILT = 25.0
 # 出膛点：Player.ThrowObject → thrownPos = firstChunk.pos + throwDir*10 + (0,4)（游戏 y↑）
 THROW_ORIGIN_DX = 10.0
 THROW_ORIGIN_DY = 4.0
@@ -1993,20 +1995,22 @@ class SlugcatBody:
             spear.unstuck()
 
         # 槽位规则：
-        #   Hunter：1 手 + 1 背，共两支；
-        #   Spearmaster：两只手各一支，不使用背槽；
+        #   Hunter：双手各一支（双持，用户要求）＋ 背上仍可备一支；
+        #   Spearmaster：两只手各一支，不使用背槽（dual_spear）；
         #   其他猫：全身最多一支。
-        if not getattr(self.stats, "dual_spear", False):
-            # 非矛大师：手里已经有矛时，不允许第二支进入另一只手。
-            # Hunter 的第二支只能进入专属背槽；其他猫直接拒绝。
-            if self.hand_spears:
-                if getattr(self.stats, "back_spear", False) and self.back_spear is None:
-                    self.put_spear_on_back(spear)
-                    return True
-                return False
-            # Hunter 已经背着一支时，仍可拿一支到手；总量正好两支。
-            if self.back_spear is not None and not getattr(self.stats, "back_spear", False):
-                return False
+        cap = int(getattr(self.stats, "hand_spear_max", 1) or 1)
+        if getattr(self.stats, "dual_spear", False):
+            cap = max(cap, 2)
+        use_back = (bool(getattr(self.stats, "back_spear", False))
+                    and not getattr(self.stats, "dual_spear", False))
+        if len(self.hand_spears) >= cap:
+            # 手满了：只有专属背槽还能再收一支，其余直接拒绝。
+            if use_back and self.back_spear is None:
+                self.put_spear_on_back(spear)
+                return True
+            return False
+        if self.back_spear is not None and not use_back:
+            return False
 
         side = self._take_hand("spear", side)
         if side is None:
@@ -2047,16 +2051,20 @@ class SlugcatBody:
             self.arm_aim[side] = None
         return side
 
-    def spear_hold_angle(self, up_frac=0.35):
-        """手里的矛的朝向（原版 Player.GetHeldItemDirection / PlayerGraphics.spearDir）。
+    def spear_hold_angle(self, tilt=None):
+        """手里的矛的朝向（原版 Spear 被 PlayerGraphics 拎在身侧的姿态）。
 
-        - 平常：杆几乎水平、矛头朝前，并带原版那种 ±4° 的步态摇摆
-          （原版 DegToVec((80 + cos((animationFrame + (leftFoot?9:3))/12*2π)*4) * spearDir)）。
+        - 平常：矛尖朝**前上方**，杆离竖直约 25°，并带原版那种 ±4° 的步态摇摆
+          （原版是 DegToVec((80 + cos((animationFrame + (leftFoot?9:3))/12*2π)*4) * spearDir)，
+          即杆围着肩转；桌宠按参考图收敛成「尖端过顶、杆贴身前上方」这一档）。
+          旧版写成 _ang_from_up(±1, -0.35)＝离竖直 70.7°，看着像把矛横在身前 / 拖在身后，
+          用户报的「拿矛角度不对」就是它。
         - 爬杆时：杆顺着体轴朝上（原版 ClimbOnBeam 分支先 y=|y| 再向体轴 slerp 0.75），
           否则横着的矛会插进竖杆里。
         - 朝向一律取 self.facing —— 只有走动时才更新、静止保持。**不能用
           chunk0.x - chunk1.x**：挂在竖杆上时两节水平几乎重合，dx 每帧正负乱跳，
           矛就会原地翻 180°（用户报的「拿着矛/背着矛时矛随机旋转」）。
+        角度口径与 rendering.primitives.draw_spear 一致：0 = 竖直向上、顺时针为正（y↓）。
         """
         fdir = 1.0 if self.facing >= 0 else -1.0
         if self.on_pole:
@@ -2064,10 +2072,11 @@ class SlugcatBody:
             if self.animation in ("StandOnBeam", "HangFromBeam", "GetUpOnBeam"):
                 return 90.0 if fdir > 0 else 270.0
             return 0.0
+        base = SPEAR_HOLD_TILT if tilt is None else float(tilt)
         wob = 0.0
         if self.is_moving():
             wob = math.cos(self.stride_phase * 2.0 * math.pi * self.walk_bob_freq) * 4.0
-        return _ang_from_up(fdir, -up_frac) + fdir * wob
+        return fdir * (base + wob)
 
     def throw_spear(self, dir_x, frc=1.0, up=1.5, recoil=1.0, vel=None, toss=False,
                     dir_y=0.0, input_x=1, input_y=0, flip=False):
@@ -2082,10 +2091,15 @@ class SlugcatBody:
         if sp is None:
             return None
         rng = getattr(self.stats, "spear_dmg_range", None)
+        mul = float(getattr(self.stats, "spear_dmg_mul", 1.0) or 1.0)
         if rng is not None:
             # 原版 spearDamageBonus：throwingSkill 0 的猫是 0.6 + 0.3*rand^4
             lo, hi = float(rng[0]), float(rng[1])
             sp.damage = lo + (hi - lo) * (sp._rng.random() ** 4)
+        else:
+            if mul > 1.0 and self.energy < tuning.EXHAUST_ENTER_ENERGY:
+                mul *= 0.1          # 力竭：饕餮 3 → 0.3（wiki 表）
+            sp.damage = mul         # 掷出时由投掷者定伤害（各猫单矛伤害表）
         c0, c1 = self.chunk0, self.chunk1
         sx = c0.x + float(dir_x) * THROW_ORIGIN_DX
         sy = c0.y - float(dir_y) * THROW_ORIGIN_DX - THROW_ORIGIN_DY

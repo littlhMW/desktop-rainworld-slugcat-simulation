@@ -58,6 +58,15 @@ FLAPS_MAX = 60            # 兼容旧字段：体力条的刻度数
 REST_TICKS = 70           # 兼容旧字段：rest>0 表示落着没飞
 EATEN_COUNTDOWN = 3
 
+# ── 捕食蝠蝇（原版 CicadaAI 的 BatFly 猎食：饿了主动去抓，抓到当场吃掉）──
+HUNGER_DRAIN = 1.0 / 2400.0   # 每 tick 掉一点（满 → 饿约 60 s）
+HUNGER_INIT = (0.35, 1.0)     # 出生时的饥饿度区间（随机，不是全都饿）
+HUNGRY_BELOW = 0.55           # 低于它才开始找蝠蝇
+HUNT_R = 320.0                # 捕食视线半径
+CATCH_D = 12.0                # 贴到这么近就咬中
+PREY_FLEE_R = 70.0            # 蝠蝇察觉到蝉乌贼的距离
+PREY_FLEE_D = 140.0           # 逃跑目标点距离
+
 WALL_MARGIN = 20.0
 
 # 4 条触须的初始散开偏移（原版是 4 个独立 Limb，各自的物理历史不同）
@@ -89,7 +98,8 @@ class Squidcada:
                  "stamina", "flying", "flying_power", "sin_counter", "wait_fly",
                  "charge_counter", "charge_dir", "like", "stun", "armed_threat",
                  "look_at", "look_dir", "look_rot", "charging_vis",
-                 "threat_mode", "threat_pos", "_contact_ceil")
+                 "threat_mode", "threat_pos", "_contact_ceil",
+                 "hunger", "prey")
 
     @property
     def haul_chunk_mass(self):
@@ -127,6 +137,8 @@ class Squidcada:
         rng = self._rng = _random.Random(seed * 6151 + 7)
         self.male = rng.random() < 0.5     # 原版：雄性偏白、雌性偏黑
         self.hue = 0.55 + rng.uniform(-0.1, 0.1)   # 原版个体色相（蓝紫）
+        self.hunger = rng.uniform(HUNGER_INIT[0], HUNGER_INIT[1])   # 饿了就去抓蝠蝇
+        self.prey = None         # 正在追的那只蝠蝇（原版 CicadaAI 的 prey）
         self.flap = rng.random()
         self.flap_ph = rng.random() * math.tau
         self.wings = [self.flap, self.flap]
@@ -381,7 +393,8 @@ class Squidcada:
                                              self.wing_dep_to)
 
     # ── 主循环 ──
-    def step(self, WL: float, HL: float, threats=(), look_at=None) -> None:
+    def step(self, WL: float, HL: float, threats=(), look_at=None,
+             prey=()) -> None:
         self.look_at = look_at
         self.gfx_tick()
         if self.state in (ItemState.MOUSE, ItemState.CARRIED):
@@ -408,7 +421,9 @@ class Squidcada:
             return
 
         self._stamina_tick(grabbed=False)
+        self._hunt_tick(prey)
         self._flight(WL, HL, threats)
+        self._try_catch()
         self._flags_sync()
 
     # ── 体力（Cicada.cs:232-235 / :587-592）──
@@ -429,6 +444,44 @@ class Squidcada:
         """新模型映射回旧字段：flaps = 体力刻度，rest > 0 表示落着没飞。"""
         self.flaps = int(round(clampf(self.stamina, 0.0, 1.0) * FLAPS_MAX))
         self.rest = 0 if self.flying else REST_TICKS
+
+    # ── 捕食蝠蝇 ──
+    def _hunt_tick(self, prey) -> None:
+        """饿了就挑最近的一只蝠蝇当猎物（原版 CicadaAI：蝉乌贼会捕食蝠蝇）。"""
+        self.hunger = clampf(self.hunger - HUNGER_DRAIN, 0.0, 1.0)
+        cur = self.prey
+        if cur is not None and (getattr(cur, 'dead', False)
+                                or cur.state != ItemState.FREE
+                                or self.hunger > HUNGRY_BELOW):
+            cur = self.prey = None
+        if cur is None and self.hunger <= HUNGRY_BELOW:
+            best, bd = None, HUNT_R
+            for bf in prey:
+                if getattr(bf, 'dead', False) or bf.state != ItemState.FREE:
+                    continue
+                d = math.hypot(bf.x - self.x, bf.y - self.y)
+                if d < bd:
+                    best, bd = bf, d
+            self.prey = best
+        tgt = self.prey
+        if tgt is None:
+            return
+        # 蝠蝇会被扑过来的蝉乌贼惊走：把它的漂移目标改到反方向（原版 BatFly 逃跑）
+        if math.hypot(tgt.x - self.x, tgt.y - self.y) < PREY_FLEE_R:
+            ux, uy = _dirvec(self.x, self.y, tgt.x, tgt.y)
+            tgt.goal = (tgt.x + ux * PREY_FLEE_D, tgt.y + uy * PREY_FLEE_D)
+
+    def _try_catch(self) -> bool:
+        """贴到猎物身上就一口咬死（吃完饥饿度回满，进入下一个捕食周期）。"""
+        bf = self.prey
+        if bf is None or getattr(bf, 'dead', False) or bf.state != ItemState.FREE:
+            return False
+        if math.hypot(bf.x - self.x, bf.y - self.y) > CATCH_D:
+            return False
+        bf.bite()                 # BatFly：die() + 尸体倒计时，由 items 层剔除
+        self.hunger = 1.0
+        self.prey = None
+        return True
 
     def _charge(self, px: float, py: float) -> None:
         """Cicada.cs:694-704 Charge(pos)：锁定方向，起手蓄势。"""
@@ -537,7 +590,7 @@ class Squidcada:
             self.vy += cy * CONTACT_PUSH * fp * st * self._rng.random()
 
     def _fly_goal(self, WL, HL, tx, ty):
-        """敌意 → 贴到对方身边 30px 好顶；畏惧 → 掉头逃；否则闲逛。"""
+        """敌意 → 贴到对方身边 30px 好顶；畏惧 → 掉头逃；饿了 → 追蝠蝇；否则闲逛。"""
         if self.threat_pos is not None and self.threat_mode is not None:
             gx, gy = self.threat_pos
             dx, dy = self.x - gx, self.y - gy
@@ -545,6 +598,8 @@ class Squidcada:
             if self.threat_mode == "antagonize":
                 return (gx + dx / d * 30.0, gy + dy / d * 30.0)
             return (self.x + dx / d * 160.0, self.y + dy / d * 160.0)
+        if self.prey is not None:                # 饿了：猎物就是路径目标
+            return (self.prey.x, self.prey.y)
         self._drift(WL, HL)
         return self._goal
 

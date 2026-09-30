@@ -41,7 +41,8 @@ SAINT_DEF = CatDef(
     layout_file="saint.json",
     atlas_keys=("base", "msc", "ui", "uimsc"),
     caps=CatCaps(tongue=True, ascension=True),
-    stats=replace(DEFAULT_STATS, throwing_skill=0),   # 原版 Saint throwingSkill = 0
+    stats=replace(DEFAULT_STATS, throwing_skill=0,   # 原版 Saint throwingSkill = 0
+                  spear_dmg_range=(0.6, 0.9)),     # 0.6 + 0.3*rand^4
     # 慈悲孱弱纯素：偏静易累最耐寒，爱舌钩荡跃
     personality=replace(DEFAULT_PERSONALITY, activity=0.4, stamina=0.8, cold_gain_fac=0.5,
                         sociability=0.3, temper=0.3, crawl_like=0.55,

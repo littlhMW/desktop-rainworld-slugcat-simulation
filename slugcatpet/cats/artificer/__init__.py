@@ -38,7 +38,7 @@ ARTIFICER_DEF = CatDef(
                   is_artificer=True,
                   drown_threshold=0.5,                                # 憋气极短，挣扎门提前留逃生时间
                   karma_cap=0,                                        # 业力锁 1 级（无 Echo 可升）
-                  throwing_skill=2),
+                  throwing_skill=2, spear_dmg_mul=1.25),
     # 复仇爆破手：好动强健、极不亲人
     # 极度暴躁：玩两下就把矛/石头甩出去，绝不肯趴
     personality=replace(DEFAULT_PERSONALITY, activity=0.75, stamina=1.1,

@@ -38,7 +38,7 @@ GOURMAND_DEF = CatDef(
     atlas_keys=("base",),
     caps=CatCaps(tongue=False, ascension=False),
     stats=replace(DEFAULT_STATS, weight_fac=1.35, pole_fac=0.8,
-                  max_food=11, food_hibernate=7, throwing_skill=2),
+                  max_food=11, food_hibernate=7, throwing_skill=2, spear_dmg_mul=3.0),
     # 饕餮：极其善良、一般勇敢；不喜欢用矛，宁可跳起来用体重砸下去
     personality=replace(DEFAULT_PERSONALITY, activity=0.45, stamina=1.15,
                         sociability=0.8, temper=0.35, crawl_like=0.45,
