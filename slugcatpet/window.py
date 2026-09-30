@@ -1690,8 +1690,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         poly = QPolygonF()
         for x, y in pts:
             poly.append(QPointF(x, y))
-        poly.append(QPointF(WL, bottom))
-        poly.append(QPointF(0.0, bottom))
+        # 水体必须向左右和底部多画一圈；世界震屏时也不会从透明桌宠窗口边缘露白。
+        bleed = 24.0
+        poly.append(QPointF(WL + bleed, bottom + bleed))
+        poly.append(QPointF(-bleed, bottom + bleed))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(*tuning.WATER_BODY_RGBA))
         p.drawPolygon(poly)
@@ -1811,7 +1813,13 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
         self._draw_fx_under(p)
 
-        rain_draw.draw_rain_under(p, self.rain, self.shelters, self._WL, self._HL)
+        # 暴雨雨幕属于屏幕空间，不跟随世界震屏；安全洞跟随庇护所位置。
+        if self.rain.active:
+            p.save()
+            if self._shake[0] or self._shake[1]:
+                p.translate(-self._shake[0], -self._shake[1])
+            rain_draw.draw_rain_under(p, self.rain, self.shelters, self._WL, self._HL)
+            p.restore()
 
         if self.shelters:
             # 后层（内腔暗底 + 墙体 + 结构）画在猫之前：躲进去的猫仍然看得见，
@@ -1877,7 +1885,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
         self._draw_fx(p)
 
-        rain_draw.draw_rain_over(p, self.rain, self.shelters, self._WL, self._HL)
+        if self.rain.active:
+            p.save()
+            if self._shake[0] or self._shake[1]:
+                p.translate(-self._shake[0], -self._shake[1])
+            rain_draw.draw_rain_over(p, self.rain, self.shelters, self._WL, self._HL)
+            p.restore()
 
         if self.snow_on:
             self._snow.draw(p, self._WL, self._HL, self._scale)
@@ -1888,7 +1901,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             self._draw_place_hint(p)
             p.restore()
 
-        rain_draw.draw_rain_darkness(p, self.rain, self.shelters, self._WL, self._HL)
+        if self.rain.active:
+            p.save()
+            if self._shake[0] or self._shake[1]:
+                p.translate(-self._shake[0], -self._shake[1])
+            rain_draw.draw_rain_darkness(p, self.rain, self.shelters, self._WL, self._HL)
+            p.restore()
 
         # 左下角固定 HUD：先抵消震屏平移，再画在屏幕（逻辑）坐标上
         if self._shake[0] or self._shake[1]:
