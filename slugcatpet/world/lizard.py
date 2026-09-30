@@ -16,9 +16,10 @@ from .terrain import Caps
 from . import lizard_cos
 from ..planning.navgraph import StuckDetector
 from .lizard_ai import (CARRY_HURRY, DEN_ARRIVE_R, DOMINANCE_DEFER, WARN_R,
-                        ApproachPlan, Memory, Observation, PackAlert, PreyTracker,
+                        ApproachPlan, Observation, PackAlert, PreyState,
                         SocialMemory, _terrain_route, choose_den, flank_offset,
-                        los_blocked, plan_approach, prefs_for, virtual_dens)
+                        los_blocked, los_blocked_idx, plan_approach, prune_side,
+                        prefs_for, virtual_dens, PERCEIVE_EVERY)
 
 # ── 物理 ──
 GRAVITY = 0.9                 # 同石头/蝙蝠量级
@@ -891,11 +892,38 @@ class _Leg:
         self.pair = (2 if back else 0) if pair is None else int(pair)
 
 
+def _prey_field(name):
+    """把「猎物链」的老字段名代理到 `self.prey`（文档 §17）。
+
+    PreyState 是这条链（追踪 / 占有 / 叼住 / 回巢 / 守卫 / 记忆）的**唯一**持有者；
+    这里只是让 `self.carry_obj`、`self.guard_t`、`self.mem` 这些老调用点原样可用，
+    读写都通到同一个 PreyState，行为与从前逐字段赋值完全一致。
+    """
+    def _get(self):
+        return getattr(self.prey, name)
+
+    def _set(self, value):
+        setattr(self.prey, name, value)
+
+    return property(_get, _set)
+
+
 class Lizard:
     food_class = "none"      # 不是食物：尸体算无用尸体（会被猫拖出屏幕清场）
     """一只蜥蜴：头为驱动质点，躯干/尾逐节跟随；巡走 → 警觉 → 扑咬。"""
 
     collision_layer = 0                 # 不参与 chunk 互推，交互全部走 AI
+
+    # 文档 §17：猎物链的老名字 → PreyState（唯一状态对象）的代理。
+    target = _prey_field("target")
+    target_obj = _prey_field("target_obj")
+    carry_obj = _prey_field("carry_obj")
+    carry_body = _prey_field("carry_body")
+    carry_den = _prey_field("carry_den")
+    carry_corner = _prey_field("carry_corner")
+    guard_obj = _prey_field("guard_obj")
+    guard_t = _prey_field("guard_t")
+    mem = _prey_field("mem")
 
     __slots__ = ("breed", "color", "tail_edge", "tail_amt", "rng", "seed", "id",
                  "body_rgb",
@@ -903,7 +931,7 @@ class Lizard:
                  "body_rad", "seg", "legs", "state", "facing", "look_at",
                  "limbs_aim",
                  "head_angle", "last_head_angle", "jaw", "last_jaw",
-                 "target", "target_obj", "bite_event", "bite_hold", "bite_cd", "_tgt_hold",
+                 "bite_event", "bite_hold", "bite_cd", "_tgt_hold",
                  "walk_phase", "idle_timer", "goal_x", "hop_cd", "blink", "last_blink",
                  "chain_dir", "_ax_c",
                  "body_dir", "move_dir", "look_dir", "turn_mode", "turn_progress",
@@ -919,8 +947,8 @@ class Lizard:
                  "threat", "threat_obj", "threat_t",
                  "noise_x", "noise_y", "noise_t", "lurk",
                  "bob", "bob_front", "bob_hind",
-                 "carry_obj", "carry_body", "carry_corner", "carry_den", "sprint",
-                 "guard_obj", "guard_t", "obs", "mem", "prey", "plan", "soc",
+                 "sprint",
+                 "obs", "prey", "plan", "soc",
                  "alert", "warning_t", "stage", "stage_obj", "peers",
                  "_blockers", "_tick",
                  "depth", "last_depth", "head_depth", "last_head_depth", "turn_lift",
@@ -931,7 +959,8 @@ class Lizard:
                  "_seed_prev",
                  "climb_kind", "climb_attached", "climb_side",
                  "climb_top", "climb_bot", "caps", "terrain", "_ground",
-                 "_stuck")
+                 "_stuck",
+                 "_blk_start", "_blk_end", "_blk_ver", "_claims", "_scanned")
 
     def __init__(self, x: float, y: float, breed: LizardBreed | None = None,
                  seed: int = 0, id: int = 0):
@@ -999,17 +1028,12 @@ class Lizard:
         self.camo_color = None
         self.camo_mix = 0.0      # 0＝本体色，1＝完全等于采样到的背景色（淡入淡出）
         self.camo_flicker = 0    # 受伤后「不由自主胡乱变色」剩余 tick
-        # 叼着死猫/昏迷猫回巢穴：carry_obj 是那只猫（PetUnit），carry_body 是
-        # 它的身体（被钉住跟着嘴走）。carry_den 是**开始搬运时锁定的那个巢穴**
-        # （原版 ReturnPrey 的 den：定了就不换），carry_corner 只是它的左右符号。
-        self.carry_obj = None
-        self.carry_body = None
-        self.carry_den = None
-        self.carry_corner = 0
         # ── AI 分层（world/lizard_ai.py）──
         self.obs = {"cats": (), "prey": (), "threats": (), "rivals": (), "pack": ()}
-        self.mem = Memory()          # 「我上次在哪看见它」（置信度记忆）
-        self.prey = PreyTracker()    # 「这只是我的猎物」（咬倒 → 归我 → 回巢穴）
+        # 文档 §17：「猎物链」只有这一个状态对象 —— target / target_obj / 咬倒
+        # 归属 / carry_obj+carry_body+carry_den+carry_corner（叼回巢穴）/ guard_obj
+        # +guard_t（放下后守一会儿）/ mem（我上次在哪看见它）全在里面。
+        self.prey = PreyState()
         self.plan = None             # 这一帧的接近路线（ApproachPlan）
         self.soc = SocialMemory()    # 同族关系：支配度 / 认怂 / 敬意
         self.rel = Relations(self)   # 动态关系：好感 / 恐惧 / 记恨（事件总线记账）
@@ -1020,8 +1044,13 @@ class Lizard:
         self.peers = ()              # 同场其它蜥蜴（认猎物归属用）
         self._blockers = ()          # 视线遮挡物：(杆子线段, 大生物圆)
         self._tick = 0
-        self.guard_obj = None        # 刚送回巢穴的猎物（守一会儿）
-        self.guard_t = 0
+        # 视线两端裁剪缓存（文档 §37）：起点（自己）一 tick 算一次、终点（每个目标）
+        # 一 tick 算一次；_claims 是这一 tick 全场的猎物归属表。
+        self._blk_start = (frozenset(), frozenset())
+        self._blk_end = {}
+        self._blk_ver = -1
+        self._claims = None          # None = 没有全场归属表（旧入口/测试）
+        self._scanned = False        # 还没看过第一眼 → 第一次必须扫
         # loungeTendency：锁定新目标时掷一次（绿蜥 1.0 必全速冲，蓝蜥 0.01 慢慢蹭）
         self.sprint = 0.55
 
@@ -1140,8 +1169,6 @@ class Lizard:
         self.last_head_angle = 0.0
         self.jaw = 0.0
         self.last_jaw = 0.0
-        self.target = None
-        self.target_obj = None
         self.bite_event = None
         self._tgt_hold = 0
         self.bite_cd = rng.randint(30, 90)
@@ -1203,7 +1230,7 @@ class Lizard:
         if (self.dead or self.stun > 0 or self.held_by_hand or self.hauled
                 or self.state != ItemState.FREE or self.hurt_flash > 0):
             return False
-        if self.target_obj is not None or self.carry_obj is not None:
+        if self.prey.chasing:
             return False
         return math.hypot(self.vx, self.vy) < CAMO_HIDE_VX
 
@@ -1824,13 +1851,28 @@ class Lizard:
 
     # ── AI ──
     # ══ 第一层：感知（同一份世界快照，不做任何决策）══
+    def should_scan(self, tick: int) -> bool:
+        """这一 tick 要不要重建观察（文档 §37 AI 时间片）。
+
+        按 id 错峰：平均每 `PERCEIVE_EVERY` tick 才扫一次，避免所有蜥蜴同一 tick
+        一起跑昂贵的感知。第一次必须扫，否则 `obs` 一直是空的。
+        """
+        if not self._scanned:
+            return True
+        return (int(tick) + self.id) % PERCEIVE_EVERY == 0
+
     def perceive(self, WL, HL, targets=(), prey=(), threats=(), others=(), pack=(),
-                 lizards=(), blockers=(), surfaces=(), terrain=None, tick=None) -> dict:
+                 lizards=(), blockers=(), surfaces=(), terrain=None, tick=None,
+                 scan=True) -> dict:
         """这一 tick 看见 / 听见什么。
 
         每条记录都带上距离、关系权重、视野锥得分、**可见性**（锥内且没被挡）、
         姿态（匍匐更难被盯上）以及「这只猎物是不是已经归别人」。这一层不改世界、
         不改速度 —— 所以多只蜥蜴可以拿同一份快照各自决策。
+
+        `scan=False`（AI 时间片，文档 §37）：这一 tick 不重建观察，只刷新地形 /
+        遮挡 / 同伴这些便宜字段，直接复用上一次的 `obs`。记忆按跳过的 tick 数
+        一次性衰减，保证有效速率和逐帧跑时一致。
         """
         if tick is not None:
             self._tick = int(tick)
@@ -1839,6 +1881,10 @@ class Lizard:
         if terrain is not None:
             self.terrain = terrain                    # 全场共用的一份地形快照
         self.peers = tuple(lizards)
+        if not scan:
+            self.mem.miss()
+            return self.obs
+        self._scanned = True
         cats, preys, thrs, rivs, pk = [], [], [], [], []
         for row in targets:
             obj, ox, oy, dead, fainted = _cat_row(row)
@@ -1870,20 +1916,60 @@ class Lizard:
         self._update_memory(cats, preys)
         return self.obs
 
+    def _los(self, x0, y0, x1, y1, obj) -> bool:
+        """两点之间视线是否通畅（带两端裁剪缓存，文档 §37）。
+
+        `prune_blockers` 的起点裁剪与终点裁剪互相独立，所以拆开缓存：起点（自己）
+        一 tick 只算一次，终点（每个目标）一 tick 只算一次；之后每个候选只做一次
+        下标集合的交集判断，不再对每个「蜥蜴 × 目标」重跑一遍几何。
+        """
+        segs, circles = self._blockers
+        if self._blk_ver != self._tick:
+            self._blk_ver = self._tick
+            self._blk_start = prune_side(x0, y0, segs, circles)
+            self._blk_end = {}
+        ek = self._blk_end.get(id(obj))
+        if ek is None:
+            ek = prune_side(x1, y1, segs, circles)
+            self._blk_end[id(obj)] = ek
+        return not los_blocked_idx(x0, y0, x1, y1, segs, circles,
+                                   self._blk_start, ek)
+
     def _observe(self, obj, ox, oy, kind, w=1.0, dead=False, fainted=False,
                  stance="stand") -> Observation:
-        """把一个候选变成观察记录（含视野锥与视线遮挡判定）。"""
+        """把一个候选变成观察记录（视野锥 + 视线遮挡）。
+
+        视线只算一次：旧版 `_observe` 先跑一遍 `los_blocked`，`sees()` 里又跑一遍。
+        另外超过任何消费者会用到的距离（`notice_r * THREAT_NOTICE_FAC`）就不再判
+        遮挡 —— 远处的东西本来就够不着（文档 §37，`_pick_threat` / `_flee_util`
+        / `_hunt_util` 三个消费者都只在这个半径内看 `los`）。
+        """
         d = math.hypot(ox - self.x, oy - self.y)
+        v = self._visual_fac(ox, oy)
         los = True
-        if self._blockers:
-            segs, circles = self._blockers
-            los = not los_blocked(self.x, self.y, ox, oy, segs, circles)
-        return Observation(obj, ox, oy, d, kind, w, self._visual_fac(ox, oy),
-                           self.sees(ox, oy, obj) and los, dead, fainted,
-                           stance, self._claimed_by(obj), los=los)
+        if self._blockers and d <= self.notice_r * THREAT_NOTICE_FAC:
+            los = self._los(self.x, self.y, ox, oy, obj)
+        if not los:
+            return Observation(obj, ox, oy, d, kind, w, v, False, dead, fainted,
+                               stance, self._claimed_by(obj), los=False)
+        if obj is self.target_obj:
+            in_cone = d <= self.notice_r
+        else:
+            in_cone = d <= self.notice_r * (VIS_BACK_FAC + (1.0 - VIS_BACK_FAC) * v)
+        return Observation(obj, ox, oy, d, kind, w, v, in_cone, dead, fainted,
+                           stance, self._claimed_by(obj), los=True)
 
     def _claimed_by(self, obj):
-        """这只猎物是不是已经被别的蜥蜴认领（它咬倒的、正往回叼的）。"""
+        """这只猎物是不是已经被别的蜥蜴认领（它咬倒的、正往回叼的）。
+
+        全场归属表由 `items._step_lizards()` 每 tick 建一次（文档 §37）：旧版对
+        每个候选都要遍历所有同伴跑 `owns()`，一张表就够了。没有表时（旧入口 /
+        单元测试直接调用）退回逐同伴扫描。
+        """
+        claims = self._claims
+        if claims is not None:
+            owner = claims.get(id(obj))
+            return None if owner is None or owner is self else owner
         for other in self.peers:
             if other is self or getattr(other, "dead", False):
                 continue
@@ -2304,7 +2390,7 @@ class Lizard:
 
     def offer_alert(self):
         """黄蜥广播「我在哪看见什么猎物」（原版 Pack 情报，不是站在一起）。"""
-        if self.dead or self.tamed or self.carry_body is not None:
+        if self.dead or self.tamed or self.prey.carrying:
             return None
         if self.breed.key not in PACK_BREEDS:
             return None
@@ -2317,7 +2403,7 @@ class Lizard:
         """收到同伴的情报：记下来，包夹位置按自己的序号错开（不要全挤一个点）。"""
         if alert is None or self.dead or self.tamed:
             return
-        if self.carry_body is not None or alert.obj is None:
+        if self.prey.carrying or alert.obj is None:
             return
         # 「哪条更新」看原始时间戳；同一条被转发到第二次（hops 更大）不该覆盖
         # 更早收到的那份更清晰版本（文档 §16：转发不刷新 TTL）。
@@ -2515,7 +2601,7 @@ class Lizard:
 
     def _hunt_util(self, obs) -> float:
         """Hunt 效用：嘴里有肉最高；目标越近越高，出了视野半径就没有。"""
-        if self.carry_obj is not None or self.carry_body is not None:
+        if self.prey.carrying:
             return HUNT_UTIL
         reach = max(8.0, self._bite_reach() * 1.5)
         best = 0.0
@@ -2698,8 +2784,8 @@ class Lizard:
         """
         if self.dead or self.state != ItemState.FREE:
             return (None, "")
-        if self.carry_obj is not None:
-            return (self.carry_obj, "hunt")
+        if self.prey.carrying:
+            return (self.prey.carry_obj, "hunt")
         if self.prey.owns(self.prey.obj, self._tick):
             return (self.prey.obj, "hunt")
         if (self.alert is not None and self.alert.obj is not None
@@ -2788,8 +2874,8 @@ class Lizard:
     def _carry_intent(self, WL, HL):
         """要不要走搬运流程（原版 Behavior.ReturnPrey / CarryPrey）。"""
         obs = self.obs
-        if self.carry_body is not None:
-            o = next((c for c in obs["cats"] if c.obj is self.carry_obj), None)
+        if self.prey.carrying:
+            o = next((c for c in obs["cats"] if c.obj is self.prey.carry_obj), None)
             if o is None:
                 self._release_carry()
                 return None
@@ -2912,8 +2998,8 @@ class Lizard:
         """
         obs = self.obs
         stand = self.body_rad * HEAD_STAND_FAC
-        if self.carry_body is not None:
-            o = next((c for c in obs["cats"] if c.obj is self.carry_obj), None)
+        if self.prey.carrying:
+            o = next((c for c in obs["cats"] if c.obj is self.prey.carry_obj), None)
             if o is None:
                 self._release_carry()             # 目标没了（被清场 / 转世）
                 return False

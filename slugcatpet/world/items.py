@@ -1651,13 +1651,27 @@ class ItemInteractionMixin:
         surfaces = terrain.climb_surfaces()
         live = [lz for lz in self.lizards
                 if not lz.dead and lz.state == ItemState.FREE]
-        # ① 感知：所有蜥蜴看同一份世界快照
+        # 猎物归属快照（文档 §37）：同一 tick 内归属不会变，建一张 {猎物 id → 认领者}
+        # 表全场共用，代替「每只蜥蜴 × 每个候选 × 所有同伴」跑 owns()。
+        claims = {}
+        for lz in live:
+            po = lz.prey.obj
+            if po is not None and lz.prey.owns(po, tick):
+                claims.setdefault(id(po), lz)
+        # ① 感知：所有蜥蜴看同一份世界快照。**扫描按 id 错峰降频**（文档 §37 AI
+        #    时间片）：平均每 PERCEIVE_EVERY tick 重建一次观察，其余 tick 复用上次
+        #    结果；地形 / 遮挡 / 同伴 / 归属这些便宜字段仍然逐 tick 刷新。
         for lz in self.lizards:
-            prey, threats, others, pack = self._lizard_relations(lz)
+            lz._claims = claims
+            scan = lz.should_scan(tick)
+            if scan:
+                prey, threats, others, pack = self._lizard_relations(lz)
+            else:
+                prey = threats = others = pack = ()
             lz.perceive(self._WL, self._HL, targets=targets, prey=prey,
                         threats=threats, others=others, pack=pack,
                         lizards=live, blockers=blockers,
-                        surfaces=surfaces, terrain=terrain, tick=tick)
+                        surfaces=surfaces, terrain=terrain, tick=tick, scan=scan)
         # ② 决策；黄蜥在这一步之后广播猎物情报，同伴按自己的序号去包夹
         for lz in self.lizards:
             lz.decide(self._WL, self._HL)

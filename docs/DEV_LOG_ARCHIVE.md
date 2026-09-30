@@ -4,6 +4,66 @@
 
 ## 2026-10-01
 
+### R137 · §37 AI 时间片 + §20 竖线跨高度参数化搜索 + §17 猎物链合并成 PreyState
+
+- **背景**：R136 结尾留了三条「要做但单独一轮」的审计项（§37 / §20 / §17），本轮连同上一轮遗留一次做完；三项都不是新 bug，是那份规范里**架构层面的欠账**。
+- **口径**：三项都只动**结构与调度**，不动任何行为参数、不动外观、不动伤害。
+
+**① §37 AI 时间片（纯性能项，规格见文档第三十七节）**
+
+- 规格：感知每 2~3 tick、目标选择每 4 tick、路线事件 10~20 tick、LOS 缓存 3~5 tick、Pack 10 tick、声音 5 tick；**物理 / 攻击碰撞 / 抓取仍每 tick**；8 只蜥蜴错峰到 4 个 tick 上。
+- 实装：
+  - `lizard_ai.PERCEIVE_EVERY = 3` + `Lizard.should_scan(tick)`：`(tick + id) % PERCEIVE_EVERY == 0` 才重建观察，**按 id 错峰**（不会全场挤在同一帧）；`_scanned` 保证「从没看过」的第一次必扫。
+  - `perceive(..., scan=False)`：不扫就 `mem.miss()` 让置信度照常衰减，然后**直接返回上一份 `obs`**；地形 / 遮挡 / 同伴 / 归属仍然逐 tick 刷新（所以物理和碰撞不受影响）。
+  - 猎物归属改成**每 tick 一张全场共用表** `items._step_lizards()` 里建一次（`{id(prey_obj): owner}`），`Lizard._claimed_by()` 直接查表 —— 消掉了「每只蜥蜴 × 每个候选 × 所有同伴」的 O(N²) `owns()` 扫描。
+  - `_observe()` 只算**一次** LOS（旧版 `los_blocked` 与 `sees()` 各算一遍）；超过任何消费者会用到的半径就不判遮挡。
+  - 新增 `lizard_ai.prune_side()` / `los_blocked_idx()`：起点（自己）一 tick 裁一次、终点（每个目击对象）一 tick 缓一次，视线判定只遍历两端都留下的遮挡物。
+- 实测（`_bench_lz2.py`，关掉 cProfile 的干净 A/B，只切 `lizard.py` 的 `PERCEIVE_EVERY`）：
+
+  | 场景 | 每 tick 全扫（EVERY=1） | 时间片（EVERY=3） |
+  | --- | --- | --- |
+  | 30 只蜥蜴 | 16.1 / 17.0 ms | **9.40 / 9.44 ms** |
+  | 60 只蜥蜴 | 75.3 ms | **35.6 ms** |
+
+  （EVERY=4 与 EVERY=3 基本持平：9.3 ms，所以取 3 而不是 4。R136 交接里「126.9 → 34.6 ms」那组数含 `cProfile` 的 2~3 倍自身开销，只作同口径对比，不作为绝对值。）
+
+**② §20 竖线跨高度参数化搜索（文档第二十节）**
+
+- 问题：TerrainGraph 里每根竖线只有 `bottom/top` 两个节点，`_link_beams()` 只在两端建连接 —— 「挂在墙中间要出去」「目标在另一根杆的这一层」AI 会认为**没路线**（蛞蝓猫的 SurfaceGraph 在这一点更丰富，PoleJumpReach 支持任意高度搜索）。
+- 修法：**保留端点图，只在需要时插桩**，不预先离散化所有高度。
+  - `TerrainQuery.attach_points(caps, x, y, tx, ty)`：对「我当前的高度」「目标当前的高度」两个 y，挑 `abs(s.x - px) <= caps.climb_reach` 且 `s.top + 8 < py < s.bot - 8` 的竖线，**去重**后返回插桩点。
+  - `_build_graph` 多一段「②b 按需插桩」：给每个插桩点建节点（`stand` 沿用同一根线的能力判定），`can` 时再建 4 条 **both=False** 的爬边。
+  - **climb 槽口径变了**：爬边给的是「要走的那一段」（当前高度→线顶 / 线底→当前高度），不再是整条线 —— 所以 `e2e_r116` 两处断言从 `(212.0, 60.0, 700.0, 1)` 改成 `(212.0, 60.0, 400.0, 1)`、`climb_bot` 从 `700.0` 改成 `400.0`。**这是口径变更，不是回归。**
+  - `route / reach_result / reachable / returnable` 全部改成 `for g in self._graphs(...)`：先试基础端点图，失败了才试插桩图；没有插桩需求时**缓存键不变**，仍然是原来那张图（`_attach_key` 把插桩点量化到 24px 桶）。
+  - 新增 `_same_line(a, b)`：⑤跳跃 / ⑥跳下的建边循环里 `if a == b or _same_line(a, b): continue`。**这是本轮的关键修复** —— 否则插桩节点会和同一根线的线顶/线底互建「跳跃」边，蓝蜥爬到 y≈180 后被 `jump` 反复弹回（`e2e_r117` 就卡在这里，加完 `_same_line` 自己就绿了）。
+
+**③ §17 猎物链只有一个状态对象：`PreyState`（文档第十七节）**
+
+- 问题：同一条链（看到 → 追踪 → 咬倒 → 占有 → 叼住 → 回巢 → 放下 → 守卫）被拆在 `PreyTracker` + `target/target_obj` + `carry_obj/carry_body/carry_den/carry_corner` + `guard_obj/guard_t` + `mem` 里，于是到处是「A is not None and B is not None」这种组合判断，同一条链有好几个互相独立的说法。
+- 修法：
+  - `lizard_ai.PreyState(PreyTracker)`：**唯一状态对象**。归属那一段（`obj/state/killed/fainted/claim_tick` 与 `claim/hunting/refresh/owns/owned/delivered/release`）继承自 `PreyTracker`，**一个字节都没改**，所以 `self.prey.xxxx` 老调用照旧可用；`target/target_obj/carry_*/guard_*/mem` 全搬进来。
+  - 链上位置由 `phase` 一处说了算：`idle / track / downed / carry / guard`（优先级 carry > downed > guard > track）；再给三个判据 `carrying`（=`carry_body is not None`，原版 CarryObject）、`chasing`（= 盯着或叼着，**守着巢穴不算**）、`busy`（=`phase != "idle"`）。
+  - `reset()` 整条链归零（换目标 / 被吓跑 / 清零重来）。
+  - `lizard.py`：9 个老字段**从 `__slots__` 里删掉**，改成类级 `property`，由模块级 `_prey_field(name)` 工厂生成，读写都代理到 `self.prey`。这样**全部老调用点（含跨文件）行为完全不变**，但存储只剩一份。
+  - 组合判断收进 `PreyState`：`_camo_hide` → `self.prey.chasing`；`offer_alert` / `absorb_alert` / `_hunt_util` / `claimed_obj` / `_carry_intent` / `_st_returnprey` → `self.prey.carrying`。改完 `lizard.py` 里 `carry_body is not None` / `carry_obj is not None` **各 0 处**（原来 14 + 12 处）。
+- **说明**：文档把 `stage_obj` 也列进了这条链，但它是「当前行为正对着的那条 `Observation`」的持有者（`world/lizard_ai.Observation` 记录），不是猎物链上的状态，搬进 `PreyState` 反而是错的，所以留原样。
+
+**④ 回归测试**
+
+- 新增 `work/scratch/e2e_r131.py`（约 40 项，已接进 `run_all19.ps1`，现在共 **121 个脚本**）：
+  - §37：错峰（每只 3 tick 只扫一次、不同 id 不同 tick）/ 归属表共用 / 认领者看自己不算被认领 / 没表时线性退回 / 杆子挡视线 / 远处不判遮挡 / 起点裁剪同 tick 只算一次 / 降频后照样锁猎物。
+  - §20：插桩点就是两个高度 / 只落够得着的线 / 端点图不通 → 插桩图通 / climb 槽是分段 / 墙上节点集合 == `[100.0, 110.0, 291.0, 460.0]` / 不重复插桩 / 无需求时复用同一张缓存图。
+  - §17：`PreyState` 继承关系 / `Lizard.prey` 是 `PreyState` / 9 个字段不再占 slot / 老名字是 property / 代理读写双向一致 / `phase` 四个分支 / `reset()` / `mem` 合入 / 源码层面不再有 carry 组合判断。
+- 全量 **121 个脚本 fails=0**。
+
+**⑤ 本轮仍未做（明确记录，不是遗忘）**
+
+- §8 咬合参数补全（`biteDelay=12` / `biteInFront=25` / `biteHomingSpeed=1.7` / `loungeDistance` / `loungeSpeed`）：现有 `COOLDOWN_TICKS=150` / `_bite_reach()` 是前几轮调好的另一套口径，直接换会动扑咬手感，要单独一轮调参 + 实测。
+- §13 `lizard_cos.py` 大砍（只留 TailTuft / AxolotlGills / LongHeadScales 动态）：改外观，需对着参考图核对。
+- §2 驯服社交拆 `like` / `tempLike` / `FriendTracker`、§5 Yellow 独立 Pack 层、§6 `AttemptBite / Grasp / Carry` 分层：重构级改动。
+- §9/§10 动作序列（`Attack_Prepare/Lunge/Bite/Recover`、后空翻的角动量、`bodyWiggleCounter`）：属姿态动画层。
+- §14.1 面条蝇绘制优化：R133 实测瓶颈在 Qt 绘制（每只每帧 12 条渐变 ribbon ≈55%），几何空间索引（`SpatialList`）反而更慢已撤回；能动的只有「少铺渐变 / 降 stop 数 / 6 条腿并成一次填充」，都会动外观，与「外形复刻优先」冲突。
+
 ### R136 · 竖杆顶端判定（「一爬就被瞬移到底部」）+ 蜥蜴放置预览 + 玩耍候选（拔矛玩 / 矛大师不玩自己的矛）
 
 - **背景**：用户贴了「Rain World 蜥蜴桌宠——修改意见汇总」（14 节 + 引用链接）。这是一份**整体设计/需求规范**，不是一条新 bug；本轮先把其中**可操作、可验证**的部分落地，其余逐条审计并在下面留档。

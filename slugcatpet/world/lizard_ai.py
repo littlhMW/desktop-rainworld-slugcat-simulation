@@ -34,6 +34,12 @@ CONF_LOSE = 0.12              # 低于它就彻底忘掉
 # ── 视线 ──
 LOS_STEP = 10.0               # 视线采样步长（像素）
 
+# ── AI 时间片（文档 §37）──
+# 感知不必每 tick 重建：每只蜥蜴按 id 错开，平均每 PERCEIVE_EVERY tick 扫描一次，
+# 其余 tick 复用上次的观察（只刷新地形 / 遮挡 / 同伴 / 归属这些便宜字段）。
+# 物理、攻击碰撞、抓取仍然逐 tick。8 只蜥蜴自然分成 0,4→tick0 / 1,5→tick1 的错峰。
+PERCEIVE_EVERY = 3
+
 # ── 猎物归属：原版「咬倒的猎物归我」 ──
 PREY_CLAIM_TICKS = 900        # 归属保留时长（搬运中每帧续约）
 
@@ -212,6 +218,47 @@ def los_blocked(x0, y0, x1, y1, segs=(), circles=()) -> bool:
     return False
 
 
+def prune_side(x, y, segs=(), circles=(), pad=2.0):
+    """只按**一端**（起点或终点）裁剪遮挡物，返回保留项的下标集合。
+
+    `prune_blockers` 的两端裁剪互相独立（不碰起点 **且** 不碰终点才留下），所以
+    可以拆开缓存：起点那边每只蜥蜴一 tick 只算一次，终点那边每个目标一 tick 只算
+    一次；两个下标集合取交集就和逐对跑一遍 `prune_blockers` 等价。文档 §37。
+    """
+    keep_segs = []
+    for i, (ax, ay, bx, by, half) in enumerate(segs):
+        if _seg_circle(x, y, ax, ay, bx, by, half + pad):
+            continue
+        keep_segs.append(i)
+    keep_circles = []
+    for i, (cx, cy, r) in enumerate(circles):
+        if math.hypot(cx - x, cy - y) <= r + pad:
+            continue
+        keep_circles.append(i)
+    return (frozenset(keep_segs), frozenset(keep_circles))
+
+
+def los_blocked_idx(x0, y0, x1, y1, segs, circles, start_keep, end_keep) -> bool:
+    """用两端各自裁好的下标集合做视线判定（避免重复跑 `prune_blockers`）。"""
+    ks, kc = start_keep
+    es, ec = end_keep
+    for i, (ax, ay, bx, by, half) in enumerate(segs):
+        if i not in ks or i not in es:
+            continue
+        if _seg_hit(x0, y0, x1, y1, ax, ay, bx, by):
+            return True
+        if half > 0.0:
+            for (px, py, rr) in ((ax, ay, half), (bx, by, half)):
+                if _seg_circle(x0, y0, x1, y1, px, py, rr):
+                    return True
+    for i, (cx, cy, r) in enumerate(circles):
+        if i not in kc or i not in ec:
+            continue
+        if _seg_circle(x0, y0, x1, y1, cx, cy, r):
+            return True
+    return False
+
+
 def _seg_circle(x0, y0, x1, y1, cx, cy, r) -> bool:
     """线段到圆心距离 < r。"""
     dx, dy = x1 - x0, y1 - y0
@@ -248,7 +295,11 @@ class Memory:
         self.confidence = min(1.0, self.confidence + CONF_UP)
 
     def miss(self) -> None:
-        """这一帧没看见：衰减，但**不立刻清空**（蜥蜴会先去最后看见的地方找）。"""
+        """这一帧没看见：衰减，但**不立刻清空**（蜥蜴会先去最后看见的地方找）。
+
+        时间片（文档 §37）下跳过感知的那几 tick 也各调用一次 —— 一次 = 一 tick，
+        所以有效衰减速率和逐帧跑时完全一致，不需要按 stride 补偿。
+        """
         if self.obj is None:
             return
         self.confidence *= CONF_DECAY
@@ -328,6 +379,91 @@ class PreyTracker:
     def release(self) -> None:
         """松口 / 目标没了：归属也跟着作废（否则会一直占着一具不存在的猎物）。"""
         self.clear()
+
+
+class PreyState(PreyTracker):
+    """「猎物这条链」的**唯一状态对象**（文档 §17）。
+
+    旧版把同一条链（看到 → 追踪 → 咬倒 → 占有 → 叼住 → 回巢 → 放下 → 守卫）拆在
+    PreyTracker + target/target_obj + carry_obj/carry_body/carry_den + guard_obj +
+    mem 里，于是到处是「A is not None and B is not None」这种组合判断。现在只有一个
+    对象，并且链走到哪一步由 `phase` 一处说了算：
+
+        idle   没在管猎物
+        track  盯上了（target_obj 非空）
+        downed 咬倒了、还没叼起来（原版 PreyTracker.owned）
+        carry  嘴里叼着（原版 CarryObject 非空）
+        guard  放下之后在巢穴边守着
+
+    继承 PreyTracker：归属那一段（obj/state/killed/fainted/claim_tick 与
+    claim/hunting/refresh/owns/owned/delivered/release）一个字节都没改，
+    所以 `self.prey.xxxx` 那些老调用照旧可用。
+    """
+
+    __slots__ = ("target", "target_obj", "carry_obj", "carry_body", "carry_corner",
+                 "carry_den", "guard_obj", "guard_t", "mem")
+
+    def __init__(self):
+        super().__init__()
+        # 导航目标点（可以只是「记忆里的位置」，不一定还有 target_obj）
+        self.target = None
+        self.target_obj = None
+        # 回巢：carry_obj 是嘴里那只，carry_body 是它的身体（被钉住跟着嘴走），
+        # carry_den 是**开始搬运时锁定的那个巢穴**（原版 ReturnPrey 的 den，定了
+        # 就不换），carry_corner 只是它的左右符号。
+        self.carry_obj = None
+        self.carry_body = None
+        self.carry_den = None
+        self.carry_corner = 0
+        # 刚送回巢穴的猎物：守一小会儿（原版回巢进食）
+        self.guard_obj = None
+        self.guard_t = 0
+        # 「我上次在哪看见它」（原版 forgetCounter 换成置信度）
+        self.mem = Memory()
+
+    @property
+    def carrying(self) -> bool:
+        """嘴里正叼着东西（原版 CarryObject 非空）。"""
+        return self.carry_body is not None
+
+    @property
+    def chasing(self) -> bool:
+        """盯上了或叼着（原版 PreyTracker 有目标 / CarryObject 非空）。
+
+        伪装、玩耍这类「我要不要装作没事」的判据用它 —— 只是守在巢穴边（guard）
+        不算 chasing。
+        """
+        return self.target_obj is not None or self.carry_body is not None
+
+    @property
+    def phase(self) -> str:
+        """这条链走到哪一步 —— 链上状态的唯一判据。"""
+        if self.carry_body is not None:
+            return "carry"
+        if self.owned():
+            return "downed"
+        if self.guard_obj is not None:
+            return "guard"
+        if self.target_obj is not None:
+            return "track"
+        return "idle"
+
+    @property
+    def busy(self) -> bool:
+        """手里有活（追着 / 占着 / 叼着 / 守着）：还要不要开始新的取食行为。"""
+        return self.phase != "idle"
+
+    def reset(self) -> None:
+        """整条链归零（换目标 / 被吓跑 / 清零重来）：不只是归属那一段。"""
+        self.clear()
+        self.target = None
+        self.target_obj = None
+        self.carry_obj = None
+        self.carry_body = None
+        self.carry_den = None
+        self.carry_corner = 0
+        self.guard_obj = None
+        self.guard_t = 0
 
 
 # ══ 社交记忆（原版 SocialMemory：竞争 → 判断支配 → 退让 → 记住）══

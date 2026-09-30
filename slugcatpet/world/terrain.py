@@ -165,6 +165,18 @@ class TerrainRoute:
             len(self.legs), self.cost, self.returnable, self.kind)
 
 
+def _attach_key(attach):
+    """插桩点量化成 24px 桶，再进图缓存键（文档 §20）。
+
+    「按需插桩」只在基础图给不出答案时才发生，量化只是别让同一只蜥蜴每挪 1px
+    就重建一张图。
+    """
+    if not attach:
+        return ()
+    return tuple(sorted({(int(round(ax / 24.0)), int(round(ay / 24.0)))
+                         for (ax, ay) in attach}))
+
+
 def _anchors(lo, hi):
     """一块面 [lo, hi] 上的导航锚点（含两端，等距）。"""
     lo, hi = float(lo), float(hi)
@@ -378,28 +390,63 @@ class TerrainQuery:
                 "terrain:%s" % best[2])
 
     # ── 移动图 ──
-    def graph(self, caps):
+    def graph(self, caps, attach=()):
         """把这一帧的地形编译成 MovementConnection 图（按**导航版本** + 能力表缓存）。
 
         文档 §24：旧键用 world_version，新增生物 / 物品状态会让整张图重建。
         现在只依赖 navgeom 的导航版本（只在 platform / pole / wall / shelter 变化时 +1）。
+
+        `attach` 是「按需插桩」的高度集合 [(line_x, y), ...]（文档 §20）：竖线只
+        在 top / bot 有节点，所以「我挂在墙中间」「目标在杆中间」在图上没有落点。
+        这里**不预先离散化所有高度**，只在真的需要的那一两个高度上给对应竖线补
+        节点；没有 `attach` 时就是原来那张端点图（缓存键也不变）。
         """
         if caps is None:
             caps = Caps()
         wl = float(getattr(self.win, "_WL", 0.0) or 0.0)
         hl = float(getattr(self.win, "_HL", 0.0) or 0.0)
-        key = (self.geom.version, int(wl), int(hl), caps.key())
+        key = (self.geom.version, int(wl), int(hl), caps.key(),
+               _attach_key(attach))
         cache = _graph_cache(self.win)
         hit = cache.get(key)
         if hit is not None:
             return hit
-        g = self._build_graph(caps, wl, hl)
+        g = self._build_graph(caps, wl, hl, attach)
         if len(cache) > 8:
             cache.clear()
         cache[key] = g
         return g
 
-    def _build_graph(self, caps, wl, hl):
+    def attach_points(self, caps, x, y, tx, ty):
+        """「按需插桩」要补的高度：我的当前高度 + 目标的当前高度（文档 §20）。
+
+        参数化搜索的口径不是「把每条竖线按 ANCHOR_STEP 离散成很多层」，而是
+        「只在需要时算 current vertical position → target vertical position」。
+        所以这里只挑「离自己 / 目标够近、且高度落在竖线中段」的那几条竖线。
+        """
+        out, seen = [], set()
+        for (px, py) in ((x, y), (tx, ty)):
+            for s in self.geom.verticals(caps):
+                if abs(s.x - px) > caps.climb_reach:
+                    continue
+                if py <= s.top + 8.0 or py >= s.bot - 8.0:
+                    continue                     # 端点已经盖住这个高度
+                key = (round(s.x, 1), round(py, 1))
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append((s.x, py))
+        return tuple(out)
+
+    def _graphs(self, caps, x, y, tx, ty):
+        """候选移动图：先缓存的基础图，给不出答案时才用「按需插桩」的图兜底。"""
+        base = self.graph(caps)
+        yield base
+        attach = self.attach_points(caps, x, y, tx, ty)
+        if attach:
+            yield self.graph(caps, attach=attach)
+
+    def _build_graph(self, caps, wl, hl, attach=()):
         nodes = []
         adj = []
 
@@ -463,6 +510,8 @@ class TerrainQuery:
 
         # ② 竖线：竖杆 / 背景墙 / 窗口竖边 —— 底端 + 顶端两个节点
         vnodes = []        # [(node_i, x, y, usable)]
+        vlines = []        # [(surface, nf, nh, can)]：②b 插桩要用
+        vline_of = {}      # 节点 → (kind, x)：同一条竖线上的两点之间不建跳跃 / 跳下
         for s in self.geom.verticals(None):
             if s.bot - s.top < 8.0:
                 continue
@@ -476,11 +525,49 @@ class TerrainQuery:
                           top=s.top, bot=s.bot, sid=s.sid)
             vnodes.append((nf, s.x, s.bot, can))
             vnodes.append((nh, s.x, s.top, can))
+            vlines.append((s, nf, nh, can))
+            vline_of[nf] = vline_of[nh] = (kind, round(s.x, 1))
             if can:
                 c = (s.bot - s.top) / max(0.5, caps.climb_speed) + CLIMB_COST
                 et = _CLIMB_EDGE_TYPE[kind]
                 link(nf, nh, et, c, (s.top, s.bot, 1, s.x), risk=CLIMB_RISK)
                 link(nh, nf, et, c, (s.top, s.bot, -1, s.x), risk=CLIMB_RISK)
+
+        # ②b 按需插桩（文档 §20）：竖线中间也要能进出。只在 `attach` 给的高度上
+        #     补节点 —— 「我挂在墙中间想从这跳出去 / 另一根杆在这一层」于是有了
+        #     落点；不预先离散化所有高度，也不改变没有 attach 时的端点图。
+        placed = set()
+        for (ax, ay) in attach:
+            ay = float(ay)
+            for (s, nf, nh, can) in vlines:
+                if abs(s.x - ax) > caps.climb_reach:
+                    continue
+                if ay <= s.top + 8.0 or ay >= s.bot - 8.0:
+                    continue                    # 端点已经盖住这个高度
+                key = (round(s.x, 1), round(ay, 1))
+                if key in placed:
+                    continue
+                placed.add(key)
+                kind = s.climb
+                nm = add_node(s.x, ay, stand=bool(s.stand and can), line=kind,
+                              top=s.top, bot=s.bot, sid=s.sid)
+                vnodes.append((nm, s.x, ay, can))
+                vline_of[nm] = (kind, round(s.x, 1))
+                if not can:
+                    continue
+                et = _CLIMB_EDGE_TYPE[kind]
+                cu = (ay - s.top) / max(0.5, caps.climb_speed) + CLIMB_COST
+                cd = (s.bot - ay) / max(0.5, caps.climb_speed) + CLIMB_COST
+                # 插桩点把原线切成上 / 下两段：extra = (段顶, 段底, 方向, x)，
+                # 这样动作层拿到的是「这一段爬到哪里为止」，而不是整条线。
+                link(nh, nm, et, cu, (s.top, ay, -1, s.x), both=False,
+                     risk=CLIMB_RISK)
+                link(nm, nh, et, cu, (s.top, ay, 1, s.x), both=False,
+                     risk=CLIMB_RISK)
+                link(nm, nf, et, cd, (ay, s.bot, -1, s.x), both=False,
+                     risk=CLIMB_RISK)
+                link(nf, nm, et, cd, (ay, s.bot, 1, s.x), both=False,
+                     risk=CLIMB_RISK)
 
         # ③ 面 ↔ 竖线端点：走过去就能抓（原版 Floor→Wall 那条连接）
         for (nv, vx, vy, vcan) in vnodes:
@@ -513,12 +600,17 @@ class TerrainQuery:
             return band[bisect.bisect_left(band_y, lo):
                         bisect.bisect_right(band_y, hi)]
 
+        def _same_line(a, b) -> bool:
+            """两个节点在同一条竖线上（同 kind 同 x）—— 它们之间只该有爬，没有跳。"""
+            ka = vline_of.get(a)
+            return ka is not None and ka == vline_of.get(b)
+
         # ⑤ 跳跃：往上够得着的锚点（原版 jump MovementConnection）
         if caps.jump:
             for (a, ax) in stand:
                 ay = sy[a]
                 for (b, bx) in _slice(ay - caps.jump_up, ay):
-                    if a == b:
+                    if a == b or _same_line(a, b):
                         continue
                     up = ay - sy[b]
                     if up <= 0.0 or up > caps.jump_up:
@@ -533,7 +625,7 @@ class TerrainQuery:
         for (a, ax) in stand:
             ay = sy[a]
             for (b, bx) in _slice(ay + DROP_MIN, ay + caps.drop_max):
-                if a == b:
+                if a == b or _same_line(a, b):
                     continue
                 down = sy[b] - ay
                 if down < DROP_MIN or down > caps.drop_max:
@@ -578,29 +670,30 @@ class TerrainQuery:
         """
         if kind is None:
             kind = ROUTE_RETURNABLE if must_return else ROUTE_ONE_WAY
-        g = self.graph(caps)
-        if not g.nodes:
-            return None
-        src = g.nearest(x, y, stand_only=stand_only, allow_above=False)
-        dst = g.nearest(tx, ty, stand_only=stand_only)
-        if src is None or dst is None:
-            return None
         speed = max(caps.walk_speed, caps.climb_speed, caps.jump_dx,
                     caps.hop_dx, 40.0)
-        path = g.path_edges(src, dst, max_speed=speed)
-        if not path:
-            return None
-        back = g.can_return(src, dst)
-        if kind in (ROUTE_SAFE, ROUTE_RETURNABLE) and not back:
-            return None
-        risk = max((e.risk for e in path), default=0.0)
-        if kind == ROUTE_SAFE and risk > _EDGE_RISK_LIMIT:
-            return None
-        legs = g.legs(path)
-        if not legs:
-            return None
-        cost = sum(e.time for e in path)
-        return TerrainRoute(legs, True, back, cost, kind=kind, risk=risk)
+        for g in self._graphs(caps, x, y, tx, ty):
+            if not g.nodes:
+                continue
+            src = g.nearest(x, y, stand_only=stand_only, allow_above=False)
+            dst = g.nearest(tx, ty, stand_only=stand_only)
+            if src is None or dst is None:
+                continue
+            path = g.path_edges(src, dst, max_speed=speed)
+            if not path:
+                continue
+            back = g.can_return(src, dst)
+            if kind in (ROUTE_SAFE, ROUTE_RETURNABLE) and not back:
+                continue
+            risk = max((e.risk for e in path), default=0.0)
+            if kind == ROUTE_SAFE and risk > _EDGE_RISK_LIMIT:
+                continue
+            legs = g.legs(path)
+            if not legs:
+                continue
+            cost = sum(e.time for e in path)
+            return TerrainRoute(legs, True, back, cost, kind=kind, risk=risk)
+        return None
 
     def reach_result(self, x, y, tx, ty, caps):
         """可达性的四种结论（文档 §5）。
@@ -609,33 +702,48 @@ class TerrainQuery:
         direct 直冲 —— 于是蜥蜴会一直朝穿不过去的墙走。现在分开：
         REACHABLE 追；TEMPORARILY_BLOCKED 等 / 换路线；UNREACHABLE 放弃。
         """
-        g = self.graph(caps)
-        if not g.nodes:
+        last = None
+        for g in self._graphs(caps, x, y, tx, ty):
+            last = g
+            if not g.nodes:
+                continue
+            src = g.nearest(x, y, stand_only=False, allow_above=False)
+            dst = g.nearest(tx, ty, stand_only=False)
+            if src is None or dst is None:
+                continue
+            if g.reachable(src, dst):
+                return ReachResult.REACHABLE
+        if last is None or not last.nodes:
             return ReachResult.UNKNOWN
-        src = g.nearest(x, y, stand_only=False, allow_above=False)
-        dst = g.nearest(tx, ty, stand_only=False)
-        if src is None or dst is None:
+        dst = last.nearest(tx, ty, stand_only=False)
+        if dst is None:
             return ReachResult.UNKNOWN
-        if g.reachable(src, dst):
-            return ReachResult.REACHABLE
-        n = g.nodes[dst]
+        n = last.nodes[dst]
         if math.hypot(n.x - tx, n.y - ty) > SNAP_FAR:
             return ReachResult.TEMPORARILY_BLOCKED   # 目标此刻不在任何地形上
         return ReachResult.UNREACHABLE
 
     def reachable(self, x, y, tx, ty, caps):
         """从 (x, y) 到得了 (tx, ty) 附近的地形吗。"""
-        g = self.graph(caps)
-        src = g.nearest(x, y, allow_above=False)
-        dst = g.nearest(tx, ty)
-        return g.reachable(src, dst)
+        for g in self._graphs(caps, x, y, tx, ty):
+            src = g.nearest(x, y, allow_above=False)
+            dst = g.nearest(tx, ty)
+            if src is None or dst is None:
+                continue
+            if g.reachable(src, dst):
+                return True
+        return False
 
     def returnable(self, x, y, tx, ty, caps):
         """到了 (tx, ty) 之后还回得来吗（可达性映射的第二问）。"""
-        g = self.graph(caps)
-        src = g.nearest(x, y, allow_above=False)
-        dst = g.nearest(tx, ty)
-        return g.can_return(src, dst)
+        for g in self._graphs(caps, x, y, tx, ty):
+            src = g.nearest(x, y, allow_above=False)
+            dst = g.nearest(tx, ty)
+            if src is None or dst is None:
+                continue
+            if g.can_return(src, dst):
+                return True
+        return False
 
     def __repr__(self):
         return "<Terrain floors=%d vpoles=%d wedges=%d hpoles=%d walls=%d>" % (
