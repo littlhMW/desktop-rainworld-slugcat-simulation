@@ -265,13 +265,13 @@ class Ascension:
             win.add_spark(self.fx, self.fy, math.cos(ang) * sp, math.sin(ang) * sp,
                           white=True, life=SPARK_LIFE_MIN + (i * 9 % (SPARK_LIFE_MAX - SPARK_LIFE_MIN)))
         self._ascend_kill()
-        self._spend_food()
+        self._spend_karma_flower()
         win.start_cursor_hijack(self.fx, self.fy, restore_on_land=True)
 
-    def _spend_food(self):
-        """每次超度立刻耗尽饱食度（超度门要求饱食度满，见 saint.states._ascend_ready）。"""
+    def _spend_karma_flower(self):
+        """成功完成超度后消耗一格业力花槽；食物不再因超度被清空。"""
         b = self.win.body
-        b.food_eat(-b.food)
+        b.flower_karma = False
 
     def _ascend_kill(self):
         """原版 Player.monkAscension 的收束：半径 60(+体节半径) 内一切生物 Die()。
