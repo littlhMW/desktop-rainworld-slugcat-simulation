@@ -229,16 +229,26 @@ def _needle_feed_amount(obj) -> float:
 
 def _spear_should_protect_pet(sp, victim) -> bool:
     """AI/玩耍用矛的同伴保护：中性或友好关系不允许即死。"""
-    owner = getattr(sp, "thrower", None)
-    if owner is None or owner is victim:
+    owner_body = getattr(sp, "thrower", None)
+    if owner_body is None or owner_body is getattr(victim, "body", None):
         return False
-    beh = getattr(owner, "behavior", None)
+    owner_pet = None
+    win = getattr(owner_body, "window", None)
+    for pet in getattr(win, "pets", ()):
+        if getattr(pet, "body", None) is owner_body:
+            owner_pet = pet
+            break
+    if owner_pet is None:
+        # 非桌宠投掷者维持原版伤害。
+        return False
+    beh = getattr(owner_pet, "behavior", None)
     if beh is not None and getattr(beh, "state", None) == "ItemPlay":
         return True
     try:
         from ..behavior.relationship import relations_for
-        return relations_for(owner).hostility_to(victim) < 0.60
+        return relations_for(owner_body).hostility_to(getattr(victim, "body", victim)) < 0.60
     except Exception:
+        # 无关系数据时宁可保护同伴，避免误杀。
         return True
 
 
