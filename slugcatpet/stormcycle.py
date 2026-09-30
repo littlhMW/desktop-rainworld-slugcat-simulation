@@ -230,6 +230,10 @@ class StormCycle:
             self.settle_t = 0
             self.pressure = 1.0
             self.cycle_id += 1          # 新一轮雨：first_drop_done 该复位了
+            self._storm_dead_ids.clear()
+            self._storm_penalty_applied = False
+            self._storm_watch_ready = False
+            self._storm_display_hold = 0
 
     def _step_gather(self, pets, shelters):
         self.phase_t += 1
@@ -298,6 +302,10 @@ class StormCycle:
             self.phase_t = 0
             self.settle_t = 0
             self.pressure = 0.0
+            self._storm_display_hold = 1
+            self._storm_dead_ids.clear()
+            self._storm_watch_ready = False
+            self._storm_penalty_applied = False
 
     # ── 左下角 HUD 的原料（只给数据，绘制在 rendering/storm_hud.py） ──
     def hud_info(self, pets=None):
