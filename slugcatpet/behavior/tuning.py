@@ -439,8 +439,8 @@ FOOD_URGE_RATE      = 1.0 / 2400.0    # 未达到冬眠线时的欲望累积（�
 FOOD_URGE_RATE_FULL = 0.0             # 达到冬眠线后不再靠旧的慢累积触发觅食
 FOOD_SEEK_P         = 0.75            # 仅用于“接近冬眠线但尚未达到”的旧式欲望闸
 FOOD_DEFICIT_URGENT = 2.0             # 离冬眠食物还差 >=2 格：饿了直接找
-FOOD_POST_HIBERNATE_CELL_SEC = 10.0   # 冬眠线以上，每个“未满格”对应的基础等待单位
-FOOD_POST_HIBERNATE_WAIT_CELLS = 4    # 缺 1→30s，缺 2→20s，缺 3→10s，缺 4+→0s
+FOOD_POST_HIBERNATE_CELL_SEC = 10.0   # 冬眠线以上，每个“未满格”对应的等待单位
+FOOD_POST_HIBERNATE_SLOW_CELLS = 3    # 只有最后 3 个未满格进入 10/20/30s 缓冲区
 FOOD_POST_HIBERNATE_WAIT_MAX_SEC = 30.0
 # 业力花（KarmaAction）：独立于「吃」的目标链 —— 业力花只填隐藏花条、不填饱食度
 KARMA_SEEK_P        = 0.30            # 每次检查起意去拔业力花的概率
