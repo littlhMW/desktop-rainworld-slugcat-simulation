@@ -197,7 +197,7 @@ class StormCycle:
         self.rain_drive = min(1.0, self.rain_drive + 1.0 / self.rise_ticks)
         if not shelters:
             # 没有庇护所：没有门可关，也不该靠 all([]) == True 侥幸过闸。
-            # 等雨势爬满（或兜底超时）就直接进雨眠相位，绝不卡死在集合段。
+            # 等雨势爬满（或兜底超时）就直接进暴雨期，绝不卡死在集合段。
             if self.rain_drive >= 1.0 or self.phase_t >= self.gather_timeout:
                 self.phase = SLEEP
                 self.phase_t = 0
