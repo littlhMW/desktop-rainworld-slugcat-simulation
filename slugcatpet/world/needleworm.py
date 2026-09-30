@@ -620,6 +620,9 @@ class NeedleWorm:
         if self.age == AGE_EGG:
             self._step_egg(WL, HL)
             return
+        if self.dead:
+            self._step_dead(WL, HL)
+            return
         self.even_out_temps()
         if self.age == AGE_SMALL:
             self._step_small(WL, HL, cats)
@@ -654,6 +657,27 @@ class NeedleWorm:
         s = self.seg[0]
         s.lx, s.ly = s.x, s.y
         s.x, s.y = self.x, self.y
+
+    def _step_dead(self, WL, HL) -> None:
+        """
+        尸体：不再悬停、不再追猎、不再扑翅，只剩重力 + 空气阻力 + 碰撞。
+
+        用户口径：大小面条蝇都要有死亡状态（原版死掉之后是掉到地上的尸体，
+        暴雨里也会被杀）。少了这一条，已经 dead 的面条蝇还在跑完整的飞行 AI，
+        看起来「暴雨也在自由活动」。
+        """
+        self.flying_target = 0.0
+        self.swish_counter = 0
+        self.charging_attack = 0.0
+        self.vy += self.gravity * self.room_gravity
+        apply_water(self, self.water_y, self.buoyancy, self.water_friction,
+                    self.room_gravity, self.air_friction)
+        self.vx *= self.air_friction
+        self.x += self.vx
+        self.y += self.vy
+        self._collide(WL, HL)
+        if self._contact_floor or self._contact_x != 0:
+            self.vx *= 0.72
 
     # ── 幼体：惨叫链（SmallNeedleWorm.cs:108-173 / 209-345）──
     def _holder(self, cats):

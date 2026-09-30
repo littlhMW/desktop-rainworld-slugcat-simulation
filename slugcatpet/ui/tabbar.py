@@ -699,8 +699,7 @@ class TabBar(QWidget):
             grid.setColumnStretch(c, 1)
         dpr = QGuiApplication.primaryScreen().devicePixelRatio()
         atlas = getattr(self.pet, "atlas", None)
-        place_items = [("vpole", t("tip_vpole"), self._place_vpole),
-                       ("hpole", t("tip_hpole"), self._place_hpole),
+        place_items = [("pole", t("tip_pole"), self._place_pole),
                        ("fruit", t("tip_fruit"), self._place_fruit),
                        ("stone", t("tip_stone"), self._place_stone),
                        ("lamp", t("tip_lamp"), self._place_lamp),
@@ -899,12 +898,8 @@ class TabBar(QWidget):
         self.pet.enter_place_lizard_mode()
         self._collapse()
 
-    def _place_vpole(self):
-        self.pet.enter_place_vpole_mode()
-        self._collapse()
-
-    def _place_hpole(self):
-        self.pet.enter_place_hpole_mode()
+    def _place_pole(self):
+        self.pet.enter_place_pole_mode()
         self._collapse()
 
     def _place_squidcada(self):

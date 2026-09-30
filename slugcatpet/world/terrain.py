@@ -424,12 +424,19 @@ class TerrainQuery:
         return out
 
     def vpoles(self):
-        """竖杆：``(x, top, bot)``（top < bot）。"""
+        """竖杆 + 窗口左右竖边：``(x, top, bot)``（top < bot）。
+
+        用户口径：**窗口左右的边缘不应该被视作墙壁，应该被视作杆子** ——
+        它们和杆一样是可抓可爬的竖线，而不是「背景墙」。
+        """
         out = []
         for pl in self._poles():
             if getattr(pl, "kind", None) != VERTICAL:
                 continue
             out.append((float(pl.x), min(pl.ay, pl.by), max(pl.ay, pl.by)))
+        for ws in getattr(self.win, "wall_surfaces", ()) or ():
+            for top, bot in ws.segments:
+                out.append((float(ws.x), float(top), float(bot)))
         return tuple(out)
 
     def hpoles(self):
@@ -442,18 +449,19 @@ class TerrainQuery:
         return tuple(out)
 
     def walls(self):
-        """背景墙的**可见**竖段：``(x, top, bot)``。"""
+        """真正的竖直墙面：``(x, top, bot)``。
+
+        用户口径：窗口左右边缘改当杆（见 ``vpoles``）之后，这一族只剩庇护所
+        那几条**立着的**墙壁条（顶/底那两条扁平的实心条不算竖墙）。这样
+        蓝 / 白 / 鳗鱼蜥才有东西可爬，庇护所墙也同时成了所有生物的地形。
+        """
+        from ..core import chunkphys
         out = []
-        for ws in getattr(self.win, "wall_surfaces", ()) or ():
-            for top, bot in ws.segments:
-                out.append((float(ws.x), float(top), float(bot)))
-        if out:
-            return tuple(out)
-        for rect in getattr(self.win, "walls", ()) or ():     # 兜底：还没建 surface
-            x0, y0, x1, y1 = rect[0], rect[1], rect[2], rect[3]
-            top, bot = min(y0, y1), max(y0, y1)
-            out.append((float(x0), top, bot))
-            out.append((float(x1), top, bot))
+        for x0, y0, x1, y1 in chunkphys.solids():
+            if (y1 - y0) <= (x1 - x0) + 1.0:
+                continue                      # 扁平条（顶墙 / 底墙）：不是竖墙
+            out.append((float(x0), float(y0), float(y1)))
+            out.append((float(x1), float(y0), float(y1)))
         return tuple(out)
 
     def climb_surfaces(self):
@@ -466,22 +474,28 @@ class TerrainQuery:
         return tuple(out)
 
     # ── 可站的面 ──
-    def walk_floors(self):
-        """能站在上面的面：屏幕地板 + 窗口顶边 + 横杆杆面 -> ``(x0, y, x1)``。"""
+    def walk_floors(self, caps=None):
+        """能站在上面的面：屏幕地板 + 窗口顶边 + 横杆杆面 -> ``(x0, y, x1)``。
+
+        ``caps.hpole_walk`` 为假（不会用杆的品种，如绿蜥）时**不把横杆杆面
+        当地面** —— 用户口径：无杆能力的品种无论如何都不该与杆子互动，
+        连站在杆面上都不行。
+        """
         wl = float(getattr(self.win, "_WL", 0.0) or 0.0)
         hl = float(getattr(self.win, "_HL", 0.0) or 0.0)
         out = [(0.0, hl, wl)]
         for x0, y, x1 in self.platforms():
             out.append((float(x0), float(y), float(x1)))
-        for x0, y, x1 in self.hpoles():
-            out.append((x0, y, x1))
+        if caps is None or caps.hpole_walk:
+            for x0, y, x1 in self.hpoles():
+                out.append((x0, y, x1))
         return tuple(out)
 
-    def floor_under(self, x, y):
+    def floor_under(self, x, y, caps=None):
         """x 处、y 之下最近的可站面（没有就退回屏幕地板）。"""
         hl = float(getattr(self.win, "_HL", 0.0) or 0.0)
         best = hl
-        for x0, fy, x1 in self.walk_floors():
+        for x0, fy, x1 in self.walk_floors(caps):
             if fy < y - FLOOR_SNAP:
                 continue                      # 面在我上面：踩不到
             if not (x0 - 4.0 <= x <= x1 + 4.0):
@@ -563,7 +577,7 @@ class TerrainQuery:
 
         # ① 可站的面：屏幕地板 / 窗台 / 横杆杆面
         spans = []
-        for x0, y, x1 in self.walk_floors():
+        for x0, y, x1 in self.walk_floors(caps):
             lo, hi = max(0.0, float(x0)), min(wl, float(x1))
             if hi - lo > 1.0:
                 spans.append((lo, float(y), hi))
@@ -731,14 +745,14 @@ class TerrainQuery:
         dst = g.nearest(tx, ty)
         return g.can_return(src, dst)
 
-    def support(self, x, y, default):
+    def support(self, x, y, default, caps=None):
         """脚下的支撑面 y：屏幕地板 / 窗台 / 横杆杆面里，离身体最近的下面那一块。
 
         生物物理用它当「地面」，这样蜥蜴能站在别的窗口顶上和横杆上，而不是只认
         屏幕底边（原版 Floor tile 本来就不止一种）。
         """
         best = default
-        for x0, fy, x1 in self.walk_floors():
+        for x0, fy, x1 in self.walk_floors(caps):
             if fy < y - SINK_TOL:
                 continue                      # 面在身体上方：这一脚踩不到
             if not (x0 - 2.0 <= x <= x1 + 2.0):

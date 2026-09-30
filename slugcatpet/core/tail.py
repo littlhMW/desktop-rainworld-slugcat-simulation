@@ -40,6 +40,9 @@ class Tail:
                              self.rad[i], self.conn[i], Tail.SFRIC, Tail.AFFECT[i])
                      for i in range(4)]
         self.floor_y = None
+        # 每段脚下的支撑面查询（x, y -> y 或 None）。给了它就按「真实地形」托尾巴
+        # （屏幕底 / 窗台 / 庇护所墙壁顶面），不给就退回单条 floor_y 地面线。
+        self.support_fn = None
         # 可调旋钮：存每 tick 原始量，施加时按需 ×K_IMP
         self.fan = 28.0                             # 扇出力，逐段 ÷2
         self.leash = 9.0                            # 拴绳长度，不换算
@@ -93,8 +96,13 @@ class Tail:
                     prev.vx += cp_x * KI; prev.vy += cp_y * KI  # ×K_IMP
                     s.stretched = clampf((s.conn / (d * 0.5) + 2.0) / 3.0, 0.2, 1.0)
             # 地面碰撞，约束后扇出前
-            if self.floor_y is not None:
-                lim = self.floor_y - s.rad
+            ground = self.floor_y
+            if self.support_fn is not None:
+                sup = self.support_fn(s.x, s.y)
+                if sup is not None and (ground is None or sup < ground):
+                    ground = sup
+            if ground is not None:
+                lim = ground - s.rad
                 if s.y > lim:
                     s.y = lim
                     if s.vy > 0.0:

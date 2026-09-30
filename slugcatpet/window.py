@@ -2001,8 +2001,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 lx, ly = self.to_logical(e.position().x(), e.position().y())
                 if self._place_kind == "erase":
                     self.erase_at((lx, ly))       # 删除模式：删完继续留着，可连点
-                elif self._place_kind in ("vpole", "hpole"):
-                    self.place_pole(lx, ly, self._place_kind)
+                elif self._place_kind in ("vpole", "hpole", "pole"):
+                    self._begin_pole_place(lx, ly)      # 拉线放杆：记起点，松开时成杆
                 elif self._place_kind == "stone":
                     self.place_stone(lx, ly)
                 elif self._place_kind == "lamp":
@@ -2085,18 +2085,24 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
     def mouseMoveEvent(self, e):
         # 放庇护所：按下 → 拖 → 松开。万一「按下」那一下没落到窗口上（工具栏抢了
         # 鼠标），只要左键还按着，第一个移动事件就当作起点，拖动照样能框出矩形。
-        if self._place_mode and self._place_kind == "shelter":
-            if (self._shelter_drag_start is None
-                    and (e.buttons() & Qt.MouseButton.LeftButton)):
+        if self._place_mode and self._place_kind in ("shelter", "vpole", "hpole", "pole"):
+            if e.buttons() & Qt.MouseButton.LeftButton:
                 lx, ly = self.to_logical(e.position().x(), e.position().y())
-                self._shelter_drag_start = (lx, ly)
+                if self._place_kind == "shelter":
+                    if self._shelter_drag_start is None:
+                        self._shelter_drag_start = (lx, ly)
+                elif getattr(self, "_pole_drag_start", None) is None:
+                    self._pole_drag_start = (lx, ly)
             return
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
-        if self._place_mode and self._place_kind == "shelter":
+        if self._place_mode and self._place_kind in ("shelter", "vpole", "hpole", "pole"):
             if e.button() == Qt.MouseButton.LeftButton:
-                self._finish_shelter_place()
+                if self._place_kind == "shelter":
+                    self._finish_shelter_place()
+                else:
+                    self._finish_pole_place()
             return
         if not self.pets:
             return

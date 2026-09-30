@@ -839,18 +839,69 @@ class ItemInteractionMixin:
         self._spear_drag_last = None
 
     def enter_place_vpole_mode(self):
-        return self._enter_place_pole_mode("vpole", "vertical")
+        return self.enter_place_pole_mode()
 
     def enter_place_hpole_mode(self):
-        return self._enter_place_pole_mode("hpole", "horizontal")
+        return self.enter_place_pole_mode()
 
-    def _enter_place_pole_mode(self, place_kind, pole_kind):
-        if not self.can_place_pole(pole_kind):
+    def enter_place_pole_mode(self):
+        """横杆 / 竖杆合并成一个入口（用户口径）：拉一条直线决定这根杆 ——
+        横着拉＝横杆，竖着拉＝竖杆；拉动只决定长度与起终点，粗细恒为 POLE_RAD，
+        根部不再写死在屏幕边上。"""
+        if not self.can_place_pole("pole"):
             return False
         self._place_mode = True
-        self._place_kind = place_kind
+        self._place_kind = "pole"
+        self._pole_drag_start = None
         self._begin_place_capture()
         return True
+
+    def _begin_pole_place(self, lx, ly):
+        self._pole_drag_start = (lx, ly)
+
+    def _finish_pole_place(self):
+        if not self._place_mode or self._place_kind not in ("vpole", "hpole", "pole"):
+            return None
+        st = getattr(self, "_pole_drag_start", None)
+        self._pole_drag_start = None
+        if st is None:
+            return None
+        cur = self.cursor_logical()
+        if cur is None:
+            self._exit_place_mode()
+            return None
+        return self.place_pole_line(st[0], st[1], cur[0], cur[1])
+
+    def place_pole_line(self, x0, y0, x1, y1):
+        """按一条线段放杆：|dx| >= |dy| 是横杆，否则是竖杆。
+
+        与旧 place_pole 的区别：起终点就是杆的两端（根部可以是半空），
+        长度＝拉出来的距离（不足 MIN_LENGTH 时按方向补到最短）。
+        """
+        from .pole import Pole, VERTICAL, HORIZONTAL, MIN_LENGTH
+        dx, dy = float(x1) - float(x0), float(y1) - float(y0)
+        if abs(dx) >= abs(dy):
+            kind, y1 = HORIZONTAL, float(y0)
+            if abs(dx) < MIN_LENGTH:
+                x1 = float(x0) + (MIN_LENGTH if dx >= 0 else -MIN_LENGTH)
+        else:
+            kind, x1 = VERTICAL, float(x0)
+            if abs(dy) < MIN_LENGTH:
+                y1 = float(y0) + (MIN_LENGTH if dy >= 0 else -MIN_LENGTH)
+        if not self.can_place_pole(kind):
+            return None
+        x0 = clampf(float(x0), 0.0, self._WL)
+        x1 = clampf(float(x1), 0.0, self._WL)
+        y0 = clampf(float(y0), 0.0, self._HL)
+        y1 = clampf(float(y1), 0.0, self._HL)
+        pl = Pole(kind, x0, y0, x1, y1, seed=self._pole_seed)
+        self._pole_seed += 1
+        self.poles.append(pl)
+        self.world_version += 1
+        self.geometry_version += 1
+        self._exit_place_mode()
+        self.update()
+        return pl
 
     def _draw_poles(self, p):
         p.save()
@@ -877,17 +928,19 @@ class ItemInteractionMixin:
         cx, cy = cur
         if not (0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL):
             return
-        if self._place_kind == "vpole":
-            top = min(max(cy, POLE_TOP_MARGIN), self._HL - POLE_MIN_LENGTH)
-            a = QPointF(cx, self._HL)
-            b = QPointF(cx, top)
+        st = getattr(self, "_pole_drag_start", None)
+        if st is None:
+            # 还没按下：光标处点一小段，示意「从这里拉出一根杆」
+            a = QPointF(cx, cy - POLE_MIN_LENGTH * 0.5)
+            b = QPointF(cx, cy + POLE_MIN_LENGTH * 0.5)
         else:
-            ax = 0.0 if cx < self._WL * 0.5 else self._WL
-            end = cx
-            if abs(end - ax) < POLE_MIN_LENGTH:
-                end = ax + (POLE_MIN_LENGTH if ax == 0.0 else -POLE_MIN_LENGTH)
-            a = QPointF(ax, cy)
-            b = QPointF(end, cy)
+            sx, sy = st
+            if abs(cx - sx) >= abs(cy - sy):     # 横着拉：横杆
+                a = QPointF(sx, sy)
+                b = QPointF(cx, sy)
+            else:                                 # 竖着拉：竖杆
+                a = QPointF(sx, sy)
+                b = QPointF(sx, cy)
         p.save()
         p.setOpacity(0.5)
         self._draw_pole_rod(p, a.x(), a.y(), b.x(), b.y(), POLE_RAD)
@@ -1951,6 +2004,7 @@ class ItemInteractionMixin:
         self._place_mode = False
         self._place_kind = None
         self._slime_preview = None
+        self._pole_drag_start = None
         hk = getattr(self, "_hotkey_filter", None)
         if hk is not None:
             hk.unregister(HK_PLACE_ESC)
@@ -2149,7 +2203,7 @@ class ItemInteractionMixin:
             self._draw_erase_hint(p)
             return
 
-        if self._place_kind in ("vpole", "hpole"):
+        if self._place_kind in ("vpole", "hpole", "pole"):
             self._draw_pole_hint(p)
             return
 

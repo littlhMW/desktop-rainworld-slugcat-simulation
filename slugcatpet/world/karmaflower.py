@@ -350,6 +350,10 @@ class KarmaFlower(Fruit):
                 # 被手拿起的瞬间连根拔起（原版 DetatchStalk）：整株连茎一起走，
                 # 地上不留残茎；之后茎靠自己的弹簧/重力继续甩
                 self.detach_root()
+            # 「这一帧走了多远」：花瓣/茎的飘动与朝向都读 movement。旧版搬动时
+            # 它停在上一次自由落体的值 —— 表现就是「被拿着时这株花没有物理」。
+            self.movement = inv_lerp(0.0, 12.0, math.hypot(self.x - self.last_x,
+                                                           self.y - self.last_y))
             self.carry_parts()
             self._contact_floor = False
             self._parts_step()          # 花体被手/鼠标搬，只有花瓣与茎在跟

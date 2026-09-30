@@ -287,6 +287,30 @@ def cat_solids() -> list:
     return CAT_SOLIDS
 
 
+def support_under(x: float, y: float, default: float) -> float:
+    """x 处、y 之下最近的可站表面：屏幕底 / 窗台 / 墙壁条顶面。
+
+    给尾巴这类「不是完整 chunk 物理」的部件用 —— 用户口径：庇护所墙壁和
+    窗口地面都要能像屏幕底部地面一样把猫尾巴托住。
+    """
+    best = default
+    for x0, fy, x1 in PLATFORMS:
+        if fy < y - 8.0:                 # 面在身体上方：这一处够不到
+            continue
+        if not (x0 - 2.0 <= x <= x1 + 2.0):
+            continue
+        if fy < best:
+            best = fy
+    for x0, y0, x1, _y1 in SOLIDS:
+        if y0 < y - 8.0:
+            continue
+        if not (x0 - 2.0 <= x <= x1 + 2.0):
+            continue
+        if y0 < best:
+            best = y0
+    return best
+
+
 def terrain_obstacle_ahead(x: float, foot_y: float, direction: int,
                            radius: float = RAD1, body_h: float = 14.0,
                            look_ahead: float = 10.0, step_up: float = STEP_UP) -> bool:
@@ -333,6 +357,19 @@ def _solid_blocks(obj, r: float, table, impact=None, prev_floor: bool = False,
         if x1 <= x0 or y1 <= y0:
             continue
         if obj.x + r <= x0 or obj.x - r >= x1:
+            continue
+        # 竖直扫掠：这一 tick 从障碍顶边「上方」跨到「下方」时，单点检测
+        # 会因为已经整个越过而漏判 —— 薄墙（庇护所壁厚 ~5.6px）+ 高速下落
+        # 就会直接穿过去（用户报的「猫从杆上掉下来穿透墙壁」）。这里按
+        # 上一帧的底边补一次落顶判定。
+        ly = getattr(obj, "last_y", obj.y)
+        if (ly + r <= y0 + 0.5 and obj.y - r > y0 and obj.vy > 0.0):
+            obj.y = y0 - r
+            if impact is not None:
+                _fire_impact(obj, (0, 1), abs(obj.vy), True, impact)
+            obj.vy = 0.0
+            _set_floor(obj, y0)
+            hit = True
             continue
         if obj.y + r <= y0 or obj.y - r >= y1:
             continue

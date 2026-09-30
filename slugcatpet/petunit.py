@@ -154,6 +154,8 @@ class PetUnit:
         ax, ay = self.gfx.tail_root_world()
         self.tail = Tail(ax, ay, rad=self.gfx.tail_rad, conn=self.gfx.tail_conn)
         self.tail.floor_y = floor_y
+        # 尾巴按真实地形托住：屏幕底 / 窗台 / 庇护所墙壁条顶面（用户口径）
+        self.tail.support_fn = self._tail_support
         self._prev_root = (ax, ay)
         if self.cat.caps.tongue:
             mx, my = self.gfx.mouth_world()
@@ -239,6 +241,11 @@ class PetUnit:
         self._attach_behavior()
         w._prev_dirty = None             # 强制整窗重绘
         w.update()
+
+    def _tail_support(self, x, y):
+        """尾巴某一点脚下的支撑面 y（屏幕底 / 窗台 / 庇护所墙壁顶面）。"""
+        from .core import chunkphys
+        return chunkphys.support_under(x, y, self.tail.floor_y)
 
     # ── 每 tick 推进 ──
     def step(self, cursor, cycle_prog):

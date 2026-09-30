@@ -197,7 +197,7 @@ class Spear:
         同一个计数器：只有没有钉成杆（pinned=False）的骨针才会最终 GONE。
         钉成竖/横杆的针保留为场景杆，不参加这条清除。
         """
-        if not self.needle or self.needle_live or self.pinned:
+        if not self.needle or self.needle_live:
             return
         if self.needle_fade_wait > 0:
             self.needle_fade_wait -= 1
@@ -206,6 +206,11 @@ class Spear:
             self.needle_fade -= 1
         if self.needle_fade <= 0:
             self.needle_fade = 0
+            if self.pinned:
+                # 钉成杆的针：褪成黑色后保留为场景杆，不消失。
+                # （旧实现这里一并 return，扎在墙上的针就永远停在白色 ——
+                #  正是用户报的「白针扎墙后不黑，拔出来重投才变黑」。）
+                return
             self.state = ItemState.GONE
             self.stuck_to = None
             self.stuck_local = None
@@ -229,6 +234,34 @@ class Spear:
         self._still = 0
         self.stuck_angle = 90.0 if wall > 0 else 270.0
         self.x = (WL - LEN * 0.5 + self.embedded) if wall > 0 else (LEN * 0.5 - self.embedded)
+        self._sync_interp()
+
+    def embed_in_bar(self, nx: float, ny: float, x: float, y: float) -> None:
+        """刺进「墙壁条」（庇护所框 / 窗台 / 其它实心地形）。
+
+        用户口径：庇护所的框就是一条条墙壁，像杆子被定义成杆子一样 —— 有碰撞、
+        可以被扎矛。接触点 (x, y) 是这一 tick 扫掠到的落点，杆尖朝表面里埋进去。
+        角度约定见 tip()：0=上 90=右 180=下 270=左。
+        """
+        self.needle_disconnect()
+        self.stuck = True
+        self.pinned = True
+        self._thrown = False
+        self.toss_t = 0
+        self.vx = self.vy = 0.0
+        self.spin = 0.0
+        self.spinning = False
+        self._still = 0
+        if abs(nx) >= abs(ny):
+            ang = 90.0 if nx < 0.0 else 270.0      # 侧墙：杆尖指向墙内
+        else:
+            ang = 180.0 if ny < 0.0 else 0.0       # 顶面朝下扎 / 底面朝上扎
+        self.angle_deg = self.last_angle = ang
+        self.stuck_angle = ang
+        a = math.radians(ang)
+        dx, dy = math.sin(a), -math.cos(a)
+        self.x = x - dx * (LEN * 0.5 - self.embedded)
+        self.y = y - dy * (LEN * 0.5 - self.embedded)
         self._sync_interp()
 
     def unstuck(self) -> None:
@@ -367,14 +400,18 @@ class Spear:
             t, nx, ny = solid_hit
             self.x = self.last_x + (self.x - self.last_x) * max(0.0, t - 1e-4)
             self.y = self.last_y + (self.y - self.last_y) * max(0.0, t - 1e-4)
+            # 墙壁条（庇护所框 / 窗台）可以被扎矛：
+            #  · 顶面（ny<0，从上落下）无条件插住收势 —— 旧实现没有这条路，
+            #    矛落在庇护所墙上就一直翻滚（用户报的「疯狂旋转」）；
+            #  · 侧面按原版概率插住（近处必插 / 远处 33%），插不住才弹开。
+            if ny < 0.0 or not self._thrown or wp.stick_roll(self, self._rng):
+                self.embed_in_bar(nx, ny, self.x, self.y)
+                return
             self._contact_x = int(nx) if nx else 0
             self._contact_floor = ny > 0.0
             self._contact_ceil = ny < 0.0
-            if self._thrown:
-                # 庇护所墙这一类实心地形刺不进去：原版「击中了无法刺入的地形」→
-                # 无效弹开 + 翻滚，绝不去走 stick(WL)（那是屏幕左右边的插法）。
-                self.bounce_off(nx, ny)
-                return
+            self.bounce_off(nx, ny)
+            return
         if self._thrown:
             if self._contact_floor:
                 # 撞到地面平面即停止物理（原地收势插地）；捡起时 unstuck() 恢复正常。

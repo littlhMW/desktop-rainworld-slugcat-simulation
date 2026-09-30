@@ -35,6 +35,8 @@ _STR = {
     # —— tabbar：图标盘 tooltip ——
     "tip_vpole":   {"zh": "放竖杆", "en": "Place vertical pole"},
     "tip_hpole":   {"zh": "放横杆", "en": "Place horizontal pole"},
+    "tip_pole":    {"zh": "放杆（拖一条线，横拉横杆 / 竖拉竖杆）",
+                    "en": "Place pole (drag a line)"},
     "tip_fruit":   {"zh": "放果子", "en": "Place fruit"},
     "tip_stone":   {"zh": "放石头", "en": "Place stone"},
     "tip_lamp":    {"zh": "放灯笼", "en": "Place lantern"},

@@ -21,7 +21,8 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath
 
 from ..core.units import clampf, lerp, inv_lerp
-from .lizard import BODY_SCALE, BLACK_RGB, _ang_from_up, _ang_lerp
+from .lizard import (BODY_SCALE, BLACK_RGB, HEAD_DEFLECT_FLASH,
+                     _ang_from_up, _ang_lerp)
 from . import lizard_cos as _cos
 from ..rendering.pixelmode import aa_hint
 from ..rendering.primitives import _qcolor
@@ -89,8 +90,12 @@ def head_color(lz, ts: float):
     白蜥／蝾螈／黑蜥在原版是恒定色分支（发光、雪盖等），宠物里直接取品种定色。
     """
     b = lz.breed
+    base = b.head_rgb if b.head_rgb is not None else lz.color
+    if lz.head_flash > 0:
+        # 头甲把矛弹开：头部打一层强烈的白（用户口径：弹开要看得出来）
+        return _mix(base, (255, 255, 255),
+                    0.55 + 0.45 * lz.head_flash / HEAD_DEFLECT_FLASH)
     if lz.hurt_flash > 0:
-        base = b.head_rgb if b.head_rgb is not None else lz.color
         return _mix(base, (255, 255, 255), 0.45 * lz.hurt_flash / 8.0)
     if lz.dead:                            # 尸体：头色定住、不再呼吸闪烁
         return b.head_rgb if b.head_rgb is not None else _mix(BLACK_RGB, lz.color, 0.22)

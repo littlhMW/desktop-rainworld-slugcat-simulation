@@ -27,6 +27,7 @@ class TongueClimber:
         self.stop_dist = stop_dist            # 到目标此距内停止
         self.phase = "shoot"                  # shoot → reel → settle → (ceiling)
         self.fails = 0
+        self.close_fails = 0        # 舌头一粘上就「太近」的次数（见 reel 相）
         self.timer = 0
         self.giveup = False
         self.jitter = 0
@@ -73,12 +74,19 @@ class TongueClimber:
             if tg.attached:
                 d = math.hypot(c0.x - tg.anchor[0], c0.y - tg.anchor[1])
                 if d < CLIMB_RELEASE_DIST:
+                    # 粘点就贴在自己头顶（庇护所墙壁 / 顶面的情况）：这一趟
+                    # 没有可爬的高度，收舌重来。连续几次都这样就直接放弃，
+                    # 否则会「粘上→断开→再粘」无限重复（用户报的反复粘墙）。
+                    self.close_fails += 1
+                    if self.close_fails >= 3:
+                        self.giveup = True
                     tg.retract()
                     self.body.chunk0.vy -= 1.5
                     self.phase = "settle"
                     self.timer = 0
                     self.fails = 0
                 else:
+                    self.close_fails = 0
                     self.tongue.set_targets(
                         ideal=max(CLIMB_IDEAL_MIN, self.tongue.ideal - 0.5))
             elif tg.is_idle():

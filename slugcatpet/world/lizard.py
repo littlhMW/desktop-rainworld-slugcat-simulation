@@ -48,10 +48,13 @@ HEAD_DEPTH_LERP = 0.5         # 原版 headDepthRotation 的插值系数
 TURN_LIFT = 6.0               # 转身时上半身支起的高度（原版靠头部绳索，这里直接抬驱动点）
 HURT_STUN = 70                # 非致命伤的僵直 tick
 HURT_FLASH = 8                # 受击白闪帧数
+HEAD_DEFLECT_FLASH = 14       # 头甲把矛弹开的白闪帧数（比普通受击更亮更久）
 CORPSE_TTL = 1500             # 尸体保留 tick（约 25s）
 HEAD_STAND_FAC = 2.05         # 头（链首）离地高度 = 躯干半径 * 此值
 BODY_STAND_FAC = 1.7          # 躯干节最低离地 = 自身半径 * 此值
 TAIL_SINK_FAC = 0.5           # 尾节可拖到接近地面
+TAIL_GRAV_FAC = 1.7           # 尾巴「更重」：尾节重力倍数（比躯干下坠更快、摆动更迟滞）
+TAIL_ALIGN_FAC = 0.72         # 尾巴顺直约束强度倍数（越软越像一条有重量的尾巴）
 TURN_VX = 0.35                # 判定「真的转身」的横向速度阈值（避免停下时身体窜到头前面）
 LEG_SIDE_FAC = 0.55           # 腿根挂在躯干侧下方 = 半径 * 此值
 LEG_JOINT = 25.0              # 原版 LizardLimb.jointDist 基准（再 ×(sizeFac+1)/2）
@@ -62,6 +65,10 @@ LEG_GRIP_DELAY = 1            # 原版 limbGripDelay（各品种都是 1）
 FLOOR_GRIP_TOL = 1.5          # 脚离真实地形 ≤ 这么多才算 grounded（原版 gripCounter 的贴合判定）
 LEG_LAND_TOL = 3.5            # 自由脚离落点面 ≤ 这么多 → 直接吸附落地（原版 reachedSnapPosition）
 LEG_STEP_STAGGER = 2.5        # 每条腿「拉满就换步」的距离错开量：四只脚不会同时抬起（原版靠各腿髋位错开）
+LEG_MAX_STRETCH = 1.35        # 脚离髋超过 jointDist × 这个倍数：支点作废，直接放开
+                              # （被拖拽 / 被挤飞时脚不该把身体拽回去）
+LEG_ANCHOR_MAX = 4.0          # 脚离髋超过 jointDist × 这个倍数：它不是支点，是坏锚点
+                              # （身体已经掉走、脚还留在原来的平面上）→ 不参与身体回拉
 LEG_SWING_MAX = 14            # 摆腿最多持续这么多 tick，超过就允许随时落地（否则脚会一直悬着）
 LEG_MIN_SUPPORT = 2           # 四足品种任何时刻至少留几只脚踩在地上（换步 / 起步都不许破）
 NO_GRIP_SPEED = 0.10            # 原版 noGripSpeed：没有脚支撑时地面滑行速度的「上限」（不是摩擦系数）
@@ -841,7 +848,7 @@ class Lizard:
                  "held_by_hand", "water_y", "room_gravity", "_contact_floor",
                  "dead", "spacing", "spikes", "cosmetics", "cosmetic_pts", "like", "tamed", "friend_id",
                  "climb_x", "climb_dir", "climb_surfaces", "hauler",
-                 "max_health", "health", "stun", "hurt_flash", "dead_t",
+                 "max_health", "health", "stun", "hurt_flash", "head_flash", "dead_t",
                  "rock_push", "rock_push_dir",
                  "hauled", "haul_thrown", "is_meat", "wall_dir",
                  "anger", "anger_obj", "submitted_to",
@@ -896,6 +903,7 @@ class Lizard:
         self.rock_push = 0       # 被石头砸歪的剩余 tick（原版 turnedByRockCounter=20）
         self.rock_push_dir = 0
         self.hurt_flash = 0      # 受击白闪（渲染用）
+        self.head_flash = 0      # 头甲弹开矛的头部强白闪（渲染用）
         self.dead_t = 0          # 尸体已躺 tick
         self.is_meat = False     # 蜥蜴不是食物：尸体算无用尸体（会被猫拖出屏幕清场）
         self.hauled = False      # 正被蛞蝓猫拖着走：位置每 tick 由猫写死
@@ -1010,6 +1018,9 @@ class Lizard:
             walk=True, jump=True,
             wall_climb=bool(b.climb_wall and b.wall_attach),
             pole_climb=bool(b.climb_pole),
+            # 横杆杆面也是「杆」：不会用杆的品种（绿蜥等）连站在杆面上都不行
+            # （用户口径：无杆能力的品种无论如何都无法与杆子互动）。
+            hpole_walk=bool(b.climb_pole),
             wall_jump=bool(getattr(b, "wall_jump", False)),
             climb_reach=CLIMB_WALK_R)
         self.terrain = None           # 这一帧的世界地形查询（items 每 tick 换一份）
@@ -1240,6 +1251,9 @@ class Lizard:
             self.vx += dvec[0] * f
             self.vy += dvec[1] * f
         self.hurt_flash = HURT_FLASH
+        if shielded:
+            # 头甲把矛弹开：头部强烈白闪一下（用户口径：表示这次弹开无效）
+            self.head_flash = HEAD_DEFLECT_FLASH
         self.health -= num
         self.stun = max(self.stun, int(min(num2, 200.0)))
         self.jaw = 0.0
@@ -1337,6 +1351,8 @@ class Lizard:
         self._ground = self._ground_y(HL)
         if self.hurt_flash > 0:
             self.hurt_flash -= 1
+        if self.head_flash > 0:
+            self.head_flash -= 1
         # 被鼠标拎着的分支必须排在尸体之前：死蜥也要能被拖。
         # 之前 dead 先命中，尸体每帧只做自由落体（vx *= 0.9 + _integrate），
         # 拎起来就原地往下掉 —— 表现就是「蜥蜴尸体拖不动」。
@@ -1347,8 +1363,8 @@ class Lizard:
         elif self.dead:
             self._release_carry()
             self.dead_t += 1
-            if self.dead_t > CORPSE_TTL:
-                self.state = ItemState.GONE
+            # 尸体不再按 TTL 自行消失（用户口径：蜥蜴尸体老是突然消失）。
+            # 只有被拖出窗口 / 被甩出去（items._cull_flung_corpses）才清除。
             self.vx *= 0.9
             self._integrate(WL, HL)
         else:
@@ -1448,6 +1464,11 @@ class Lizard:
             hip = self.seg[min(lg.pair, len(self.seg) - 1)]
             ddx, ddy = lg.x - hip.x, lg.y - hip.y
             dd = math.hypot(ddx, ddy)
+            if dd > joint * LEG_ANCHOR_MAX:
+                # 这不是支点，是留在别的平面上的坏锚点（身体掉了下去、脚还踩
+                # 在原来的平台上）。它不参与回拉，否则会像橡皮筋把身体死死拽
+                # 在原处（用户报的脚黏在平面 / 被拽走后脚把蜥蜴拉回去）。
+                continue
             over = dd - joint
             if over > 0.0 and dd > 1e-6:
                 corr += ddx / dd * over      # 身体朝脚的方向回拉
@@ -1460,11 +1481,76 @@ class Lizard:
                 self.vx = 0.0
         self.vx += clampf(corr * FOOT_PULL_K, -FOOT_PULL_MAX, FOOT_PULL_MAX)
 
+    def _floor_under(self, x, y):
+        """脚下真实的站立面。不会用杆的品种不把横杆杆面当地面（用户口径：
+        绿蜥蜴等无杆能力的品种无论如何都不该与杆子互动）。"""
+        if self.terrain is None:
+            return self._ground
+        return self.terrain.floor_under(x, y, self.caps)
+
+    def _collide_solids(self) -> None:
+        """庇护所墙壁（chunkphys.solids）对蜥蜴也是实心地形。
+
+        用户口径：庇护所的墙要正确传给其它生物判定碰撞，尤其是蜥蜴。以前蜥蜴
+        只读 terrain 的竖线（杆 / 背景墙），庇护所墙体不在它眼里 —— 蜥蜴能直接
+        穿进屋里。这里按 chunkphys 同一套 AABB 把头和整条身体推出去。
+        """
+        from ..core import chunkphys
+        rects = chunkphys.solids()
+        if not rects:
+            return
+        step_up = getattr(chunkphys, "STEP_UP", 8.0)
+
+        def _push(px, py, r):
+            for x0, y0, x1, y1 in rects:
+                if x1 <= x0 or y1 <= y0:
+                    continue
+                if px + r <= x0 or px - r >= x1:
+                    continue
+                if py + r <= y0 or py - r >= y1:
+                    continue
+                p_left = (px + r) - x0
+                p_right = x1 - (px - r)
+                p_top = (py + r) - y0
+                p_bot = y1 - (py - r)
+                m = min(p_left, p_right, p_top, p_bot)
+                if m <= 0.0:
+                    continue
+                # 台阶：横向被挡但障碍顶边离脚面不到一步 → 直接踩上去
+                if (m in (p_left, p_right) and 0.0 <= (py + r) - y0 <= step_up):
+                    py = y0 - r
+                    continue
+                if m == p_top:
+                    py = y0 - r
+                elif m == p_bot:
+                    py = y1 + r
+                elif m == p_left:
+                    px = x0 - r
+                else:
+                    px = x1 + r
+            return px, py
+
+        r = self.head_rad
+        nx_, ny_ = _push(self.x, self.y, r)
+        if nx_ != self.x:
+            if (nx_ - self.x) * self.vx < 0.0:
+                self.vx = 0.0
+            self.x = nx_
+        if ny_ != self.y:
+            if (ny_ - self.y) * self.vy < 0.0:
+                self.vy = 0.0
+            if ny_ < self.y:
+                self._contact_floor = True
+            self.y = ny_
+        for s in self.seg:
+            sx, sy = _push(s.x, s.y, s.rad)
+            s.x, s.y = sx, sy
+
     def _collide_static_lines(self, WL: float) -> None:
         """竖杆与可见背景墙都是实体线；只有能力决定能否主动附着攀爬。"""
         tq = self.terrain
-        if tq is None or self.climb_attached:
-            return
+        if tq is None or self.climb_attached or self.dead:
+            return          # 尸体不再和杆 / 墙碰撞（用户口径）
         lines = [(x, top, bot) for x, top, bot in tq.vpoles()]
         lines += [(x, top, bot) for x, top, bot in tq.walls()]
         for x, top, bot in lines:
@@ -1481,7 +1567,7 @@ class Lizard:
 
     def _collide_chain_lines(self, WL: float) -> None:
         tq = self.terrain
-        if tq is None or self.climb_attached:
+        if tq is None or self.climb_attached or self.dead:
             return
         lines = [(x, top, bot) for x, top, bot in tq.vpoles()]
         lines += [(x, top, bot) for x, top, bot in tq.walls()]
@@ -1511,6 +1597,7 @@ class Lizard:
         self.x += self.vx
         self.y += self.vy
         self._collide_static_lines(WL)
+        self._collide_solids()
 
         r = self.head_rad
         # 转身时上半身支起：头的落点抬高 turn_lift（链体仍受各自的落地限制）
@@ -3188,7 +3275,7 @@ class Lizard:
             self.seg[k].vx += imp_x * shares[k]
             self.seg[k].vy += imp_y * shares[k]
         for s in self.seg:
-            s.vy += grav
+            s.vy += grav * (TAIL_GRAV_FAC if s.tail else 1.0)
             s.vx *= SEG_AIR_FRIC
             s.vy *= SEG_AIR_FRIC
             s.x += s.vx
@@ -3245,8 +3332,9 @@ class Lizard:
             prev_x, prev_y = anc_x, anc_y
             dir_x, dir_y = seed_x, seed_y
             for s in self.seg:
-                s.x += (prev_x + dir_x * s.dist - s.x) * align
-                s.y += (prev_y + dir_y * s.dist - s.y) * align
+                al = align * (TAIL_ALIGN_FAC if s.tail else 1.0)
+                s.x += (prev_x + dir_x * s.dist - s.x) * al
+                s.y += (prev_y + dir_y * s.dist - s.y) * al
                 dx, dy = s.x - prev_x, s.y - prev_y
                 d = math.hypot(dx, dy)
                 if d > 1e-6:
@@ -3358,14 +3446,19 @@ class Lizard:
 
         def foot_floor(lg):
             """这只脚脚底下的真实站立面（腿的着地点）。"""
-            return (self.terrain.floor_under(lg.x, lg.y) - LEG_LIMB_RAD
+            return (self._floor_under(lg.x, lg.y) - LEG_LIMB_RAD
                     if self.terrain is not None else floor)
 
         # ① 支撑相的门：这一帧脚是不是真的踩在真实地形上（完全不看 reaching）。
         #    用单侧判定：脚「低于面」也算接触（下一相 PushOutOfTerrain 会把它顶上来），
         #    只看「脚还悬在面上方多少」。双侧 abs() 会让脚在面上方 1.6px 悬着时
         #    误判成离地 —— 这正是换步脚永远落不了地的来历。
-        on_ground = [bool(not stunned and lg.y >= foot_floor(lg) - FLOOR_GRIP_TOL)
+        # 被鼠标拎着 / 被猫拖着走：身体不是自己走出来的，这一帧的支撑脚全部
+        # 作废 —— 否则旧支点会像橡皮筋把身体往回拽（甚至穿墙），也就是用户
+        # 报的「拉拽离开后松手，脚把蜥蜴拽回去，脚还永远黏在那里」。
+        held_body = self.state == ItemState.MOUSE or self.hauled
+        on_ground = [bool(not stunned and not held_body
+                          and lg.y >= foot_floor(lg) - FLOOR_GRIP_TOL)
                      for lg in self.legs]
         support_now = sum(1 for i, lg in enumerate(self.legs)
                           if lg.planted and on_ground[i])
@@ -3390,6 +3483,17 @@ class Lizard:
             # 原版 num = DistanceToLine(脚, 髋, 髋+Perp(a)) == -(脚-髋)·a
             num = -(ax * (lg.x - hx) + ay * (lg.y - hy))
 
+            if (lg.planted
+                    and math.hypot(lg.x - hx, lg.y - hy) > joint * LEG_MAX_STRETCH):
+                # 脚已经远到腿长的极限之外：它绝不可能还是支点（被拖拽 / 被挤飞 /
+                # 被瞬移）。直接放开，不要留下一个永远把身体拉回去的旧锚点。
+                lg.planted = False
+                lg.reaching = True
+                lg.airborne = False
+                lg.grip = 0
+                lg.plant_dx = lg.plant_dy = 0.0
+                if planted_n > 0:
+                    planted_n -= 1
             if stunned:
                 lg.disabled = True
                 lg.reaching = False
@@ -3485,7 +3589,7 @@ class Lizard:
                         if not continue_out:
                             rmax = joint - 1.0
                             want_x = hx + ax * rmax
-                            support_y = (self.terrain.floor_under(want_x, hy)
+                            support_y = (self._floor_under(want_x, hy)
                                          if self.terrain is not None else room_hl)
                             gy = support_y - LEG_LIMB_RAD
                             dy_g = gy - hy
@@ -3525,7 +3629,7 @@ class Lizard:
                     lg.y += lg.vy
                     lg.vx *= LEG_AIR_FRIC
                     lg.vy *= LEG_AIR_FRIC
-                leg_floor = (self.terrain.floor_under(lg.x, lg.y)
+                leg_floor = (self._floor_under(lg.x, lg.y)
                              - LEG_LIMB_RAD if self.terrain is not None else floor)
                 if lg.y > leg_floor:                         # PushOutOfTerrain
                     lg.y = leg_floor

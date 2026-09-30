@@ -57,6 +57,7 @@ DRIFT_TOP = 0.5           # 漂移目标的高度上限（占窗口高度的比�
 FLAPS_MAX = 60            # 兼容旧字段：体力条的刻度数
 REST_TICKS = 70           # 兼容旧字段：rest>0 表示落着没飞
 EATEN_COUNTDOWN = 3
+HOLD_EAT_TICKS = 40       # 咬住蝠蝇后含在嘴里这么久才吞下（消失＝吃掉）
 
 # ── 捕食蝠蝇（原版 CicadaAI 的 BatFly 猎食：饿了主动去抓，抓到当场吃掉）──
 HUNGER_DRAIN = 1.0 / 2400.0   # 每 tick 掉一点（满 → 饿约 60 s）
@@ -99,7 +100,7 @@ class Squidcada:
                  "charge_counter", "charge_dir", "like", "stun", "armed_threat",
                  "look_at", "look_dir", "look_rot", "charging_vis",
                  "threat_mode", "threat_pos", "_contact_ceil",
-                 "hunger", "prey")
+                 "hunger", "prey", "prey_hold", "prey_hold_obj")
 
     @property
     def haul_chunk_mass(self):
@@ -139,6 +140,8 @@ class Squidcada:
         self.hue = 0.55 + rng.uniform(-0.1, 0.1)   # 原版个体色相（蓝紫）
         self.hunger = rng.uniform(HUNGER_INIT[0], HUNGER_INIT[1])   # 饿了就去抓蝠蝇
         self.prey = None         # 正在追的那只蝠蝇（原版 CicadaAI 的 prey）
+        self.prey_hold = 0       # 已咬住、还含在嘴里的剩余 tick
+        self.prey_hold_obj = None
         self.flap = rng.random()
         self.flap_ph = rng.random() * math.tau
         self.wings = [self.flap, self.flap]
@@ -285,10 +288,23 @@ class Squidcada:
 
     # ── 渲染状态：对照 CicadaGraphics.Update（翅膀展开/收起、眨眼、扑翅相位）──
     def _heading(self):
-        """体轴（朝头）单位向量：飞的时候取速度方向，否则按朝向横躺。"""
+        """体轴（朝头）单位向量：飞的时候取速度方向，否则按朝向横躺。
+
+        被手拿着 / 被鼠标拖着时不走物理，vx/vy 恒为 0；这时改用「这一帧的位移」
+        当体轴，精灵才会朝着移动方向 —— 旧版一直用上一次飞行留下的 facing，
+        所以「被拿着时完全没有物理、精灵朝向也丢了」。
+        """
         sp = math.hypot(self.vx, self.vy)
         if sp > 0.6:
             return (self.vx / sp, self.vy / sp)
+        dx, dy = self.x - self.last_x, self.y - self.last_y
+        d = math.hypot(dx, dy)
+        if d > 0.35:
+            if dx > 0.0:
+                self.facing = 1
+            elif dx < 0.0:
+                self.facing = -1
+            return (dx / d, dy / d)
         return (float(self.facing), 0.0)
 
     def _tent_tick(self, ux, uy) -> None:
@@ -399,6 +415,8 @@ class Squidcada:
         self.gfx_tick()
         if self.state in (ItemState.MOUSE, ItemState.CARRIED):
             self._stamina_tick(grabbed=True)      # 位置由手每 tick 写入，只推进体力
+            if self.prey_hold_obj is not None:    # 自己被抓住：松口，猎物逃掉
+                self._release_prey_hold()
             return
         self.last_x, self.last_y = self.x, self.y
         if self.state == ItemState.GONE:
@@ -423,6 +441,7 @@ class Squidcada:
         self._stamina_tick(grabbed=False)
         self._hunt_tick(prey)
         self._flight(WL, HL, threats)
+        self._prey_hold_tick()
         self._try_catch()
         self._flags_sync()
 
@@ -449,6 +468,8 @@ class Squidcada:
     def _hunt_tick(self, prey) -> None:
         """饿了就挑最近的一只蝠蝇当猎物（原版 CicadaAI：蝉乌贼会捕食蝠蝇）。"""
         self.hunger = clampf(self.hunger - HUNGER_DRAIN, 0.0, 1.0)
+        if self.prey_hold_obj is not None:
+            return                     # 嘴里还含着猎物：吃完之前不再挑新的
         cur = self.prey
         if cur is not None and (getattr(cur, 'dead', False)
                                 or cur.state != ItemState.FREE
@@ -472,16 +493,57 @@ class Squidcada:
             tgt.goal = (tgt.x + ux * PREY_FLEE_D, tgt.y + uy * PREY_FLEE_D)
 
     def _try_catch(self) -> bool:
-        """贴到猎物身上就一口咬死（吃完饥饿度回满，进入下一个捕食周期）。"""
+        """贴到猎物身上就叼住 —— 杀死 → 含在嘴里一会儿 → 吞下（原版 CicadaAI 当场吃掉）。
+
+        旧版直接 ``bf.bite()`` 就撒手：蝠蝇立刻变成一具尸体掉在地上，看起来像
+        「蝉乌贼猎杀完把尸体丢掉了」。现在叼住、持有 HOLD_EAT_TICKS tick，
+        最后把猎物置成 EATEN（items 层把 EATEN 的蝠蝇剔除＝吃掉）。
+        """
         bf = self.prey
-        if bf is None or getattr(bf, 'dead', False) or bf.state != ItemState.FREE:
+        if bf is None or self.prey_hold_obj is not None:
+            return False
+        if getattr(bf, 'dead', False) or bf.state != ItemState.FREE:
             return False
         if math.hypot(bf.x - self.x, bf.y - self.y) > CATCH_D:
             return False
-        bf.bite()                 # BatFly：die() + 尸体倒计时，由 items 层剔除
-        self.hunger = 1.0
+        bf.die()                              # 咬死：叼在嘴里的是尸体（dead）
+        bf.state = ItemState.CARRIED          # 叼住：位置每 tick 由蝉乌贼写
+        bf.held_by_hand = None
+        bf.vx = bf.vy = 0.0
+        self.prey_hold_obj = bf
+        self.prey_hold = HOLD_EAT_TICKS
         self.prey = None
         return True
+
+    def _release_prey_hold(self) -> None:
+        """松口：嘴里的猎物回到自由态（自己被抓住 / 状态被外部打断时用）。"""
+        bf = self.prey_hold_obj
+        if bf is not None and bf.state == ItemState.CARRIED:
+            bf.state = ItemState.FREE
+            bf.vx = self.vx
+            bf.vy = self.vy - 2.0
+        self.prey_hold_obj = None
+        self.prey_hold = 0
+
+    def _prey_hold_tick(self) -> None:
+        """叼着猎物的这些 tick：把它含在嘴边，到点吞下（消失）。"""
+        bf = self.prey_hold_obj
+        if bf is None:
+            return
+        if bf.state in (ItemState.GONE, ItemState.EATEN):
+            self.prey_hold_obj = None
+            self.prey_hold = 0
+            return
+        self.prey_hold -= 1
+        bf.last_x, bf.last_y = bf.x, bf.y
+        bf.x, bf.y = self.x, self.y + 2.0
+        if hasattr(bf, "set_rotation_to_grabber"):
+            bf.set_rotation_to_grabber(self.x, self.y)
+        if self.prey_hold <= 0:
+            bf.state = ItemState.EATEN       # 吞下：items 层剔除 EATEN 的蝠蝇
+            self.prey_hold_obj = None
+            self.prey_hold = 0
+            self.hunger = 1.0                # 吃饱，进入下一个捕食周期
 
     def _charge(self, px: float, py: float) -> None:
         """Cicada.cs:694-704 Charge(pos)：锁定方向，起手蓄势。"""

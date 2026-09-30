@@ -966,6 +966,7 @@ class BehaviorFSM:
         self.cursor = cursor
         for fn in self._ext_tickers:
             fn()
+        self._squid_lift_tick()      # 叼着活蝉乌贼：扑翅托举 + 水平拖拽（原版 LiftPlayerPower）
         self._track_cursor(cursor)
         self._shot_clock += 1
         disturbed = self.grab.active
@@ -3208,7 +3209,9 @@ class BehaviorFSM:
             self._transition("Airborne")     # 悬空不能趴：先落地
             return
         if self._hibernating:
-            if self._too_cold_to_sleep():
+            # 饱食度不够就绝不允许真正入睡（用户报的「没吃饱也自己睡着」）：
+            # _hibernating 是残影时当场醒，而不是照单进 Sleep 扣食物。
+            if self._too_cold_to_sleep() or not self.body.food_satisfied():
                 self._hibernating = False
                 self._transition("WakeSequence")
                 return
