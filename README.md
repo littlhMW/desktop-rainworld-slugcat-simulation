@@ -1,6 +1,6 @@
 # SlugcatPet Extended
 
-Rain World 桌面宠物扩展版。基于 `lingxiaojun/slugcatpet`，重点扩展生物、物件、AI、物理和环境系统。
+Rain World 桌面宠物扩展版。基于 `lingxiaojun/slugcatpet`，重点扩展生物、物件、行为、环境与场景系统。
 
 ## 扩展内容
 
@@ -42,7 +42,7 @@ python run_slugcatpet.py
 - 拖动物件进行移动、携带或投掷。
 - 使用橡皮工具删除对象，使用清空功能清除场景对象。
 - 庇护所通过拖拽区域创建，尺寸由拖拽范围决定。
-- 自带雨循环番茄钟，可在环境面板中手动开启或关闭。
+- 自带雨循环计时器，可在环境面板中手动开启或关闭。
 
 ## 角色
 
