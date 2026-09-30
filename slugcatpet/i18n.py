@@ -130,7 +130,7 @@ _STR = {
     "settings_min_pets":     {"zh": "至少保留 1 只", "en": "Keep at least 1 cat"},
     "settings_add_none":     {"zh": "添加失败（详见 error.log）",
                               "en": "Could not add cat (see error.log)"},
-    "settings_add_failed":   {"zh": "没能添加{variant}：{why}",
+    "settings_add_failed":   {"zh": "添加{variant}失败：{why}",
                               "en": "Could not add {variant}: {why}"},
     "settings_remove_confirm": {"zh": "确定移除 {name}？", "en": "Remove {name}?"},
     "settings_env_section":  {"zh": "环境", "en": "Environment"},
@@ -146,18 +146,13 @@ _STR = {
     "settings_storm_block":     {"zh": "暴雨时拦住鼠标点击（不穿透）",
                                  "en": "Storm blocks mouse clicks (no click-through)"},
     "settings_storm_block_tip": {
-        "zh": "默认关闭：暴雨期间照样鼠标穿透，不挡你干活。开启后暴雨里点击不再落到桌面上（用来配合下一项点杀）。"
-              "",
-        "en": "Off by default: the window stays click-through during a storm, so your work is never blocked. "
-              "When on, clicks during a storm no longer reach the desktop (this is what makes the next option work). "
-              "The strip at the very bottom of the screen (taskbar / tray) is never blocked either way."},
+        "zh": "开启后暴雨期间点击不穿透；底部任务栏区域不受影响。",
+        "en": "On: storm clicks do not pass through; the bottom taskbar area is unaffected."},
     "settings_storm_lethal":    {"zh": "暴雨中点击杀死庇护所外的猫",
                                  "en": "Storm clicks kill a cat outside a shelter"},
     "settings_storm_lethal_tip": {
-        "zh": "与上一项互相独立：这一项只管「点了会不会死猫」。开启后，暴雨期间点击庇护所外会随机杀一只猫；"
-              "关掉就只是拦住点击，不会死猫。",
-        "en": "Independent of the option above: this one only decides whether a click kills. When on, clicking "
-              "outside a shelter during a storm kills a random cat; off means clicks are only blocked."},
+        "zh": "开启后，暴雨期间点击庇护所外会杀死一只猫。",
+        "en": "On: clicking outside a shelter during a storm kills a cat."},
     "settings_storm_focus_minutes":   {"zh": "平静期（分钟）", "en": "Calm (minutes)"},
     "settings_storm_warning_minutes": {"zh": "征兆期（分钟）", "en": "Omen (minutes)"},
     "settings_storm_sleep_minutes":   {"zh": "暴雨期（分钟）", "en": "Storm (minutes)"},
@@ -165,15 +160,11 @@ _STR = {
 
     # —— settings：AI 行为 ——
     "settings_ai_section":        {"zh": "友军伤害", "en": "Friendly fire"},
-    "settings_friendly_fire_protect": {"zh": "友军伤害计算（同伴免疫）",
+    "settings_friendly_fire_protect": {"zh": "友伤保护",
                                        "en": "Friendly-fire protection"},
     "settings_friendly_fire_protect_tip": {
-        "zh": "勾选后：蛞蝓猫丢出的矛 / 石头不会对同伴造成伤害或眩晕（砸中只弹开）。取消勾选就是真实友伤，"
-              "高伤害的矛照样一下打死同伴。这只决定伤害结算，完全不影响 AI —— 猫出手前永远会先避让同伴的弹道。",
-        "en": "When ticked, spears and rocks thrown by slugcats deal no damage and no stun to fellow slugcats "
-              "(they just bounce off). Unticked means real friendly fire: a strong spear still kills an ally "
-              "outright. This only decides the damage maths and never changes AI - cats still probe their throw "
-              "arc and avoid allies before firing."},
+        "zh": "开启后同伴不受矛、石头伤害；关闭后友伤正常生效。",
+        "en": "On: allies ignore spear and rock damage. Off: friendly fire applies."},
     "settings_hud_section":       {"zh": "状态面板", "en": "Status panel"},
     "settings_show_hud":     {"zh": "显示状态面板", "en": "Show status panel"},
     "settings_pick_title":   {"zh": "选择皮", "en": "Pick a variant"},
