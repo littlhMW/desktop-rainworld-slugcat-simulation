@@ -4,6 +4,36 @@
 
 ## 2026-10-01
 
+### R139 · 持物绑定到实际手位（一只手 = 一个状态 = 一套手臂 = 一个物品）
+
+**问题**：手的位置有两套在打架。`rendering/graphics.py::_update_hands()` 按攀爬动画算真实手位（写回 `body.hand_pos`），`core/creature.py::_carry_anchor()` 又按身体偏移另算一套持物位置。于是爬杆时矛浮在身体旁边、和攀爬手脱节；更糟的是 `_apply_carry_stone` / `_apply_carry_spear` 在「有杆」时**整条跳过** `_aim_hand`，把上一帧的 `arm_aim` 留在原地 —— 而 `_update_hands` 的优先级是 `hand_aim > arm_aim > 内部姿态`，`arm_aim` 会盖掉攀爬姿态，把那只手从杆上拽回身侧持物点，于是同一只手既有一只伸向身侧的持物臂、又有一条杆上的抓握手（用户报的「多出两只手」）。
+
+**修法**：把「手」收成两个独立状态槽位，动画决定手的实际位置，持物只读取对应手的位置。
+
+- `behavior/anim_intent.py` 新增 `BEAM_LIMB_ANIMS`（`ClimbOnBeam / BeamTip / StandOnBeam / HangFromBeam / GetUpOnBeam`）作为**唯一真值源**。原先这份元组在 `graphics.py` 里抄了两遍（`_update_hands` 和 `_update_legs`），现在两处 + `creature.hands_on_anim()` 共读一份，顺手删掉一份重复。
+- `creature.hands_on_anim()`：`bodyMode == "ClimbingOnBeam" and animation in BEAM_LIMB_ANIMS`。注意它**不等于**旧的 `_holding_on_pole()` —— 扶墙下滑的 `WallClimb` 也把 `bodyMode` 写成 `ClimbingOnBeam`，但手并没有被 beam 姿态接管，旧口径把这一档也算进「有杆」，属于误伤。旧名 `_holding_on_pole` 已删除（全仓库无调用方），不再留两个名字指一件事。
+- `creature._carry_anchor(side)` → `(x, y, aimed)` 唯一真值源：动画接管时返回 `hand_world(side)`（即 `hand_pos`）+ `aimed=False`；`hand_pos` 还没写过（没跑过渲染帧）时退回身体锚点但**仍然** `aimed=False`，绝不抢那只手。其余状态照旧返回身体偏移锚点 + `aimed=True`（手跟物），这一档与旧版逐位相同。
+- `_apply_carry_stone` / `_apply_carry_spear` 不再「有杆就整条跳过」，统一走 `_aim_hand(side, cx if aimed else None, ...)` —— `aimed=False` 会把 `arm_aim` 清掉，从根上消灭「残留瞄准把攀爬手拽走」。
+- 新增 `creature.release_hands_to_anim()`：进 `PoleClimb` / `HPole` / `CeilingHang` 时显式把双手交还动画（清 `arm_aim`）。三处 `_*_enter()` 都已接上。
+- `_sleep_drop_hands()` 原来只 `release_spear()`（放主手那支），双手各一支的猎手 / 矛大师会漏掉副手 → 改成遍历 `hand_spears` 逐手放掉；背上的矛不受影响。
+
+**证据（A/B 实机渲染，`work/scratch/_shot139d.py`）**：复刻旧口径 vs 新口径，同一根竖杆、同一只拿矛的手 ——
+
+| | `|矛 − 手|` |
+|---|---|
+| 旧版（物留身体锚点） | **17.5 px**（矛浮在杆旁边） |
+| 新版（物跟实际手） | **0.0 px** |
+
+目视拼图 `work/scratch/shot139_ab.png`（左旧右新）、单张放大 `shot139_pole.png` / `shot139_dual.png`：新版是「一只抓握手按在杆上、矛挂在这只手上」，不再有身侧浮空的矛。注意 A/B 里的旧版只复刻了「物留锚点」那一半；真实旧版还会被残留 `arm_aim` 把手也拽过去，比截图更糟。
+
+**测试**：新增 `work/scratch/e2e_r139.py`（40 项，全绿）—— 动画集判定（含 `WallClimb` 边界）、`creature`/`graphics` 共读一份、`graphics` 不再硬编码元组；果子/石头/矛三种物品「站着物在携带点 + arm_aim=携带点」「爬杆物在手位 + arm_aim 清空」「`hand_pos` 未知时暂留携带点但不抢手」「手位与身侧锚点确实是两处（用例有效）」；双手各一支各跟各的手 + `hand_pos` 只有 l/r 两槽；`release_hands_to_anim` 与三处 `_*_enter()`；入睡释放两手 + 背矛保留；绘制层「站着 2 条手臂 / 爬杆 0 条手臂 + 正好 2 条抓握精灵」。`run_all19.ps1` 已登记（123 个脚本）。
+
+**改既有守护**：`e2e_r49.py` §3 原来钉的是 b625b76 的口径「爬杆时物留在稳定携带点、不吃 `hand_pos`」—— 那正是本轮要修的行为，已按新规格重写（物跟手 + 清 `arm_aim` + `hand_pos` 未知时的兜底）。
+
+**回归**：`run_all19.ps1` **123 个脚本 fails=0 []**；`tools/parts_audit.py --check` exit=0；`tools/sprite_variants.py` 正常。
+
+**未做**：§9.1 `_strip_path()` 拓扑、§9/§10 动作序列（`PrepareToLounge` 式分节点冲量、Attack 四阶段姿态）；驯服社交 / 黄蜥 Pack / AttemptBite→Grasp→Carry 分层（用户明确暂缓）。
+
 ### R138 · §8 咬合参数补齐 + §13 花纹复刻核对 + §14.1 面条蝇绘制优化
 
 **§8 咬合参数补齐（`world/lizard.py`）** —— 把公开反编译里的粉蜥咬合参数真正落进桌宠逻辑，不再是「距离够近就结算伤害」的一锤子买卖。

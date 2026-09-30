@@ -4,6 +4,7 @@ import math
 import random   # 溺水吐泡概率/散射用
 
 from ..behavior import tuning
+from ..behavior.anim_intent import BEAM_LIMB_ANIMS
 from ..cats.stats import DEFAULT_STATS
 from ..core import chunkphys as cp
 from ..core.chunkphys import BodyChunk, solve_conn
@@ -1845,14 +1846,43 @@ class SlugcatBody:
         ox, oy = _rot(sgn * CARRY_OFF_X * s, CARRY_OFF_Y * s, ang)
         return c0.x + ox, c0.y + oy
 
-    def _holding_on_pole(self):
-        """持物时是否正处于杆/吊顶动作；杆上的手由攀爬姿态接管。"""
-        return bool(self.bodyMode == "ClimbingOnBeam" or self.on_pole or self.ceil_cling)
+    def hands_on_anim(self) -> bool:
+        """此刻双手是否由攀爬/吊挂动画驱动（而不是被持物锚点牵着走）。"""
+        return (self.bodyMode == "ClimbingOnBeam"
+                and self.animation in BEAM_LIMB_ANIMS)
+
+    def hand_world(self, side):
+        """这只手此刻的世界坐标（渲染层每帧写回的真值）；没跑过渲染帧时 None。"""
+        hp = self.hand_pos.get(side)
+        return None if hp is None else (float(hp[0]), float(hp[1]))
+
+    def release_hands_to_anim(self) -> None:
+        """把双手交还给动画（爬杆/横杆/吊挂）。
+
+        一只手 = 一个状态：动画一旦接管，持物瞄准就必须让位，否则上一帧的
+        arm_aim 会一直把这只手从杆上拽回身侧持物点（用户报的「拿矛爬杆矛
+        浮空 / 多出两只手」）。
+        """
+        self.arm_aim["l"] = None
+        self.arm_aim["r"] = None
 
     def _carry_anchor(self, side):
-        """稳定的持物锚点；不读取可能滞后的 hand_pos。"""
+        """持物锚点唯一真值源 → ``(x, y, aimed)``。
+
+        攀爬/吊挂动画接管双手时，物品跟随**那只手的实际位置**（渲染层每帧写回
+        的 ``hand_pos``）——「攀爬动画决定左右两只手的最终位置，任何被该手持有的
+        物品都跟随这只实际手的位置移动」。aimed=False 表示「别去动这只手」。
+
+        其余状态才回落到身体偏移算出的携带点，由 ``arm_aim`` 把手牵过去
+        （手跟物），这一档行为与旧版逐位一致。
+        """
         cx, cy = self._carry_pos(side)
-        return cx, cy, not self._holding_on_pole()
+        if not self.hands_on_anim():
+            return cx, cy, True
+        hw = self.hand_world(side)
+        if hw is None:                       # 还没跑过渲染帧：物暂留携带点，但别 aim
+            return cx, cy, False
+        return hw[0], hw[1], False
 
     def reach_for(self, fruit, side):
         """Aim hand at fruit; clear opposite side (only one hand reaches)."""
@@ -2040,8 +2070,9 @@ class SlugcatBody:
         s.rotation_deg = s.last_rotation
         s.spin = 0.0
         s.x, s.y = cx, cy
-        if not self._holding_on_pole():
-            self._aim_hand(side, cx if aimed else None, cy if aimed else None)
+        # 统一走 _aim_hand：爬杆时 aimed=False 会把 arm_aim 清掉（不能留上一帧的
+        # 瞄准值，否则攀爬手会被拽回持物点）。
+        self._aim_hand(side, cx if aimed else None, cy if aimed else None)
 
     # ── 矛（原版 Spear：玩家持矛时杆斜指前上方，掷出后走弹道）──
     def grab_spear(self, spear, side=None, arm=True):
@@ -2253,8 +2284,9 @@ class SlugcatBody:
             hold_angle = self.spear_hold_angle()
             sp.last_angle = hold_angle
             sp.angle_deg = hold_angle
-            if not self._holding_on_pole():
-                self._aim_hand(side, cx if aimed else None, cy if aimed else None)
+            # 同石头：爬杆时也要把 arm_aim 清掉（原来这里整条跳过，留下上帧的
+            # 瞄准值把攀爬手拽回身侧）。
+            self._aim_hand(side, cx if aimed else None, cy if aimed else None)
         bs = self.back_spear
         if bs is not None:
             bx, by, bang = self._back_spear_pose()

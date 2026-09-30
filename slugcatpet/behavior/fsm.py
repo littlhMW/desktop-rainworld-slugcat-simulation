@@ -3894,6 +3894,9 @@ class BehaviorFSM:
         from .pole_climb import PoleClimber
         self.gfx.hand_aim["l"] = None
         self.gfx.hand_aim["r"] = None
+        # 双手交给攀爬动画：清掉持物瞄准，否则爬杆时手会被拽回身侧持物点，
+        # 矛留在身体旁边浮空、和攀爬手脱节（用户报的「多出两只手」）。
+        self.body.release_hands_to_anim()
         pole = self._poleclimb_pole
         start = self._poleclimb_start
         self._poleclimb_pole = None
@@ -4002,6 +4005,7 @@ class BehaviorFSM:
 
     def _hpole_enter(self):
         from ..world.hpole import HPoleController
+        self.body.release_hands_to_anim()      # 横杆同理：手归横杆动画
         pole = self._hpole_pole
         start = self._hpole_start
         start_x = self._hpole_start_x
@@ -6005,8 +6009,10 @@ class BehaviorFSM:
             f.y = min(f.y, b.chunk1.y - f.rad)
         if b.carried_stone is not None:
             b.release_stone(to_free=True)
-        if b.carried_spear is not None:
-            b.release_spear(to_free=True)
+        # 两只手各一支（猎手/矛大师）时也要清干净：只放 carried_spear 会漏掉副手
+        # 那支，睡姿里就残着一根矛（用户要的「入睡不留手部残留」）。
+        for s in list(b.hand_spears):
+            b.release_spear(to_free=True, side=s)
 
     def _sleep_urge_tick(self):
         full = (self.body.food_satisfied()
@@ -6255,6 +6261,7 @@ class BehaviorFSM:
         self._hibernating = False        # 吊在顶上不算睡觉（免得蜷在半空）
         b.set_posture(True)
         b.stop_walk()
+        b.release_hands_to_anim()        # 吊顶的手由 HangFromBeam 摆
 
     def _st_ceilinghang(self, cursor, disturbed):
         b = self.body

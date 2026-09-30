@@ -22,6 +22,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+# ── 被「横杆/吊挂」这档动画接管的肢体姿态（唯一真值源）──────────────────
+# 落进这一档时，手和腿的位置都由动画决定：持物只**跟随**那只手，不再自己算
+# 第二套锚点。core/creature.py::hands_on_anim 与 rendering/graphics.py 的
+# _update_hands / _update_legs 必须读同一份，否则又会退回「动画在动手、持物在
+# 拉手」的两套坐标（用户报的「拿矛爬杆矛浮空 / 多出两只手」）。
+# 注意：扶墙下滑的 WallClimb 不在其中 —— 它的 bodyMode 也叫 ClimbingOnBeam，
+# 但手并没有被 beam 姿态接管。
+BEAM_LIMB_ANIMS = ("ClimbOnBeam", "BeamTip", "StandOnBeam",
+                   "HangFromBeam", "GetUpOnBeam")
+
 PRIO_NONE = -1        # 本 tick 还没人表态
 PRIO_FALLBACK = 0     # 兜底（把 look 清成 None）
 PRIO_AMBIENT = 10     # 闲逛扫视 / 环境注意

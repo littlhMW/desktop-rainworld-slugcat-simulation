@@ -7,7 +7,8 @@ from ..core.units import K_VEL, K_IMP, damp60, clampf, inv_lerp
 from ..core.gfxmath import (_hsl2rgb, _ang_from_up, _rot, _lerp, _catmull,
                            SHOULDER_OFF_X, SHOULDER_OFF_Y, ARM_DIV, ARM_MAX,
                            TAIL_RAD, TONGUE_WIDTH_SCALE)
-from ..behavior.anim_intent import AnimationController, PRIO_ACTION, point_of
+from ..behavior.anim_intent import (AnimationController, PRIO_ACTION, point_of,
+                                   BEAM_LIMB_ANIMS)
 
 # head 骨参数
 HEAD_AIR = damp60(0.99)
@@ -666,8 +667,7 @@ class SlugcatGraphics(GraphicsDrawMixin):
         self.legs.update(LEGS_AIR)
 
         anim = getattr(b, "animation", None)
-        if b.bodyMode == "ClimbingOnBeam" and anim in (
-                "ClimbOnBeam", "BeamTip", "StandOnBeam", "HangFromBeam", "GetUpOnBeam"):
+        if b.bodyMode == "ClimbingOnBeam" and anim in BEAM_LIMB_ANIMS:
             c0 = b.chunk0
             if anim == "ClimbOnBeam":
                 ph = self.anim_frame / 20.0 * 2.0 * math.pi
@@ -768,8 +768,7 @@ class SlugcatGraphics(GraphicsDrawMixin):
 
             if aim is None and not self.dead:
                 anim = getattr(b, "animation", None)
-                if b.bodyMode == "ClimbingOnBeam" and anim in (
-                        "ClimbOnBeam", "BeamTip", "StandOnBeam", "HangFromBeam", "GetUpOnBeam"):
+                if b.bodyMode == "ClimbingOnBeam" and anim in BEAM_LIMB_ANIMS:
                     aim, speed, quickness = self._beam_hand_target(idx, anim, spine_ang)
                 elif b.bodyMode == "Crawl":
                     if self.sleep_curl > 0.0:
