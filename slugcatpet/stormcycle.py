@@ -76,6 +76,9 @@ class StormCycle:
         # 每进入一次 GATHER 就 +1：window 靠它探测「新一轮雨」并把 RainSystem 的
         # first_drop_done 复位（旧实现跨周期不复位，第二场雨永远没有第一滴重雨）。
         self.cycle_id = 0
+        # 已跑完的雨循环次数（雨眠计时器主圆环的 karma 等级 = 它，1..10 夹紧）。
+        # 不跟着 reset() 清 —— 它是这一局的累计成绩，只随存档走。
+        self.cycles_done = 0
         self.fade_ticks = max(1, int(tuning.STORM_RAIN_FADE_TICKS))
         self.rise_ticks = max(1, int(tuning.STORM_RAIN_RISE_TICKS))
         self.gather_timeout = _minutes_to_ticks(tuning.STORM_GATHER_TIMEOUT_MINUTES)
@@ -238,6 +241,7 @@ class StormCycle:
         else:
             self.rain_drive = min(1.0, self.rain_drive + 1.0 / self.rise_ticks)
         if self.phase_t >= self.sleep_ticks:
+            self.cycles_done += 1          # 一场雨安全过去：番茄钟 +1 级
             self.phase = FOCUS
             self.phase_t = 0
             self.settle_t = 0
@@ -245,31 +249,57 @@ class StormCycle:
 
     # ── 左下角 HUD 的原料（只给数据，绘制在 rendering/storm_hud.py） ──
     def hud_info(self, pets=None):
-        """返回雨循环 HUD 数据；环境面板实际暴雨不显示倒计时。"""
+        """雨眠计时器的原料（绘制在 rendering/storm_hud.py）。
+
+        ``ring_total`` / ``ring_remain`` 是主圆环外那一圈小方块的比例：平静期只算
+        预警之外的那段（预警那段单独算「征兆期」），征兆期从专注尾巴一直连到集合段，
+        暴雨期就是剩下的雨。环境面板手动放的那场仍然不给倒计时。
+        """
         if not self.enabled and not self.manual:
             return None
         if self.manual and self.phase in (GATHER, SLEEP):
             return None
+        warn = self.warning_ticks
         if self.phase == FOCUS:
-            remain = max(0, self.focus_ticks - self.phase_t)
-            mode = "rain" if remain <= self.warning_ticks else "cycle"
+            left = max(0, self.focus_ticks - self.phase_t)
+            if left <= warn:
+                mode, ring_total, ring_remain = "rain", warn, left
+            else:
+                mode = "cycle"
+                ring_total = max(0, self.focus_ticks - warn)
+                ring_remain = left - warn
         elif self.phase == GATHER:
-            return None
+            mode = "rain"
+            ring_total = self.gather_timeout
+            ring_remain = max(0, ring_total - self.phase_t)
         else:
-            return None
+            mode = "hibernation"
+            ring_total = self.sleep_ticks
+            ring_remain = max(0, ring_total - self.phase_t)
+        phase_left = max(0, self.focus_ticks - self.phase_t) if self.phase == FOCUS else ring_remain
         need = 0
+        first = None
         for p in (pets or ()):
             beh = getattr(p, "behavior", None)
             body = getattr(p, "body", None)
             if body is None or (beh is not None and beh.is_truly_dead()):
                 continue
+            if first is None:
+                first = body          # 计时器固定显示第一只猫的数据
             miss = int(getattr(body, "food_hibernate", 0)) * 4 - (
                 int(getattr(body, "food", 0)) * 4
                 + int(getattr(body, "food_quarter", 0)))
             if miss > need:
                 need = miss
-        return {"mode": mode, "seconds": remain / TICK_HZ,
+        return {"mode": mode, "seconds": phase_left / TICK_HZ,
                 "phase": self.phase,
+                "ring_total": ring_total, "ring_remain": ring_remain,
+                "cycles": int(self.cycles_done),
+                "food": int(getattr(first, "food", 0)) if first is not None else 0,
+                "food_quarter": int(getattr(first, "food_quarter", 0)) if first is not None else 0,
+                "food_max": int(getattr(first, "food_max", 0)) if first is not None else 0,
+                "food_hibernate": (int(getattr(first, "food_hibernate", 0))
+                                   if first is not None else 0),
                 "starvation": (need + 3) // 4,
                 "hungry": need > 0,
                 "storm": self.phase in (GATHER, SLEEP)}
@@ -278,6 +308,7 @@ class StormCycle:
     def to_dict(self):
         return {"enabled": bool(self.enabled), "manual": bool(self.manual),
                 "phase": self.phase, "phase_t": int(self.phase_t),
+                "cycles_done": int(self.cycles_done),
                 "settle_t": int(self.settle_t),
                 "rain_drive": float(self.rain_drive),
                 "focus_minutes": self.focus_minutes,
@@ -291,6 +322,10 @@ class StormCycle:
         self.manual = bool(d.get("manual", False))
         if d.get("phase") in (FOCUS, GATHER, SLEEP):
             self.phase = d["phase"]
+        try:
+            self.cycles_done = max(0, int(d.get("cycles_done", self.cycles_done)))
+        except Exception:
+            pass
         try:
             self.phase_t = max(0, int(d.get("phase_t", 0)))
             self.settle_t = max(0, int(d.get("settle_t", 0)))
