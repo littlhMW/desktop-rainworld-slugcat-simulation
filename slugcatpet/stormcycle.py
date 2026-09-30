@@ -129,7 +129,7 @@ class StormCycle:
         手动的这一场跑完（暴雨期结束回到 FOCUS）会把 ``enabled`` 还原成触发前的值
         —— 临时下一场雨不会顺手把整个雨循环打开。
         """
-        if self.phase in (GATHER, SLEEP):
+        if self.manual and self.phase in (GATHER, SLEEP):
             return False
         self._manual_prev = bool(self.enabled)
         self.manual = True
@@ -217,6 +217,15 @@ class StormCycle:
                 sh.start_closing()
 
     def _step_sleep(self, shelters):
+        if self.manual:
+            self.phase_t = 0
+            self.pressure = 1.0
+            self.rain_drive = 1.0
+            for sh in shelters:
+                if sh.door_state == OPENING:
+                    sh.start_closing()
+            return
+
         self.phase_t += 1
         self.pressure = 1.0
         remain = self.sleep_ticks - self.phase_t
@@ -233,28 +242,21 @@ class StormCycle:
             self.phase_t = 0
             self.settle_t = 0
             self.pressure = 0.0
-            if self.manual:             # 手动那一场收工：还原触发前的雨循环开关
-                self.manual = False
-                self.enabled = self._manual_prev
 
     # ── 左下角 HUD 的原料（只给数据，绘制在 rendering/storm_hud.py） ──
     def hud_info(self, pets=None):
-        """返回 {mode, seconds, starvation, hungry}；关掉暴雨时 None。
-
-        mode: ``cycle``（平静期 M:SS）/ ``rain``（征兆期 M:SS）/
-        ``hibernation``（暴雨期 M:SS，即暴雨期剩余）。
-        """
+        """返回雨循环 HUD 数据；环境面板实际暴雨不显示倒计时。"""
         if not self.enabled and not self.manual:
+            return None
+        if self.manual and self.phase in (GATHER, SLEEP):
             return None
         if self.phase == FOCUS:
             remain = max(0, self.focus_ticks - self.phase_t)
             mode = "rain" if remain <= self.warning_ticks else "cycle"
         elif self.phase == GATHER:
-            remain = max(0, self.sleep_ticks)
-            mode = "hibernation"
+            return None
         else:
-            remain = max(0, self.sleep_ticks - self.phase_t)
-            mode = "hibernation"
+            return None
         need = 0
         for p in (pets or ()):
             beh = getattr(p, "behavior", None)
