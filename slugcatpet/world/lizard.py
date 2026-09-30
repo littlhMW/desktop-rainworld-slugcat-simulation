@@ -1263,7 +1263,7 @@ class Lizard:
 
         self.anim = self._intent()          # AI → 动画意图（这一帧的映射只发生一次）
         self._step_chain(self._ground)
-        self._step_legs(self._ground)
+        self._step_legs(HL)
         self._step_head()
         self._step_depth()
         self._step_cosmetics()
@@ -2974,7 +2974,7 @@ class Lizard:
                         s.vy = 0.0
 
     # ── 腿 ──
-    def _step_legs(self, HL) -> None:
+    def _step_legs(self, room_hl) -> None:
         """四足：逐行移植 LizardLimb.Update + Limb.Update（屏幕系 y↓，60 tick/秒）。
 
         要点（与原版一一对应）：
@@ -2991,7 +2991,7 @@ class Lizard:
         quick = b.limb_quickness
         lift = b.lift_feet
         step_len = lerp(-0.5, 0.5, b.step_length)         # StepLength（health = 1）
-        floor = HL - LEG_LIMB_RAD
+        floor = room_hl - LEG_LIMB_RAD
         stunned = self.stun > 0
         # limbsAimFor：原版是行进目标格中心，宠物里取躯干前方一点
         self.limbs_aim = (self.x + self.chain_dir * LEG_AIM_AHEAD, self.y)
@@ -3037,15 +3037,21 @@ class Lizard:
                     # FindGrip 的宠物版：本窗口只有「地面 + 左右墙」，
                     # 于是落点 = 髋正前方 (joint-1) 处压到地面，再夹进 joint-1 半径内
                     # （原版 FindGrip 也只取 maximumRadiusFromAttachedPos 内的地形格）。
-                    support_y = (self.terrain.support(gx, hy, HL) if self.terrain is not None else HL)
+                    support_y = (self.terrain.floor_under(gx, hy)
+                                 if self.terrain is not None else room_hl)
                     gy = support_y - LEG_LIMB_RAD
                     gdx, gdy = gx - hx, gy - hy
                     gd = math.hypot(gdx, gdy)
                     rmax = joint - 1.0
-                    if gd > rmax and gd > 1e-6:
-                        gx = hx + gdx / gd * rmax
-                        gy = hy + gdy / gd * rmax
-                    lg.abs_x, lg.abs_y = gx, gy
+                    if gd > rmax:
+                        # 原版 FindGrip 找不到 jointDist 范围内的地形时，
+                        # 不会生成一个虚假的悬空落点；本次伸脚直接失败，下一帧重算。
+                        lg.abs_x, lg.abs_y = lg.x, lg.y
+                        lg.reaching = False
+                        lg.snap = False
+                        lg.grip = 0
+                    else:
+                        lg.abs_x, lg.abs_y = gx, gy
                 else:
                     if (num > joint * -0.5 * (b.step_length + 0.1)
                             and not _dist_less(lg.x, lg.y, hx, hy, joint - 1.0)
@@ -3066,10 +3072,12 @@ class Lizard:
                 lg.y += lg.vy
                 lg.vx *= LEG_AIR_FRIC
                 lg.vy *= LEG_AIR_FRIC
-                leg_floor = (self.terrain.support(lg.x, lg.y, HL) - LEG_LIMB_RAD if self.terrain is not None else floor)
+                leg_floor = (self.terrain.floor_under(lg.x, lg.y)
+                             - LEG_LIMB_RAD if self.terrain is not None else floor)
                 if lg.y > leg_floor:                         # PushOutOfTerrain
                     lg.y = leg_floor
-                    lg.vy = min(0.0, lg.vy)
+                    if lg.vy > 0.0:
+                        lg.vy = 0.0
             # ── ConnectToPoint(髋, jointDist)：腿长硬上限（脚不会被甩飞）──
             ddx, ddy = lg.x - hx, lg.y - hy
             dd = math.hypot(ddx, ddy)
@@ -3089,10 +3097,17 @@ class Lizard:
             if abs(num11) > LEG_DEPTH_MIN:
                 num8 += 1.0 if num11 > 0.0 else -1.0
             # ── gripCounter ──
-            if (not stunned and lg.reaching
-                    and (lg.snap or (_dist_less(lg.x, lg.y, lg.abs_x, lg.abs_y,
-                                                LEG_LIMB_RAD + 1.0)
-                                     and lg.y >= floor - 0.5))):
+            # 原版 gripCounter 只在脚已经到达 FindGrip 的绝对位置、并且
+            # 当前位置仍贴着实际地形时才累计。脚悬空就不算支撑。
+            grounded = False
+            if not stunned and lg.reaching:
+                near_grip = lg.snap or _dist_less(
+                    lg.x, lg.y, lg.abs_x, lg.abs_y, LEG_LIMB_RAD + 1.0)
+                if near_grip:
+                    gy = (self.terrain.floor_under(lg.x, lg.y) - LEG_LIMB_RAD
+                          if self.terrain is not None else floor)
+                    grounded = abs(lg.y - gy) <= 1.5
+            if grounded:
                 lg.grip += 1
                 if lg.grip >= LEG_GRIP_DELAY:
                     grip[2 if lg.pair >= 1 else 0] += 1
