@@ -5,10 +5,8 @@ import math
 
 from ..behavior import tuning
 from ..core.units import clampf
-from ..core import chunkphys
 from .ability import Ability, Estimate, RUNNING, DONE, GIVEUP, reach_assist, walk_band
 from .jump_arc import get_arc, sweep_hit
-from .walk_reach import _walk_crosses_solid
 
 SETTLE_VX = 0.3
 SETTLE_MAX = 40      # 驻停等待上限，超时按当前状态起跳
@@ -25,19 +23,6 @@ def _free_launch_hit(arc, gx, gy, launch_y, xmin, xmax, radius):
     return None
 
 
-def _arc_hits_solids(arc, launch_x, launch_y, radius=None):
-    """检查完整跳弧是否穿过统一地形；用于防止规划器选择「理论命中、实际撞墙」的路线。"""
-    r = float(radius if radius is not None else chunkphys.RAD0)
-    for px, py in arc.points:
-        x = launch_x + px
-        y = launch_y + py
-        for x0, y0, x1, y1 in chunkphys.cat_solids():
-            if x + r <= x0 or x - r >= x1 or y + r <= y0 or y - r >= y1:
-                continue
-            return True
-    return False
-
-
 class JumpReach(Ability):
     key = "jump"
 
@@ -52,14 +37,8 @@ class JumpReach(Ability):
         best = None
         best_t = None
 
-        def consider(lx, hold, md, hit, arc):
+        def consider(lx, hold, md, hit):
             nonlocal best, best_t
-            # 起跳点本身也必须从当前支撑面走得到，不能隔着庇护所墙「瞬移式」选位。
-            if _walk_crosses_solid(hipx, lx, floor):
-                return
-            launch_y = floor - arc.takeoff_h
-            if _arc_hits_solids(arc, lx, launch_y):
-                return
             t = abs(hipx - lx) / tuning.PLAN_WALK_SPEED + hit + tuning.PLAN_STARTUP_TICKS
             if best_t is None or t < best_t:
                 best_t = t
@@ -71,14 +50,14 @@ class JumpReach(Ability):
                 dy = gy - (floor - arc0.takeoff_h)
                 hit = sweep_hit(arc0, 0.0, dy, PLAN_HIT_RADIUS)
                 if hit is not None:
-                    consider(gx, hold, 0, hit, arc0)
+                    consider(gx, hold, 0, hit)
             for md in (1, -1):
                 arc = get_arc(stats, hold, md)
                 lh = _free_launch_hit(arc, gx, gy, floor - arc.takeoff_h,
                                       xmin, xmax, PLAN_HIT_RADIUS)
                 if lh is not None:
                     lx, hit = lh
-                    consider(lx, hold, md, hit, arc)
+                    consider(lx, hold, md, hit)
         if best is None:
             return None
         return best + (best_t,)
