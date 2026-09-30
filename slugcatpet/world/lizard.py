@@ -93,7 +93,7 @@ LOST_R = 230.0                # 超出即失去兴趣
 
 # 叼走死猫/昏迷猫（原版把猎物拖回巢穴的宠物化改写：改拖到屏幕两侧角落）
 CARRY_NOTICE_R = 460.0        # 多远之内会主动去叼尸体/昏迷猫
-CARRY_SPEED_FAC = 0.55        # 叼着东西走，速度打这个折
+CARRY_SPEED_FAC = 0.36        # 叼着东西走 = 基准速度 × 这个系数（见 _state_speed）
 CARRY_CORNER_MARGIN = 34.0    # 角落落点距屏幕边缘
 CARRY_ARRIVE_R = 22.0         # 距角落多近算「到了」
 CARRY_MOUTH_FAC = 1.1         # 嘴前叼点 = 头半径 * 此值
@@ -230,6 +230,16 @@ VIS_BACK_FAC = 0.4            # 锥外残余视野：偏轴时等效视距压到
 # ── 威胁 / 逃跑（Behavior.Flee）──
 THREAT_NOTICE_FAC = 1.25      # 对 Afraid 对象的警觉半径放大（原版威胁阈值低于猎物）
 FLEE_TICKS = 80               # 单次逃跑持续 tick
+# ── 移动速度：一律「品种基准速度 × 状态系数」──
+# 旧口径给巡逻 / 调查 / 叼东西写死了 1.8~2.4 px/tick 的**绝对**上限，与品种无关：
+# 只有绿蜥（base 6.7）追猎快得过自己巡逻，粉/蓝/白/黄/红/黑/蝾螈/青/鳗鱼全是
+# 「慢悠悠地追」（追猎 1.3~2.2 < 巡逻 2.4），速度上根本看不出「看见猎物了」。
+# 现在全部按同一把尺子缩放，状态之间的先后次序与品种无关地固定：
+#   发呆 0 < 巡逻 < 叼东西 < 调查 / 上任一分工位 < 追猎(惰性 / 冲刺) < 受伤 < 逃跑
+MOVE_SPEED_FLOOR = 1.5        # 基准速度下限：焦糖蜥 base 0.65，纯相对量会几乎贴地不动
+PATROL_SPEED = 0.30           # 巡逻游走
+SNIFF_SPEED = 0.38            # 循声调查 / 走上墙点 / 黄蜥分工位 / 跟朋友
+HUNT_SPEED = 0.80             # 追猎（再乘 sprint：惰性 0.55 / 冲刺 1.0）
 FLEE_SPEED = 1.12             # 逃跑速度 × base_speed
 FLEE_ACCEL = 0.18
 FLEE_HOP = 0.03
@@ -1508,7 +1518,8 @@ class Lizard:
         if leg.mode == "drop" and leg.tx is not None:
             goal_x, goal_y = leg.tx, leg.ty      # 掉下去：朝落点走，剩下交给重力
         self.target, self.target_obj = (goal_x, goal_y), (o.obj if o else None)
-        want = clampf((goal_x - self.x) * 0.07, -2.4, 2.4)
+        sp = self._state_speed(SNIFF_SPEED)
+        want = clampf((goal_x - self.x) * 0.07, -sp, sp)
         self._drive_vx(want, WALK_TURN)
         return True
 
@@ -2034,7 +2045,8 @@ class Lizard:
         if o is None:
             return
         self.look_at = (o.x, o.y)
-        want = clampf((o.x - self.x) * 0.06, -2.2, 2.2)
+        sp = self._state_speed(SNIFF_SPEED)
+        want = clampf((o.x - self.x) * 0.06, -sp, sp)
         self._drive_vx(want, WALK_TURN)
 
     def _climb_plan(self, o, HL) -> None:
@@ -2123,7 +2135,7 @@ class Lizard:
         hop = self._hop_vy()
         return plan_approach(o.x, o.y, self.x, self.y, floor, WL, self._bite_reach(),
                              prefs_for(self.breed.key), GRAVITY, hop, AIR_FRICTION,
-                             sprint=self.sprint, base_speed=self.breed.base_speed,
+                             sprint=self.sprint, base_speed=self._move_base(),
                              tick=self._tick, terrain=self.terrain, caps=self.caps)
 
     def _approach_tick(self, o, WL, HL) -> None:
@@ -2141,17 +2153,20 @@ class Lizard:
         if plan.mode in ("climb_wall", "climb_pole"):
             # Planner 给的是地形路线：走到上墙点，剩下的交给 _step_wall 的附着物理
             wx = plan.target[0]
-            want = clampf((wx - self.x) * 0.08, -2.6, 2.6)
+            sp = self._state_speed(SNIFF_SPEED)
+            want = clampf((wx - self.x) * 0.08, -sp, sp)
             self._drive_vx(want, WALK_TURN)
             return
         lx = plan.launch[0] if plan.launch else self.x
         if abs(self.x - lx) <= 10.0 and self._contact_floor and self.hop_cd <= 0:
             self._leap()
             self.hop_cd = HOP_CD
-            want = clampf((o.x - self.x) * 0.05, -2.6, 2.6)
+            sp = self._state_speed(SNIFF_SPEED)
+            want = clampf((o.x - self.x) * 0.05, -sp, sp)
             self._drive_vx(want, LUNGE_ACCEL)
             return
-        want = clampf((lx - self.x) * 0.06, -2.4, 2.4)
+        sp = self._state_speed(SNIFF_SPEED)
+        want = clampf((lx - self.x) * 0.06, -sp, sp)
         self._drive_vx(want, WALK_TURN)
 
     def _warn_tick(self, o, WL, HL) -> None:
@@ -2349,7 +2364,8 @@ class Lizard:
             return
         dx = tx - self.x
         if abs(dx) > FOLLOW_GAP:
-            want = clampf(dx * 0.05, -2.2, 2.2)
+            sp = self._state_speed(SNIFF_SPEED)
+            want = clampf(dx * 0.05, -sp, sp)
             self._drive_vx(want, WALK_TURN)
         else:
             self.vx -= self.vx * 0.22
@@ -2429,7 +2445,7 @@ class Lizard:
         tx, ty = self.threat if self.threat is not None else (self.x, self.y)
         dx, dy = self.x - tx, self.y - ty
         d = math.hypot(dx, dy) or 1.0
-        sp = self.breed.base_speed * FLEE_SPEED
+        sp = self._state_speed(FLEE_SPEED)
         self._drive_vx(dx / d * sp, FLEE_ACCEL)
         self.target = self.target_obj = None
         self.look_at = (tx, ty)
@@ -2514,7 +2530,8 @@ class Lizard:
                 best, bestd = (cx, cy), d
         self.target = self.target_obj = None
         self.look_at = best
-        want = clampf((best[0] - self.x) * 0.05, -2.0, 2.0) * INJURY_SPEED
+        sp = self._state_speed(INJURY_SPEED)
+        want = clampf((best[0] - self.x) * 0.05, -sp, sp)
         self._drive_vx(want, WALK_TURN)
         return True
 
@@ -2528,7 +2545,8 @@ class Lizard:
             self.noise_t = 0
             return False
         self.look_at = (self.noise_x, self.noise_y)
-        want = clampf(dx * 0.06, -2.0, 2.0)
+        sp = self._state_speed(SNIFF_SPEED)
+        want = clampf(dx * 0.06, -sp, sp)
         self._drive_vx(want, WALK_TURN)
         return True
 
@@ -2543,7 +2561,8 @@ class Lizard:
             self.look_at = (self.alert.x, self.alert.y)
             if abs(gx - self.x) <= 10.0:
                 return False                       # 已经站到自己的位置了
-            want = clampf((gx - self.x) * 0.05, -2.2, 2.2)
+            sp = self._state_speed(SNIFF_SPEED)
+            want = clampf((gx - self.x) * 0.05, -sp, sp)
             self._drive_vx(want, WALK_TURN)
             return True
         best, bd = None, 1e9
@@ -2555,7 +2574,8 @@ class Lizard:
         if best is None or bd <= PACK_GAP:
             return False
         self.look_at = (best.x, best.y)
-        want = clampf((best.x - self.x) * 0.05, -2.0, 2.0)
+        sp = self._state_speed(SNIFF_SPEED)
+        want = clampf((best.x - self.x) * 0.05, -sp, sp)
         self._drive_vx(want, WALK_TURN)
         return True
 
@@ -2601,7 +2621,7 @@ class Lizard:
         loungeTendency 决定「冲刺倾向」：绿蜥 1.0 一发现猎物就全速冲，
         蓝蜥 0.01 基本是慢慢蹭过去（原版 LizardAI 用同一参数掷骰）。
         """
-        sp = self.breed.base_speed * 0.8 * self.sprint
+        sp = self._state_speed(HUNT_SPEED) * self.sprint
         acc = LUNGE_ACCEL
         if self.breed.charge_leap:
             # 青蜥蓄力弹射：扑击整段更快更猛（wiki：爬墙 + 蓄力弹射跳跃）
@@ -2805,7 +2825,8 @@ class Lizard:
                     self.guard_obj, self.guard_t = o.obj, GUARD_PREY_TICKS
                 return True                        # 这一 tick 用来放下
             hurry = self._carry_hurry(obs["rivals"])
-            want = clampf((den.x - self.x) * 0.05, -1.8, 1.8) * CARRY_SPEED_FAC * hurry
+            sp = self._state_speed(CARRY_SPEED_FAC)
+            want = clampf((den.x - self.x) * 0.05, -sp, sp) * hurry
             self._drive_vx(want, WALK_TURN)
             self._hold_cat()
             self.look_at = (den.x, HL - 12.0)
@@ -2902,7 +2923,8 @@ class Lizard:
         if abs(dx) < 10.0 or self.idle_timer > IDLE_TICKS[1] - 24:
             self.vx -= self.vx * 0.22
             return
-        want = clampf(dx * 0.06, -2.4, 2.4)
+        sp = self._state_speed(PATROL_SPEED)
+        want = clampf(dx * 0.06, -sp, sp)
         self._drive_vx(want, WALK_TURN)
 
     def stuck_frames(self):
@@ -2973,6 +2995,18 @@ class Lizard:
         return clampf(-dy / d, -1.0, 1.0)
 
     # ── 身体朝向 / 转身 ──
+    def _move_base(self) -> float:
+        """走路 / 追猎用的基准速度：品种 base_speed，带一个下限。
+
+        焦糖蜥 base_speed 只有 0.65，纯相对量会让它巡逻 / 叼东西几乎贴地不动
+        （腿都不摆）。下限只保证「走得动」，不改状态之间的先后次序。
+        """
+        return max(self.breed.base_speed, MOVE_SPEED_FLOOR)
+
+    def _state_speed(self, mult: float) -> float:
+        """某个移动状态的速度上限 = 基准速度 × 状态系数（发呆类不走这里）。"""
+        return self._move_base() * mult
+
     def _drive_vx(self, want: float, k: float) -> None:
         """AI 想要的横向速度：既按老口径推 vx，也把「意图」单独记一份。
 
