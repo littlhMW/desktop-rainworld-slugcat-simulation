@@ -336,3 +336,19 @@ class StormCycle:
     def from_dict(self, d):
         if not isinstance(d, dict):
             return
+        self.enabled = bool(d.get("enabled", self.enabled))
+        self.manual = bool(d.get("manual", False))
+        if d.get("phase") in (FOCUS, GATHER, SLEEP):
+            self.phase = d["phase"]
+        try:
+            self.cycles_done = max(0, int(d.get("cycles_done", self.cycles_done)))
+        except Exception:
+            pass
+        try:
+            self.phase_t = max(0, int(d.get("phase_t", 0)))
+            self.settle_t = max(0, int(d.get("settle_t", 0)))
+            self.rain_drive = max(0.0, min(1.0, float(d.get("rain_drive", 0.0))))
+        except Exception:
+            pass
+        self.set_durations(d.get("focus_minutes"), d.get("warning_minutes"),
+                           d.get("sleep_minutes"))
