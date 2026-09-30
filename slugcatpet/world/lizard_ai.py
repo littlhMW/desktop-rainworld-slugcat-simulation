@@ -119,11 +119,11 @@ class Observation:
     """这一帧「看到的一个东西」：目标 + 位置 + 距离 + 关系权重 + 可见性。"""
 
     __slots__ = ("obj", "x", "y", "dist", "kind", "weight", "visual", "visible",
-                 "los", "dead", "fainted", "stance", "owner", "side")
+                 "los", "dead", "fainted", "stance", "claimed_by", "side")
 
     def __init__(self, obj, x, y, dist, kind, weight=1.0, visual=1.0,
                  visible=True, dead=False, fainted=False, stance="stand",
-                 owner=None, side=0, los=True):
+                 claimed_by=None, side=0, los=True):
         self.obj = obj
         self.x = float(x)
         self.y = float(y)
@@ -136,7 +136,9 @@ class Observation:
         self.dead = bool(dead)
         self.fainted = bool(fainted)
         self.stance = stance          # 猫的姿态（Crawl 更难被盯上）
-        self.owner = owner            # 这只猎物已经归谁（别的蜥蜴）——没有则 None
+        # 这只猎物已经被**别的蜥蜴**认领了吗（文档 §18：owner 改名 claimed_by，
+        # 免得和 PreyTracker 自己那份归属记录同名却语义不同）——没有则 None。
+        self.claimed_by = claimed_by
         self.side = int(side)         # 相对自己的左右（-1 左 / +1 右）
 
     @property
@@ -279,14 +281,14 @@ class PreyTracker:
     会接手。
     """
 
-    __slots__ = ("obj", "state", "killed", "fainted", "claim_tick", "owner")
+    # 「归属」只有一份记录：obj + state（文档 §18：删掉与 obj 恒等的 owner）。
+    __slots__ = ("obj", "state", "killed", "fainted", "claim_tick")
 
     def __init__(self):
         self.clear()
 
     def clear(self) -> None:
         self.obj = None
-        self.owner = None
         self.state = "none"          # none / hunting / downed / delivered
         self.killed = False
         self.fainted = False
@@ -294,7 +296,7 @@ class PreyTracker:
 
     def claim(self, obj, tick, *, fainted=False, killed=False) -> None:
         """咬倒 / 咬死一只猎物 → 归我。"""
-        self.obj = self.owner = obj
+        self.obj = obj
         self.fainted = bool(fainted)
         self.killed = bool(killed)
         self.claim_tick = int(tick)
@@ -303,22 +305,24 @@ class PreyTracker:
     def hunting(self, obj, tick) -> None:
         """只是盯上了，还没咬倒：记一笔兴趣，但不构成归属。"""
         if self.obj is not obj:
-            self.obj, self.owner = obj, None
+            self.obj, self.state = obj, "hunting"
             self.killed = self.fainted = False
-            self.state = "hunting"
         self.claim_tick = int(tick)
 
     def refresh(self, tick) -> None:
-        if self.owner is not None:
+        if self.owned():
             self.claim_tick = int(tick)
 
+    def owned(self) -> bool:
+        """咬倒了都还没交出去 = 这只真的归我（hunting 只是兴趣）。"""
+        return self.obj is not None and self.state == "downed"
+
     def owns(self, obj, tick) -> bool:
-        return (self.owner is not None and self.owner is obj
+        return (self.owned() and self.obj is obj
                 and int(tick) - self.claim_tick <= PREY_CLAIM_TICKS)
 
     def delivered(self, tick) -> None:
         self.state = "delivered"
-        self.owner = None
         self.claim_tick = int(tick)
 
     def release(self) -> None:

@@ -69,12 +69,28 @@
   `_climb_plan` / `_approach_tick` 接管；同层或图里没路线时才退回直线趋近。
 - `_investigate_tick`（InvestigatePos）与 `_noise_tick`（InvestigateSound）都接上了它。
 
-**⑨ 逃 / 猎 改成效用 + 迟滞（文档 §40）**
+**⑨ 猎物归属只有一个说法（文档 §18）**
+- **问题**：`owner` 这个名字在两处指两件事 —— `Observation.owner` 是「这只猎物已经被
+  **别的蜥蜴**认领」，`PreyTracker.owner` 是「我自己的归属记录」；后者还和同名的
+  `PreyTracker.obj` **恒等**（`claim()` 里写的是 `self.obj = self.owner = obj`），
+  于是「咬倒了吗」只能靠 owner 是不是 None 猜。
+- `Observation.owner` → **`claimed_by`**，`Lizard._prey_owner()` → `_claimed_by()`。
+- `PreyTracker` 删掉 `owner` 槽：归属 = `obj` + `state`，新增 `owned()`
+  （`state == "downed"`，`hunting` 只是兴趣不算归属），`refresh()` / `owns()` /
+  `delivered()` 全部改成读它。
+
+**⑩ 逃 / 猎 改成效用 + 迟滞（文档 §40）**
 - `decide()` 的 ① 不再只问 `threat_t > 0`：新增 `_flee_outweighs_hunt()`，
   `_flee_util()` 按威胁距离给分（贴到 30% 警觉半径 = `FLEE_UTIL`），
   `_hunt_util()` 按目标距离给分（进咬合距离 = `HUNT_UTIL`，嘴里有肉直接满），
   切换要拉开 `FLEE_HUNT_HYSTERESIS = 0.12`；已经在逃时反向要求猎明显更划算才回头。
   于是「猎物已经在嘴边」不会再被一个远处的威胁打断，也不会在边界上每帧横跳。
+
+**⑪ 结清 R132 记录在案的四项**（上一轮的「本轮未做」清单）
+- 「双寻路器统一」= ①②；「Dijkstra O(V²) → heapq」= ②；
+  「`SurfaceGraph` 建边加 SpatialGrid」= `_link_jumps` 改成按 x 排序 + `bisect`
+  的横向窗口粗筛（旧实现是节点两两比，40 块平台就是上千次 `land_sweep` 级别判定）；
+  「`geometry_version` 拆分」= ③。
 
 **测试**
 - 口径更新（都是本轮**有意**改掉的行为，不是放宽断言）：
@@ -91,8 +107,9 @@
   会同时改动 `e2e_r117` 里「上墙段的 climb 槽 = 线顶」这条口径，需要单独一轮做。
 - §37「AI 时间片（感知 2~3 tick / 目标 4 / LOS 3~5 / Pack 10 / 声音 5）」：属纯性能项，
   与行为正确性解耦，留到下一次性能轮（和面条蝇的空间索引一起做更划算）。
-- §17「PreyState 字段合并」/ §18「PreyTracker 改名」：纯内部重命名，无行为收益，
-  为避免与行为改动混在一个 diff 里，留到独立的重命名提交。
+- §17「PreyState 字段合并」：蜥蜴这边没有独立的 PreyState 类（归属记在
+  `PreyTracker`、追逐记在 `Memory`、搬运记在 `carry_*` 字段上），要合并得先决定
+  搬运动作是否也归进这个状态机 —— 属取食行为重构，不是纯重命名，留到那一轮。
 ### R134 · 蜥蜴移动速度按状态分级（巡逻 / 追猎 / 叼东西）
 
 - **问题**（用户：「蜥蜴发呆巡逻，看见猎物，叼东西的速度应该做出区别」）：

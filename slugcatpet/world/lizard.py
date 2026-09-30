@@ -1880,10 +1880,10 @@ class Lizard:
             los = not los_blocked(self.x, self.y, ox, oy, segs, circles)
         return Observation(obj, ox, oy, d, kind, w, self._visual_fac(ox, oy),
                            self.sees(ox, oy, obj) and los, dead, fainted,
-                           stance, self._prey_owner(obj), los=los)
+                           stance, self._claimed_by(obj), los=los)
 
-    def _prey_owner(self, obj):
-        """这只猎物是不是已经归别的蜥蜴（它咬倒的、正往回叼的）。"""
+    def _claimed_by(self, obj):
+        """这只猎物是不是已经被别的蜥蜴认领（它咬倒的、正往回叼的）。"""
         for other in self.peers:
             if other is self or getattr(other, "dead", False):
                 continue
@@ -2281,7 +2281,7 @@ class Lizard:
     def _contest_pick(self, obs):
         """我想要的猎物在别人嘴里：支配度差太多就认怂，否则上去抢。"""
         for o in list(obs["cats"]) + list(obs["prey"]):
-            owner = o.owner
+            owner = o.claimed_by
             if owner is None or owner is self or o.dead or not o.visible:
                 continue
             if self.soc.defers_to(owner, self._tick):
@@ -2373,7 +2373,7 @@ class Lizard:
             if (o.kind == "cat" and self.friend_id is not None
                     and getattr(o.obj, "id", None) == self.friend_id):
                 continue
-            if o.owner is not None and o.owner is not self:
+            if o.claimed_by is not None and o.claimed_by is not self:
                 continue
             if o.kind == "cat" and _cat_offering_food(o.obj):
                 pass
@@ -2700,8 +2700,8 @@ class Lizard:
             return (None, "")
         if self.carry_obj is not None:
             return (self.carry_obj, "hunt")
-        if self.prey.owner is not None and self.prey.owns(self.prey.owner, self._tick):
-            return (self.prey.owner, "hunt")
+        if self.prey.owns(self.prey.obj, self._tick):
+            return (self.prey.obj, "hunt")
         if (self.alert is not None and self.alert.obj is not None
                 and self.alert.fresh(self._tick)):
             return (self.alert.obj, "hunt")
@@ -2772,7 +2772,7 @@ class Lizard:
         for o in cats:
             if not (o.dead or o.fainted):
                 continue
-            if o.owner is not None and o.owner is not self:
+            if o.claimed_by is not None and o.claimed_by is not self:
                 continue
             if o.dist > CARRY_NOTICE_R:
                 continue
