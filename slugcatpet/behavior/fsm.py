@@ -541,9 +541,13 @@ class BehaviorFSM:
         self._itemplay_side = "r"
         self._lick_cd = 0                # 圣徒舔生物玩耍的冷却
         self._play_face = 1              # 玩耍时的朝向倾向（进玩法时随机一次）
-        # 觅食欲望：吃到东西归 0，慢慢涨回 1 才想再找吃的
+        # 觅食欲望：
+        # - 冬眠食物线以下：由 hunger_need + _food_urge 驱动，保证真的饿了会找
+        # - 已达到冬眠线：每次吃东西后按“距离 food_max 还差几格”安排下一次觅食等待
         self._food_urge = 1.0
         self._food_prev = self.body.food
+        self._food_prev_q = self.body.food * 4 + self.body.food_quarter
+        self._food_seek_wait = 0       # 冬眠线以上的主动觅食等待（tick）
         self._karma_cd = 0            # 业力花（独立行动）的冷却
         self._karma_shoot_cd = 0      # 矛大师「用白针打落业力花」的短冷却
         self._fetch_karma = False     # 下一次 FetchFruit 是去拔业力花（独立目标链）
@@ -961,13 +965,44 @@ class BehaviorFSM:
             self.body.temper = self._force_temper
         if self._force_food is not None:
             self.body.food = self._force_food
-        if self.body.food > self._food_prev:
-            self._food_urge = 0.0          # 吃到东西：觅食欲望归 0
-            self._social_urge_boost(tuning.SOCIAL_URGE_BOOST_EAT)   # 吃到东西：想社交
+        food_now_q = self.body.food * 4 + self.body.food_quarter
+        if food_now_q > self._food_prev_q:
+            self._food_urge = 0.0          # 吃到东西：基础觅食欲望归 0
+            self._social_urge_boost(tuning.SOCIAL_URGE_BOOST_EAT)
             if (self.body.food_satisfied()
-                    and self._food_prev < self.body.food_hibernate):
-                self._social_urge_boost(tuning.SOCIAL_URGE_BOOST_FULL)   # 够冬眠了
+                    and self._food_prev_q < self.body.food_hibernate * 4):
+                self._social_urge_boost(tuning.SOCIAL_URGE_BOOST_FULL)
+            # 已满足冬眠线，但还没有达到真正的 food_max：
+            # 根据“还差几格”安排下一次主动觅食。小数格也算“没有满”。
+            if self.body.food_satisfied() and food_now_q < self.body.food_max * 4:
+                missing_cells = int(math.ceil(
+                    (self.body.food_max * 4 - food_now_q) / 4.0))
+                max_wait_sec = max(
+                    0.0,
+                    min(
+                        tuning.FOOD_POST_HIBERNATE_WAIT_MAX_SEC,
+                        (tuning.FOOD_POST_HIBERNATE_WAIT_CELLS - missing_cells)
+                        * tuning.FOOD_POST_HIBERNATE_CELL_SEC,
+                    )
+                )
+                # 每只猫用自己的 rng；activity/hurry 只改变区间内取值的位置，
+                # 不改变你规定的 0~10 / 0~20 / 0~30 上限。
+                if max_wait_sec > 0.0:
+                    urgency = clampf(
+                        (float(self.pers.activity) + float(self.pers.hurry)) * 0.5,
+                        0.0, 1.0)
+                    exponent = 1.0 + 1.5 * (urgency - 0.5)
+                    u = self.rng.random() ** exponent
+                    wait_sec = max_wait_sec * u
+                    self._food_seek_wait = int(round(wait_sec * 40.0))
+                else:
+                    self._food_seek_wait = 0
+            else:
+                # 尚未达到冬眠线：继续走原来的 hunger_need 逻辑，不额外拖延。
+                self._food_seek_wait = 0
         self._food_prev = self.body.food
+        self._food_prev_q = food_now_q
+        self.mood.tick_freshness(self._active_mood())
         self.mood.tick_freshness(self._active_mood())
         self.timer += 1
 
@@ -1211,6 +1246,8 @@ class BehaviorFSM:
     def _act_fetchfood_pre(self, ctx):
         if self._fetch_cooldown > 0:
             self._fetch_cooldown -= 1
+        if self._food_seek_wait > 0:
+            self._food_seek_wait -= 1
 
         # 取果触发：门禁 + 间隔节流重算候选
         self._fetch_check = (self._fetch_check + 1) % T_FETCH_CHECK
@@ -1220,6 +1257,7 @@ class BehaviorFSM:
         return (self._fetch_check == 0
                 and not self.body.food_satisfied()
                 and self._food_seek_ready()
+                and self._food_seek_wait <= 0
                 and not self.grab.active and not self._exhausted
                 and not self._cold_urgent() and not self._zerog()
                 and self._fetch_cooldown <= 0
