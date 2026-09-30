@@ -1877,6 +1877,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                     self.place_seedcob(lx, ly)
                 elif self._place_kind == "karmaflower":
                     self.place_karmaflower(lx, ly)
+                elif self._place_kind == "slugpup":
+                    self.place_slugpup(lx, ly)
                 elif self._place_kind == "shelter":
                     self._begin_shelter_place(lx, ly)
                 else:
