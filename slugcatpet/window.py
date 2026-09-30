@@ -546,6 +546,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             ((pet.behavior is None) or not pet.behavior.blocks_interaction())
             and is_over(pet.body, pet.gfx, cur, pad=6.0)
             for pet in self.pets)
+        storm_capture = bool(getattr(self.storm, "active", False))
         dragging_fruit = self._dragged_fruit is not None
         over_fruit = self._fruit_at(cur) is not None
         dragging_stone = self._dragged_stone is not None
@@ -576,7 +577,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                     or dragging_nworm or over_nworm
                     or dragging_pearl or over_pearl or dragging_spear or over_spear
                     or dragging_scav or over_scav or dragging_cob or over_cob
-                    or dragging_flower or over_flower or over_body)
+                    or dragging_flower or over_flower or over_body or storm_capture)
         if want != self._passthrough:
             self._passthrough = want
             if not self._hwnd:
@@ -1378,6 +1379,23 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             return
         pet.behavior.kill()
 
+    def _storm_kill_click(self, pos) -> bool:
+        """暴雨中点击庇护所外：随机杀死一只仍活着的成年蛞蝓猫。"""
+        if not self.storm.active:
+            return False
+        lx, ly = pos
+        if any(sh.contains(lx, ly) for sh in (self.shelters or ())):
+            return False
+        candidates = [
+            p for p in self.pets
+            if not getattr(p, "is_pup", False)
+            and not getattr(getattr(p, "behavior", None), "is_truly_dead", lambda: False)()
+        ]
+        if not candidates:
+            return False
+        self._storm_rng.choice(candidates).behavior.kill()
+        return True
+
     # ── 增删猫 ──
     def add_pet(self, variant="saint"):
         """新增一只猫；满员或怎么都建不起来时返回 None（失败写 error.log）。"""
@@ -1984,6 +2002,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             return
         if e.button() == Qt.MouseButton.LeftButton:
             pos = self.to_logical(e.position().x(), e.position().y())
+            if self._storm_kill_click(pos):
+                return
             grabbed = False
             for pet in self.pets:
                 if getattr(pet, "controlled", False):
