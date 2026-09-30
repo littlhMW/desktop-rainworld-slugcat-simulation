@@ -1255,7 +1255,7 @@ class BehaviorFSM:
         self._social_urge_tick()
     def _act_fetchfood_gate(self, ctx):
         return (self._fetch_check == 0
-                and not self.body.food_satisfied()
+                and (self.body.food * 4 + self.body.food_quarter) < self.body.food_max * 4
                 and self._food_seek_ready()
                 and self._food_seek_wait <= 0
                 and not self.grab.active and not self._exhausted
@@ -7456,7 +7456,10 @@ class BehaviorFSM:
         """
         need = self.body.hunger_need
         if need <= 0.0:
-            return False
+            # 已达到冬眠线：只有还没真正满饱时，才允许进入“补满”觅食。
+            # 下一次起意由 _food_seek_wait 控制，避免吃到 4 格后立刻又去找。
+            return ((self.body.food * 4 + self.body.food_quarter)
+                    < self.body.food_max * 4)
         if need >= tuning.FOOD_DEFICIT_URGENT:
             return True
         return self._food_urge >= 1.0 and self.rng.random() < tuning.FOOD_SEEK_P
