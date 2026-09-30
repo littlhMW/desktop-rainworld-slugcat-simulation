@@ -839,8 +839,10 @@ class BehaviorFSM:
         return self.state == "Dead" and self._revive_timer <= 0
 
     def begin_reincarnation(self) -> bool:
-        """全体转生：真死也一起走转世倒计时（环境致死同一通路）。"""
+        """全体转生：暴雨期间冻结；救援复活不走这里。"""
         if self.state != "Dead":
+            return False
+        if getattr(self.win, "storm_active", False):
             return False
         self._reincarnate = True
         if self._revive_timer <= 0:
@@ -3492,6 +3494,10 @@ class BehaviorFSM:
         # 死亡不再自行复活：只有同伴用特殊表情扒拉（_nuzzle 触碰累计）或
         # 环境致死转世（_reincarnate）才会回来。
         if self._revive_timer > 0:
+            # 暴雨期间冻结环境致死的自动复活/转生倒计时。
+            # 救援复活例外：_social_revive 在成功按压后会清掉 _reincarnate。
+            if getattr(self.win, "storm_active", False) and self._reincarnate:
+                return
             self._revive_timer -= 1
             if self._revive_timer <= 0:
                 if self._reincarnate:
@@ -6374,7 +6380,12 @@ class BehaviorFSM:
             beh.nuzzle(self._social_press_per, by=self.win)
             self.body.temper_shift(tuning.TEMPER_FEED * 0.5)
         if g.step():
-            beh.nuzzle(tuning.REVIVE_TOUCH_TICKS, by=self.win)   # 按完就复活
+            revived = beh.nuzzle(tuning.REVIVE_TOUCH_TICKS, by=self.win)   # 按完就复活
+            if revived:
+                # 暴雨期间允许同伴救援；清掉环境致死留下的“转生”标记，
+                # 让下一 tick 走普通 revive，而不是继续被暴雨锁住。
+                beh._reincarnate = False
+                beh._revive_timer = 1
             self.body.temper_shift(tuning.TEMPER_FEED)
             if tgt is not self.win:
                 # 救活了谁：上总线（目击者会各自反应），被救的那只记下这份亲近
