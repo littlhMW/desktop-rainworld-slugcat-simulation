@@ -188,6 +188,30 @@ BODY_JUMP_SHARE = 0.55        # 蹬地起跳时分给躯干的初速比例
 BODY_BITE_PUSH = 1.6          # 咬合时前半身朝猎物压出去的冲量
 BODY_BITE_LUNGE = 2.5         # 咬合瞬间头点朝猎物递出去的距离（原版 snap 的前半身前伸）
 
+# ── 动作序列（文档 §9.3 / §10）：Attack 四阶段姿态 + PrepareToJump 分节点冲量 ──
+# 原版 Lizard.ActAnimation() 不是「播一段动画」，而是直接给不同 bodyChunk 注入不同
+# 方向的速度。所以这里同样按阶段给**每个 chunk 单独**写速度，而不是整条一起推。
+ATK_PREPARE_T = 5             # Attack_Prepare：压低身体、前半身压上去、后半身反推
+ATK_LUNGE_T = 6               # Attack_Lunge：chunk 按 loungeSpeed/(k+1) 依次递出
+ATK_BITE_T = 4                # Attack_Bite：下颚夹合 + 前半身再顶一下
+ATK_RECOVER_T = 10            # Attack_Recover：postLoungeStun，身体回收、尾巴追上
+ATK_PUSH_PREP = 0.85          # Prepare 段每 tick 的躯干冲量
+ATK_COMPRESS_PREP = 0.55      # Prepare 段压低身体的比例
+ATK_RAISE_LUNGE = 0.35        # Lunge 段抬起前身
+ATK_COMPRESS_BITE = 0.35
+ATK_COMPRESS_RECOVER = 0.15
+ATK_LUNGE_K = 0.55            # Lounge：每节拿到的推进比例（原版 1/(k+1)）
+ATK_RECOVER_BACK = 0.30       # Recover：反方向回收
+BODY_JUMP_MID = 0.30          # PrepareToJump：中节额外拿到的起跳方向速度
+BODY_JUMP_REAR = 0.40         # PrepareToJump：后节拿到反向速度（身体被蹬长）
+
+# ── 原版 bodyWiggleCounter（文档 §10.5）：身体自己的低频扰动 ──
+WIGGLE_DECAY = 0.90           # 每 tick 衰减
+WIGGLE_AMP = 0.60             # 幅度（乘在 wiggle 上）
+WIGGLE_SEG_PHASE = 0.90       # 相邻节的相位差
+WIGGLE_BUMP = 0.55            # 事件（发现猎物 / 起跳 / 出声）抬高量
+HEAD_LEAD_K = 0.30            # 物理扭头：前 1~2 节被颈子带偏的比例（文档 §9.2/§10.4）
+
 # ── 原版关系表（StaticWorld.InitStaticWorldRelationships，decomp_full/StaticWorld.cs:3668-3726）──
 # 值 = (关系类型, 强度)。类型 -> AI 模块的映射照抄 LizardAI.ModuleToTrackRelationship
 # （LizardAI.cs:1346-1361）：
@@ -988,6 +1012,7 @@ class Lizard:
                  "body_dir", "move_dir", "look_dir", "turn_mode", "turn_progress",
                  "_turn_imp", "_last_body_dir", "_vx_intent", "_want_vx",
                  "_body_imp_x", "_body_imp_y",
+                 "_atk_phase", "_atk_t", "_atk_dir", "wiggle",
                  "held_by_hand", "water_y", "room_gravity", "_contact_floor",
                  "dead", "spacing", "spikes", "cosmetics", "cosmetic_pts", "like", "tamed", "friend_id",
                  "climb_x", "climb_dir", "climb_surfaces", "hauler",
@@ -1201,6 +1226,13 @@ class Lizard:
         # 不是只推头点。_step_chain 取走并清零。
         self._body_imp_x = 0.0
         self._body_imp_y = 0.0
+        # Attack 动作序列（文档 §9.3 / §10.3）：Prepare → Lunge → Bite → Recover，
+        # 由 _start_bite 触发，_step_attack_pose 每 tick 给各 chunk 单独写速度。
+        self._atk_phase = None
+        self._atk_t = 0
+        self._atk_dir = (1.0, 0.0)
+        # 原版 bodyWiggleCounter：停着也不像一块死物（文档 §10.5）
+        self.wiggle = 0.0
         # AI 这一 tick 的行进意图速度（物理改 vx 之前先记下来：脚支撑会把 vx 清零，
         # 不能拿积分后的 vx 当「想往哪走」）
         self._vx_intent = 0.0
@@ -1553,6 +1585,7 @@ class Lizard:
             self._integrate(WL, HL)
 
         self._step_turn()                   # 身体朝向 / 转身状态（在链体之前定 body_dir）
+        self._step_attack_pose()            # Attack 四阶段：先给 chunk 写速度，再映射体态
         self.anim = self._intent()          # AI → 动画意图（这一帧的映射只发生一次）
         self._step_chain(self._ground)
         self._step_legs(HL)
@@ -2623,6 +2656,8 @@ class Lizard:
         if math.hypot(x - self.x, y - self.y) > NOISE_R:
             return
         self.noise_x, self.noise_y, self.noise_t = float(x), float(y), NOISE_TICKS
+        # 原版 HearSound 会抬高 bodyWiggleCounter（文档 §10.5）
+        self.wiggle = min(1.0, self.wiggle + WIGGLE_BUMP * 0.6)
 
     def _pick_threat(self, threats) -> None:
         """原版 ThreatTracker（Afraid 关系）：挑最近 / 最重的威胁。
@@ -3158,6 +3193,22 @@ class Lizard:
         self.bite_event = None
         self.jaw = 1.0
         self.vx *= 0.2
+        # 这一口的出手方向（loungeDir）在动作开始时就定下来，之后整段序列都用它
+        px, py = _obj_pos(obj)
+        if px is None:
+            px, py = _obj_pos(self.target_obj)
+        if px is None and self.target is not None:
+            px, py = self.target
+        if isinstance(px, (int, float)) and not isinstance(px, bool) and \
+                isinstance(py, (int, float)) and not isinstance(py, bool):
+            fx, fy = float(px) - self.x, float(py) - self.y
+            fd = math.hypot(fx, fy)
+            self._atk_dir = ((fx / fd, fy / fd) if fd > 1e-6
+                             else (float(self.facing), 0.0))
+        else:
+            self._atk_dir = (float(self.facing), 0.0)
+        self._set_attack_phase("prepare", ATK_PREPARE_T)
+        self.wiggle = min(1.0, self.wiggle + WIGGLE_BUMP)
         if wind == 0:
             self._snap_jaws()
         # 咬合的一瞬：前半身朝猎物「压」出去（原版 jaw 一夹，前 chunk 被反作用
@@ -3435,6 +3486,68 @@ class Lizard:
         self._body_imp_x += float(dvx)
         self._body_imp_y += float(dvy)
 
+    # ── 动作序列：Attack_Prepare / Lunge / Bite / Recover（文档 §9.3 / §10.3）──
+    def _set_attack_phase(self, phase: str, ticks: int) -> None:
+        self._atk_phase = phase
+        self._atk_t = max(0, int(ticks))
+
+    def _step_attack_pose(self) -> None:
+        """把 Attack 的四个姿态阶段**逐 chunk** 作用上去（原版 Lizard.ActAnimation）。
+
+        原版「扑咬」不是一个 AI 状态，而是一串极短的姿态动作：
+
+            PrepareToLounge  所有 chunk 朝猎物做预备移动（前半身压、后半身反推）
+            Lounge           三个 chunk 吃 loungeDir * loungeSpeed / (k + 1)
+                             （[0] 最大、[1] 次之、[2] 最弱）
+            JawsSnapShut     下颚夹合，前半身再顶一下
+            postLoungeStun   身体回收，尾巴最后追上
+
+        这里照同一顺序给每个 chunk 单独写速度 —— 于是「蓄力 → 爆发 → 咬合 → 恢复」
+        在身体上真的看得见，而不是只把整体 vx 调大。
+        """
+        ph = self._atk_phase
+        if ph is None:
+            return
+        if self.dead or self.stun > 0:
+            self._atk_phase = None
+            return
+        self._atk_t -= 1
+        if self._atk_t < 0:
+            nxt = {"prepare": ("lunge", ATK_LUNGE_T),
+                   "lunge": ("bite", ATK_BITE_T),
+                   "bite": ("recover", ATK_RECOVER_T)}.get(ph)
+            if nxt is None:
+                self._atk_phase = None
+                return
+            self._set_attack_phase(*nxt)
+            return
+        n = len(self.seg)
+        px, py = self._atk_dir
+        if ph == "prepare":
+            # PrepareToLounge：所有 chunk 先朝猎物做预备移动（前节多、后节少）
+            self._body_impulse(px * ATK_PUSH_PREP, py * ATK_PUSH_PREP)
+            for k in range(min(3, n)):
+                sh = ATK_PUSH_PREP * 0.5 / (k + 1.0)
+                self.seg[k].vx += px * sh
+                self.seg[k].vy += py * sh
+        elif ph == "lunge":
+            sp = self.breed.lounge_speed * ATK_LUNGE_K * self.breed.body_size_fac
+            for k in range(min(3, n)):
+                sh = 1.0 / (k + 1.0)
+                self.seg[k].vx += px * sp * sh
+                self.seg[k].vy += py * sp * sh
+        elif ph == "bite":
+            # FightingStance：前半身朝猎物顶出去、后半身反向（身体被拉长）
+            self._body_impulse(px * ATK_PUSH_PREP * 0.6, py * ATK_PUSH_PREP * 0.6)
+            if n >= 3:
+                self.seg[2].vx -= px * ATK_PUSH_PREP * 0.4
+                self.seg[2].vy -= py * ATK_PUSH_PREP * 0.4
+        else:                                   # recover
+            for k in range(min(3, n)):
+                sh = ATK_RECOVER_BACK / (k + 1.0)
+                self.seg[k].vx -= px * ATK_PUSH_PREP * sh
+                self.seg[k].vy -= py * ATK_PUSH_PREP * sh
+
     def _leap(self, scale: float = 1.0) -> float:
         """蹬地起跳：头点拿初速，同一份冲量灌给躯干前几节（原版 Creature.Jump）。"""
         vy = self._hop_vy() * scale
@@ -3442,6 +3555,14 @@ class Lizard:
             return 0.0
         self.vy = vy
         self._body_impulse(0.0, vy * BODY_JUMP_SHARE)
+        # 原版 PrepareToJump（文档 §10.2）：chunk0 沿起跳方向加速、chunk2 反向、
+        # chunk1 速度减半 —— 三节拿不同方向的冲量，身体才会被「蹬」长，而不是整条
+        # 一起平移。chunk0 的位置由驱动点钉住（速度每 tick 会被重算），所以这里只补
+        # 中节和后节。
+        if len(self.seg) >= 3:
+            self.seg[1].vy += vy * BODY_JUMP_MID
+            self.seg[2].vy -= vy * BODY_JUMP_REAR
+        self.wiggle = min(1.0, self.wiggle + WIGGLE_BUMP)
         return vy
 
     def _step_head(self) -> None:
@@ -3533,6 +3654,32 @@ class Lizard:
         elif self.head_x > WL - r:
             self.head_x = WL - r
             self.head_vx = 0.0
+        # 物理扭头（文档 §9.2 / §10.4）：原版 HeadRotation 的头方向来自「颈→真实
+        # head 节点」的几何 —— 头先转、前 1~2 节被颈子带偏、中段与尾巴滞后。旧实现
+        # 只有 head_angle 在转，头的位置永远挂在体轴正前方，于是「贴图在看上头、脖子
+        # 还朝前」，俯仰完全看不出来。
+        #
+        # 驱动量取 **AI 的注视角**（head_angle），不取头弹簧的瞬时位移：弹簧位移里混着
+        # 重力下垂和咬合/起跳的冲量，拿它当弯曲源会反过来吃掉那些动作（实测把咬合时
+        # 「前节比尾节先动」的位移差压掉一半）。没在看任何东西（look_at 为空，头只是
+        # 沿 move_dir 朝前）时不带偏 —— 那种情况本来就不需要弯。
+        if (not self.dead and self.stun <= 0 and not self.hauled
+                and self.state != ItemState.MOUSE and len(self.seg) > 2
+                and self.look_at is not None):
+            ax, ay = _dirvec(self.seg[0].x - self.seg[2].x,
+                             self.seg[0].y - self.seg[2].y)
+            if abs(ax) + abs(ay) > 0.3:
+                view = math.radians(self.head_angle)
+                vx_, vy_ = math.sin(view), -math.cos(view)     # 0=上 90=右（屏幕系）
+                nx_, ny_ = -ay, ax                             # 体轴法向
+                lat = vx_ * nx_ + vy_ * ny_
+                if lat < 0.0:                                  # 取朝观察方向那一侧
+                    lat, nx_, ny_ = -lat, -nx_, -ny_
+                off = HEAD_LEAD_K * self.head_conn * lat
+                self.seg[1].x += nx_ * off
+                self.seg[1].y += ny_ * off
+                self.seg[2].x += nx_ * off * 0.45
+                self.seg[2].y += ny_ * off * 0.45
 
     def _intent(self) -> LizardAnimIntent:
         """按当前 stage 生成动画意图 —— AI 与动画之间唯一的映射点（品种不进这层）。"""
@@ -3543,6 +3690,19 @@ class Lizard:
         it.alert = it.aggression = it.fear = 0.0
         it.body_compress = it.body_raise = 0.0
         it.locomotion = "idle"
+        # Attack 动作序列的体态（文档 §9.3）：压低 → 递出 → 夹合 → 回收
+        ph = self._atk_phase
+        if ph == "prepare":
+            it.body_compress = max(it.body_compress, ATK_COMPRESS_PREP)
+            it.aggression = max(it.aggression, 0.7)
+        elif ph == "lunge":
+            it.body_raise = max(it.body_raise, ATK_RAISE_LUNGE)
+            it.aggression, it.locomotion = 0.9, "run"
+        elif ph == "bite":
+            it.body_compress = max(it.body_compress, ATK_COMPRESS_BITE)
+            it.aggression = max(it.aggression, 0.9)
+        elif ph == "recover":
+            it.body_compress = max(it.body_compress, ATK_COMPRESS_RECOVER)
         if self.dead or self.stun > 0:
             it.jaw_open = 0.0
             it.look_lift = 0.0
@@ -3939,6 +4099,19 @@ class Lizard:
                     s.y = lim
                     if s.vy > 0.0:
                         s.vy = 0.0
+        # ⑥ bodyWiggleCounter（原版 LizardGraphics 的 bodyWiggleCounter，文档
+        #    §10.5）：身体自己的低频扰动，逐节相位差、越往尾越大。原版由 HearSound /
+        #    PreySpotted / ShootTongue / PrepareToLounge / Lounge 抬高，其余时间随机
+        #    抬高 —— 这是「停着也不像一块死物」的来源。
+        if not self.dead and self.wiggle > 0.002:
+            n_seg = len(self.seg)
+            amp = WIGGLE_AMP * self.wiggle
+            for i in range(1, n_seg):
+                s = self.seg[i]
+                t = i / max(1, n_seg - 1)
+                s.y -= (math.sin(self._tick * 0.09 + i * WIGGLE_SEG_PHASE)
+                        * amp * (0.35 + 0.65 * t))
+        self.wiggle *= WIGGLE_DECAY
         # 链根最后再钉一次：上面所有修正（弯曲 / 步态 / 落地）都不许把第 0 节
         # 从驱动点上拽走
         self.seg[0].x, self.seg[0].y = self.x, self.y

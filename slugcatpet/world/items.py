@@ -2097,6 +2097,15 @@ class ItemInteractionMixin:
             return (min(math.hypot(cx - b.chunk0.x, cy - b.chunk0.y),
                         math.hypot(cx - b.chunk1.x, cy - b.chunk1.y))
                     - PUP_PICK_R)
+        if hasattr(obj, "snout_n") and getattr(obj, "seg", None):
+            # 面条蝇 / 卵：长条物体按整条体节链判定，只测身体中心的话
+            # 尾巴 / 吻部点不中（用户报的「单个删除也无法选中」）。
+            best = None
+            for s in obj.seg:
+                d = math.hypot(cx - s.x, cy - s.y) - s.rad
+                if best is None or d < best:
+                    best = d
+            return best
         if hasattr(obj, "bulb_x"):
             return math.hypot(cx - obj.bulb_x, cy - obj.bulb_y) - LAMP_PICK_R
         if hasattr(obj, "body_path"):                  # 蜥蜴这类多节身体
@@ -2535,15 +2544,25 @@ class ItemInteractionMixin:
         return True
 
     def _needleworm_at(self, pos):
+        """光标下的面条蝇（含尸体、含已摔出窗外的）。
+
+        命中判定遍历整条体节链：旧实现只测 ``nw.x / nw.y``（身体中心）并且要求
+        state ∈ {FREE, CARRIED}，于是长条虫的尾巴 / 吻部点不中、已经躺在地上的
+        尸体也选不上 —— 用户报的「无法被拖动 / 单个删除也无法选中」。
+        """
         if pos is None:
             return None
         cx, cy = pos
         best, bestd = None, 1e9
         for nw in self.needleworms:
-            if nw.state not in (ItemState.FREE, ItemState.CARRIED):
+            if nw.state in (ItemState.EATEN, ItemState.GONE):
                 continue
-            d = math.hypot(cx - nw.x, cy - nw.y)
-            if d <= nw.rad + NEEDLEWORM_GRAB_PAD and d < bestd:
+            d = 1e18
+            for s in nw.seg:
+                ds = math.hypot(cx - s.x, cy - s.y) - s.rad
+                if ds < d:
+                    d = ds
+            if d <= NEEDLEWORM_GRAB_PAD and d < bestd:
                 best, bestd = nw, d
         return best
 
@@ -2560,6 +2579,7 @@ class ItemInteractionMixin:
         nw.vx = nw.vy = 0.0
         nw.last_x, nw.last_y = pos
         nw.x, nw.y = pos
+        nw.snap_chain()                 # 整条虫跟手，别只搬身体中心
         self._dragged_needleworm = nw
         return True
 
@@ -2577,6 +2597,7 @@ class ItemInteractionMixin:
         # 与拖蛞蝓猫同一手感：直接跟光标，不做限速延迟。
         nw.x, nw.y = cur
         nw.vx = nw.vy = 0.0
+        nw.snap_chain()                 # seg 才是渲染 / 命中用的几何，必须同步
 
     def _end_needleworm_drag(self) -> bool:
         nw = self._dragged_needleworm
@@ -2739,7 +2760,7 @@ class ItemInteractionMixin:
             self.needleworms.append(baby)
         self._cull_flung_corpses()
         self.needleworms = [nw for nw in self.needleworms
-                            if nw.state != ItemState.EATEN]
+                            if nw.state not in (ItemState.EATEN, ItemState.GONE)]
 
     def _draw_needleworms(self, p):
         ts = self._ts

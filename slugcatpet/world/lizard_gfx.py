@@ -18,7 +18,8 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath
+from PySide6.QtGui import (QColor, QLinearGradient, QPainter, QPainterPath,
+                           QPolygonF)
 
 from ..core.units import clampf, lerp, inv_lerp
 from .lizard import (BODY_SCALE, BLACK_RGB, HEAD_DEFLECT_FLASH,
@@ -153,6 +154,59 @@ def _strip_path(pts, halfw) -> QPainterPath:
     return path
 
 
+def _chunked_path(pts, halfw, segs: int = 14) -> QPainterPath:
+    """按「每个 body chunk 一个横截面」拼身体（文档 §9.1 的拓扑级改动）。
+
+    连续带 ``_strip_path`` 把 head + seg[0..2] + tail 一次挤出，节点之间的横向
+    错位会被整条带子的法向插值摊平，于是无论物理节点怎么错开，看过去永远是一
+    根软管 —— 出不来原版那种「前胸扭过去、屁股还没跟上」的 S 形。
+
+    原版 LizardGraphics 的身体本来就是一组 BodyChunk 圆 + 连接面（drawPositions
+    逐节画），不是一条整体平滑的带子。这里照同一拓扑做：每个节点一圈自己的横
+    截面（长轴沿该节点自己的局部体轴），节点之间用梯形连接面填缝 —— 节点相对
+    位移直接变成轮廓上的折角，不再被抹平。
+    """
+    n = len(pts)
+    path = QPainterPath()
+    if n < 2:
+        return path
+
+    def axis(i):
+        ax, ay = pts[max(0, i - 1)]
+        bx, by = pts[min(n - 1, i + 1)]
+        dx, dy = bx - ax, by - ay
+        d = math.hypot(dx, dy)
+        return (dx / d, dy / d) if d > 1e-6 else (1.0, 0.0)
+
+    for i, (cx, cy) in enumerate(pts):
+        ux, uy = axis(i)
+        nx, ny = -uy, ux
+        hw = halfw[i]
+        ring = []
+        for k in range(segs):
+            a = (k / segs) * math.tau
+            u = math.cos(a) * hw             # 圆截面；节与节之间由下面的连接面填缝
+            v = math.sin(a) * hw
+            ring.append(QPointF(cx + ux * u + nx * v, cy + uy * u + ny * v))
+        path.addPolygon(QPolygonF(ring))
+    for i in range(n - 1):
+        ax, ay = pts[i]
+        bx, by = pts[i + 1]
+        dx, dy = bx - ax, by - ay
+        d = math.hypot(dx, dy)
+        if d < 1e-6:
+            continue
+        nx, ny = -dy / d, dx / d
+        wa, wb = halfw[i], halfw[i + 1]
+        path.addPolygon(QPolygonF([
+            QPointF(ax + nx * wa, ay + ny * wa),
+            QPointF(ax - nx * wa, ay - ny * wa),
+            QPointF(bx - nx * wb, by - ny * wb),
+            QPointF(bx + nx * wb, by + ny * wb)]))
+    path.setFillRule(Qt.FillRule.WindingFill)
+    return path
+
+
 def _blit(p, atlas, frame, tint, x, y, rot, sx, sy, ax, ay, key=HEAD_KEY,
           opacity=1.0):
     """锚点 (ax, ay)（ay 自图像顶部量）钉在 (x, y)，顺时针 rot 度。"""
@@ -246,10 +300,11 @@ def _draw_body(p, lz, spine, rads):
     破坏迷彩效果。
     """
     rgb = body_color(lz)
-    path = _strip_path(spine, rads)
+    path = _strip_path(spine, rads)       # 描边 / 裁剪用的连续带（轮廓保持连贯）
+    chunk_path = _chunked_path(spine, rads)   # 填充用的分块身体（逐节横截面）
     if lz.body_rgb is not None:           # 白蜥：纯色，无渐变无描边
         p.setBrush(QColor(*rgb))
-        p.drawPath(path)
+        p.drawPath(chunk_path)
         p.setBrush(Qt.BrushStyle.NoBrush)
         return
     x0, y0 = spine[0]
@@ -262,8 +317,10 @@ def _draw_body(p, lz, spine, rads):
                            QPointF((x0 + x1) * 0.5 - nx * span, (y0 + y1) * 0.5 - ny * span))
     grad.setColorAt(0.0, QColor(*_shade(rgb, BODY_TOP_K)))
     grad.setColorAt(1.0, QColor(*_shade(rgb, BODY_BOT_K)))
+    # 填充走分块身体、描边仍走连续带（本函数末尾那一笔）：轮廓一笔连贯不会
+    # 出现逐节接缝，内部则按 body chunk 分块 —— 节点相对位移保留成折角。
     p.setBrush(grad)
-    p.drawPath(path)
+    p.drawPath(chunk_path)
 
     if lz.tail_edge is not None and lz.tail_amt > 0.0:
         n_tail = sum(1 for s in lz.seg if s.tail)

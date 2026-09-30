@@ -99,6 +99,15 @@ CARRY_OFF_X = 20.0
 CARRY_OFF_Y = 12.0
 # 持矛倾角：矛尖朝前上方，杆离竖直 25°（原版 PlayerGraphics 持矛贴图 / 用户参考图）
 SPEAR_HOLD_TILT = 25.0
+# 双持（两只手各一支矛）时额外向外撇的角度：两支矛合成「\ /」外八字，
+# 尾端在胸前交叉、矛尖朝外上方（用户给的猎手双持参考图）。单持不撇。
+DUAL_SPEAR_SPLAY = 40.0
+# 双持时前倾剔弱到 35%：参考图里两支矛是围着**竖直方向**对称的，
+# 而不是围着单持的 25° 前倾对称（不降的话左手那支几乎竖直，不像外八字）。
+DUAL_SPEAR_BASE_K = 0.35
+# 抱竖杆时手里的东西横向偏出杆线这么多像素：不偏的话矛/石头正好压在杆上，
+# 看上去像「插进杆里」（用户参考图：杆上持物画在杆侧面）。
+POLE_CARRY_DX = 7.0
 # 出膛点：Player.ThrowObject → thrownPos = firstChunk.pos + throwDir*10 + (0,4)（游戏 y↑）
 THROW_ORIGIN_DX = 10.0
 THROW_ORIGIN_DY = 4.0
@@ -270,6 +279,9 @@ class SlugcatBody:
         self.stun = 0
         self.arm_aim = {"l": None, "r": None}
         self.hand_pos = {"l": None, "r": None}   # 手上帧世界坐标（graphics 每帧写回）
+        # 这只手本帧是不是被「手势」（hand_aim：指指点点 / 伸手够杆 …）驱动的：
+        # graphics._update_hands 每帧写回，_carry_anchor 读它决定物跟不跟手。
+        self.hand_anim_driven = {"l": False, "r": False}
         self.arm_full_reach = 24.0
         self.eat_raise = 0.0
 
@@ -1838,11 +1850,16 @@ class SlugcatBody:
         return None
 
     def _carry_pos(self, side):
-        """Carry hand position in world coords."""
+        """Carry hand position in world coords.
+
+        ``eat_raise``（低头啃食时把手抬到嘴边的姿态）**只作用在拿着食物的那只手**
+        上：以前它对所有手一视同仁，双持（另一只手还握着矛/石头）吃东西时另一只
+        手也被一起拽到胸前（用户报的「双持吃东西另一只手也老是一起动」）。
+        """
         c0 = self.chunk0
         sgn = -1.0 if side == "l" else 1.0
         ang = _ang_from_up(c0.x - self.chunk1.x, c0.y - self.chunk1.y)
-        s = 1.0 - self.eat_raise
+        s = (1.0 - self.eat_raise) if side == self.hand_of.get("fruit") else 1.0
         ox, oy = _rot(sgn * CARRY_OFF_X * s, CARRY_OFF_Y * s, ang)
         return c0.x + ox, c0.y + oy
 
@@ -1850,6 +1867,14 @@ class SlugcatBody:
         """此刻双手是否由攀爬/吊挂动画驱动（而不是被持物锚点牵着走）。"""
         return (self.bodyMode == "ClimbingOnBeam"
                 and self.animation in BEAM_LIMB_ANIMS)
+
+    def on_vertical_pole(self) -> bool:
+        """此刻是不是「抱着竖杆」（ClimbOnBeam / BeamTip）。
+
+        竖杆上的持物要偏到杆侧，不能正好压在杆线上看上去像插进杆里。
+        横杆（StandOnBeam / HangFromBeam / GetUpOnBeam）不走这一档。
+        """
+        return bool(self.on_pole and self.animation in ("ClimbOnBeam", "BeamTip"))
 
     def hand_world(self, side):
         """这只手此刻的世界坐标（渲染层每帧写回的真值）；没跑过渲染帧时 None。"""
@@ -1877,11 +1902,13 @@ class SlugcatBody:
         （手跟物），这一档行为与旧版逐位一致。
         """
         cx, cy = self._carry_pos(side)
-        if not self.hands_on_anim():
+        if not (self.hands_on_anim() or self.hand_anim_driven.get(side)):
             return cx, cy, True
         hw = self.hand_world(side)
         if hw is None:                       # 还没跑过渲染帧：物暂留携带点，但别 aim
             return cx, cy, False
+        if self.on_vertical_pole():          # 抱着竖杆：物偏到杆侧，别画进杆里
+            hw = (hw[0] + (-POLE_CARRY_DX if side == "l" else POLE_CARRY_DX), hw[1])
         return hw[0], hw[1], False
 
     def reach_for(self, fruit, side):
@@ -2144,7 +2171,7 @@ class SlugcatBody:
             self.arm_aim[side] = None
         return side
 
-    def spear_hold_angle(self, tilt=None):
+    def spear_hold_angle(self, tilt=None, side=None, dual=False):
         """手里的矛的朝向（原版 Spear 被 PlayerGraphics 拎在身侧的姿态）。
 
         - 平常：矛尖朝**前上方**，杆离竖直约 25°，并带原版那种 ±4° 的步态摇摆
@@ -2160,16 +2187,23 @@ class SlugcatBody:
         角度口径与 rendering.primitives.draw_spear 一致：0 = 竖直向上、顺时针为正（y↓）。
         """
         fdir = 1.0 if self.facing >= 0 else -1.0
+        splay = 0.0
+        dual_k = 1.0
+        if dual and side in ("l", "r"):
+            dual_k = DUAL_SPEAR_BASE_K
+            # 参考图：双持时两支矛向外撇（左手向屏幕左、右手向屏幕右），
+            # 屏幕空间固定 —— 不乘 fdir，这样朝向反过来时整体镜像。
+            splay = DUAL_SPEAR_SPLAY * (-1.0 if side == "l" else 1.0)
         if self.on_pole:
             # 杆上不要用两个 chunk 的瞬时 dx 算角度；它会在抓杆/摆动时左右翻转。
             if self.animation in ("StandOnBeam", "HangFromBeam", "GetUpOnBeam"):
                 return 90.0 if fdir > 0 else 270.0
             return 0.0
-        base = SPEAR_HOLD_TILT if tilt is None else float(tilt)
+        base = (SPEAR_HOLD_TILT if tilt is None else float(tilt)) * dual_k
         wob = 0.0
         if self.is_moving():
             wob = math.cos(self.stride_phase * 2.0 * math.pi * self.walk_bob_freq) * 4.0
-        return fdir * (base + wob)
+        return fdir * (base + wob) + splay
 
     def throw_spear(self, dir_x, frc=1.0, up=1.5, recoil=1.0, vel=None, toss=False,
                     dir_y=0.0, input_x=1, input_y=0, flip=False):
@@ -2272,6 +2306,7 @@ class SlugcatBody:
         摆放写成了「手里没矛时才走」的分支，于是矛大师手里一有白针，背上那根
         就再也不跟身体走 —— 停在原地像一根掉在地上的白针（用户报的那个 bug）。
         """
+        dual = len(self.hand_spears) >= 2          # 双持（猎手 / 矛大师）：两支矛外八字
         for side in ("l", "r"):
             sp = self.hand_spears.get(side)
             if sp is None:
@@ -2281,7 +2316,7 @@ class SlugcatBody:
             sp.x, sp.y = cx, cy
             sp.spin = 0.0
             sp.spinning = False
-            hold_angle = self.spear_hold_angle()
+            hold_angle = self.spear_hold_angle(side=side, dual=dual)
             sp.last_angle = hold_angle
             sp.angle_deg = hold_angle
             # 同石头：爬杆时也要把 arm_aim 清掉（原来这里整条跳过，留下上帧的

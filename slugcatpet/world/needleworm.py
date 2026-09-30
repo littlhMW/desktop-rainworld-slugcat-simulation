@@ -138,6 +138,12 @@ POKE_STUN = 30.0
 STUCK_WALL_RATE = 0.0125        # BigNeedleWorm.cs:328（0.0125/tick，>1 挣脱）
 CHAIN_FOLLOW = 0.5              # 自由飞行时尾节跟随强度（原版靠质量+绳长约束）
 CHAIN_FOLLOW_HELD = 0.88        # 被拿起/拖拽时绷紧：体长仍有变化但不弹成弹簧
+DEAD_CHAIN_GRAV = 0.55          # 尸体尾节的每 tick 重力（比活体大，塌得快）
+DEAD_CHAIN_FRIC = 0.94          # 尸体尾节空气阻力
+DEAD_CHAIN_DRAG = 0.55          # 父节速度传给子节的比例（BodyChunkConnection）
+DEAD_CHAIN_FLOOR_FRIC = 0.80    # 尸体尾节蹭地时的切向摩擦
+DEAD_CHAIN_TOPPLE = 0.06        # 尸体尾节竖直时的横向「倒伏」力矩（见 _step_dead_chain）
+DEAD_CHAIN_TOPPLE_RATIO = 0.45  # 只有 |dx| < ratio*|dy| 才加力矩（躺平后停手）
 STUCK_TICKS = (20, 40)          # 茅嘴扎进墙/地后挂住 0.5~1s 才拔得出来（用户口径）
 STUCK_TICKS_MAX = 40
 STUCK_WALL_STUN = 20            # 撞墙当场的那一下僵直（原版 Stun(60)＝1.5s，按挂住时长压短）
@@ -695,6 +701,87 @@ class NeedleWorm:
         self._collide(WL, HL)
         if self._contact_floor or self._contact_x != 0:
             self.vx *= 0.72
+        # 物理位置最后必须同步到链节上：渲染（draw_needleworm 读 nw.seg）和
+        # 光标命中判定都吃 seg，不同步 = 尸体画面停在死亡那一帧。
+        self._step_dead_chain(HL)
+
+    def _step_dead_chain(self, HL) -> None:
+        """尸体链：Verlet 摆链（重力 + 阻力 + 到父节的绳长约束）。
+
+        活体走 `_step_chain` 的「位置插值 + 正弦摆动」，那是给**有肌肉**的身体
+        用的；尸体要的是松垮下垂：每一节按自己的速度下坠，再被父节的绳长拉住，
+        整条虫于是塌到地面摊平（用户报的「尸体没有正确遵循物理下坠」）。同时把
+        物理位置同步进 ``seg`` —— 渲染和命中判定读的都是它。
+        """
+        sn = self.snout_n
+        body0 = self.seg[sn]
+        body0.lx, body0.ly = body0.x, body0.y
+        body0.x, body0.y = self.x, self.y
+        if len(self.seg) > sn + 1:
+            ux, uy = _dirvec(self.seg[sn + 1].x, self.seg[sn + 1].y, body0.x, body0.y)
+        else:
+            ux, uy = float(self.facing), 0.0
+        if abs(ux) + abs(uy) < 1e-6:
+            ux, uy = float(self.facing), 0.0
+        self.lzrot, self.zrot = self.zrot, (ux, uy)
+        # 吻段：仍沿体轴前伸，死亡后不再有张口/下垂
+        num = 3.0 * self.snout_len
+        if self.age == AGE_SMALL:
+            num *= 0.85
+        bx = body0.x + ux * (body0.rad + 5.0)
+        by = body0.y + uy * (body0.rad + 5.0)
+        for k in range(sn - 1, -1, -1):
+            s = self.seg[k]
+            s.lx, s.ly = s.x, s.y
+            s.x += (bx + ux * (num * (sn - 1 - k)) - s.x) * 0.45
+            s.y += (by + uy * (num * (sn - 1 - k)) - s.y) * 0.45
+        # 尾段：Verlet。lx/ly 就是上一帧位置，速度 = 位置差；绳长约束直接改
+        # 位置，隐含地把动量一起改掉 —— 这正是原版 BodyChunkConnection 的行为。
+        grav = DEAD_CHAIN_GRAV * self.room_gravity
+        for i in range(sn + 1, len(self.seg)):
+            s = self.seg[i]
+            p = self.seg[i - 1]
+            vx = (s.x - s.lx) * DEAD_CHAIN_FRIC
+            vy = (s.y - s.ly) * DEAD_CHAIN_FRIC + grav
+            # 纯竖直的摆链是个**退化稳定平衡**：绳长约束把向下的位移整个吃掉，
+            # 尸体于是「倒立在鼻尖上」，尾巴朝天立着不动。真实链子会被任何横向
+            # 扰动推倒 —— 这一节还基本竖直时给一个极小的横向力矩把它推离平衡；
+            # 一旦躺平（|dx| 已经大于 |dy|）就不再加力，免得尸体在地上自己滑。
+            dxr, dyr = s.x - p.x, s.y - p.y
+            if abs(dxr) < DEAD_CHAIN_TOPPLE_RATIO * abs(dyr):
+                vx += DEAD_CHAIN_TOPPLE * self.facing
+            s.lx, s.ly = s.x, s.y
+            s.x += vx + (p.x - p.lx) * DEAD_CHAIN_DRAG
+            s.y += vy + (p.y - p.ly) * DEAD_CHAIN_DRAG
+            dx, dy = s.x - p.x, s.y - p.y
+            d = math.hypot(dx, dy)
+            if d > 1e-6:
+                k = (d - s.dist) / d
+                s.x -= dx * k
+                s.y -= dy * k
+            floor = HL - s.rad * 0.5
+            if s.y > floor:
+                s.y = floor
+                # 蹭地：切向速度也衰减，否则尸体会在地上无限打滑
+                s.lx = s.x - (s.x - s.lx) * DEAD_CHAIN_FLOOR_FRIC
+        self.head_rad = body0.rad
+
+    def snap_chain(self) -> None:
+        """把整条链节**刚体平移**到身体位置（拖动 / 瞬移用）。
+
+        与 `_step_chain` 的软体跟随不同：拖动时整条虫要跟手，不能一节一节
+        慢慢追（那会看起来像被拽长的橡皮筋）。
+        """
+        sn = self.snout_n
+        if sn >= len(self.seg):
+            return
+        body0 = self.seg[sn]
+        dx, dy = self.x - body0.x, self.y - body0.y
+        for s in self.seg:
+            s.lx, s.ly = s.x, s.y
+            s.x += dx
+            s.y += dy
+        self.head_rad = body0.rad
 
     # ── 幼体：惨叫链（SmallNeedleWorm.cs:108-173 / 209-345）──
     def _holder(self, cats):

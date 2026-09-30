@@ -26,7 +26,11 @@ import math
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QPen
 
-THREAD_RGB = (242, 204, 140)     # ApplyPalette threadCol（fog 只占 0.2，直接取本色）
+# 细线颜色：从尾巴根（红）渐变到针尾（黄）—— 用户指定（原版 ApplyPalette
+# threadCol 是一色米黄，这里按用户口径改成渐变）。
+THREAD_RGB = (242, 204, 140)     # 兼容旧引用（已不再作为收色）
+THREAD_TAIL_RGB = (226, 58, 44)  # 尾巴根端：红
+THREAD_TIP_RGB = (248, 222, 82)  # 针端：黄
 LINK_DIST = 6.0                  # 相邻两点最小间距
 LIFE_MIN, LIFE_MAX = 150.0, 200.0
 LIFE_START = 2.0                 # points[i,3].x 初值（2）
@@ -127,8 +131,20 @@ class NeedleThread:
             pts[n - 1][0], pts[n - 1][1] = tail_xy
             pts[n - 1][4] = pts[n - 1][5] = 0.0
 
+    def _shade(self, i):
+        """第 i 个节点的颜色：首端（尾巴根）红 → 末端（针）黄。"""
+        n = len(self.pts)
+        t = 0.0 if n < 2 else i / float(n - 1)
+        a, b = THREAD_TAIL_RGB, THREAD_TIP_RGB
+        return (int(a[0] + (b[0] - a[0]) * t),
+                int(a[1] + (b[1] - a[1]) * t),
+                int(a[2] + (b[2] - a[2]) * t))
+
     def draw(self, painter) -> None:
-        """逐段细线：宽度 2*0.5*InverseLerp(0,0.3,life)，alpha = min(life,1)。"""
+        """逐段细线：宽度 2*0.5*InverseLerp(0,0.3,life)，alpha = min(life,1)。
+
+        颜色沿线长从尾巴根的红渐变到针端的黄（用户口径）。
+        """
         pts = self.pts
         n = len(pts)
         if n < 2:
@@ -139,7 +155,7 @@ class NeedleThread:
             life = min(self._life(i), self._life(i - 1))
             if life <= 0.0:
                 continue
-            col = QColor(*THREAD_RGB)
+            col = QColor(*self._shade(i))
             col.setAlphaF(min(1.0, life))
             pen = QPen(col, max(0.6, _ilerp(0.0, WIDTH_FULL, life)))
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)

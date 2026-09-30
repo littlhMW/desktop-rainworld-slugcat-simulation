@@ -3355,9 +3355,10 @@ class BehaviorFSM:
         self._drag_pole = p
         if p is not None:
             px, py, _d = self._pole_near_point(p)
-            side = "r" if px >= b.chunk0.x else "l"
-            self.gfx.hand_aim[side] = (px, py)       # 伸手抱杆
-            self.gfx.hand_aim["l" if side == "r" else "r"] = None
+            side = b.free_hand(hint="r" if px >= b.chunk0.x else "l")
+            if side is not None:                     # 两手都占着：别把拿东西的手抽去抱杆
+                self.gfx.hand_aim[side] = (px, py)   # 伸手抱杆
+                self.gfx.hand_aim["l" if side == "r" else "r"] = None
             self.gfx.look_at = (px, py)
 
     def _drag_grab_item(self) -> bool:
@@ -3762,6 +3763,9 @@ class BehaviorFSM:
         dl = math.hypot(cx - slx, cy - sly)
         dr = math.hypot(cx - srx, cy - sry)
         side = "l" if dl <= dr else "r"
+        # 优先用空手比划：拿着矛/石头的那只手不抽去指指点点（用户报的
+        # 「手部依旧没有正确处理」）。两手都占着才退回最近的那只，物品跟手走。
+        side = b.free_hand(hint=side) or side
         sx, sy = (slx, sly) if side == "l" else (srx, sry)
         sgn = 1 if cx >= b.chunk0.x else -1
         if enforce_side:
@@ -6596,6 +6600,7 @@ class BehaviorFSM:
         self.gfx.face(True, PRIO_URGENT)     # 抚摸 / 拍拍的表情
         ox, oy = g.offset()
         side = "r" if ob.chunk0.x >= self.body.chunk0.x else "l"
+        side = self.body.free_hand(hint=side) or side   # 抚摸也用空手
         self.gfx.hand_aim[side] = (ob.chunk0.x + ox, ob.chunk0.y + oy)
         self.gfx.hand_aim["l" if side == "r" else "r"] = None
         if g.step():
@@ -6622,6 +6627,7 @@ class BehaviorFSM:
         self.gfx.face(False, PRIO_URGENT)
         ox, oy = g.offset()
         side = "r" if ob.chunk0.x >= self.body.chunk0.x else "l"
+        side = self.body.free_hand(hint=side) or side   # 摇醒也用空手
         self.gfx.hand_aim[side] = (ob.chunk0.x + ox, ob.chunk0.y + oy)
         self.gfx.hand_aim["l" if side == "r" else "r"] = None
         self._social_touch += 1
@@ -6730,6 +6736,7 @@ class BehaviorFSM:
                 return False
         b = self.body
         side = "r" if tx >= b.chunk0.x else "l"
+        side = b.free_hand(hint=side) or side   # 同指指点点：优先空手
         self.gfx.hand_aim[side] = (tx, ty)
         self.gfx.hand_aim["l" if side == "r" else "r"] = None
         return True

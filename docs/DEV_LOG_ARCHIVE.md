@@ -4,6 +4,45 @@
 
 ## 2026-10-01
 
+### R140 · 面板超长/身体拓扑/动作序列/面条蝇三连修 + 手部动画与持矛角度订正
+
+本轮两批需求一起交付。前一批是上一轮遗留的三件大事（面条蝇三连修、身体拓扑、动作序列），后一批是手部动画与持矛姿态。
+
+**① 面条蝇三连修（`rendering/primitives.py` / `world/needleworm.py` / `world/items.py`）**
+
+- **翅膀动画丢失**：R138 §14.1 的合批优化把每组颜色**取均值塌成一个 stop**，翅的「根→尖」渐变被抹平。`ribbon_many` 现在按每条在合批轴线上的投影区间铺开**全部**颜色点（仍只有一个 `QLinearGradient` + 一次 `drawPath`）。
+- **尸体不动**：`_step_dead` 从不调 `_step_chain`，`seg` 永远停在死亡那一帧。新增 `_step_dead_chain()`（Verlet 摆链：重力 + 阻力 + 父节速度传递 + 绳长约束 + 地板）。坑：纯竖直摆链是**退化稳定平衡**（绳长约束吃掉向下位移 → 尸体倒立在鼻尖上），靠 `DEAD_CHAIN_TOPPLE` 横向力矩破解，且只在 `|dx| < 0.45*|dy|` 时加（躺平后停手，免得在地上自己滑）。
+- **命中 / 拖动 / 删除**：`items._needleworm_at` 改为遍历**整条 `nw.seg`**（只跳 EATEN/GONE）；`_erase_dist` 走整条体节链；`_begin/_step_needleworm_drag` 调 `nw.snap_chain()`（刚体跟手）；池过滤改成 `not in (EATEN, GONE)`（摔出窗外的尸体真的出池）。
+
+**② §9.1 身体拓扑（`world/lizard_gfx.py`）**：新增 `_chunked_path()`——每个 body chunk 一圈**自己的圆截面** + 节间梯形连接面，替代「一条整体平滑软管」；`_draw_body` 填充走分块路径、描边仍走 `_strip_path()`（轮廓一笔连贯不留接缝）。圆截面不能加体轴拉长（会让包围盒外扩像胖一圈），用 `hw` 原值 + 梯形面填缝。
+
+**③ §9/§10 动作序列（`world/lizard.py`）**
+
+- Attack 四阶段 `Prepare → Lunge → Bite → Recover`：`_step_attack_pose()` **逐 chunk 单独写速度**（前节前压、中后节反向/压缩），`_intent()` 把阶段映射成 `body_compress` / `body_raise`。
+- `_leap()` 加 PrepareToJump 分节点冲量（`seg[1].vy += vy*BODY_JUMP_MID`、`seg[2].vy -= vy*BODY_JUMP_REAR`）。
+- `_step_chain` 末尾加 bodyWiggleCounter 扰动 + 衰减；`hear_noise()` 抬高 wiggle。
+- `_step_head_point` 末尾加**物理扭头**：驱动量取 AI 的注视角 `head_angle`（不取头弹簧位移——里面混着重力下垂和咬合冲量，拿它当弯曲源会反过来吃掉动作），只在 `look_at is not None` 时生效。
+
+**④ 吃东西只动拿食物的那只手（`core/creature.py::_carry_pos`）**：`eat_raise` 以前对所有手一视同仁，双持（另一只手还握着矛/石头）吃东西时另一只手也被一起拽到胸前。现在 `s = (1.0 - eat_raise) if side == hand_of["fruit"] else 1.0`——只有食物手抬到嘴边，另一只手（及其手里的东西）原地不动。
+
+**⑤ 双持矛外八字 + 杆上持物偏移（`core/creature.py`）**
+
+- `spear_hold_angle(tilt, side, dual)`：双持（只要 `len(hand_spears) >= 2`，猎手双矛与**矛大师的白针走同一条路**）时两支矛向外撒 `DUAL_SPEAR_SPLAY = 40°`，且前倾剔弱到 `DUAL_SPEAR_BASE_K = 0.35`（参考图里两支矛是围着**竖直方向**对称的，不降的话左手那支几乎竖直，不像外八字）。撒开量乘不乘 `fdir`——不乘，于是照片翻过来时整体**镜像**（只持一支时还是原来的 25°，不受影响）。
+- 新增 `on_vertical_pole()`（`on_pole and animation in ("ClimbOnBeam", "BeamTip")`）：抱竖杆时 `_carry_anchor` 把物横向偏出杆线 `POLE_CARRY_DX = 7px`（左手向屏幕左、右手向屏幕右）——不偏的话矛/石头正好压在杆线上，看上去像插进杆里（用户参考图：杆上持物画在杆侧面）。横杆/`HangFromBeam` 不走这一档。
+
+**⑥ 手势的手部处理（`behavior/fsm.py` + `rendering/graphics.py`）**
+
+- 伸手比划优先用**空手**：`_point_at_cursor` / `_aim_target` / `_drag_reach_tick`（被鼠标拗着伸手抱杆）/ `_social_stroke` / `_social_wake` 五处都改走 `body.free_hand(hint=...)`——拿着东西的手不再被抽去指指点点（两手都占才退回最近的手；`_drag_reach_tick` 两手都占时宁可不伸手）。
+- `graphics._update_hands` 每帧回写 `body.hand_anim_driven[side]`；`_carry_anchor` 读它：**被手势驱动的手，持物跟着手走**（不再留在身侧锚点——否则手伸出去了、矛还在腰边）。这把 R139 的「一只手 = 一个状态」从攀爬动画扩到了手势动画。
+
+**⑦ 矛大师的细线：尾巴根红 → 针端黄（`world/needlethread.py`）**：原版 `ApplyPalette` 的 `threadCol` 是一色米黄；按用户口径改成沿线长渐变（`_shade(i)`，首端 `(226,58,44)` → 末端 `(248,222,82)`），宽度/alpha 仍走原版 `InverseLerp(0,0.3,life)`。
+
+**证据**（离屏渲染，`work/scratch/_vis140b.py` / `_vis140eat.py`）：`r140b_vis.png`（双持外八字·竖杆持物·细线尾红针黄）、`r140b_eat.png`（左：双持站立；右：吃饭时只有食物手抬到嘴边、矛手原地）；双持实测角 `(-31.2°, +48.8°)`，抱竖杆时 `_carry_anchor("l") = 手位 − 7px`。面条蝇证据图 `nw140_wings_ab.png` / `lz140_run3.png`。
+
+**测试**：`work/scratch/e2e_r140.py`（8 组 30+ 断言）+ `work/scratch/e2e_r140b.py`（6 组 30 项），都已登记进 `run_all19.ps1`。
+
+**回归**：`run_all19.ps1` **125 个脚本 fails=0 []**；`tools/parts_audit.py --check` exit=0；`tools/sprite_variants.py` 正常。
+
 ### R139 · 持物绑定到实际手位（一只手 = 一个状态 = 一套手臂 = 一个物品）
 
 **问题**：手的位置有两套在打架。`rendering/graphics.py::_update_hands()` 按攀爬动画算真实手位（写回 `body.hand_pos`），`core/creature.py::_carry_anchor()` 又按身体偏移另算一套持物位置。于是爬杆时矛浮在身体旁边、和攀爬手脱节；更糟的是 `_apply_carry_stone` / `_apply_carry_spear` 在「有杆」时**整条跳过** `_aim_hand`，把上一帧的 `arm_aim` 留在原地 —— 而 `_update_hands` 的优先级是 `hand_aim > arm_aim > 内部姿态`，`arm_aim` 会盖掉攀爬姿态，把那只手从杆上拽回身侧持物点，于是同一只手既有一只伸向身侧的持物臂、又有一条杆上的抓握手（用户报的「多出两只手」）。

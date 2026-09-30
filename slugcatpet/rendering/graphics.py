@@ -761,6 +761,7 @@ class SlugcatGraphics(GraphicsDrawMixin):
 
             # 优先级：hand_aim > arm_aim > 内部姿态 > None（收回）
             aim = None if self.dead else self.hand_aim[side]
+            gesture = aim is not None              # 这只手本帧是被手势驱动的
             if aim is None and not self.dead:
                 aim = getattr(b, "arm_aim", _NO_ARM_AIM).get(side)
             speed = HUNT_SPEED
@@ -830,6 +831,9 @@ class SlugcatGraphics(GraphicsDrawMixin):
 
             hand.update(sx, sy, aim, speed=speed, quickness=quickness)
             b.hand_pos[side] = (hand.x, hand.y)   # 物跟手（原版 Player.cs:5988 用 hands[i].pos）
+            drv = getattr(b, "hand_anim_driven", None)
+            if drv is not None:                   # 手势驱动的手：持物跟着它走
+                drv[side] = gesture
 
     def _beam_hand_target(self, j, anim, axis):
         """爬杆 / 站顶的手目标。"""

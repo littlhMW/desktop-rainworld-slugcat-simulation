@@ -170,46 +170,71 @@ def ribbon_many(painter, groups, flat=None) -> None:
     「小对象 + 状态切换」就是主线程的大头。合批后 12 次 drawPath 变 1~2 次。
 
     ``groups`` = [(points, halfwidths, colors), ...]；``flat`` 给定时整批用同一个
-    纯色（腿就是这种：颜色本来几乎一样），否则按每条的颜色均值拉一条渐变。
+    纯色（腿就是这种：颜色本来几乎一样）。
+
+    R140 修正：合批**不能**把每条的颜色塌成一个均值。翅是「根→尖」多点渐变
+    （`prof_c` 六档），塌成均值以后整片翅是一个平色，用户看到的「翅膀动画丢失」
+    就是这条回归 —— 翅尖逐帧在动，但渐变没了。现在把每条自己的 ``colors`` 按
+    它在合批轴线上的投影区间重新铺开：整体仍只有一个 QLinearGradient、一次
+    drawPath（性能不倒退），但每条都保住了自己的根→尖渐变。
     """
     path = QPainterPath()
     n = 0
     first = last = None
-    stops = []
+    spans = []            # 每条带：((端点 a), (端点 b), colors)
     for pts, halfs, cols in groups:
         if isinstance(pts, QPolygonF):
             poly = pts                      # 调用方已经建好环（如翅的刚体变换）
-            last = poly.at(poly.count() - 1)
-            last = (last.x(), last.y())
-            if first is None:
-                f0 = poly.at(0)
-                first = (f0.x(), f0.y())
+            cnt = poly.count()
+            if cnt < 2:
+                continue
+            p0, p1 = poly.at(0), poly.at(cnt - 1)
+            a = (p0.x(), p0.y())
+            b = (p1.x(), p1.y())
         else:
             if len(pts) < 2:
                 continue
             poly = _ring(pts, halfs)
-            if first is None:
-                first = pts[0]
-            last = pts[-1]
+            a, b = pts[0], pts[-1]
+        if first is None:
+            first = a
+        last = b
         path.addPolygon(poly)
+        spans.append((a, b, cols))
         n += 1
-        if flat is None:
-            k = len(cols)
-            stops.append((int(sum(c[0] for c in cols) / k),
-                          int(sum(c[1] for c in cols) / k),
-                          int(sum(c[2] for c in cols) / k)))
     if n == 0:
         return
     path.setFillRule(Qt.FillRule.WindingFill)
     if flat is not None:
         brush = _qcolor(flat)
     else:
-        brush = QLinearGradient(QPointF(first[0], first[1]), QPointF(last[0], last[1]))
-        if len(stops) == 1:
-            brush.setColorAt(0.0, _qcolor(stops[0]))
+        ax, ay = first
+        dx, dy = last[0] - ax, last[1] - ay
+        L2 = dx * dx + dy * dy
+        brush = QLinearGradient(QPointF(ax, ay), QPointF(last[0], last[1]))
+        stops = []
+        if L2 < 1e-6:
+            # 轴线退化（整批几何几乎没有长度）：退回逐条平均色
+            for a, b, cols in spans:
+                k = len(cols) or 1
+                stops.append((0.5, (int(sum(c[0] for c in cols) / k),
+                                    int(sum(c[1] for c in cols) / k),
+                                    int(sum(c[2] for c in cols) / k))))
         else:
-            for i, c in enumerate(stops):
-                brush.setColorAt(i / (len(stops) - 1.0), _qcolor(c))
+            for a, b, cols in spans:
+                k = len(cols)
+                if k <= 0:
+                    continue
+                ta = ((a[0] - ax) * dx + (a[1] - ay) * dy) / L2
+                tb = ((b[0] - ax) * dx + (b[1] - ay) * dy) / L2
+                for i, c in enumerate(cols):
+                    f = (i / (k - 1.0)) if k > 1 else 0.0
+                    stops.append((clampf(ta + (tb - ta) * f, 0.0, 1.0), c))
+        # 同一位置的多个 stop：Qt 的 setColorAt 按插入序后者覆盖前者，正是
+        # 「相邻两条带首尾相接」时应有的硬边，不必手工去重。
+        stops.sort(key=lambda s: s[0])
+        for t, c in stops:
+            brush.setColorAt(t, _qcolor(c))
     painter.save()
     aa_hint(painter)
     painter.setPen(Qt.PenStyle.NoPen)
