@@ -4,6 +4,42 @@
 
 ## 2026-10-01
 
+### R136 · 竖杆顶端判定（「一爬就被瞬移到底部」）+ 蜥蜴放置预览 + 玩耍候选（拔矛玩 / 矛大师不玩自己的矛）
+
+- **背景**：用户贴了「Rain World 蜥蜴桌宠——修改意见汇总」（14 节 + 引用链接）。这是一份**整体设计/需求规范**，不是一条新 bug；本轮先把其中**可操作、可验证**的部分落地，其余逐条审计并在下面留档。
+- **审计结论（先说已经做完的，本轮没重复改）**：
+  - 文档称「`Lizard.decide()` 用了 `self.injured` 但 `__slots__` 里没有这个字段」——**不成立**：`lizard.py:2433` 的 `injured` 是 property，实现就是 `LizardInjuryTracker.Utility`（`SCurve(InverseLerp(0.2, 0.9, 1 - health), 0.01)`），即文档 §11.5 建议的降级写法。
+  - §1 Tracker 分层 / §3 PathFinder+AImap 语义 / §4 品种能力从 BreedParams 派生 / §7 花纹独立 RNG：R129–R135 已实装（`LizardBreed` / `BREED_TRAITS` / `lizard_cos` 独立 `crng` / `TerrainQuery`）。
+  - §9/§10「运动结果怎么变成身体姿势」：R129 已做**身体拓扑重排**（3 核心 body chunk + 视觉软体头）与 `look_dir` / `body_dir` / `chain_dir` 三通道的限速转身（`_step_turn`）、`_body_impulse` 动作冲量；§11.1 那三个时间常数的分层就是现在的实现。
+  - §14.2 矛大师骨针自然消失：R132 实装（`needle_disconnect` → `needle_fade_wait` 先保持黑 → `needle_fade` 渐隐 → `state = GONE`；`draw_needle` 在 `fade <= 0` 且非 `pinned` 时直接不画），`e2e_r127` 已覆盖「拿起不褪 / 扎住不褪 / pinned 不消失」。
+  - §14.5 学会放手：`Creature.ITEM_PRIO`（石头 1 < 果子 2 < 矛 3）+ `pick_hand` 选最低价值的受害者手 + `_take_hand` 落地下手，已经实现；本轮补了回归测试（见下）。
+
+**① 竖杆「一尝试爬就瞬间极快被打到底部」（文档 §14.7）**
+- 根因在 `world/pole.py::Pole.top_y`：它写死返回 `self.by`。而 `place_pole_line` 的 `(ax, ay)` 是**按下鼠标**那一点、`(bx, by)` 是**松开**那一点 —— 从上往下拉的竖杆 `ay < by`，`by` 是**杆底**。
+  于是 `_enter_tip` 的触发条件 `c1.y <= pole.top_y + TIP_ENTER_PAD` 在猫一抓住杆时就成立 → `_enter_tip()` → `_snap_axis()` 把 `chunk1` 直接写到 `by`（杆底）、`chunk0` 写到 `by - arc_r`，相位进 `tip` 并**钉死**在那儿。
+  表现为「一爬就瞬间被打到底部」；重画杆子时拉的方向不同，所以「有概率修好」。
+- 修法：`top_y = min(ay, by)`，新增对称的 `bottom_y = max(ay, by)`，`x` 取两端中点。
+- 实测（`e2e_r130`）：旧代码 5 tick 后相位变 `tip`、`chunk1` 从 500 被瞬移到 800；新代码停在 `climb`，150 tick 内**向上爬 266px**，全程没有掉到起点下方。
+- 影响面：`pole_reach.py` 也读 `top_y`（可站立杆顶高度），同一处一并修好。
+
+**② 蜥蜴放置预览「头在左上角、身体拉伸到鼠标」（文档 §14.6）**
+- `items._lay_lizard_hint()` 只摆了 `lz.x/y`、`seg`、`legs`，**没摆 R129 新增的软体头点**。渲染头点读的是 `head_lx → head_x`，不摆就停在构造时的 `(head_conn, 0)` ＝屏幕左上角；身体却在光标处 → 看起来就是「头在左上角、身体从左上角拉到鼠标」。
+- 修法：头点摆到光标，驱动点（链根 `x/y`）退到光标后方 `head_conn`，链节再依次向左；与 `Lizard.__init__` 的初始几何（`head = x + head_conn`、`seg[0] = x - head_conn`）一致。
+
+**③ 玩耍候选：拔下矛玩（仅拔能拔的）+ 矛大师不玩自己的矛（文档 §14.3 / §14.4）**
+- `fsm._nearest_play_item()` 取矛时用 `not pinned` 一刀切，与 `_spear_usable`（工匠才拔得动钉成杆的矛）重复且矛盾。改成直接用 `_spear_usable(sp)`：斜擦插墙的矛（`lodge_in_surface`，`pinned=False`）所有猫都能拔下来玩，钉成杆的矛只有工匠能拔 ⇒ 只有工匠把它当玩具。
+- 新增：`tail_needle` 品种（矛大师）跳过 `sp.needle` 的矛 —— 尾针是它唯一的取食工具，不是玩具。非矛大师的猫照旧可以玩别人掉的骨针。
+
+**④ 回归测试**：新增 `work/scratch/e2e_r130.py`（32 项：竖杆顶端双向 / 爬升相位与位移 / 预览几何 / 玩耍候选 6 例 / 槽位让位 8 例），已接进 `run_all19.ps1`。
+反向验证过：把 `top_y` 改回 `by` 时该脚本立刻 FAIL（`chunk1` 被瞬移到 800、相位 `tip`、150 tick 位移 −0.9px）。全量 **120 个脚本 fails=0**。
+
+- **本轮未做（明确记录，不是遗忘）**：
+  - §14.1 面条蝇绘制优化：R133 已实测（60 只成体 AI+物理 1.8~2.1 ms/tick，绘制 **52 ms/帧**，其中每只每帧 12 条 `ribbon()`（`QPainterPath` + 逐段 `setColorAt` + 抗锯齿渐变填充）占 ≈55%）。能动的只有「少铺几条渐变多边形 / 降 stop 数 / 6 条腿并成一次填充」，都会动外观，与用户「外形复刻优先」相冲突，本轮不擅自改。
+  - §8 参数补全（`biteDelay=12` / `biteInFront=25` / `biteHomingSpeed=1.7` / `loungeDistance` / `loungeSpeed`）：现有 `COOLDOWN_TICKS=150`、`_bite_reach()` 是前几轮调好的另一套口径，直接换原版数值会动扑咬手感，需要单独一轮调参 + 实测，不塞进本轮。
+  - §13 `lizard_cos.py` 大砍（只留 TailTuft / AxolotlGills / LongHeadScales 动态）：改的是外观，需先对着参考图核对，未动。
+  - §2 驯服社交拆 `like` / `tempLike` / `FriendTracker`、§5 Yellow 独立 Pack 层、§6 `AttemptBite / Grasp / Carry` 分层：属于重构级改动，未动。
+  - §9/§10 剩余的 `FightingStance` / `PrepareToLounge → Lounge` 逐 chunk 冲量序列与 `bodyWiggleCounter`：拓扑与三通道已在 R129 就位，但这些具体动作序列未做。
+
 ### R135 · 双导航系统合并（蜥蜴 TerrainQuery ↔ 蛞蝓猫 SurfaceGraph 收成一套）
 
 - **背景**（用户：「那份文档全部实现。需要达成统一」，指「精简版：蜥蜴与蛞蝓猫双导航系统审计」）：

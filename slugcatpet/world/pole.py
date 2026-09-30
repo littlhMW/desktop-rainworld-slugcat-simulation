@@ -70,11 +70,25 @@ class Pole:
     # ── 竖杆便捷访问 ──
     @property
     def x(self) -> float:
-        return self.bx          # 竖杆 x
+        # 竖杆两端 x 相同（place_pole_line 会把 x1 归到 x0）；取中点防手滑。
+        return (self.ax + self.bx) * 0.5
 
     @property
     def top_y(self) -> float:
-        return self.by          # 顶端（y 较小）
+        """顶端＝ y 较小的那一端。
+
+        **不能写死成 by**：place_pole_line 的 (ax, ay) 是按下鼠标那一点、
+        (bx, by) 是松开那一点 —— 从上往下拉的竖杆 ay < by，by 是**杆底**。
+        旧实现把杆底当顶端，猫一抓住杆就满足「已经到顶」→ _enter_tip() →
+        _snap_axis() 把两个 chunk 直接瞬移到 by（用户报的「一尝试爬就瞬间
+        极快被打到底部」；重画杆子时拉的方向不同，所以「有概率修好」）。
+        """
+        return min(self.ay, self.by)
+
+    @property
+    def bottom_y(self) -> float:
+        """底端＝ y 较大的那一端 —— 与 top_y 对称，别再用 by 冒充。"""
+        return max(self.ay, self.by)
 
     def step(self, WL: float, HL: float) -> None:
         """静态，无积分。"""

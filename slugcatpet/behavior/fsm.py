@@ -8192,10 +8192,15 @@ class BehaviorFSM:
             if not o.at_rest_on_ground(self.HL):
                 continue
             cands.append((o, math.hypot(o.x - c0.x, o.y - c0.y), "stone"))
+        # 矛大师不许玩自己尾巴长的针（原版那是它唯一的取食工具，不是玩具）。
+        needle_race = bool(self.win.cat.tuning.get("tail_needle"))
         for sp in self.win.spears:
             if sp.state != "free" or sp.stuck_to is not None:
                 continue
-            if getattr(sp, "pinned", False):
+            if not self._spear_usable(sp):
+                # 钉成杆的矛只有工匠拔得动；拔不动的不算玩具（用户「仅拔能拔的」）
+                continue
+            if needle_race and getattr(sp, "needle", False):
                 continue
             if not (sp.stuck or (abs(sp.vx) < 0.4 and abs(sp.vy) < 0.4)):
                 continue

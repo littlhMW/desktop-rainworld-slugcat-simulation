@@ -1870,11 +1870,20 @@ class ItemInteractionMixin:
     @staticmethod
     def _lay_lizard_hint(lz, cx, cy):
         """把预览蜥蜴摆成「头在光标、身体横躺向左」的站姿。"""
-        lz.x = lz.last_x = cx
-        lz.y = lz.last_y = cy
-        lz.head_angle = lz.last_head_angle = 90.0
         lz.facing = 1
-        x = cx
+        lz.body_dir = lz.move_dir = 0.0
+        lz.chain_dir = 1.0
+        lz.head_angle = lz.last_head_angle = 90.0
+        # 软体头点：R129 起渲染真的读 head_lx → head_x（头不再是「AI 直接写的
+        # 独立点」）。这里不摆它，预览的头就停在构造时的 (head_conn, 0)，也就是
+        # 屏幕左上角 —— 用户看到的正是「头在左上角、身体拉伸到鼠标」。
+        lz.head_x = lz.head_lx = cx
+        lz.head_y = lz.head_ly = cy
+        lz.head_vx = lz.head_vy = 0.0
+        # 驱动点（链根 x/y）在头后方 head_conn 处：head = x + chain_dir*head_conn。
+        x = cx - lz.head_conn
+        lz.x = lz.last_x = x
+        lz.y = lz.last_y = cy
         for s in lz.seg:
             x -= s.dist
             s.x = s.lx = x
