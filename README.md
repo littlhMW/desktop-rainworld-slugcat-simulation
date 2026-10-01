@@ -21,7 +21,7 @@
 
 ```powershell
 pip install -e .
-python run_slugcatpet.py
+desktop-rainworld-slugcat-simulation
 ```
 
 也可以构建 Windows 可执行文件 `RainWorldSlugcatSimulation.exe`：
@@ -96,7 +96,7 @@ Running from source requires a local Rain World installation. On first launch, s
 
 ```powershell
 pip install -e .
-python run_slugcatpet.py
+desktop-rainworld-slugcat-simulation
 ```
 
 To build the Windows executable `RainWorldSlugcatSimulation.exe`:
