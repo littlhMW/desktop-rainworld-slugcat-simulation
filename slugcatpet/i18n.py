@@ -173,6 +173,17 @@ _STR = {
     "settings_friendly_fire_protect_tip": {
         "zh": "开启后同伴不受矛、石头伤害；关闭后友伤正常生效。",
         "en": "On: allies ignore spear and rock damage. Off: friendly fire applies."},
+    "settings_meow_section": {"zh": "猫叫（Push To Meow）", "en": "Meows (Push To Meow)"},
+    "settings_meow_enable": {"zh": "启用猫叫", "en": "Enable meows"},
+    "settings_meow_tip": {
+        "zh": "需要安装 Steam 创意工坊的 Push To Meow；猫会根据饥饿、危险和活动状态概率发声。",
+        "en": "Requires the Steam Workshop Push To Meow item; cats meow based on hunger, danger and activity."},
+    "settings_meow_missing": {
+        "zh": "未检测到 Push To Meow 音频，请先订阅并下载创意工坊项目。",
+        "en": "Push To Meow audio was not found. Subscribe to and download the Workshop item first."},
+    "settings_meow_ready": {"zh": "已检测到本地音频", "en": "Local audio detected"},
+    "settings_meow_volume": {"zh": "音量", "en": "Volume"},
+    "settings_meow_volume_val": {"zh": "{n}%", "en": "{n}%"},
     "settings_hud_section":       {"zh": "状态面板", "en": "Status panel"},
     "settings_show_hud":     {"zh": "显示状态面板", "en": "Show status panel"},
     "settings_pick_title":   {"zh": "选择皮", "en": "Pick a variant"},

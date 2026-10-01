@@ -1,0 +1,135 @@
+"""Optional Push To Meow integration.
+
+The desktop pet does not ship Workshop audio.  When the local Push To Meow
+workshop item is present we reuse its WAV files and keep the feature silent
+when it is absent.  This mirrors the user's requested dependency while making
+the packaged app safe to run without the mod installed.
+"""
+from __future__ import annotations
+
+import random
+from pathlib import Path
+
+from PySide6.QtCore import QUrl
+from PySide6.QtMultimedia import QSoundEffect
+
+WORKSHOP_ID = "3257541402"
+_VARIANT_PREFIX = {
+    "gourmand": "Fat",
+    "saint": "Whispery",
+    "artificer": "Coarse",
+    "spearmaster": "Spear",
+    "rivulet": "RivuletA",
+    "watcher": "Watcher",
+    "slugpup": "Pup",
+}
+
+
+def _roots() -> list[Path]:
+    out = []
+    env = Path(str(__import__("os").environ.get("SLUGCATPET_PUSH_TO_MEOW", "")))
+    if str(env) not in ("", "."):
+        out.append(env)
+    for drive in ("C", "D", "E", "F"):
+        out.extend((
+            Path(f"{drive}:/Steam/steamapps/workshop/content/312520/{WORKSHOP_ID}"),
+            Path(f"{drive}:/SteamLibrary/steamapps/workshop/content/312520/{WORKSHOP_ID}"),
+            Path(f"{drive}:/Program Files (x86)/Steam/steamapps/workshop/content/312520/{WORKSHOP_ID}"),
+        ))
+    return out
+
+
+def find_push_to_meow() -> Path | None:
+    for root in _roots():
+        p = root / "soundeffects"
+        if (p / "MeowNormal1.wav").is_file():
+            return p
+    return None
+
+
+class MeowManager:
+    """Low-frequency, context-aware meows driven from the world tick."""
+
+    def __init__(self, params: dict):
+        self.params = params
+        self.enabled = bool(params.get("meows_enabled", False))
+        self.volume = max(0, min(100, int(params.get("meows_volume", 70))))
+        self.root = find_push_to_meow()
+        self._rng = random.Random(0x4D454F57)
+        self._cooldowns: dict[str, int] = {}
+        self._effects: dict[str, QSoundEffect] = {}
+        self._playing: list[QSoundEffect] = []
+
+    @property
+    def available(self) -> bool:
+        return self.root is not None
+
+    def set_enabled(self, value: bool) -> None:
+        self.enabled = bool(value)
+        self.params["meows_enabled"] = self.enabled
+
+    def set_volume(self, value: int) -> None:
+        self.volume = max(0, min(100, int(value)))
+        self.params["meows_volume"] = self.volume
+        for effect in self._effects.values():
+            effect.setVolume(self.volume / 100.0)
+
+    def _prefix(self, pet) -> str:
+        return _VARIANT_PREFIX.get(getattr(pet, "variant", ""), "Normal")
+
+    def _context(self, pet) -> tuple[float, bool]:
+        beh = getattr(pet, "behavior", None)
+        state = str(getattr(beh, "state", ""))
+        body = getattr(pet, "body", None)
+        hungry = float(getattr(body, "food", 1.0)) <= 0.25
+        danger = any(k in state.lower() for k in ("flee", "fight", "threat", "panic", "hurt"))
+        speed = abs(float(getattr(body, "vx", 0.0))) + abs(float(getattr(body, "vy", 0.0)))
+        # Probability per 40 Hz tick.  Distress is audible sooner; idle cats
+        # remain occasional enough that a group does not become a chorus.
+        chance = 1.0 / (180.0 if danger else 900.0 if hungry else 2400.0)
+        if speed > 8.0:
+            chance *= 0.55
+        return chance, danger or hungry
+
+    def _play(self, pet, long_call: bool) -> None:
+        if self.root is None:
+            return
+        prefix = self._prefix(pet)
+        stem = f"Meow{prefix}{'' if long_call else 'Short'}"
+        files = sorted(self.root.glob(stem + "*.wav"))
+        if not files:
+            stem = "MeowNormal" + ("" if long_call else "Short")
+            files = sorted(self.root.glob(stem + "*.wav"))
+        if not files:
+            return
+        path = self._rng.choice(files)
+        key = str(path)
+        effect = self._effects.get(key)
+        if effect is None:
+            effect = QSoundEffect()
+            effect.setSource(QUrl.fromLocalFile(str(path)))
+            effect.setLoopCount(1)
+            self._effects[key] = effect
+        effect.setVolume(self.volume / 100.0)
+        effect.play()
+        self._playing.append(effect)
+
+    def tick(self, pets) -> None:
+        if not self.enabled or not self.available:
+            return
+        self._playing = [e for e in self._playing if e.isPlaying()]
+        if len(self._playing) >= 3:
+            return
+        for pet in pets:
+            key = str(getattr(pet, "id", id(pet)))
+            cd = self._cooldowns.get(key, 0)
+            if cd > 0:
+                self._cooldowns[key] = cd - 1
+                continue
+            if getattr(pet, "behavior", None) is None or getattr(pet.behavior, "dead", False):
+                continue
+            chance, urgent = self._context(pet)
+            if self._rng.random() >= chance:
+                continue
+            self._play(pet, long_call=urgent or self._rng.random() < 0.35)
+            self._cooldowns[key] = self._rng.randint(180, 420)

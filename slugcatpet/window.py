@@ -23,6 +23,7 @@ from .core import chunkphys
 from .core.units import clampf, lerp
 from .core.water import WaterSurface
 from .world.effects import EffectsMixin
+from .audio import MeowManager
 from .world.items import ItemInteractionMixin
 from .world.enums import ItemState
 from .world.rain import RainSystem
@@ -430,6 +431,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # 友军伤害：默认关＝保持原本的真实友伤。开着时蛞蝓猫投出的矛/石头
         # 不再对同伴造成伤害与眩晕；只改伤害结算，一点不碰 AI。
         self.friendly_fire_protect = bool(self._params.get("friendly_fire_protect", False))
+        # Optional local Push To Meow audio integration.  It is intentionally
+        # silent until enabled in Settings and remains harmless when Workshop
+        # audio is not installed.
+        self.meows = MeowManager(self._params)
         self._shelter_drag_start = None
         self._shelter_seed = 0
 
@@ -1197,6 +1202,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
         for pet in self.pets:
             pet.step(cur, cycle_prog)
+
+        self.meows.tick(self.pets)
 
         self._rain_push_tick()        # 雨压：暴露在雨里的东西被轻轻往下压
 
@@ -2485,6 +2492,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         """
         self.friendly_fire_protect = bool(on)
         self._params["friendly_fire_protect"] = self.friendly_fire_protect
+
+    def set_meows_enabled(self, on) -> None:
+        self.meows.set_enabled(on)
+
+    def set_meows_volume(self, value) -> None:
+        self.meows.set_volume(value)
 
     def set_storm_enabled(self, on):
         """开/关雨循环。**不会**自动放庇护所 —— 屋子由工具栏自己框选出来。"""

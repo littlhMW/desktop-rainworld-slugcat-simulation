@@ -98,6 +98,8 @@ class SettingsWindow(QWidget):
         right.addWidget(self._divider())
         self._section_ai(right)
         right.addWidget(self._divider())
+        self._section_meow(right)
+        right.addWidget(self._divider())
         self._section_hud(right)
         right.addStretch(1)
         self._outer.addWidget(self._body)
@@ -307,6 +309,44 @@ class SettingsWindow(QWidget):
     def _on_friendly_fire_toggled(self, checked):
         """勾选＝同伴免疫矛/石头的伤害与眩晕（纯伤害结算，AI 照旧避让）。"""
         self._window.set_friendly_fire_protect(checked)
+
+    def _section_meow(self, v):
+        """Optional Push To Meow playback and AI-driven probability controls."""
+        v.addWidget(self._header(t("settings_meow_section")))
+        audio = getattr(self._window, "meows", None)
+        chk = QCheckBox(t("settings_meow_enable"))
+        chk.setChecked(bool(getattr(audio, "enabled", False)))
+        chk.setToolTip(t("settings_meow_tip"))
+        chk.toggled.connect(self._on_meow_toggled)
+        v.addWidget(chk)
+        status = QLabel(t("settings_meow_ready") if getattr(audio, "available", False)
+                        else t("settings_meow_missing"))
+        status.setObjectName("dim")
+        status.setWordWrap(True)
+        v.addWidget(status)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(QLabel(t("settings_meow_volume")))
+        sld = QSlider(Qt.Orientation.Horizontal)
+        sld.setRange(0, 100)
+        value = int(getattr(audio, "volume", 70))
+        sld.setValue(value)
+        label = QLabel(t("settings_meow_volume_val", n=value))
+        label.setObjectName("dim")
+        label.setMinimumWidth(42)
+        sld.valueChanged.connect(lambda n, lb=label: self._on_meow_volume(n, lb))
+        row.addWidget(sld, 1)
+        row.addWidget(label)
+        v.addLayout(row)
+        self._meow_slider = sld
+
+    def _on_meow_toggled(self, checked):
+        self._window.set_meows_enabled(checked)
+
+    def _on_meow_volume(self, value, label=None):
+        self._window.set_meows_volume(value)
+        if label is not None:
+            label.setText(t("settings_meow_volume_val", n=int(value)))
 
     def _section_hud(self, v):
         if self._hud is None:
