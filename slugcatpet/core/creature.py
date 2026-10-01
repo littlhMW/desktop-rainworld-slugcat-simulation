@@ -98,16 +98,26 @@ ZEROG_POLE_LEAN = 5.0
 
 CARRY_OFF_X = 20.0
 CARRY_OFF_Y = 12.0
-# 持矛倾角：矛尖朝前上方，杆离竖直 25°（原版 PlayerGraphics 持矛贴图 / 用户参考图）
-SPEAR_HOLD_TILT = 25.0
-# 双持（两只手各一支矛）：**基准姿态两支矛同角度、同方向（平行）**。
-# 用户口径：截图里看到「两边角度不一样」是叠加在上面的步态**摆动相位**
-# （原版 (animationFrame + (leftFoot?9:3))/12*2π 的那种 ±4° 摇摆，两只手差
-# 半个周期），不是基准。旧版 ±40° 外八字（尾端在胸前交叉）是错的，已废弃。
-DUAL_SPEAR_SPLAY = 0.0        # 保留常量名供旧调用点 import；恒 0
-DUAL_SPEAR_BASE_K = 1.0       # 恒 1：双持与单持同一个基准角
-# 杆上持物：这个偏移现在作用在**手**上（见 rendering/graphics.py::
-# _beam_hand_target），不再改“物”的位置 —— 物永远粘在手上。
+# 持矛朝向已改为**原版 Player.GetHeldItemDirection() 的移植**（见
+# spear_hold_angle）。下面两个常量是 R144 之前那套自造角度的遗留，只保留名字
+# 供旧调用点 / 旧测试 import，不再参与计算。
+SPEAR_HOLD_TILT = 25.0        # 废弃（旧的自造基准角）
+DUAL_SPEAR_SPLAY = 0.0        # 废弃（旧的外八字）
+DUAL_SPEAR_BASE_K = 1.0       # 废弃
+# 原版 PlayerGraphics.Update 里 spearDir 的步进/衰减（40fps 定步长）。
+SPEAR_DIR_GAIN = 0.10
+SPEAR_DIR_DECAY = 0.05
+# 原版 GetHeldItemDirection 里持矛那一档的角度（DegToVec 的参数）。
+SPEAR_MOVE_ANGLE = 80.0
+# 原版 v = Slerp(v, DegToVec(...), |spearDir|) 里那条 ±4° 步态摆动的振幅：
+# 相位 = (animationFrame + (leftFoot ? 9 : 3)) / 12 * 2π，**两只手共用同一个
+# leftFoot**，所以双持的两支矛永远严格平行（不是差半个周期）。
+SPEAR_WOBBLE_DEG = 4.0
+SPEAR_WOBBLE_PERIOD_F = 12.0
+SPEAR_WOBBLE_PHASE_LF = 9.0
+SPEAR_WOBBLE_PHASE_RF = 3.0
+# 杆上持物：**手**现在直接贴杆（原版 absoluteHuntPos.x = MiddleOfTile ± 1），
+# 这个偏移改作用在「物」上：竖杆上把矛挪到杆侧，否则矛和杆会叠成一条线。
 # 常量本体在 core/gfxmath.py（渲染层也要读），这里只是转出供反向依赖。
 # 出膛点：Player.ThrowObject → thrownPos = firstChunk.pos + throwDir*10 + (0,4)（游戏 y↑）
 THROW_ORIGIN_DX = 10.0
@@ -183,6 +193,13 @@ class SlugcatBody:
         self.stride_phase = 0.0
         self.stride_rate = 0.06
         self._stride_prev_x = None
+        # 原版 PlayerGraphics.spearDir：持矛朝向的平滑值 [-1,1]（站立推方向时
+        # 每 tick ±0.1，否则朝 0 每 tick 退 0.05）。走路反向时矛是**转过去**的，
+        # 不是瞬间翻面（用户报的「猫向左走矛就左右翻转」）。
+        self.spear_dir = 0.0
+        # 原版 animationFrame / leftFoot：持矛摆动相位的两个输入。
+        self.anim_frame = 0
+        self.left_foot = False
         self.turn = 0.0                 # 0=正面 .. 1=侧面
         self.turn_rate = 0.12
         self.walk_bob_y = 0.0
@@ -1343,6 +1360,17 @@ class SlugcatBody:
             elif move_x < 0:
                 self.facing = -1
 
+        # ── 原版 PlayerGraphics.Update:1987-1998：持矛朝向 spearDir ──
+        # 只在「站立 + 有方向输入」时累积，否则每 tick 朝 0 退 0.05。
+        if self.standing and move_x != 0:
+            self.spear_dir = min(max(self.spear_dir + move_x * SPEAR_DIR_GAIN,
+                                     -1.0), 1.0)
+        elif self.spear_dir < 0.0:
+            self.spear_dir = min(self.spear_dir + SPEAR_DIR_DECAY, 0.0)
+        elif self.spear_dir > 0.0:
+            self.spear_dir = max(self.spear_dir - SPEAR_DIR_DECAY, 0.0)
+        self.anim_frame += 1
+
         target_sink = 1.0 if not self.standing else 0.0
         self.hip_sink += (target_sink - self.hip_sink) * HIP_SINK_EASE
         self._floor_h = self.H + self.hip_sink * self.crawl_sink
@@ -1691,8 +1719,11 @@ class SlugcatBody:
         if moving:
             if self._stride_prev_x is None:
                 self._stride_prev_x = hx
+            _prev_phase = self.stride_phase
             self.stride_phase = (self.stride_phase
                                  + abs(hx - self._stride_prev_x) * self.stride_rate) % 1.0
+            if self.stride_phase < _prev_phase:      # 一个步态周期走完 = 换脚
+                self.left_foot = not self.left_foot
             self._stride_prev_x = hx
             self.walk_bob_y = (math.sin(self.stride_phase * 2 * math.pi * self.walk_bob_freq)
                                * self.walk_bob_amp)
@@ -1877,6 +1908,20 @@ class SlugcatBody:
         """
         return bool(self.on_pole and self.animation in ("ClimbOnBeam", "BeamTip"))
 
+    def _pole_item_offset(self):
+        """杆上持物：手贴杆/杆身，物挪到旁边 → 返回 (dx, dy)。
+
+        一只手 = 一个状态 = 一个目标：手的位置由攀爬动画决定（贴杆），
+        **物**再相对手做一个固定的、只跟「杆的走向」有关的偏移，免得矛/果子
+        正好压在杆线上看起来像插进杆里（参考图里是并排在杆侧）。
+        """
+        if self.on_vertical_pole():
+            s = -1.0 if self.facing >= 0 else 1.0
+            return s * POLE_CARRY_DX, 0.0
+        if self.animation in ("HangFromBeam", "GetUpOnBeam"):
+            return 0.0, POLE_CARRY_DX
+        return 0.0, 0.0
+
     def on_horizontal_beam(self) -> bool:
         """此刻是不是「横杆姿态」接管双手（站杆顶 / 吊杆 / 撑上杆）。
 
@@ -2040,8 +2085,9 @@ class SlugcatBody:
             return
         side = self.hand_of.get("fruit")
         cx, cy, aimed = self._carry_anchor(side)
+        ox, oy = self._pole_item_offset()
         f.last_x, f.last_y = f.x, f.y
-        f.x, f.y = cx, cy
+        f.x, f.y = cx + ox, cy + oy
         f.set_rotation_to_grabber(self.chunk0.x, self.chunk0.y)
         self._aim_carry(side, aimed)
         if f.stalk is not None:
@@ -2125,7 +2171,8 @@ class SlugcatBody:
         s.last_rotation = s.rotation_deg
         s.rotation_deg = s.last_rotation
         s.spin = 0.0
-        s.x, s.y = cx, cy
+        ox, oy = self._pole_item_offset()
+        s.x, s.y = cx + ox, cy + oy
         # 统一走 _aim_carry：爬杆时 aimed=False 会把 arm_aim 清掉（不能留上一帧的
         # 瞄准值，否则攀爬手会被拽回持物点）。
         self._aim_carry(side, aimed)
@@ -2200,42 +2247,86 @@ class SlugcatBody:
             self.arm_aim[side] = None
         return side
 
-    def spear_hold_angle(self, tilt=None, side=None, dual=False):
-        """手里的矛的朝向（原版 Spear 被 PlayerGraphics 拎在身侧的姿态）。
+    def _held_item_dir(self, side):
+        """原版 Player.GetHeldItemDirection() 的前半段 → 屏幕坐标方向向量。
 
-        - 平常：矛尖朝**前上方**，杆离竖直约 25°，并带原版那种 ±4° 的步态摇摆
-          （原版是 DegToVec((80 + cos((animationFrame + (leftFoot?9:3))/12*2π)*4) * spearDir)，
-          即杆围着肩转；桌宠按参考图收敛成「尖端过顶、杆贴身前上方」这一档）。
-          旧版写成 _ang_from_up(±1, -0.35)＝离竖直 70.7°，看着像把矛横在身前 / 拖在身后，
-          用户报的「拿矛角度不对」就是它。
-        - 双持：两支矛**同角度、同方向（平行）**，只有 ±4° 步态摆动按手错开
-          半周期（原版 leftFoot?9:3）—— 用户口径：截图里的角度差是摆动相位，
-          不是基准姿态。旧版 ±40° 外八字已废弃（DUAL_SPEAR_SPLAY 恒 0）。
-        - 爬杆时：杆顺着体轴朝上（原版 ClimbOnBeam 分支先 y=|y| 再向体轴 slerp 0.75），
-          否则横着的矛会插进竖杆里。
-        - 朝向一律取 self.facing —— 只有走动时才更新、静止保持。**不能用
-          chunk0.x - chunk1.x**：挂在竖杆上时两节水平几乎重合，dx 每帧正负乱跳，
-          矛就会原地翻 180°（用户报的「拿着矛/背着矛时矛随机旋转」）。
+        Player.cs:6006-6012（反编译）::
+
+            v = DirVec(bodyChunks[0].pos, hands[hand].pos) * (hand == 0 ? -1 : +1)
+            if animation != HangFromBeam: v = PerpendicularVector(v)   # (-v.y, v.x)
+
+        ``hands[hand].pos`` 就是这只手此刻的真实位置（Player.cs:5989 每帧把
+        grabbedChunk 搬到 hands[i].pos）—— 所以「矛的朝向」本来就建立在
+        「手在哪」上，不是另算一套。本函数返回**屏幕坐标**（y↓）的方向向量。
+        """
+        c0 = self.chunk0
+        hw = self.hand_world(side) or self._carry_pos(side)
+        s = -1.0 if side == "l" else 1.0        # 原版 (hand == 0) ? -1 : +1
+        vx, vy = (hw[0] - c0.x) * s, (hw[1] - c0.y) * s
+        if self.animation != "HangFromBeam":
+            vx, vy = vy, -vx                    # PerpendicularVector（y↓ 版）
+        return vx, vy
+
+    def spear_hold_angle(self, tilt=None, side=None, dual=False):
+        """手里的矛的朝向 —— 原版 ``Player.GetHeldItemDirection()`` 的移植。
+
+        Player.cs:6006-6034（反编译，逐行对照）::
+
+            v = DirVec(body0.pos, hands[hand].pos) * (hand == 0 ? -1 : +1)
+            if animation != HangFromBeam: v = PerpendicularVector(v)
+            if bodyMode == Crawl:
+                v = DirVec(body1.pos, Lerp(hands[hand].pos, body0.pos, 0.8))
+            elif animation == ClimbOnBeam:
+                v.y = |v.y|
+                v = Slerp(v, DirVec(body1.pos, body0.pos), 0.75)
+            elif grabbed is Spear:
+                v = Slerp(v,
+                          DegToVec((80 + cos((animationFrame + (leftFoot ? 9 : 3)) / 12
+                                             * 2π) * 4 * spearDir) * spearDir),
+                          |spearDir|)
+
+        几个此前搞错、现在按原版落地的点：
+
+        * **朝向由 spearDir 决定，不由 facing 决定**。spearDir 是平滑量：
+          站立推方向时每 tick ±0.1（限幅 ±1），否则每 tick 朝 0 退 0.05。
+          所以反向走路时矛是**转过去**的（+80° → 0 → −80°），不是瞬间翻面。
+          旧版 ``fdir * 25`` 在 facing 翻转的那一帧直接镜像 50°，就是用户报的
+          「矛在右侧猫向左走矛就会左右翻转」。
+        * **双持的两支矛永远严格平行**：那一档的目标角只跟 spearDir 有关，
+          摆动的相位用 ``leftFoot``——两只手共用同一个 leftFoot，不是差半周期。
+          旧版按手错开 0.75/0.25 是自造的。
+        * **静止时两支矛各按自己那只手的基准方向**（Perp(body→hand)），
+          右手 +31°、左手 −31°（离竖直），也就是原版的静息「外张」——这不是
+          外八字 bug，是 Perp 那一行的必然结果。
+        * **爬竖杆**：手贴杆（MiddleOfTile ± 1，见 rendering._beam_hand_target），
+          矛先 ``vy = -|vy|``（原版 v.y = |v.y|）再朝体轴 slerp 0.75，
+          于是贴着杆斜立 ≈ ±8°，和参考图一致。
+
         角度口径与 rendering.primitives.draw_spear 一致：0 = 竖直向上、顺时针为正（y↓）。
         """
-        fdir = 1.0 if self.facing >= 0 else -1.0
-        if self.on_pole and not self.on_horizontal_beam():
-            # 竖杆：杆顺着体轴朝上（否则横着的矛会插进竖杆里）。
-            # 不要用两个 chunk 的瞬时 dx 算角度；它会在抓杆/摆动时左右翻转。
-            #
-            # 横杆姿态（StandOnBeam / HangFromBeam / GetUpOnBeam）**不在这里**：
-            # 旧代码给它 90°/270°（沿杆横放），矛正好躺在横杆里。
-            # 参考图（玩家实机）里是**正常持矛角**（25° 前上）。
-            return 0.0
-        base = SPEAR_HOLD_TILT if tilt is None else float(tilt)
-        # 步态摆动：基准角 + 原版 ±4°，**两只手差半个周期**（leftFoot?9:3）。
-        # 双持时这就是「蛞蝓猫在摆动」——两边基准角与方向仍然完全一致。
-        wob = 0.0
-        if self.is_moving():
-            off = 0.75 if side == "l" else (0.25 if side == "r" else 0.5)
-            ph = (self.stride_phase + off) % 1.0
-            wob = math.cos(ph * 2.0 * math.pi) * 4.0
-        return fdir * (base + wob)
+        side = side if side in ("l", "r") else "r"
+        c0, c1 = self.chunk0, self.chunk1
+        vx, vy = self._held_item_dir(side)
+        if self.bodyMode == "Crawl":
+            c0 = self.chunk0
+            hw = self.hand_world(side) or self._carry_pos(side)
+            tx = hw[0] * 0.2 + c0.x * 0.8
+            ty = hw[1] * 0.2 + c0.y * 0.8
+            return _ang_from_up(tx - c1.x, ty - c1.y)
+        if self.animation == "ClimbOnBeam":
+            if vy > 0.0:
+                vy = -vy                        # 原版 v.y = |v.y|
+            return _lerp_ang(_ang_from_up(vx, vy),
+                             _ang_from_up(c0.x - c1.x, c0.y - c1.y), 0.75)
+        sd = self.spear_dir
+        if sd == 0.0:
+            return _ang_from_up(vx, vy)
+        wob = math.cos((self.anim_frame
+                        + (SPEAR_WOBBLE_PHASE_LF if self.left_foot
+                           else SPEAR_WOBBLE_PHASE_RF))
+                       / SPEAR_WOBBLE_PERIOD_F * 2.0 * math.pi) * SPEAR_WOBBLE_DEG
+        target = (SPEAR_MOVE_ANGLE + wob * sd) * sd
+        return _lerp_ang(_ang_from_up(vx, vy), target, abs(sd))
 
     def throw_spear(self, dir_x, frc=1.0, up=1.5, recoil=1.0, vel=None, toss=False,
                     dir_y=0.0, input_x=1, input_y=0, flip=False):
@@ -2344,8 +2435,9 @@ class SlugcatBody:
             if sp is None:
                 continue
             cx, cy, aimed = self._carry_anchor(side)
+            ox, oy = self._pole_item_offset()
             sp.last_x, sp.last_y = sp.x, sp.y
-            sp.x, sp.y = cx, cy
+            sp.x, sp.y = cx + ox, cy + oy
             sp.spin = 0.0
             sp.spinning = False
             hold_angle = self.spear_hold_angle(side=side, dual=dual)
@@ -2419,6 +2511,15 @@ def _closest_on_segment(px, py, ax, ay, bx, by):
 
 def _ang_from_up(dx, dy):
     return math.degrees(math.atan2(dx, -dy))
+
+
+def _wrap180(a):
+    return (a + 180.0) % 360.0 - 180.0
+
+
+def _lerp_ang(a, b, t):
+    # 沿**最短弧**把角度 a 转到 b 的 t 比例（原版 Vector3.Slerp 的二维等价）。
+    return a + _wrap180(b - a) * float(t)
 
 
 def _rot(lx, ly, deg):

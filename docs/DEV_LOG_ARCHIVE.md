@@ -4,6 +4,61 @@
 
 ## 2026-10-01
 
+### R145 · 持矛朝向 / 爬杆手位回归原版（反编译对拍）
+
+用户实测：**「矛在右侧、猫向左走，矛就左右翻转」**、**「爬杆子手要贴着杆子」**，
+并要求「底层逻辑有隐患，反编译看看」。查下来两处都是自造角度/自造偏移，不是参数没调好。
+
+**① 持矛朝向：`facing * 25` 是自造的 → 换成原版 `spearDir`**
+
+旧实现 `spear_hold_angle()` = `fdir * (25 + wob)`，`fdir` 直接取 `facing`。
+`facing` 是**瞬时**的：猫一走反向，那一帧整根矛镜像 50° —— 用户看到的「左右翻转」。
+原版根本不是这么算的（`Player.cs:6006-6034 GetHeldItemDirection`）：
+
+```
+v = DirVec(mainBodyChunk.pos, grasps[hand].grabbed.bodyChunks[0].pos) * (hand == 0 ? -1 : +1)
+if (animation != HangFromBeam) v = PerpendicularVector(v)          // (-v.y, v.x)
+if (bodyMode == Crawl)  v = DirVec(bodyChunks[1].pos, Lerp(hand.pos, bodyChunks[0].pos, 0.8))
+elif (animation == ClimbOnBeam) { v.y = Abs(v.y); v = Slerp(v, DirVec(body1.pos, body0.pos), 0.75) }
+elif (grabbed is Spear)
+    v = Slerp(v, DegToVec((80 + Cos((animationFrame + (leftFoot ? 9 : 3)) / 12 * 2π) * 4 * spearDir)
+                          * spearDir), Abs(spearDir))
+```
+
+要点（都已落地）：
+
+* **朝向由 `spearDir` 决定，不看 `facing`**。`PlayerGraphics.cs:1987-1998`：
+  `bodyMode == Stand && input.x != 0` 时每 tick ±0.1（限幅 ±1），否则朝 0 每 tick 退 0.05。
+  于是反向走路是**转过去**的（+80° → 0° → −80°），不是瞬间翻面。
+* **双持两支永远严格平行**：那一档的目标角只跟 `spearDir` 有关，摆动相位
+  `(animationFrame + (leftFoot ? 9 : 3)) / 12 * 2π` 里**两只手共用同一个 `leftFoot`**。
+  旧版按手错开 0.75/0.25 是自造的。
+* **静止时两支各按自己那只手的 `Perp`**（右手 +30.96°、左手 −30.96°）。
+  这不是「外八字 bug」，是 `PerpendicularVector` 那一行的必然结果，和参考图一致。
+* 物永远读那只手的 `hand_pos`（= `Player.cs:5988` 把 grabbed chunk 挪到 `hands[i].pos`）。
+
+**② 爬杆手位：`POLE_CARRY_DX` 推手 → 手贴杆，偏移改由「物」承担**
+
+R142 把「别让矛压在杆线上」的 7px 偏移加在**手**上，结果手浮在杆旁边。
+原版 `SlugcatHand.cs:193-215` 的手是**贴杆**的：
+
+* `ClimbOnBeam`：`absoluteHuntPos = (MiddleOfTile(body0.pos).x, body0.pos.y)`，
+  `y += (cond ? -3 : 3) + 6f`，`x += ±flipDirection` —— 行竖杆上只有 **±1px**。
+* `HangFromBeam / GetUpOnBeam`：`y = MiddleOfTile(body0.pos).y - 1` —— 手抓在杆身上。
+
+现在 `rendering/graphics.py::_beam_hand_target` 不再推手，偏移交给
+`core/creature.py::_pole_item_offset()`：竖杆 → 物挪到杆侧 `∓x`，吊杆 → 物挪到杆身下 `+y`。
+`graphics.py` 里那个已经没人用的 `POLE_CARRY_DX` import 一并删掉。
+
+**③ 回归口径同步**
+
+`e2e_r39 / r114 / r141 / r142 / r144` 里 15 条检查编码的是旧口径（「双持同角」「竖杆矛角恒 0」
+「持物的手从杆线上伸出去」），按原版口径改写：静止镜像 ±30.96°、`spearDir=±1` 时严格平行、
+竖杆 `|角−杆轴| < 26°`、手贴杆且偏移由物承担。`fails=0`。
+
+**验证**：`run_all19.ps1` → `=== round done; fails=0 []`；
+`r145_hands.py` 出图目视：`E` 手贴杆（x=149/151，杆 x=150）、`C` 朝左走矛 −80°（转过去，不翻面）。
+
 ### R144 · Wall / Pole / Background 三方拆分 + 窗口重置 + 持物手收敛
 
 R143 文档末尾那段「追加审计：三分法」当时被判定与 R135 已交付的 `WINDOW_EDGE` 语义正面冲突，

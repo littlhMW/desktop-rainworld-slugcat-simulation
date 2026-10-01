@@ -6,7 +6,7 @@ import re
 from ..core.units import K_VEL, K_IMP, damp60, clampf, inv_lerp
 from ..core.gfxmath import (_hsl2rgb, _ang_from_up, _rot, _lerp, _catmull,
                            SHOULDER_OFF_X, SHOULDER_OFF_Y, ARM_DIV, ARM_MAX,
-                           TAIL_RAD, TONGUE_WIDTH_SCALE, POLE_CARRY_DX)
+                           TAIL_RAD, TONGUE_WIDTH_SCALE)
 from ..behavior.anim_intent import (AnimationController, PRIO_ACTION, point_of,
                                    BEAM_LIMB_ANIMS)
 
@@ -858,22 +858,19 @@ class SlugcatGraphics(GraphicsDrawMixin):
             off_y = (-3.0 if cond else 3.0) + 6.0 * f
             hx = px + (-flip if cond else flip)
             hy = c0.y + off_y
-            # 拿着东西的手：从杆线上伸出去，手持与否决定伸不伸。
-            # 物体本身不再自己挪位置（_carry_anchor 只返回手位）。
-            if j == 0:
-                hx -= POLE_CARRY_DX if self._hand_carrying("l") else 0.0
-            else:
-                hx += POLE_CARRY_DX if self._hand_carrying("r") else 0.0
+            # 手**贴杆**（原版 absoluteHuntPos.x = MiddleOfTile.x ± 1）。
+            # R142 曾把持物的手推开 POLE_CARRY_DX，结果手浮在杆旁边
+            # （用户实测「爬杆子手要贴着杆子」）。现在偏移改由「物」承担：
+            # 见 core/creature.py::_apply_carry_spear —— 手贴杆，矛挪到杆侧。
             return (hx, hy), HUNT_SPEED, HAND_QUICKNESS
         if anim in ("HangFromBeam", "GetUpOnBeam"):
             beam_y = getattr(b, "pole_y", c0.y)
             sh = 10.0 + 3.0 * math.sin(2.0 * math.pi * self.anim_frame / 20.0)
             hx = c0.x + (-1.0 if j == 0 else 1.0) * sh
-            # 手就在杆身上：拿东西的手往上撑 POLE_CARRY_DX，
-            # 否则物（矛心）恰好压在杆身里。空手不动。
+            # 手**抓在杆身上**（原版 absoluteHuntPos.y = MiddleOfTile.y - 1）。
+            # 同竖杆：原来把持物的手顶开 POLE_CARRY_DX，手就浮在杆外了。
+            # 物由 core/creature.py::_pole_item_offset 挪到杆身下面。
             hy = beam_y
-            if self._hand_carrying("l" if j == 0 else "r"):
-                hy -= POLE_CARRY_DX
             return (hx, hy), HUNT_SPEED, HAND_QUICKNESS
         # 站杆顶 / 撑上杆：两手向两侧张开扮演平衡（参考图）。
         #
