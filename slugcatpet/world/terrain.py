@@ -29,7 +29,7 @@ from ..planning.navgraph import (ATTACK, CLIMB_EDGE as E_CLIMB_EDGE,
                                  CLIMB_WALL as E_CLIMB_WALL, DROP, FINISH,
                                  JUMP, POLE_HOP, STEP, WALK as E_WALK,
                                  Capabilities, NavGraph, NavigationEdge,
-                                 ReachResult, WALL_HOP, edge_cost)
+                                 ReachResult, WALL_HOP, anchor_key, edge_cost)
 
 FLOOR_TOL = 18.0        # 「这块地形的落脚点在我这一层」的容差
 ATTACH_TOL = 30.0       # 上墙点离我多近算「走过去就能抓」
@@ -214,11 +214,15 @@ class TerrainGraph(NavGraph):
                 best, bd = n.nid, d
         return best
 
-    def path_edges(self, src, dst, max_speed=20.0):
-        """目标明确时优先 A*（采样启发式可采纳：不超过最快连接的耗时下限）。"""
-        got = self.astar(src, dst, max_speed=max_speed)
+    def path_edges(self, src, dst, max_speed=20.0, avoid=None):
+        """目标明确时优先 A*（采样启发式可采纳：不超过最快连接的耗时下限）。
+
+        ``avoid``（节点下标集合）是导航级黑名单：文档 §13 的 Navigation stuck
+        要靠它断掉「同一条边反复被选中」的循环。
+        """
+        got = self.astar(src, dst, max_speed=max_speed, avoid=avoid)
         if got is None:
-            got = self.path(src, dst)
+            got = self.path(src, dst, avoid=avoid)
         return got
 
     def legs(self, path):
@@ -240,8 +244,8 @@ class TerrainGraph(NavGraph):
         return _merge_legs(out)
 
     # 兼容：旧调用点还会直接喊 _run
-    def _run(self, src):
-        NavGraph._run(self, src)
+    def _run(self, src, avoid=None):
+        NavGraph._run(self, src, avoid)
 
 
 def _merge_legs(legs):
@@ -660,16 +664,24 @@ class TerrainQuery:
 
     # ── 寻路 ──
     def route(self, x, y, tx, ty, caps, must_return=True, stand_only=True,
-              kind=None):
+              kind=None, avoid=None):
         """多段地形路线。
 
         路线类型（文档 §4）：SAFE / RETURNABLE 要求「能去也能回」；ONE_WAY /
         RISKY / DEAD_END 只要求去得了。追即将掉落的猫、红蜥跳危险位置、
         追进死角的猎物本来就可以单向 —— 旧实现一律 must_return，于是这些情况
         全被判无路线，上层只能 fallback 成 direct 直冲，最后撞墙 / 原地跳。
+
+        ``kind`` 还可以给**一串**类型（文档 §5：行为先指定路线哲学）：
+        从严到松依次尝试，取第一个成立的，于是「我要 SAFE，但只有 RETURN 可用」
+        会降级成 RETURN 而不是直接判无路线。
+
+        ``avoid`` 是 StuckDetector 的导航黑名单（量化锚点键的集合）：里面的
+        落点不进图，寻路自然绕开。
         """
         if kind is None:
             kind = ROUTE_RETURNABLE if must_return else ROUTE_ONE_WAY
+        kinds = (kind,) if isinstance(kind, str) else tuple(kind)
         speed = max(caps.walk_speed, caps.climb_speed, caps.jump_dx,
                     caps.hop_dx, 40.0)
         for g in self._graphs(caps, x, y, tx, ty):
@@ -679,21 +691,36 @@ class TerrainQuery:
             dst = g.nearest(tx, ty, stand_only=stand_only)
             if src is None or dst is None:
                 continue
-            path = g.path_edges(src, dst, max_speed=speed)
+            ban = self._avoid_ids(g, avoid, src)
+            path = g.path_edges(src, dst, max_speed=speed, avoid=ban)
             if not path:
                 continue
             back = g.can_return(src, dst)
-            if kind in (ROUTE_SAFE, ROUTE_RETURNABLE) and not back:
-                continue
             risk = max((e.risk for e in path), default=0.0)
-            if kind == ROUTE_SAFE and risk > _EDGE_RISK_LIMIT:
-                continue
             legs = g.legs(path)
             if not legs:
                 continue
             cost = sum(e.time for e in path)
-            return TerrainRoute(legs, True, back, cost, kind=kind, risk=risk)
+            for k in kinds:
+                if k in (ROUTE_SAFE, ROUTE_RETURNABLE) and not back:
+                    continue
+                if k == ROUTE_SAFE and risk > _EDGE_RISK_LIMIT:
+                    continue
+                return TerrainRoute(legs, True, back, cost, kind=k, risk=risk)
         return None
+
+    @staticmethod
+    def _avoid_ids(g, avoid, src):
+        """黑名单桶键 → 这张图的节点下标（源点永远不封，否则自己出不去）。"""
+        if not avoid:
+            return None
+        ban = set()
+        for n in g.nodes:
+            if n.nid == src:
+                continue
+            if anchor_key(n.x, n.y) in avoid:
+                ban.add(n.nid)
+        return ban or None
 
     def reach_result(self, x, y, tx, ty, caps):
         """可达性的四种结论（文档 §5）。

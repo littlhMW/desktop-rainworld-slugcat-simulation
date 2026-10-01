@@ -4,6 +4,87 @@
 
 ## 2026-10-01
 
+### R143 · 收口：行为→路线哲学、Jump 归位统一图、target-drift、导航黑名单、真伏击 / 包夹
+
+外部审计（用户贴的整理稿）结论是「R135–R137 的统一导航已经成立，别再大改寻路」，并给出
+**下一轮只做这五件事**。本轮把这五件全部落地，一行不留。
+
+文档末尾还有一段「追加审计：Wall / Pole / Background 三分法」，**本轮没做**：它要求把
+`WINDOW_EDGE` 从基础 Surface 类型里拿掉、把背景墙拆成 `BackgroundRegion`，这与 R135 已交付的
+设计正面冲突 —— `planning/navgeom.py` 的模块注释明确写着 `WINDOW_EDGE` 的语义就是「一个身份 =
+碰撞体 + 可攀爬竖线 + 顶端可站」。那是一次真正的几何重构，不该塞进收口轮，留给单独一轮。
+
+**① 行为各自指定路线类型（文档 §5）**
+
+`route()` 本来就支持 `SAFE / RETURNABLE / ONE_WAY / RISKY / DEAD_END`，但上层从来不传 ——
+`lizard_ai._terrain_route()` 一律默认 `RETURNABLE`，「五种路线哲学」等于不存在。
+
+- `world/terrain.py::route(..., kind=)`：`kind` 现在可以给**一串**（从严到松），取第一个成立的。
+  于是「我要 SAFE，但只有 RETURN 可用」会降级成 RETURN，而不是直接判无路线。
+- `lizard_ai.route_kinds(intent, prefs)`：意图 → 路线类型链。
+  Hunt 看性格（伏击型 `RETURNABLE` 优先，冲刺型 `ONE_WAY` 优先）／Carry `SAFE→RETURN`／
+  Flee `SAFE→RETURN→ONE_WAY`／Investigate `RETURNABLE`／Pack `ONE_WAY`。
+- 落点：`_terrain_route(..., kind=)`、`_vertical_detour(..., kind=)`、`plan_approach(..., route_kind=)`；
+  Hunt（`_plan_for`）、Investigate、Carry（去巢穴）、Flee（找逃生点）、Pack（去包夹位）各自传入自己的链。
+  路线的实际档次写在 `plan.reason` 里（`navgraph:one_way` / `navgraph:safe` …），测试直接钉它。
+
+**② Jump 成为可比较的 NavigationEdge（文档 §6）**
+
+旧顺序是「先自己枚举起跳弧，失败了才问图」—— 两套 planner 打架。`plan_approach()` 现在是：
+
+1. 同层 → 直线扑（原版也是直线扑）；
+2. **统一导航图先说**：`_terrain_route()` 给 walk / climb / jump / drop / hop 的 MovementConnection；
+3. 图给的那条 **jump 边**再交给 `sim_arc()` 细化起跳点（`_launch_search(cx=边起点, span=半个搜索窗)`）；
+4. 图里没有连接时，才退回本地弧线搜索（`arc:launch`，Jump Executor 的兜底）。
+
+顺带把起跳点搜索抽成 `_launch_search()`，它只回答「这一跳从哪儿起跳」。
+
+**③ 移动目标 target-drift（文档 §12）**
+
+`ApproachPlan` 增加 `anchor`（规划时目标在哪）与 `drifted(tx, ty)`（阈值 `TARGET_DRIFT = 24px`）。
+`_terrain_route` / `plan_approach` 造的计划都带上猎物当时的坐标；`_route_tick`、`_approach_tick`、
+`_vertical_detour` 在目标漂走时**立刻重规划**，不再硬等 `ROUTE_TTL`。
+
+**④ StuckDetector 分两种卡住 + 导航黑名单（文档 §13）**
+
+- 区分 `STUCK_PHYSICS`（路线对、位移被墙 / 碰撞吞掉 → 原地小跳脱困，**不丢路线**）与
+  `STUCK_NAVIGATION`（同一条边反复把人带到同一个死点 → 记进黑名单）。
+- 新增 `block() / blocked() / blocked_keys()`；黑名单是**世界知识**：`reset()` 不清它，
+  `BLACKLIST_TTL = 240` 过期。
+- `planning/navgraph.py`：`NavGraph.astar/path/_run` 接受 `avoid`（节点下标集），Dijkstra 的缓存键也带上它
+  （否则「先问一次、再带黑名单问」会复用旧结果）；`TerrainGraph.path_edges(..., avoid=)`；
+  `TerrainQuery.route(..., avoid=)` 用 `anchor_key()` 把量化锚点键翻成节点下标（源点永不禁）。
+- `lizard._route_tick`：等级 1 按类型分流，等级 2 丢路线；黑名单经 `self._stuck.blocked_keys(tick)`
+  传给每一次寻路（Hunt / Investigate / Carry / Flee / Pack 全走同一条路）。
+
+**⑤ 真正的白蜥伏击 + 黄蜥包围（文档 §14/§15）**
+
+两者都从统一地形里挑点，不再是「目标坐标 + X 偏移」：
+
+- `stand_anchors(terrain, caps, cx, cy, r)`：可站面上采样出来的落点候选（`NavGeometry.floors`）。
+- `pack_slots(...)`：猎物的前 / 后 / 左 / 右四个落点（平地退化时沿面补齐，绝不挤成一列）；
+  `lizard._pack_seat()` 用**路线代价**挑最划算的那个（`PACK_SEAT_TICKS = 30` 缓存一轮），
+  于是每只黄蜥各自选位 —— 才是围过去。旧 `flank_offset()` 保留（兼容旧测试）但行为层不再调用。
+- `ambush_point(...)`：猎物去路的侧后方（视野锥外）、有遮挡加分、离猎物约一个扑咬距离、离自己近 ——
+  白蜥的 `lurk` 从「决定不追」变成「挪到伏击点等」，`_lurk_idle()` 负责走过去。另外 `act()` 里
+  `st == "Lurk"` **不再**要求 `o is None`：以前带目标的 Lurk 会掉进 `_lunge_toward` 直接冲锋，
+  伏击意图等于没有。
+- Flee 升级：威胁不在同一层时，从可站面里挑「离威胁最远」的落点、走 SAFE 路线过去
+  （`_flee_seat`，最多试 `FLEE_SEAT_TRIES = 3` 个）；逃跑路线不含跳（Flee 没有跳跃执行器）。
+- Carry 升级：巢穴不在同一层时走 `SAFE` 路线（`no_jump=True`），不再对着 `den.x` 一路撞。
+- `_climb_obs(st, o)`：Flee / Carry 这类「非追猎」状态只有在**自己的正式路线含爬段**时才把观察交给
+  攀爬层，避免它们临时抓一根竖线。
+
+**性能**：30 只蜥蜴 300 tick 实测 `7.04 ms/tick`（改前 `7.43 ms/tick`）—— 图本来就有缓存，
+每 tick 多一次 A* 没有变成热点。
+
+**测试**：新增 `work/scratch/e2e_r143.py`（33 项全绿）—— 路线类型链（合成图验证 SAFE 被高风险边否掉、
+链式降级、顺序有意义）、Jump 归位（合成图给 jump 边 → 计划来自 navgraph；无图 → `arc:launch`）、
+target-drift（阈值 / 锚点透传 / 行为级重规划）、StuckDetector 分类与黑名单（`avoid` 穿透
+astar / path / route 与 Dijkstra 缓存键）、伏击点 / 包夹位（只来自可站面、四个互不相同、锥外、
+无地形退化）、白蜥伏击待机真的朝伏击点挪、黄蜥包夹位来自路线代价、Flee 走 SAFE 路线。
+`run_all19.ps1` 已登记（128 个脚本，`fails=0`）。
+
 ### R142 · 杆上持物：物永远贴手，偏移改由手承担
 
 用户实测截图（竖杆）：手里的矛浮在杆旁、没在手上。—— 这和 R141 那两张实测图（横杆）是同一个错误。

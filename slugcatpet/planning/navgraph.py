@@ -223,13 +223,33 @@ class ReachResult:
     UNKNOWN = "unknown"
 
 
+STUCK_PHYSICS = "physics"          # 路线对，位移被墙 / 碰撞吞掉
+STUCK_NAVIGATION = "navigation"    # 路线本身反复把人带到同一个死点
+ANCHOR_BUCKET = 24.0               # 锚点量化桶（黑名单 / 插桩 / 图缓存共用一个键）
+BLACKLIST_TTL = 240              # 导航黑名单保留 tick（约 4s）
+
+
+def anchor_key(x, y, bucket=ANCHOR_BUCKET):
+    """锚点量化成 24px 桶。黑名单与按需插桩必须用同一个键，别各算一套。"""
+    return (int(round(float(x) / bucket)), int(round(float(y) / bucket)))
+
+
 class StuckDetector:
-    """卡住检测（文档 §28）：不是「重规划几次」，是「这段时间有没有位移」。
+    """卡住检测（文档 §13/§28）：不是「重规划几次」，是「这段时间有没有位移」。
 
     升级阶梯：1 次卡住 → 当前边重试；2 次 → 换边；3 次 → 换面；4 次 → 放弃目标。
+
+    并且区分两种卡住 —— 这是「丢掉路线重新问图」之外真正需要的一层：
+
+      STUCK_PHYSICS     这条路线是对的，位移被墙 / 碰撞 / 脚支撑吞掉了。
+                        该做的是原地小跳、反向蹭出来，**不是**丢掉路线。
+      STUCK_NAVIGATION  同一条边反复被选中、每次都到同一个死点。
+                        该做的是把它的落点记进黑名单，让下一次寻路绕开它 ——
+                        否则「A→B 失败 → 重规划 → 又给 A→B → 又卡」会一直转。
     """
 
-    __slots__ = ("window", "min_px", "owner", "_x", "_y", "_tick", "level")
+    __slots__ = ("window", "min_px", "owner", "_x", "_y", "_tick", "level",
+                 "kind", "_tries", "_blocked")
 
     def __init__(self, window=24, min_px=8.0, tick=0):
         self.window = int(window)
@@ -239,15 +259,48 @@ class StuckDetector:
         self._y = None
         self._tick = int(tick)
         self.level = 0
+        self.kind = ""
+        self._tries = {}                # 边签名 → 已经卡过几次
+        self._blocked = {}              # 黑名单桶键 → 过期 tick
 
     def reset(self, x, y, tick=0):
+        """重新开始计时。**不清黑名单** —— 那是世界知识，不是当前目标的进度。"""
         self._x, self._y = float(x), float(y)
         self._tick = int(tick)
         self.owner = None
         self.level = 0
+        self.kind = ""
 
-    def update(self, x, y, tick, owner=None) -> int:
-        """返回当前卡住等级（0 = 没卡住）。owner 变了（换了目标）就重新计时。"""
+    # ── 导航黑名单（文档 §13：Navigation stuck 要 blacklist 当前 edge）──
+    def block(self, x, y, tick, ttl=BLACKLIST_TTL):
+        self._blocked[anchor_key(x, y)] = int(tick) + int(ttl)
+
+    def blocked(self, x, y, tick) -> bool:
+        k = anchor_key(x, y)
+        until = self._blocked.get(k)
+        if until is None:
+            return False
+        if int(tick) > until:
+            del self._blocked[k]
+            return False
+        return True
+
+    def blocked_keys(self, tick):
+        """还没过期的黑名单桶键（直接喂 TerrainQuery.route(avoid=...)）。"""
+        out = set()
+        for k, until in list(self._blocked.items()):
+            if int(tick) > until:
+                del self._blocked[k]
+            else:
+                out.add(k)
+        return out
+
+    def update(self, x, y, tick, owner=None, edge=None) -> int:
+        """返回当前卡住等级（0 = 没卡住）。
+
+        owner 变了（换了目标）就重新计时；``edge`` 是这条边的签名（一般是它的
+        落点）。同一签名卡第二次起判为 STUCK_NAVIGATION。
+        """
         if self._x is None or owner != self.owner:
             self.reset(x, y, tick)
             self.owner = owner
@@ -258,8 +311,18 @@ class StuckDetector:
         self._x, self._y, self._tick = float(x), float(y), int(tick)
         if moved < self.min_px:
             self.level = min(4, self.level + 1)
+            key = edge if edge is not None else owner
+            try:
+                self._tries[key] = self._tries.get(key, 0) + 1
+                n = self._tries[key]
+            except TypeError:
+                n = 1
+            if len(self._tries) > 48:
+                self._tries.clear()
+            self.kind = STUCK_NAVIGATION if n >= 2 else STUCK_PHYSICS
         else:
             self.level = 0
+            self.kind = ""
         return self.level
 
 
@@ -283,7 +346,7 @@ class NavGraph:
     """
 
     __slots__ = ("nodes", "adj", "radj", "comp", "_dist", "_prev", "_src",
-                 "_ret_src", "_ret_set", "version", "_pos")
+                 "_avoid", "_ret_src", "_ret_set", "version", "_pos")
 
     def __init__(self, nodes, adj, version=0, pos=None):
         self.nodes = nodes
@@ -299,6 +362,7 @@ class NavGraph:
         self._dist = None
         self._prev = None
         self._src = None
+        self._avoid = None
         self._ret_src = None
         self._ret_set = None
 
@@ -321,7 +385,13 @@ class NavGraph:
         return math.hypot(bx - ax, by - ay) * scale
 
     # ── Dijkstra（单源，heapq）──
-    def _run(self, src):
+    def _run(self, src, avoid=None):
+        """单源最短路。``avoid`` 里的节点不可进入（导航级黑名单，文档 §13）。
+
+        「A→B 走不通 → 重规划 → 又给 A→B」的死循环只能靠把那条边记下来解决：
+        StuckDetector 判定 STUCK_NAVIGATION 后把落点塞进 avoid，下一次寻路
+        自然绕开它，而不是原样再给一遍。
+        """
         n = len(self.nodes)
         dist = [float("inf")] * n
         prev = [None] * n
@@ -334,23 +404,27 @@ class NavGraph:
             if d > dist[u]:
                 continue
             for e in self.edges(u):
+                if avoid is not None:
+                    v = edge_dst(e)
+                    if v in avoid and v != src:
+                        continue
                 nd = d + e.time
                 if nd < dist[e.dst]:
                     dist[e.dst] = nd
                     prev[e.dst] = (u, e)
                     push(heap, (nd, e.dst))
-        self._dist, self._prev, self._src = dist, prev, src
+        self._dist, self._prev, self._src, self._avoid = dist, prev, src, avoid
 
-    def _ensure(self, src):
+    def _ensure(self, src, avoid=None):
         if src is None:
             return False
-        if self._dist is None or self._src != src:
-            self._run(src)
+        if self._dist is None or self._src != src or self._avoid != avoid:
+            self._run(src, avoid)
         return True
 
-    def path(self, src, dst):
+    def path(self, src, dst, avoid=None):
         """返回 [NavigationEdge, ...]；不可达 None。"""
-        if src is None or dst is None or not self._ensure(src):
+        if src is None or dst is None or not self._ensure(src, avoid):
             return None
         if self._dist[dst] == float("inf"):
             return None
@@ -364,7 +438,7 @@ class NavGraph:
         return out
 
     # ── A*（目标明确时用；蜥蜴追猎恒有目标）──
-    def astar(self, src, dst, max_speed=20.0):
+    def astar(self, src, dst, max_speed=20.0, avoid=None):
         if src is None or dst is None:
             return None
         if src == dst:
@@ -390,6 +464,10 @@ class NavGraph:
                 continue
             closed.add(u)
             for e in self.edges(u):
+                if avoid is not None:
+                    v = edge_dst(e)
+                    if v in avoid and v != src:
+                        continue
                 ng = gc + e.time
                 if ng < g.get(e.dst, float("inf")) - 1e-9:
                     g[e.dst] = ng

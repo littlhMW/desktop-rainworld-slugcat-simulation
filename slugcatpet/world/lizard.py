@@ -12,14 +12,15 @@ from dataclasses import dataclass
 from ..core.units import clampf, lerp, inv_lerp
 from ..behavior.relationship import Relations
 from .enums import ItemState
-from .terrain import Caps
+from .terrain import (Caps, ROUTE_ONE_WAY, ROUTE_RETURNABLE, ROUTE_SAFE)
 from . import lizard_cos
-from ..planning.navgraph import StuckDetector
+from ..planning.navgraph import STUCK_NAVIGATION, STUCK_PHYSICS, StuckDetector
 from .lizard_ai import (CARRY_HURRY, DEN_ARRIVE_R, DOMINANCE_DEFER, WARN_R,
                         ApproachPlan, Observation, PackAlert, PreyState,
                         SocialMemory, _terrain_route, choose_den, flank_offset,
-                        los_blocked, los_blocked_idx, plan_approach, prune_side,
-                        prefs_for, virtual_dens, PERCEIVE_EVERY)
+                        los_blocked, los_blocked_idx, pack_slot_for, pack_slots,
+                        plan_approach, prune_side, prefs_for, route_kinds,
+                        virtual_dens, PERCEIVE_EVERY)
 
 # ── 物理 ──
 GRAVITY = 0.9                 # 同石头/蝙蝠量级
@@ -282,6 +283,9 @@ HUNT_SPEED = 0.80             # 追猎（再乘 sprint：惰性 0.55 / 冲刺 1.
 FLEE_SPEED = 1.12             # 逃跑速度 × base_speed
 FLEE_ACCEL = 0.18
 FLEE_HOP = 0.03
+FLEE_SEAT_DY = 220.0          # 逃跑落点可以和我差这么多层（再远就不考虑）
+FLEE_SEAT_TRIES = 3           # 每次重规划最多试几个「离威胁最远」的落点
+PACK_SEAT_TICKS = 30          # 黄蜥包夹位多久重算一次（路线代价不便宜）
 
 # ── 侵略追踪器（AgressionTracker，LizardAI.cs:628 / AgressionTracker.cs）──
 ANGER_UP = 0.001              # 原版 angerSpeedUp
@@ -1035,7 +1039,7 @@ class Lizard:
                  "_seed_prev",
                  "climb_kind", "climb_attached", "climb_side",
                  "climb_top", "climb_bot", "caps", "terrain", "_ground",
-                 "_stuck",
+                 "_stuck", "_pack_point", "_pack_point_tick",
                  "_blk_start", "_blk_end", "_blk_ver", "_claims", "_scanned")
 
     def __init__(self, x: float, y: float, breed: LizardBreed | None = None,
@@ -1194,6 +1198,10 @@ class Lizard:
         self.climb_bot = None
         self.climb_surfaces = ()      # 这一帧可攀爬的面 [(x, y_top, y_bot, kind)]
         self._stuck = StuckDetector()  # 跟着地形路线走却挪不动窝的检测（文档 §28）
+        # 黄蜥这一轮分到的包夹点（文档 §14）：由路线代价从猎物周边的落点里挑，
+        # 不是「同一个目标点 + X 偏移」；隔一段时间重算一次。
+        self._pack_point = None
+        self._pack_point_tick = -10 ** 9
         # 地形能力表（原版 CreatureTemplate / LizardBreedParams）：
         # 地形图全场共用，但「这张图里我能用哪些连接」逐品种过滤。
         self.caps = Caps(
@@ -1649,7 +1657,25 @@ class Lizard:
         # 卡住检测（文档 §28）：手里有一条正式路线、却连着几个窗口都没挪窝 ——
         # 说明这条路走不通（贴着爬不上去的墙、卡在门口）。丢掉它，下一 tick
         # 重新问图，而不是永远顶在同一面墙上。
-        if self._stuck.update(self.x, self.y, self._tick, owner=leg.x) >= 2:
+        if o is not None and plan.drifted(o.x, o.y):
+            # 目标从我规划时的位置漂走了（文档 §12）：这条路线已经过时，立即
+            # 重规划 —— 不是硬走完 TTL 才对。
+            self.plan = None
+            return False
+        edge = (leg.mode, round(leg.x, 1), round(leg.y, 1))
+        lvl = self._stuck.update(self.x, self.y, self._tick, owner=leg.x, edge=edge)
+        if lvl >= 1:
+            if self._stuck.kind == STUCK_NAVIGATION:
+                # 同一条边反复把我带到同一个死点：记进导航黑名单（文档 §13），
+                # 下一次寻路自然绕开它，而不是又给同一条路线。
+                self._stuck.block(leg.x, leg.y, self._tick)
+            else:
+                # 路线是对的、位移被墙 / 碰撞吞掉了（STUCK_PHYSICS）：
+                # 蹭一下脱困就行，**不丢路线**。
+                if self._contact_floor and self.hop_cd <= 0:
+                    self._leap(0.55)
+                    self.hop_cd = HOP_CD
+        if lvl >= 2:
             self.plan = None
             self._climb_release()
             self._stuck.reset(self.x, self.y, self._tick)
@@ -2172,16 +2198,14 @@ class Lizard:
         o = self.stage_obj
         # 攀爬：够得着的竖杆 / 背景墙竖边就贴上去（原版 Climb / Wall tile）。
         # 每 tick 重算一次，所以「追猎以外」的状态自然松手。
-        self._climb_plan(o if st in ("Attack", "HuntPrey", "ApproachPrey",
-                                     "InvestigatePos", "InvestigateSound",
-                                     "PackCoordination") else None, HL)
+        self._climb_plan(self._climb_obs(st, o), HL)
         if st in ("", "Stunned", "CasualBite"):
             return
         # 地形路线的当前段是「走 / 掉」时由这里接管位移；「爬 / 跳」段交给
         # 上面的 _climb_plan 与下面的 _approach_tick，互不打架。
         if (self.plan is not None and self.plan.legs
                 and st in ("HuntPrey", "ApproachPrey", "InvestigatePos",
-                           "InvestigateSound", "PackCoordination")
+                           "InvestigateSound", "PackCoordination", "Flee")
                 and self._route_tick(o, WL, HL)):
             return
         if st == "FollowFriend":
@@ -2212,7 +2236,7 @@ class Lizard:
                 return
             if self.bite_cd > 0:
                 pass                              # 咬合冷却期：下巴由 _jaw_target 收回
-            if st == "Lurk" and o is None:
+            if st == "Lurk":
                 self._lurk_idle(WL, HL)
                 return
             if st == "ApproachPrey":
@@ -2232,6 +2256,21 @@ class Lizard:
         self._wander(WL, HL)
 
     # ── 动作层的几个小件 ──
+    def _climb_obs(self, st, o):
+        """哪些状态允许把「这一帧的观察」交给攀爬层（原版 Climb / Wall tile）。
+
+        追猎那几个状态一直交给它；其余状态**只在这条正式路线里含爬段时**才交
+        —— Flee / ReturnPrey 之类的路线也会爬墙，但没有路线时不该临时抓线。
+        """
+        if st in ("Attack", "HuntPrey", "ApproachPrey", "InvestigatePos",
+                  "InvestigateSound", "PackCoordination"):
+            return o
+        plan = self.plan
+        if (o is not None and plan is not None and plan.alive(self._tick)
+                and getattr(plan, "climb", None) is not None):
+            return o
+        return None
+
     def _lunge_toward(self, o, WL, HL, bite=True) -> None:
         """朝目标加速（原版直接扑）：写目标坐标 + 交给 _lunge。"""
         if o is None:
@@ -2253,19 +2292,23 @@ class Lizard:
         if o is None:
             return
         self.look_at = (o.x, o.y)
-        if self._vertical_detour(o.x, o.y):
+        if self._vertical_detour(o.x, o.y, kind=route_kinds("investigate")):
             return
         sp = self._state_speed(SNIFF_SPEED)
         want = clampf((o.x - self.x) * 0.06, -sp, sp)
         self._drive_vx(want, WALK_TURN)
 
-    def _vertical_detour(self, gx, gy) -> bool:
+    def _vertical_detour(self, gx, gy, kind=None, no_jump=False) -> bool:
         """目标明显不在同一层时，向地形层要一条正式路线并安装成 self.plan。
 
         返回 True 表示这一帧改由路线层驱动（_route_tick 走 / _climb_plan 爬 /
         _approach_tick 跳）。原版蜥蜴拿到的是 LizardPather 的 MovementConnection
         序列，不是「动作层临时发现一根竖线就爬」—— 这里照那个口径先问图
         （文档 §6/§29/§30）。
+
+        ``kind`` 是**这个行为**要的路线哲学（文档 §5：Investigate 保守、
+        ReturnPrey 留退路、Pack 只要过得去）；``no_jump`` 给那些没有跳跃执行器
+        的状态用（叼着猎物时不该跳）。
         """
         if self.terrain is None or self.caps is None or self.dead:
             return False
@@ -2274,11 +2317,16 @@ class Lizard:
         plan = self.plan
         if (plan is not None and plan.alive(self._tick) and plan.legs
                 and plan.mode != "lurk"):
-            return True                        # 已经有一条还活着的路线，继续照它走
+            if not plan.drifted(gx, gy):
+                return True                    # 已经有一条还活着的路线，继续照它走
+            self.plan = None                   # 目标漂走了：重规划
         route = _terrain_route(self.terrain, self.caps, self.x, self.y, gx, gy,
-                               self._tick, ROUTE_TTL)
+                               self._tick, ROUTE_TTL, kind=kind,
+                               avoid=self._stuck.blocked_keys(self._tick))
         if route is None or not route.legs:
             return False
+        if no_jump and route.legs[0].mode == "jump":
+            return False                       # 这个状态没有跳跃执行器
         if all(lg.mode == "walk" for lg in route.legs):
             return False                       # 全程平地：不必抢直线趋近
         self.plan = route
@@ -2362,23 +2410,43 @@ class Lizard:
         return (CLIMB_HOP * math.sqrt(max(0.4, self.breed.body_size_fac))
                 * (0.7 + 0.6 * min(1.0, fac)))
 
+    def _prey_dir(self, o):
+        """猎物在往哪跑：伏击点要挑在它的去路侧后方（文档 §15）。"""
+        obj = getattr(o, "obj", None)
+        vx = float(getattr(obj, "vx", 0.0) or 0.0)
+        vy = float(getattr(obj, "vy", 0.0) or 0.0)
+        if abs(vx) + abs(vy) > 0.05:
+            return (vx, vy)
+        lp = self.mem.last_pos
+        if lp is not None and (abs(lp[0] - o.x) + abs(lp[1] - o.y)) > 1.0:
+            return (o.x - lp[0], o.y - lp[1])
+        return (1.0 if o.x >= self.x else -1.0, 0.0)
+
     def _plan_for(self, o, WL, HL):
-        """接近规划：同一套 utility，按品种调「绕路 / 落点 / 贴墙 / 起跳倾向」。"""
+        """接近规划：同一套 utility，按品种调「绕路 / 落点 / 贴墙 / 起跳倾向」。
+
+        追猎要哪种路线哲学（文档 §5）与导航黑名单（§13）在这里交给路线层：
+        伏击型要留退路，冲刺型愿意走单向。
+        """
         if o is None:
             return None
+        prefs = prefs_for(self.breed.key)
         floor = HL - self.body_rad * HEAD_STAND_FAC
         hop = self._hop_vy()
         return plan_approach(o.x, o.y, self.x, self.y, floor, WL, self._bite_reach(),
-                             prefs_for(self.breed.key), GRAVITY, hop, AIR_FRICTION,
+                             prefs, GRAVITY, hop, AIR_FRICTION,
                              sprint=self.sprint, base_speed=self._move_base(),
-                             tick=self._tick, terrain=self.terrain, caps=self.caps)
+                             tick=self._tick, terrain=self.terrain, caps=self.caps,
+                             route_kind=route_kinds("hunt", prefs),
+                             avoid=self._stuck.blocked_keys(self._tick),
+                             prey_dir=self._prey_dir(o))
 
     def _approach_tick(self, o, WL, HL) -> None:
         """去起跳点 → 起跳 → 空中继续修正（旧版缺的就是「去起跳点」这一步）。"""
         if o is None:
             return
         plan = self.plan
-        if plan is None or not plan.alive(self._tick):
+        if plan is None or not plan.alive(self._tick) or plan.drifted(o.x, o.y):
             plan = self._plan_for(o, WL, HL)
             self.plan = plan
         if plan is None:
@@ -2440,8 +2508,25 @@ class Lizard:
         return prefs_for(self.breed.key).get("lurk", 0.0) >= 0.5
 
     def _lurk_idle(self, WL, HL) -> None:
-        """伏击待机（原版 LurkTracker）：原地压低身体等猎物进圈。"""
+        """伏击待机（原版 LurkTracker）：先挪到伏击点，再压低身体等猎物进圈。
+
+        文档 §15：伏击不能只是「决定不追」—— 白蜥要挑一个猎物看不见、又挡在
+        它去路上的位置。伏击点由 plan_approach 用统一地形算好（mode=lurk），
+        这里只负责走过去并等。
+        """
         self.lurk = True
+        plan = self.plan
+        if plan is not None and plan.alive(self._tick) and plan.mode == "lurk":
+            tx, ty = plan.target
+            if math.hypot(tx - self.x, ty - self.y) > 26.0:
+                if self._vertical_detour(tx, ty, kind=route_kinds("lurk"),
+                                         no_jump=True):
+                    if self._route_tick(None, WL, HL):
+                        return
+                sp = self._state_speed(SNIFF_SPEED)
+                want = clampf((tx - self.x) * 0.05, -sp, sp)
+                self._drive_vx(want, WALK_TURN)
+                return
         self.vx -= self.vx * 0.25
 
     def _noise_wants(self) -> bool:
@@ -2730,6 +2815,11 @@ class Lizard:
             return False
         self.threat_t -= 1
         tx, ty = self.threat if self.threat is not None else (self.x, self.y)
+        # 威胁在**别的层**（爬到我站着的平台上方 / 掉在下面）：背对它直线跑
+        # 一点用都没有 —— 这时才动用统一导航，挑一块离它最远、且 SAFE 路线
+        # 过得去的地面当逃跑目标（文档 §5/§16）。
+        if abs(ty - self.y) > CLIMB_MIN_DY and self._flee_seat(tx, ty, HL):
+            return True
         dx, dy = self.x - tx, self.y - ty
         d = math.hypot(dx, dy) or 1.0
         sp = self._state_speed(FLEE_SPEED)
@@ -2739,6 +2829,41 @@ class Lizard:
         if self._contact_floor and self.rng.random() < FLEE_HOP:
             self._leap(0.7)
         return True
+
+    def _flee_seat(self, tx, ty, HL) -> bool:
+        """Flee 的路线层：候选落点里挑「离威胁最远 + 路线最省」的那一块地面。"""
+        if self.terrain is None or self.caps is None:
+            return False
+        plan = self.plan
+        if (plan is not None and plan.alive(self._tick) and plan.legs
+                and plan.mode != "lurk"):
+            return True                        # 还活着就照它跑，TTL 到了再重挑
+        seats = []
+        for s in self.terrain.geom.floors(self.caps):
+            if abs(s.y - self.y) > FLEE_SEAT_DY:
+                continue
+            for x in (s.lo + 16.0, 0.5 * (s.lo + s.hi), s.hi - 16.0):
+                if math.hypot(x - self.x, s.y - self.y) <= 40.0:
+                    continue
+                seats.append((x, s.y))
+        if not seats:
+            return False
+        seats.sort(key=lambda p: -math.hypot(p[0] - tx, p[1] - ty))
+        ban = self._stuck.blocked_keys(self._tick)
+        kinds = route_kinds("flee")
+        for (x, y) in seats[:FLEE_SEAT_TRIES]:
+            route = _terrain_route(self.terrain, self.caps, self.x, self.y, x, y,
+                                   self._tick, ROUTE_TTL, kind=kinds, avoid=ban,
+                                   force=True)
+            if route is None or not route.legs:
+                continue
+            if all(lg.mode == "jump" for lg in route.legs):
+                continue                       # 逃跑不靠跳（Flee 没有跳跃执行器）
+            self.plan = route
+            self.target, self.target_obj = (x, y), None
+            self.look_at = (tx, ty)
+            return True
+        return False
 
     def _anger_tick(self, others):
         """原版 AgressionTracker（AgressionTracker.cs，ctor angerSpeedUp/Down = 0.001）：
@@ -2848,11 +2973,17 @@ class Lizard:
         """
         obs = self.obs
         if self.alert is not None and self.alert.fresh(self._tick):
-            gx = clampf(self.alert.x + flank_offset(self.id), WANDER_MARGIN,
-                        max(WANDER_MARGIN, WL - WANDER_MARGIN))
+            seat = self._pack_seat(WL, HL)
+            if seat is None:
+                return False
+            gx, gy = seat
             self.look_at = (self.alert.x, self.alert.y)
-            if abs(gx - self.x) <= 10.0:
+            if abs(gx - self.x) <= 10.0 and abs(gy - self.y) <= CLIMB_MIN_DY:
                 return False                       # 已经站到自己的位置了
+            # 包夹位不和我同层时（猎物在窗口顶 / 杆上）：走路线过去，
+            # 而不是对着它的 x 一路撞。
+            if self._vertical_detour(gx, gy, kind=route_kinds("pack"), no_jump=True):
+                return self._route_tick(None, WL, HL)
             sp = self._state_speed(SNIFF_SPEED)
             want = clampf((gx - self.x) * 0.05, -sp, sp)
             self._drive_vx(want, WALK_TURN)
@@ -2870,6 +3001,46 @@ class Lizard:
         want = clampf((best.x - self.x) * 0.05, -sp, sp)
         self._drive_vx(want, WALK_TURN)
         return True
+
+    def _pack_seat(self, WL, HL):
+        """这一轮我该站的包夹点（文档 §14）。
+
+        先算猎物所在的**面**，再在它周围挑前 / 后 / 左右四个落点，最后按路线
+        代价决定我去哪个 —— 每只黄蜥各自挑最划算的那个，于是自然围上去，
+        而不是同一个点 + X 偏移（旧 flank_offset 做的事）。
+        """
+        a = self.alert
+        if a is None:
+            return None
+        if (self._pack_point is not None
+                and self._tick - self._pack_point_tick < PACK_SEAT_TICKS):
+            return self._pack_point
+        self._pack_point_tick = self._tick
+        slots = pack_slots(self.terrain, self.caps, a.x, a.y, a.x - self.x,
+                           a.y - self.y)
+        if not slots:
+            self._pack_point = None
+            return None
+        if self.terrain is None or self.caps is None:
+            self._pack_point = pack_slot_for(slots, self.id)
+            return self._pack_point
+        ban = self._stuck.blocked_keys(self._tick)
+        kinds = route_kinds("pack")
+        best, bs = None, None
+        for (sx, sy) in slots:
+            r = _terrain_route(self.terrain, self.caps, self.x, self.y, sx, sy,
+                               self._tick, ROUTE_TTL, kind=kinds, avoid=ban,
+                               force=True)
+            if r is None or not r.legs:
+                continue
+            if all(lg.mode == "jump" for lg in r.legs):
+                continue
+            if bs is None or r.score < bs:
+                best, bs = (sx, sy), r.score
+        if best is None:
+            best = pack_slot_for(slots, self.id)
+        self._pack_point = best
+        return best
 
     def intent(self):
         """这只蜥蜴此刻盯上的东西 → (对象, 类型)；没有则 (None, "")。
@@ -3124,6 +3295,14 @@ class Lizard:
                 if was_dead:                       # 尸体：在巢穴边守一会儿
                     self.guard_obj, self.guard_t = o.obj, GUARD_PREY_TICKS
                 return True                        # 这一 tick 用来放下
+            # 巢穴不在我这一层（我站在窗口顶 / 杆上）：叼着猎物走 SAFE 路线，
+            # 而不是对着 den.x 一路撞（文档 §5：Carry 要留退路、不冒险跳）。
+            if self._vertical_detour(den.x, den.y, kind=route_kinds("carry"),
+                                     no_jump=True):
+                self._route_tick(o, WL, HL)
+                self._hold_cat()
+                self.look_at = (den.x, HL - 12.0)
+                return True
             hurry = self._carry_hurry(obs["rivals"])
             sp = self._state_speed(CARRY_SPEED_FAC)
             want = clampf((den.x - self.x) * 0.05, -sp, sp) * hurry
