@@ -430,6 +430,11 @@ THREAT_EDGE_SAMPLES_POLE = 5      # 竖边采更多点：A 点安全不代表整
 THREAT_POLE_EDGE_PENALTY = 800.0  # 同杆边软惩罚（不禁止：走投无路时仍可沿杆逃）
 THREAT_ETA_MIN_SPEED = 2.0        # 静止威胁的 ETA 兜底速度（不许算成永远追不上）
 
+ESCAPE_SIDE_HYS = 8.0         # EscapeSolver 迟滞：另一侧危险度没低过它就不换边
+                              #   （同一只威胁下逐帧重算会让 away 一帧左一帧右）
+RESCUE_PATH_DANGER_PAD = 0.25  # 救援赶路沿线允许的危险度增量：超了就放弃这次救援，
+                              #   不再冲进危险区被 FaceThreat 抢回逃跑（拉锯）
+CROWD_SIDE_STEP = 18.0        # 同层行为（战斗/救援/喂食）落点让位给拥挤的横向步长
 CROWD_R = 180.0                   # 拥挤感知半径
 CROWD_SCALE = 55.0                # exp(-d / 它)
 CROWD_EDGE_SCALE = 25.0           # 边的拥挤代价 = Σpoint_cost * 它

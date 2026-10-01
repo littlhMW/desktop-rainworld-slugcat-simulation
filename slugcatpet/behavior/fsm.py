@@ -5689,6 +5689,67 @@ class BehaviorFSM:
                 return False
         return True
 
+    def _walk_to_open(self, x: float) -> None:
+        """走向 x，但轻微绕开「这里已经挤了一堆猫」的落点。
+
+        FightThreat / Socialize / HelpFeed 这些同层行为一直直接用 ``b.walk_to()``，
+        TrafficField 只进了 Planner 的路线成本 —— 于是三只猫围同一只蜥蜴时，路线层
+        根本没机会把它们散开，最后挤成一团互相顶（用户报的「一大团猫挤在一起」）。
+        这里按交通代价在 ±``CROWD_SIDE_STEP`` 内挑一个更空的落点：绕开量很小，不改变
+        行为意图，只是让同层行为也吃一次交通代价。
+        """
+        b = self.body
+        tf = getattr(self.win, "traffic_field", None)
+        if tf is None:
+            b.walk_to(x)
+            return
+        y = b.chunk1.y
+        try:
+            best = float(x)
+            bc = tf.point_cost(best, y, self.win)
+            for side in (-2.0, -1.0, 1.0, 2.0):
+                cand = float(x) + side * tuning.CROWD_SIDE_STEP
+                if b.walk_min is not None and cand < b.walk_min:
+                    continue
+                if b.walk_max is not None and cand > b.walk_max:
+                    continue
+                c = tf.point_cost(cand, y, self.win)
+                if c < bc - 1e-6:
+                    best, bc = cand, c
+            b.walk_to(best)
+        except Exception:
+            b.walk_to(x)
+
+    def _path_danger_ok(self, x1: float, y1: float) -> bool:
+        """从我现在的位置**直线**走到 (x1, y1) 会不会把自己送进危险区。
+
+        ThreatField 已经有整张危险表，但救援赶路只判断「值不值得救」（``_revive_target_safe``
+        看尸体在不在威胁那一侧），不判断「这条路安不安全」：尸体常常就躺在蜥蜴脚边，
+        决定去救之后一路 walk_to 过去，走到半路危险恶化被 FaceThreat 抢回逃跑，逃开后
+        又重新评估救人 —— 用户报的「一会儿冲上去、一会儿又匍匐退」的拉锯。
+        沿路径采样，任一点比起点危险度高出 ``RESCUE_PATH_DANGER_PAD`` 就判不安全。
+        """
+        f = self._threat_field()
+        if f is None:
+            return True
+        b = self.body
+        x0, y0 = b.chunk1.x, b.chunk1.y
+        d = math.hypot(x1 - x0, y1 - y0)
+        if d < 1e-3:
+            return True
+        try:
+            here = float(f.danger_at(x0, y0))
+            limit = here + tuning.RESCUE_PATH_DANGER_PAD
+            n = max(2, int(d / 24.0) + 1)
+            for i in range(1, n + 1):
+                t = i / float(n)
+                if float(f.danger_at(x0 + (x1 - x0) * t,
+                                     y0 + (y1 - y0) * t)) > limit:
+                    return False
+        except Exception:
+            return True
+        return True
+
     def _wants_rescue(self, kind: float) -> bool:
         """肯不肯去救倒地的同伴。
 
@@ -5725,7 +5786,17 @@ class BehaviorFSM:
         if (b.on_floor()
                 and abs(ob.chunk1.y - b.chunk1.y) <= tuning.RESCUE_LEVEL_PAD):
             # 同层：直接走过去（原版地面追人就是这么走的）
+            if not self._path_danger_ok(ob.chunk1.x, ob.chunk1.y):
+                # 同伴就躺在蜥蜴脚边：这条直线会把我送进危险区。放弃这次救援，
+                # 名额让给别的猫，别再「冲过去 → 危险恶化 → 被抢回逃跑 → 又决定救」。
+                self._rescue_exec = None
+                self._social_target = None
+                self._revive_gave_up = True      # 危险导致的放弃＝长冷却
+                b.stop_walk()
+                return
             self._rescue_exec = None
+            # 救援是**走到同伴身上**（按压半径量的是最近 chunk 对），落点必须精确；
+            # 让位给拥挤只用在「保持距离」的腿（战斗站位 / 社交旁观），不在这里。
             b.walk_to(ob.chunk1.x)
             return
         ex = self._rescue_exec
@@ -7784,7 +7855,7 @@ class BehaviorFSM:
         if d < keep - hys:                            # 太近会被咬：边打边拉开
             b.walk_to(b.chunk1.x - (tgt.x - b.chunk1.x))
         elif d > keep + hys:                          # 太远：走近到出手距离
-            b.walk_to(tgt.x)
+            self._walk_to_open(tgt.x)
         else:
             b.stop_walk()
 
@@ -8191,7 +8262,8 @@ class BehaviorFSM:
         # 反方向走是**真的翻身**（原版 bodyMode=CrawlTurn，见 creature._crawl_turn）。
         # 旧版的 face_lock 把 facing 钉在威胁那侧，只会得到「身体面对着威胁、
         # 人却在平移倒退」（用户报的「还是没有正确转身」）。
-        plan = solve_escape(b, lz, self._threat_field(), CRAWL_AWAY_STEP)
+        plan = solve_escape(b, lz, self._threat_field(), CRAWL_AWAY_STEP,
+                            prev_dir=self._crawl_dir_lock)
         away = plan.movement_dir
         # 方向锁：EscapeSolver 每 tick 重算左右危险度，多威胁 / 贴墙时危险度
         # 会一帧左一帧右，away 跟着翻号 —— 匍匐自己左右摆（用户报的原地抽搐）。
@@ -8209,6 +8281,7 @@ class BehaviorFSM:
         corner = (goal - b.chunk1.x) * away <= CRAWL_CORNER_EPS
         if corner and not self._crawl_wall and self._crawl_dir_t > 0:
             # 锁定方向顶到边了（贴墙 / 被夹住）：解锁重算一次，试反方向。
+            plan = solve_escape(b, lz, self._threat_field(), CRAWL_AWAY_STEP)
             away = plan.movement_dir
             self._crawl_dir_lock = away
             self._crawl_locked_from = lz

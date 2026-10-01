@@ -191,6 +191,9 @@ BODY_IMP_MAX = 6.0            # 单次冲量上限（防把身体甩飞）
 BODY_JUMP_SHARE = 0.55        # 蹬地起跳时分给躯干的初速比例
 BODY_BITE_PUSH = 1.6          # 咬合时前半身朝猎物压出去的冲量
 BODY_BITE_LUNGE = 2.5         # 咬合瞬间头点朝猎物递出去的距离（原版 snap 的前半身前伸）
+JAW_SNAP_MAIN = 8.0           # 原版 Lizard.cs JawsSnapShut：mainBodyChunk.vel += Dir * 8
+JAW_SNAP_BACK = 6.0           #   同一条：bodyChunks[1]/[2].vel -= Dir * 6（前冲后坐）
+JAW_SNAP_HEAD = 1.0           # 夹合那一帧头点前递的距离（速度 → 本作头点是位置驱动）
 
 # ── 动作序列（文档 §9.3 / §10）：Attack 四阶段姿态 + PrepareToJump 分节点冲量 ──
 # 原版 Lizard.ActAnimation() 不是「播一段动画」，而是直接给不同 bodyChunk 注入不同
@@ -1054,7 +1057,7 @@ class Lizard(CombatTarget):
                  "chain_dir", "_ax_c",
                  "body_dir", "move_dir", "look_dir", "turn_mode", "turn_progress",
                  "_turn_imp", "_last_body_dir", "_vx_intent", "_want_vx",
-                 "_body_imp_x", "_body_imp_y",
+                 "_body_imp_x", "_body_imp_y", "_jaw_rec_x", "_jaw_rec_y",
                  "_atk_phase", "_atk_t", "_atk_dir", "wiggle",
                  "_wiggle_ph", "_desp", "_anim_rng",
                  "held_by_hand", "water_y", "room_gravity", "_contact_floor",
@@ -1284,6 +1287,9 @@ class Lizard(CombatTarget):
         # 不是只推头点。_step_chain 取走并清零。
         self._body_imp_x = 0.0
         self._body_imp_y = 0.0
+        # JawsSnapShut 的反作用（前节前冲 / 中后节后坐），_step_chain 取走并清零
+        self._jaw_rec_x = 0.0
+        self._jaw_rec_y = 0.0
         # Attack 动作序列（文档 §9.3 / §10.3）：Prepare → Lunge → Bite → Recover，
         # 由 _start_bite 触发，_step_attack_pose 每 tick 给各 chunk 单独写速度。
         self._atk_phase = None
@@ -3524,19 +3530,41 @@ class Lizard(CombatTarget):
 
         前摇里目标跑出咬距（BITE_SNAP_SLACK 倍）→ 这一口落空，不写 bite_event；
         还咬得着才交给 items.py 结算伤害。
+
+        不管中没中，下颚夹上这一瞬原版都会给一次反作用（JawsSnapShut 逐行：
+        ``mainBodyChunk.vel += DirVec(main, pos) * 8``、``bodyChunks[1]/[2].vel
+        -= DirVec(main, pos) * 6``）—— 咬合是「头一口咬出去、身体被反推着坐
+        一下」。旧实现只有咬中才写 bite_event，夹合本身没有任何身体反作用，
+        所以扑咬看起来「头在动、身体没使劲」。
         """
         obj, dmg = self._bite_wind_obj, self._bite_wind_dmg
         self._bite_wind_obj = None
         self._bite_wind_dmg = 0.0
         self.bite_wind = 0
         self.jaw = 1.0
-        if obj is None:
-            return
-        px, py = _obj_pos(obj)
-        if px is not None:
-            if math.hypot(px - self.x, py - self.y) > self._bite_reach() * BITE_SNAP_SLACK:
-                return
-        self.bite_event = (obj, dmg)
+        self.bite_event = None      # 夹合这一瞬先清：落空就是落空，不留上一口的残留
+        hit = False
+        if obj is not None:
+            px, py = _obj_pos(obj)
+            if px is None:
+                hit = True                      # 纯坐标目标：够不着这一层，算咬中
+            else:
+                hit = (math.hypot(px - self.x, py - self.y)
+                       <= self._bite_reach() * BITE_SNAP_SLACK)
+        # 夹合方向：优先朝真正的猎物，没有目标就用作势时锁定的 _atk_dir
+        nx, ny = self._atk_dir
+        if obj is not None:
+            px, py = _obj_pos(obj)
+            if px is not None:
+                fd = math.hypot(px - self.x, py - self.y)
+                if fd > 1e-6:
+                    nx, ny = (px - self.x) / fd, (py - self.y) / fd
+        self.x += nx * JAW_SNAP_HEAD
+        self.y += ny * JAW_SNAP_HEAD
+        self._jaw_rec_x = nx * JAW_SNAP_MAIN
+        self._jaw_rec_y = ny * JAW_SNAP_MAIN
+        if hit:
+            self.bite_event = (obj, dmg)
 
     def _wander(self, WL, HL) -> None:
         """游走：定一个近处落点，走到／超时就换，再歇一会儿。
@@ -4412,6 +4440,18 @@ class Lizard(CombatTarget):
             shares[k] = (1.0 - BODY_IMP_FALLOFF) ** k
             self.seg[k].vx += imp_x * shares[k]
             self.seg[k].vy += imp_y * shares[k]
+        # JawsSnapShut 的反作用（原版逐行：main += Dir * 8、bodyChunks[1]/[2] -= Dir * 6）：
+        # 前节朝猎物冲出去、中后节被反推着坐一下 —— 夹合那一瞬整条身体是受力的，
+        # 不是「头点自己动了」。尾巴挂在第 2 节后面，自然就滞后甩出去。
+        if self._jaw_rec_x or self._jaw_rec_y:
+            jx = clampf(self._jaw_rec_x, -BODY_IMP_MAX, BODY_IMP_MAX)
+            jy = clampf(self._jaw_rec_y, -BODY_IMP_MAX, BODY_IMP_MAX)
+            self._jaw_rec_x = self._jaw_rec_y = 0.0
+            if not held:
+                for k in range(min(3, len(self.seg))):
+                    f = 1.0 if k == 0 else -(JAW_SNAP_BACK / JAW_SNAP_MAIN)
+                    self.seg[k].vx += jx * f
+                    self.seg[k].vy += jy * f
         # ⑥ bodyWiggleCounter（原版 Lizard.cs:2149-2158，逐行）：
         #    身体自己的低频扰动不是「按节画正弦」，而是**三节 bodyChunk 的反相速度
         #    冲量** —— bodyWiggle 相位累加 → 垂直于体轴的分量 → c0/c2 同号、c1 双倍

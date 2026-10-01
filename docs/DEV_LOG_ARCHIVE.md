@@ -4,6 +4,56 @@
 
 ## 2026-10-01
 
+### R156 · EscapeSolver 迟滞 / 救援路径吃危险代价 / 同层行为交通让位 / 蜥蝎 JawsSnapShut 夹合反作用
+
+R155 之后仍挂着的四件事：① `EscapeSolver` 内部没改，只在 FSM 层加了方向锁；
+② 救援赶路不吃 `ThreatField` 代价；③ `FightThreat` / `Socialize` 这些**同层行为**仍直接
+`walk_to`，不经 `TrafficField`；④ 蜥蝎的动作动画只接了 bodyWiggle / Desperation。
+
+**① `planning/escape.py`：解算器自带迟滞 + 锁定方向入参**
+
+* `solve_escape(..., prev_dir=0.0)`：只要上一帧锁定的那一侧没有比另一侧明显更危险
+  （差 ≤ `ESCAPE_HYS = 8.0`）就继续走锁定侧。两侧危险度常常只差几个像素级数值，
+  逐帧重算会让 `away` 一帧左一帧右 —— 这就是「疯狂原地左右转向抽携」。
+* `_st_crawlaway()` 把 `self._crawl_dir_lock` 作为 `prev_dir` 传进去；只有「锁定方向真顶到边」
+  那次重算**不带迟滞**，否则永远回到同一侧。FSM 层的方向锁保留（两层保险）。
+
+**② 救援赶路吃 `ThreatField` 代价**
+
+* 新增 `_path_danger_ok(x1, y1)`：沿「我 → 目标」直线每 24px 采样，任一点比起点危险度高出
+  `RESCUE_PATH_DANGER_PAD = 0.25` 就判不安全。
+* `_rescue_step()` 同层那一条路径先过这道闸：同伴就躺在蜥蝎脚边就**放弃这次救援**
+  （`_revive_gave_up = True` 记长冷却，名额让给别的猫），而不是「冲过去 → 危险恶化 →
+  被 FaceThreat 抢回逃跑 → 又决定救」拉锯。救援落点仍然是精确的 `b.walk_to(ob.chunk1.x)`
+  （按压半径量的是最近 chunk 对，不能自己让位）。
+
+**③ 同层行为让位：`_walk_to_open()`**
+
+* `FightThreat` 的「太远：走近到出手距离」那一腿改走 `_walk_to_open()`：按 `TrafficField.point_cost`
+  在 ±`CROWD_SIDE_STEP = 18`（取 4 个候选）内挑一个更空的落点。绕开量很小，不改变行为意图，
+  只是让同层行为也吃一次交通代价 —— 旧版 `walk_to` 根本不经过 Planner，路线层没机会把三只猫分开。
+* 救援 / 社交 / 喂食那几腿**没有**接：它们的到达判定就量在目标身上，让位 18~36px 会让猫永远到不了位。
+
+**④ 蜥蝎 `JawsSnapShut`：夹合反作用（`Lizard.cs:1332-1342` 逐行）**
+
+* 原版下顎夹上那一瞬：`mainBodyChunk.vel += DirVec(main, pos) * 8`、
+  `bodyChunks[1].vel -= DirVec(main, pos) * 6`、`bodyChunks[2].vel -= … * 6`，并重置 `biteDelay`。
+  **与命中无关** —— 咬空也这么用力。
+* 新增 `_jaw_rec_x/_jaw_rec_y`（`_step_chain` 逐节施加：前节 +1.0、中后节 -0.75），
+  `_snap_jaws()` 里先清 `bite_event` 再判命中，然后无论中没中都给这一次反作用。
+  旧实现只有命中才写 `bite_event`，夹合本身没有任何躯干反作用 → 扑咬「头在动、身体没使劲」。
+* 量级常量照抄原版：`JAW_SNAP_MAIN = 8.0` / `JAW_SNAP_BACK = 6.0` / `JAW_SNAP_HEAD = 1.0`（头点是位置驱动）。
+* 新增 `work/scratch/e2e_r156.py`。
+
+**仍未做（如实记录，不是本轮范围）**
+
+* 蜥蝎的转身（`PrepareToJump` 的分节反向冲量）/ 爬墙（墙面贴附的 `flipDirection`
+  分支）/ 舌头三段（`LizardTongue.LashOut` / `DragChunk`）仍是旧实现，只对拍了物理量级的一部分。
+* 猫挤成一团的 `MovementController` 层仲裁：只做了战斗站位那一腿的让位，「谁拥有移动权」仍
+  散在 FSM / Controller / hand_aim / Board 四处。
+* 猫的 `_strip_path()` 软管拓扑重排、BodyChunk 拓扑重排（「独立 head + 3 torso seg」 →
+  「3 核心 chunk + 视觉头/下頴」）仍然是独立一轮。
+
 ### R155 · 匍匐真翻身 / 意图级仲裁（战斗锁·拿武器路径·救援资格·统一收势）/ 蜥蜴 bodyWiggle·Desperation 冲量
 
 现象两件：① 匍匐逃跑时「身体面对着目标后退平移，没有转身」，而且「冲上前一会儿又匍匐退」

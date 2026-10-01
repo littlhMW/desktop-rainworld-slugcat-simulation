@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 DEFAULT_STEP = 60.0
+ESCAPE_HYS = 8.0     # 迟滞：另一侧危险度没低过这个量，就不推翻上一帧选的边
 
 
 class EscapePlan:
@@ -39,12 +40,18 @@ def _danger(field, x, y) -> float:
         return 0.0
 
 
-def solve_escape(body, threat, field=None, step=DEFAULT_STEP) -> EscapePlan:
+def solve_escape(body, threat, field=None, step=DEFAULT_STEP,
+                 prev_dir=0.0) -> EscapePlan:
     """威胁在侧时往**危险度更低**的一侧挪，脸仍然朝着威胁。
 
     ``threat`` 是这一次躲避锁定的那一只（不逐帧换人，否则 away 会翻号）。
     给了 ``field``（ThreatField）就比左右两侧的真实危险度；没给就退回
     「躲开威胁那一侧」的旧口径。
+
+    ``prev_dir`` 是上一帧已经选定的方向（±1，0 = 没有）。两侧危险度常常只差
+    几个像素级数值，逐帧重算会让 away 一帧左一帧右，走位就变成原地左右摆动
+    （用户报的「疯狂原地左右转向抽搐」）。所以只要锁定侧没有比另一侧明显更
+    危险（差 ≤ ``ESCAPE_HYS``），就继续走锁定侧。
     """
     bx = float(body.chunk1.x)
     by = float(body.chunk1.y)
@@ -59,4 +66,8 @@ def solve_escape(body, threat, field=None, step=DEFAULT_STEP) -> EscapePlan:
             movement_dir = -float(face)      # 两侧一样危险：按威胁在侧躲
         else:
             movement_dir = 1.0 if d_r < d_l else -1.0
+        if prev_dir != 0.0:
+            d_prev = d_l if prev_dir < 0.0 else d_r
+            if d_prev <= min(d_l, d_r) + ESCAPE_HYS:
+                movement_dir = -1.0 if prev_dir < 0.0 else 1.0
     return EscapePlan(movement_dir, "crawl", face)
