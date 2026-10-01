@@ -2244,6 +2244,10 @@ class ItemInteractionMixin:
             return (min(math.hypot(cx - b.chunk0.x, cy - b.chunk0.y),
                         math.hypot(cx - b.chunk1.x, cy - b.chunk1.y))
                     - PUP_PICK_R)
+        if hasattr(obj, "p0") and hasattr(obj, "p1"):
+            # SeedCob is a two-chunk plant; clicking its stalk/cob should
+            # select that single object instead of falling through to p0 only.
+            return _dist_to_path((obj.p0, obj.p1), cx, cy) - float(getattr(obj, "rad", 8.0))
         if hasattr(obj, "snout_n") and getattr(obj, "seg", None):
             # 面条蝇 / 卵：长条物体按整条体节链判定，只测身体中心的话
             # 尾巴 / 吻部点不中（用户报的「单个删除也无法选中」）。

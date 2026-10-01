@@ -126,6 +126,7 @@ class PetUnit:
                                 food=init_state.get("food"),
                                 karma=init_state.get("karma"),
                                 stats=self.cat.stats, caps=self.cat.caps)
+        self.body.is_pup = self.is_pup
         # 食性（原版 SlugCatClass → NourishmentOfObjectEaten / CanEatMeat）
         self.body.diet = self.personality.diet
         self.body.cold = float(init_state.get("cold", 0.0))
@@ -307,6 +308,8 @@ class PetUnit:
             self.tongue.room_gravity = rg
 
         b.step()
+        if self.controlled:
+            g.sleeping = b.sleeping
         if self._spawn_floor_hold > 0 and not b.on_pole and not b.wall_side:
             # 地板放置的幼崽首帧保持脚底接触，避免构造器的旧地板姿势在
             # 新位置产生一次可见的反弹；高处生成仍完整自由落体。

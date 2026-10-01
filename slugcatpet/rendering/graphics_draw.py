@@ -478,6 +478,10 @@ class GraphicsDrawMixin:
         else:
             element = self._leg_air_frame
 
+        # PlayerGraphics.cs:3044-3058：猫崽仍用 LegsA 族与 0.25 的原版锚点。
+        # 桌面贴地裁切会吞掉下缘，把幼崽腿图上提 2px，保留完整脚掌。
+        if self.vis.get("pup_wide") and self.bodyMode in ("Stand", "Crawl"):
+            y -= 2.0
         color = self.BODY
         blit(p, atlas, element, x, y, rotation, self._legs_scale_x, 1.0, color, ax=0.5, ay=0.75)
 

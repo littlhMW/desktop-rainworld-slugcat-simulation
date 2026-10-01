@@ -31,6 +31,8 @@ class ControlHud(QWidget):
         self._window = window
         self.pet = pet
         self._held = set()      # 当前按住的按键
+        self._mouse_pick = False
+        self._mouse_throw = False
         self._paused = False
         self._drag = None
         self._keymap = load_keymap()
@@ -98,8 +100,17 @@ class ControlHud(QWidget):
 
         x = (1 if down("right") else 0) - (1 if down("left") else 0)
         y = (1 if down("up") else 0) - (1 if down("down") else 0)
-        return InputPackage(x=x, y=y, jmp=down("jump"),
-                            pckp=down("grab"), thrw=down("throw"))
+        # 鼠标动作由主窗口转发为单帧脉冲：右键拾取，左键投掷。
+        pckp = down("grab") or self._mouse_pick
+        thrw = down("throw") or self._mouse_throw
+        self._mouse_pick = self._mouse_throw = False
+        return InputPackage(x=x, y=y, jmp=down("jump"), pckp=pckp, thrw=thrw)
+
+    def mouse_action(self, *, pick=False, throw=False):
+        """主窗口把受控猫的右/左键动作转进下一物理帧。"""
+        self._mouse_pick = self._mouse_pick or bool(pick)
+        self._mouse_throw = self._mouse_throw or bool(throw)
+        self._set_paused(False)
 
     def _check_session(self):
         # 会话失效则自关
@@ -111,6 +122,8 @@ class ControlHud(QWidget):
             return
         self._paused = paused
         self._held.clear()
+        if paused:
+            self._mouse_pick = self._mouse_throw = False
         self._keys.setText(t("ctrlhud_paused") if paused else self._keys_text)
         self._keys.setStyleSheet(_PAUSED_QSS if paused else "")
         self.setWindowOpacity(0.7 if paused else 1.0)

@@ -67,10 +67,11 @@ _TABLE = (
      ("x", "y", "vx", "vy", "state", "health", "dead", "like", "variant",
       "facing", "walk_phase")),
     ("seedcob", "seedcobs",
-     lambda d: SeedCob(d["x"], d["y"], seed=int(d.get("seed", 0)),
+     lambda d: SeedCob(*(d.get("placed") or (d["x"], d["y"])), seed=int(d.get("seed", 0)),
                        root_y=d.get("root_y")),
-     ("root_pos", "root_y", "placed", "open", "opened", "popped", "dead", "state",
-      "p0", "p0l", "p1", "p1l")),
+     ("root_pos", "root_y", "placed", "root_dir", "cob_dir", "conn_dist",
+      "stalk_length", "stalk_segments", "seed_pos", "leaves",
+      "open", "opened", "popped", "dead", "state", "p0", "p0l", "p1", "p1l")),
     ("seed", "seeds", lambda d: Seed(d["x"], d["y"], seed=int(d.get("seed", 0))),
      ("x", "y", "vx", "vy", "state")),
     ("karmaflower", "karmaflowers",
@@ -98,13 +99,16 @@ def snapshot(win) -> dict:
                 v = getattr(obj, name, None)
                 if isinstance(v, (int, float, str, bool)) or v is None:
                     d[name] = v
-                elif name in ("petals", "stalk_pts", "root_pos", "p0", "p0l",
+                elif name in ("petals", "stalk_pts", "root_pos", "placed", "root_dir",
+                              "cob_dir", "seed_pos", "leaves", "popped", "p0", "p0l",
                               "p1", "p1l", "grow_pos", "hover_pos"):
                     d[name] = _seq(v)
             if kind == "lizard":
                 d["breed"] = getattr(getattr(obj, "breed", None), "key", "pink")
                 d["id"] = int(getattr(obj, "id", 0) or 0)
             if kind == "spear":
+                d["seed"] = int(getattr(obj, "_id", 0) or 0)
+            if kind == "seedcob":
                 d["seed"] = int(getattr(obj, "_id", 0) or 0)
             if kind == "needleworm":
                 d["age"] = getattr(obj, "age", None)
@@ -198,6 +202,20 @@ def restore(win, data) -> int:
                         setattr(obj, name, d[name])
                     except Exception:
                         pass
+                if kind == "seedcob":
+                    # SeedCob geometry is derived from placed/root positions.
+                    # Restoring only p0/p1 leaves the constructor's default
+                    # conn_dist/stalk shape in place, which stretches the cob.
+                    placed = getattr(obj, "placed", None)
+                    if isinstance(placed, (list, tuple)) and len(placed) >= 2:
+                        obj.retarget(float(placed[0]), float(placed[1]))
+                        # Save the exact bent shape as well as its live pose.
+                        # retarget alone chooses a new random bend on load.
+                        for name in ("root_dir", "cob_dir", "conn_dist", "stalk_length",
+                                     "stalk_segments", "seed_pos", "leaves", "p0", "p0l",
+                                     "p1", "p1l"):
+                            if name in d:
+                                setattr(obj, name, d[name])
                 if getattr(obj, "state", None) in ("carried", "mouse"):
                     # 手里那件靠恢复后的重新抓取接回；没接上就落在地上，不留悬空引用。
                     # 果子/石头/蝠蝇用 held_by_hand，矛用 held_by —— 两个都只会写自己

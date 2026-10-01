@@ -842,6 +842,8 @@ class SlugcatBody(CombatTarget):
                 pkg = InputPackage()
             if pkg is not None:
                 self.set_control_input(pkg)
+        if self._ctrl_on and getattr(self, "_ctrl_pole_cd", 0) > 0:
+            self._ctrl_pole_cd -= 1
         if self.dead:
             self._step_dead()
             return
@@ -1635,6 +1637,10 @@ class SlugcatBody(CombatTarget):
         self._floor_h = self.H
 
     def _pole_update(self):
+        if self._ctrl_on:
+            from ..control.moves_pole import update
+            update(self)
+            return
         self.bodyMode = "ClimbingOnBeam"
         self.feet_stuck = None
         self.crawl_anchor = None
@@ -2037,10 +2043,15 @@ class SlugcatBody(CombatTarget):
         手也被一起拽到胸前（用户报的「双持吃东西另一只手也老是一起动」）。
         """
         c0 = self.chunk0
-        sgn = -1.0 if side == "l" else 1.0
+        # SlugcatHand.cs:77-84：幼崽持物时两手都收在投掷方向前方 3px，
+        # 成年猫才按左右手分居 ±20px。否则幼崽的手臂被拉成长臂。
+        if getattr(self, "is_pup", False):
+            hand_x = self.facing * 3.0
+        else:
+            hand_x = (-1.0 if side == "l" else 1.0) * CARRY_OFF_X
         ang = _ang_from_up(c0.x - self.chunk1.x, c0.y - self.chunk1.y)
         s = (1.0 - self.eat_raise) if side == self.hand_of.get("fruit") else 1.0
-        ox, oy = _rot(sgn * CARRY_OFF_X * s, CARRY_OFF_Y * s, ang)
+        ox, oy = _rot(hand_x * s, CARRY_OFF_Y * s, ang)
         return c0.x + ox, c0.y + oy
 
     def hands_on_anim(self) -> bool:

@@ -39,6 +39,9 @@ RESET_TABLE: dict[str, object] = {
     "_ctrl_pyro_parry_cd": 0.0,
     "_ctrl_win": None,               # 控制态取物要用窗口的物品表
     "_ctrl_variant": "",             # 投掷力档（圣徒轻抛/弱者减半）读种别
+    "_ctrl_pole": None,
+    "_ctrl_pole_cd": 0,
+    "_ctrl_sleep_hold": 0,
 }
 
 # 退出时清控制专属动画，不碰 ZeroGPoleGrab
@@ -93,6 +96,9 @@ def exit_control(pet) -> None:
     if not getattr(pet, "controlled", False):
         return
     body = pet.body
+    if getattr(body, "_ctrl_pole", None) is not None:
+        from .moves_pole import release
+        release(body)
     body._input_provider = None
     body._ctrl_on = False
     reset_ctrl_state(body)
@@ -100,6 +106,8 @@ def exit_control(pet) -> None:
         body.animation = None
     body.stop_walk()
     body.jump_boost = 0.0
+    body.sleeping = False
+    pet.gfx.sleeping = False
     beh = pet.behavior
     if beh is not None:
         if body.dead:

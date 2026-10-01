@@ -47,7 +47,7 @@ PETAL_MAX = 13.5              # 单瓣最远距
 PETAL_ART_LEN = 20.0          # 原版 scaleY = Distance / 20f
 PETAL_SCALE_X = 0.375         # 原版 scaleX = 0.375
 HOVER_SPRING = 20.0           # 原版 vel += (hoverPos - pos) / 20f
-HOVER_DY = 27.0              # 花头悬在根上方的高度（用户口径：固定，不用原版 18~36 随机）
+HOVER_DY = 27.0              # 花头基准高度；每朵在附近轻微变化
 HOVER_DX = 7.0
 ROOT_DX = 9.0
 DRAG_LEAN_MAX = 14.0          # 扎着根被鼠标软拖：花头最多朝光标歪这么多（根不动、茎被抻长＝受力）
@@ -161,17 +161,17 @@ class KarmaFlower(Fruit):
 
     # ── 扎根（原版 TryRoot）──
     def try_root(self, ground_y: float, rng=None) -> bool:
-        """扎根窗口地面（用户口径：和爆米花一致，只能长在地面上），花头固定高度。
+        """扎根窗口地面（用户口径：和爆米花一致，只能长在地面上），花头高度略有变化。
 
         原版 TryRoot 是「往下找 4 格有实心就扎根」；桌宠没有房间 tile，窗口底边
-        就是唯一地面，所以无条件扎在 ground_y 上，高度取固定常数（原版是 18~36 随机）。
+        就是唯一地面，所以无条件扎在 ground_y 上，高度在基准值附近随机。
         """
         r = rng if rng is not None else _random.Random(int(self.x) * 31 + int(self.y))
         gp = (self.x + r.uniform(-ROOT_DX, ROOT_DX), float(ground_y))
         self.grow_pos = gp
         self.hover_pos = (gp[0] + r.uniform(-HOVER_DX, HOVER_DX),
-                          gp[1] - HOVER_DY)
-        self.hover_dir_add = r.uniform(-25.0, 25.0)
+                          gp[1] - r.uniform(HOVER_DY - 4.0, HOVER_DY + 4.0))
+        self.hover_dir_add = r.uniform(-10.0, 10.0)
         # 生长动画：纯视觉（见 _grow_offset），物理位置立刻就是 hover_pos，
         # 所以拖拽/弹簧/啃食等一切逻辑与以前完全一致。
         self.grow_t = 0.0

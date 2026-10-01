@@ -29,7 +29,7 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QRadialGradient
 
 from ..i18n import t
 
@@ -73,6 +73,23 @@ KARMA_MIN = 1
 KARMA_MAX = 10           # 最低 1 级、最高 10 级
 
 _INK = QColor(238, 232, 214)
+
+
+def _draw_backdrop(p, x0: float, y0: float) -> None:
+    """黑色柔光底：中心可读，四周用很宽的渐变融入桌面。"""
+    rx, ry = HUD_W * 0.5 + 50.0, HUD_H * 0.5 + 25.0
+    gradient = QRadialGradient(QPointF(0.0, 0.0), 1.0)
+    gradient.setColorAt(0.0, QColor(0, 0, 0, 175))
+    gradient.setColorAt(0.30, QColor(0, 0, 0, 170))
+    gradient.setColorAt(0.72, QColor(0, 0, 0, 86))
+    gradient.setColorAt(1.0, QColor(0, 0, 0, 0))
+    p.save()
+    p.translate(x0 + HUD_W * 0.5, y0 + HUD_H * 0.5)
+    p.scale(rx, ry)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(gradient)
+    p.drawEllipse(QPointF(0.0, 0.0), 1.0, 1.0)
+    p.restore()
 
 # 能画汉字的字体族（有其一才用中文文案）
 _CJK_FAMS = ("Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "SimSun",
@@ -349,7 +366,8 @@ def draw_storm_hud(p, win) -> None:
     x0, y0, _, _ = hud_rect(win)
     s = _layout_scale()
     p.save()
-    # Keep the ring, pips, and countdown; the desktop itself is the backdrop.
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    _draw_backdrop(p, x0, y0)
     # 参考图是硬边像素画：贴图放大用最近邻
     p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
     # 不参与像素化滤镜：圆点/描边开抗锯齿，保持清晰

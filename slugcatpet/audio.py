@@ -129,6 +129,11 @@ class MeowManager:
     def event(self, pet, kind: str) -> None:
         if not self.enabled or not self.available or pet is None:
             return
+        beh = getattr(pet, "behavior", None)
+        dead_fn = getattr(beh, "is_dead", None)
+        if (beh is None or (dead_fn() if callable(dead_fn) else getattr(beh, "dead", False))
+                or getattr(getattr(pet, "body", None), "dead", False)):
+            return
         key = "%s:%s" % (getattr(pet, "id", id(pet)), kind)
         if self._event_cd.get(key, 0) > 0:
             return
@@ -157,7 +162,10 @@ class MeowManager:
             if cd > 0:
                 self._cooldowns[key] = cd - 1
                 continue
-            if getattr(pet, "behavior", None) is None or getattr(pet.behavior, "dead", False):
+            beh = getattr(pet, "behavior", None)
+            dead_fn = getattr(beh, "is_dead", None)
+            if (beh is None or (dead_fn() if callable(dead_fn) else getattr(beh, "dead", False))
+                    or getattr(getattr(pet, "body", None), "dead", False)):
                 continue
             chance, urgent = self._context(pet)
             if self._rng.random() >= chance:

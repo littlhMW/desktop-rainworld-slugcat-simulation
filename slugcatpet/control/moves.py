@@ -6,6 +6,46 @@ from . import moves_posture as mp
 from . import moves_slide as ms
 from . import moves_jump as mj
 from . import moves_throw as mt
+from . import moves_pole as pole
+
+SLEEP_HOLD_TICKS = 100  # Player.cs:5744-5784 forceSleepCounter；桌宠约 2.5 秒入睡
+
+
+def _sleep_update(body, inp):
+    """按住下且不移动入睡；其他输入即醒（Player.cs:6835-6899）。"""
+    quiet_down = (inp.y < 0 and inp.x == 0 and not inp.jmp
+                  and not inp.pckp and not inp.thrw and body.on_floor())
+    if body.sleeping:
+        # 原版进入 sleepCounter 后松开方向键不会立即醒；只有新的动作输入才打断。
+        active_input = bool(inp.x or inp.y > 0 or inp.jmp or inp.pckp or inp.thrw)
+        if active_input:
+            body.sleeping = False
+            body._ctrl_sleep_hold = 0
+            body.standing = True
+            body.animation = "StandUp"
+        else:
+            body.standing = False
+            body.bodyMode = "Crawl"
+            body.move_dir = 0
+            body.chunk0.vx *= 0.7
+            body.chunk1.vx *= 0.7
+            body.hip_sink += (1.0 - body.hip_sink) * cr.HIP_SINK_EASE
+            body._floor_h = body.H + body.hip_sink * body.crawl_sink
+            if body.chunk1.on_floor:
+                body._crawl_pose(moving=False)
+            body.energy_change(0.003)
+            return True
+    elif quiet_down:
+        body._ctrl_sleep_hold += 1
+        if body._ctrl_sleep_hold >= SLEEP_HOLD_TICKS:
+            body.sleeping = True
+            body.standing = False
+            body.animation = None
+            body.bodyMode = "Crawl"
+            return True
+    else:
+        body._ctrl_sleep_hold = 0
+    return False
 
 
 def ctrl_movement_update(body):
@@ -13,6 +53,11 @@ def ctrl_movement_update(body):
     c0, c1 = body.chunk0, body.chunk1
     inp = body._ctrl_input
     inp0, inp1 = inp[0], inp[1]
+
+    if _sleep_update(body, inp0):
+        return
+    if pole.try_grab(body, inp0):
+        return
 
     # 郊狼窗口 + 跳跃预输入双缓冲，勿混 body.canJump
     if getattr(body, "_ctrl_want_jump", None) is None:

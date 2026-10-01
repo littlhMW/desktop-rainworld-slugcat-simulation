@@ -42,9 +42,9 @@ NATURAL_SPAWN_TICKS = 900     # 默认间隔：每约 22s 补一只（勾选哪�
 # 物理 40 tick/s（见 _PHYS_DT）。
 SPAWN_TICK_RATE = 40
 SPAWN_PERIOD_MIN_S = 2        # 滑条下限：最密约 2s 一只
-SPAWN_PERIOD_MAX_S = 120      # 滑条上限：最疏两分钟一只
+SPAWN_PERIOD_MAX_S = 600      # 滑条上限：最疏十分钟一只
 SPAWN_PERIOD_DEF_S = int(NATURAL_SPAWN_TICKS / SPAWN_TICK_RATE)      # 默认 22s
-SPAWN_GROUND_KINDS = frozenset(("seedcob", "karmaflower"))   # 只长在地面上的
+SPAWN_GROUND_KINDS = frozenset(("karmaflower",))   # 只长在地面上的
 # 暂时隐藏的生成入口：代码保留，但不出现在「生物生成」列表与图标盘里。
 HIDDEN_PLACE_KINDS = frozenset(("scavenger",))
 # 幼崽：不是常规蛞蛓猫（不占蛞蛓猫名额、不进选皮菜单），但仍然是一只会自己行动的实体
@@ -52,6 +52,7 @@ PUP_VARIANT = "slugpup"
 # 自然生成时的落点高度带（占窗口高的比例，y 从上往下算）：
 # 会飞的在中层空域，走地的贴着地面，果实 / 灯 / 黏菌可以挂在半空。
 SPAWN_Y_BAND = {
+    "seedcob": (0.52, 0.85),
     "fruit": (0.15, 0.75),
     "batfly": (0.20, 0.70),
     "squidcada": (0.15, 0.65),
@@ -610,6 +611,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             return True
         if cur[1] > self._HL:
             return True                  # 下延带＝任务栏：任何情况下都不接管
+        if self.controlled_pet() is not None:
+            return False                 # 玩家控制时，场景空白处也接收投掷/拾取点击
         from .control.mouse import is_over
         active = any(pet.behavior is not None and pet.behavior.grab.active for pet in self.pets)
         over_body = self.cursor_hijack_allowed and any(
@@ -2334,6 +2337,14 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # 关闭鼠标互动时，不再右键点猫、左键抓猫，也不对猫执行暴雨点杀。
         cats_interactive = self.cursor_hijack_allowed
         if e.button() == Qt.MouseButton.RightButton:
+            # 受控猫沿用原版 PickUpAndThrow 的鼠标映射：右键拾取/放下，
+            # 只有未进入控制会话时右键才打开角色菜单。
+            controlled = self.controlled_pet()
+            if controlled is not None and self._control_hud is not None:
+                self._control_hud.mouse_action(pick=True)
+                self._control_hud.activateWindow()
+                self._control_hud.setFocus()
+                return
             # 右键命中区同左键抓取
             pos = self.to_logical(e.position().x(), e.position().y())
             from .control.mouse import hit_test, GRAB_PAD
@@ -2346,6 +2357,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                     return
             return
         if e.button() == Qt.MouseButton.LeftButton:
+            controlled = self.controlled_pet()
+            if controlled is not None and self._control_hud is not None:
+                self._control_hud.mouse_action(throw=True)
+                self._control_hud.activateWindow()
+                self._control_hud.setFocus()
+                return
             pos = self.to_logical(e.position().x(), e.position().y())
             if cats_interactive and self._storm_kill_click(pos):
                 return
