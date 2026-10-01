@@ -24,6 +24,7 @@ from .core.units import clampf, lerp
 from .core.water import WaterSurface
 from .world.effects import EffectsMixin
 from .audio import MeowManager
+from .sfx import SoundManager
 from .world.items import ItemInteractionMixin
 from .world.enums import ItemState
 from .world.rain import RainSystem
@@ -435,6 +436,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # silent until enabled in Settings and remains harmless when Workshop
         # audio is not installed.
         self.meows = MeowManager(self._params)
+        self.sfx = SoundManager(self._params)
         self._shelter_drag_start = None
         self._shelter_seed = 0
 
@@ -1517,7 +1519,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         beh = getattr(pet, "behavior", None)
         if beh is not None:
             try:
-                beh.apply_stun(ticks, drop_items=False, rage=False)
+                beh.apply_stun(ticks, drop_items=True, rage=False, crawl=True)
+                self.sfx.play("stun", 0.85)
                 return
             except Exception:
                 pass
@@ -2263,6 +2266,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 if getattr(pet, "controlled", False):
                     continue        # 受控猫禁左键抓取
                 if pet.behavior is not None and pet.behavior.on_press(pos):
+                    self.meows.notify_grab(pet)
                     grabbed = True
                     break
             if not grabbed:
@@ -2308,12 +2312,13 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if self._place_mode and self._place_kind in ("shelter", "vpole", "hpole",
                                                      "pole", "wall"):
             if e.button() == Qt.MouseButton.LeftButton:
+                lx, ly = self.to_logical(e.position().x(), e.position().y())
                 if self._place_kind == "shelter":
-                    self._finish_shelter_place()
+                    self._finish_shelter_place((lx, ly))
                 elif self._place_kind == "wall":
-                    self._finish_wall_place()
+                    self._finish_wall_place((lx, ly))
                 else:
-                    self._finish_pole_place()
+                    self._finish_pole_place((lx, ly))
             return
         if not self.pets:
             return
@@ -2376,6 +2381,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self.storm_active = self.storm.active
         self.storm_pressure = self.storm.pressure
         self.rain.step(self.storm.rain_drive, 1.0)
+        # RoomRain.cs:391-400：环境雨声随强度平滑渐变，和猫叫独立调节。
+        self.sfx.tick(self.rain.rain_drive if self.rain.active else 0.0)
         # 震屏：雨势折算成抖动，仍旧并入既有 self._shake（不另起一套）
         if self.rain.shake > 0.0:
             amp = self.rain.shake * RAIN_SHAKE_MAX
@@ -2499,6 +2506,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
     def set_meows_volume(self, value) -> None:
         self.meows.set_volume(value)
 
+    def set_sfx_enabled(self, on) -> None:
+        self.sfx.set_enabled(on)
+
+    def set_sfx_volume(self, value) -> None:
+        self.sfx.set_volume(value)
+
     def set_storm_enabled(self, on):
         """开/关雨循环。**不会**自动放庇护所 —— 屋子由工具栏自己框选出来。"""
         on = bool(on)
@@ -2603,9 +2616,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
     def _begin_shelter_place(self, lx, ly):
         self._shelter_drag_start = (lx, ly)
 
-    def _shelter_drag_rect(self):
+    def _shelter_drag_rect(self, cur=None):
         """当前拖出来的预览庇护所 —— 像资源管理器框选那样，**任意矩形**，不贴地。"""
-        cur = self.cursor_logical()
+        if cur is None:
+            cur = self.cursor_logical()
         if cur is None:
             return None
         ticks = int(tuning.STORM_DOOR_TICKS)
@@ -2628,7 +2642,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         return Shelter(x0, y0, dw, dh, None, self._WL,
                        seed=self._shelter_seed, door_ticks=ticks, template=tpl)
 
-    def _finish_shelter_place(self):
+    def _finish_shelter_place(self, cur=None):
         if not self._place_mode or self._place_kind != "shelter":
             return None
         if self._shelter_drag_start is None:
@@ -2637,7 +2651,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             # 当场生成一个固定大小的庇护所 —— 表现就是「拖不动、大小固定」。
             # 这里直接忽略，保持放置模式，等真正的按下-拖-松开。
             return None
-        sh = self._shelter_drag_rect()
+        sh = self._shelter_drag_rect(cur)
         self._shelter_drag_start = None
         if sh is None:
             self._exit_place_mode()

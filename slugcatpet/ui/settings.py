@@ -99,6 +99,7 @@ class SettingsWindow(QWidget):
         self._section_ai(right)
         right.addWidget(self._divider())
         self._section_meow(right)
+        self._section_sfx(right)
         right.addWidget(self._divider())
         self._section_hud(right)
         right.addStretch(1)
@@ -347,6 +348,34 @@ class SettingsWindow(QWidget):
         self._window.set_meows_volume(value)
         if label is not None:
             label.setText(t("settings_meow_volume_val", n=int(value)))
+
+    def _section_sfx(self, v):
+        v.addWidget(self._header(t("settings_sfx_section")))
+        audio = getattr(self._window, "sfx", None)
+        chk = QCheckBox(t("settings_sfx_enable"))
+        chk.setChecked(bool(getattr(audio, "enabled", True)))
+        chk.setToolTip(t("settings_sfx_tip"))
+        chk.toggled.connect(self._window.set_sfx_enabled)
+        v.addWidget(chk)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(QLabel(t("settings_sfx_volume")))
+        sld = QSlider(Qt.Orientation.Horizontal)
+        sld.setRange(0, 100)
+        value = int(getattr(audio, "volume", 55))
+        sld.setValue(value)
+        label = QLabel(t("settings_sfx_volume_val", n=value))
+        label.setObjectName("dim")
+        label.setMinimumWidth(42)
+        sld.valueChanged.connect(lambda n, lb=label: self._on_sfx_volume(n, lb))
+        row.addWidget(sld, 1)
+        row.addWidget(label)
+        v.addLayout(row)
+
+    def _on_sfx_volume(self, value, label=None):
+        self._window.set_sfx_volume(value)
+        if label is not None:
+            label.setText(t("settings_sfx_volume_val", n=int(value)))
 
     def _section_hud(self, v):
         if self._hud is None:

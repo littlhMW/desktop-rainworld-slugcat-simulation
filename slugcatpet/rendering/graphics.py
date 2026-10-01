@@ -234,6 +234,7 @@ class SlugcatGraphics(GraphicsDrawMixin):
         self.gills_flat = 0.0          # 1=鳃锚退回世界水平（趴/睡）
         self.dead = False
         self.stunned = False           # 晕脸 + 头帧0耷拉
+        self.grabbed = False            # 被鼠标抓住/甩动时闭眼
         self.face_override = None      # 表情覆写：借一族现成表情演别的状态（复活按压借晕眩脸）
         self.blink = 0
         self._blink_rng = _Rng(12345)

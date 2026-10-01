@@ -646,6 +646,7 @@ class BehaviorFSM:
         self.drag_takeover = None
         self.stun_takeover = None
         self._stun_rage = True           # 这次晕眩醒来要不要带余怒（摔晕=False，只是懵一下）
+        self._stun_crawl = False
         cat = getattr(self.win, "cat", None)
         # 统一动作注册表：主 tick 里所有「决定」的唯一出处（见 behavior/action.py）。
         # 先建表再 fsm_mount：角色的独有动作（preempt band）在挂载时登记进来。
@@ -706,19 +707,20 @@ class BehaviorFSM:
         return self.grab.begin(cursor)
 
     def on_release(self):
+        self.gfx.grabbed = False
         self.grab.end()
 
-    def apply_stun(self, ticks, drop_items=True, rage=True):
+    def apply_stun(self, ticks, drop_items=True, rage=True, crawl=False):
         """晕眩。
 
         ``drop_items=False`` 只打断动作/移动，不动手里的东西；``rage=False``
         醒来直接回 IdleStand，不进 PostThrowWander 的暴怒游荡。
 
-        摔晕（window._fall_stun）同时给这两个 False：原版「高处落地」只是懵
-        一下，不该把刚摘到嘴边的果子/抓着的矛扔掉，也不该醒来暴走一两分钟
-        —— 那会让取食、投掷、社交这些链在每次落地后从头来过。
+        高处落地（window._fall_stun）使用 ``drop_items=True, rage=False,
+        crawl=True``：先按原版掉落手持物，再直接进入匍匐姿态，醒来不暴走。
         """
         self._stun_rage = bool(rage)
+        self._stun_crawl = bool(crawl)
         if self.state in ("Ascension", "Dead", "Dragged"):
             return False
         if self.state in ("CeilingHang", "ChaseCursor", "Socialize",
@@ -1820,6 +1822,7 @@ class BehaviorFSM:
         elif st == "ItemPlay":
             self._itemplay_enter()
         elif st == "Stunned":
+            b.set_crawl(bool(getattr(self, "_stun_crawl", False)))
             b.set_posture(False)
             b.stop_walk()
             self.gfx.stunned = True
@@ -3437,6 +3440,8 @@ class BehaviorFSM:
                     self._transition("IdleStand")
 
     def _st_dragged(self, cursor, disturbed):
+        self.gfx.grabbed = True
+        self.gfx.blink = max(self.gfx.blink, 4)
         self._clear_hands()
         self._drag_reach_tick(cursor)     # 贴到杆/食物旁边就自己抓住
         ch = self.grab.chunk
@@ -3495,6 +3500,14 @@ class BehaviorFSM:
             item.vy = ch.vy * tuning.DRAG_SHAKE_THROW - 1.0
             self.win.add_spark(item.x, item.y, 0.0, -1.0, white=True, life=30)
         b.temper_shift(tuning.DRAG_SHAKE_TEMPER)
+        meows = getattr(getattr(self.win, "window", None), "meows", None)
+        if meows is None:
+            meows = getattr(self.win, "meows", None)
+        if meows is not None:
+            meows.notify_shake(self.win)
+        sfx = getattr(getattr(self.win, "window", None), "sfx", None)
+        if sfx is not None:
+            sfx.play("shake", 0.65)
 
     def _drag_reach_tick(self, cursor):
         """被鼠标抓着时：手碰到杆/食物就自己抓上去（松手就抓牢/把果子拽下来）。"""
@@ -3565,6 +3578,7 @@ class BehaviorFSM:
 
     def _drag_release(self):
         """松手：抱着杆 → 抓牢杆子（竖杆爬上去 / 横杆就地挂住）；在顶部放下 → 抓住上边缘；否则自由落。"""
+        self.gfx.grabbed = False
         p = self._drag_pole
         self._drag_pole = None
         from ..world.pole import VERTICAL
@@ -3822,9 +3836,11 @@ class BehaviorFSM:
 
     def _st_stunned(self, cursor, disturbed):
         self._clear_hands()
+        if getattr(self, "_stun_crawl", False):
+            self.body.set_crawl(True)
         if self.body.stun <= 0:
             self.gfx.stunned = False
-            self.body.set_posture(True)
+            self.body.set_posture(False if getattr(self, "_stun_crawl", False) else True)
             if self._pole_scold_on_land and self._blocker_target is not None:
                 # 被从杆上挤掉、半路摔晕：醒来照样去找挤赢的那只指指点点
                 # （_st_airborne 的落地分支被 Stunned 抢了，这里补回来）。
@@ -3834,6 +3850,7 @@ class BehaviorFSM:
                 return
             if self._stun_rage is False:      # 摔晕：懵完就接着过自己的日子
                 self._stun_rage = True
+                self._stun_crawl = False
                 self._transition("IdleStand")
                 return
             if self.stun_takeover is not None and self.stun_takeover():   # 苏醒接管：超度反击

@@ -57,8 +57,8 @@ class MeowManager:
         self.root = find_push_to_meow()
         self._rng = random.Random(0x4D454F57)
         self._cooldowns: dict[str, int] = {}
-        self._effects: dict[str, QSoundEffect] = {}
         self._playing: list[QSoundEffect] = []
+        self._event_cd: dict[str, int] = {}
 
     @property
     def available(self) -> bool:
@@ -67,11 +67,15 @@ class MeowManager:
     def set_enabled(self, value: bool) -> None:
         self.enabled = bool(value)
         self.params["meows_enabled"] = self.enabled
+        if not self.enabled:
+            for effect in self._playing:
+                effect.stop()
+            self._playing.clear()
 
     def set_volume(self, value: int) -> None:
         self.volume = max(0, min(100, int(value)))
         self.params["meows_volume"] = self.volume
-        for effect in self._effects.values():
+        for effect in self._playing:
             effect.setVolume(self.volume / 100.0)
 
     def _prefix(self, pet) -> str:
@@ -103,21 +107,37 @@ class MeowManager:
         if not files:
             return
         path = self._rng.choice(files)
-        key = str(path)
-        effect = self._effects.get(key)
-        if effect is None:
-            effect = QSoundEffect()
-            effect.setSource(QUrl.fromLocalFile(str(path)))
-            effect.setLoopCount(1)
-            self._effects[key] = effect
+        # 独立实例避免 play() 重启同一个长叫，导致声音被截断。
+        effect = QSoundEffect()
+        effect.setSource(QUrl.fromLocalFile(str(path)))
+        effect.setLoopCount(1)
         effect.setVolume(self.volume / 100.0)
         effect.play()
         self._playing.append(effect)
+
+    def event(self, pet, kind: str) -> None:
+        if not self.enabled or not self.available or pet is None:
+            return
+        key = "%s:%s" % (getattr(pet, "id", id(pet)), kind)
+        if self._event_cd.get(key, 0) > 0:
+            return
+        self._event_cd[key] = 22 if kind == "grab" else 16
+        self._play(pet, long_call=(kind == "grab" or self._rng.random() < 0.45))
+
+    def notify_grab(self, pet) -> None:
+        self.event(pet, "grab")
+
+    def notify_shake(self, pet) -> None:
+        self.event(pet, "shake")
 
     def tick(self, pets) -> None:
         if not self.enabled or not self.available:
             return
         self._playing = [e for e in self._playing if e.isPlaying()]
+        for key in list(self._event_cd):
+            self._event_cd[key] -= 1
+            if self._event_cd[key] <= 0:
+                del self._event_cd[key]
         if len(self._playing) >= 3:
             return
         for pet in pets:

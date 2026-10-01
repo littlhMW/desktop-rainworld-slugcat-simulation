@@ -604,6 +604,8 @@ class GraphicsDrawMixin:
                        else self._face_stun_frame)
         elif self.stunned:
             element = self._face_stun_frame
+        elif getattr(self, "grabbed", False):
+            element = blink_frames[min(4, len(blink_frames) - 1)]
         elif self.sleep_curl > 0.0:
             # 蜷起来睡的那一觉必须闭眼：face_special 是醒着的表情，不能盖过睡眠
             idx = int(clampf(int(_lerp(4.0, 1.0, self.sleep_curl)), 0, 8))

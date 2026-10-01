@@ -800,14 +800,15 @@ class ItemInteractionMixin:
     def _begin_pole_place(self, lx, ly):
         self._pole_drag_start = (lx, ly)
 
-    def _finish_pole_place(self):
+    def _finish_pole_place(self, cur=None):
         if not self._place_mode or self._place_kind not in ("vpole", "hpole", "pole"):
             return None
         st = getattr(self, "_pole_drag_start", None)
         self._pole_drag_start = None
         if st is None:
             return None
-        cur = self.cursor_logical()
+        if cur is None:
+            cur = self.cursor_logical()
         if cur is None:
             self._exit_place_mode()
             return None
@@ -879,7 +880,7 @@ class ItemInteractionMixin:
         y0 = clampf(y0, 0.0, max(0.0, self._HL - h))
         return (x0, y0, min(self._WL, x0 + w), min(self._HL, y0 + h))
 
-    def _finish_wall_place(self):
+    def _finish_wall_place(self, cur=None):
         if not self._place_mode or self._place_kind != "wall":
             return None
         st = getattr(self, "_wall_drag_start", None)
@@ -888,7 +889,8 @@ class ItemInteractionMixin:
             # 没有「按下」就没有框选出来的矩形：忽略这次松开、留在放置模式
             # （和放庇护所同一条规则，工具栏按钮那一下的松开会漏进来）。
             return None
-        cur = self.cursor_logical()
+        if cur is None:
+            cur = self.cursor_logical()
         if cur is None:
             self._exit_place_mode()
             return None
@@ -1861,6 +1863,9 @@ class ItemInteractionMixin:
         obj, dmg = ev
         if obj is None:
             return
+        sfx = getattr(self, "sfx", None)
+        if sfx is not None:
+            sfx.play("lizard_bite", 0.9)
         beh = getattr(obj, "behavior", None)
         if beh is not None:
             # 蛞蝓猫：按攻击者数据（biteDamageChance × DeathByBiteMultiplier）掷致死，
@@ -2048,7 +2053,6 @@ class ItemInteractionMixin:
             return
         try:
             pup.body.teleport(cx, cy)
-            pup.body.step()
             pup.gfx.update()
             pup._tick_tail()                   # 尾巴跟着摆好，别拖在出生点
             p.save()

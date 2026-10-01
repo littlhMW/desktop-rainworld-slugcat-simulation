@@ -787,3 +787,10 @@ num3 + scalesPositions.Length  num3 + scalesPositions.Length ?                  
 - `Player.cs:4114-4131,4641-4645`：幼崽只缩短体节连接（17→12），保留体块半径 9/8；`PlayerGraphics.cs:2687,2878-3041`：仅 BodyA 竖向压缩并使用 RenderAsPup 胸部插值和专用站立偏移。
 - `Lizard.cs` / `LizardAI.cs` 的 Climb/MovementConnection：实体墙、背景墙、杆统一为带 kind 的附着面；杆为 Climb tile，不作为 Solid。
 - `Player.cs` 的能力边界：Saint `no_spear` 在身体拾取与背槽入口统一拦截。
+
+## 2026-10 音频与交互补全
+
+- `RoomRain.cs:391-400`：Normal/Heavy/Death 雨声按 intensity 平滑更新；`SoundManager` 用独立 `rain_loop.wav` 循环并按雨势渐变。`SoundID.cs` 的 `Lizard_Jaws_Bite_Do_Damage`、`UI_Slugcat_Stunned_*` 对应咬合与眩晕音效入口。
+- Push To Meow `sounds.txt`：猫叫按 `vol=0.6,maxPitch=1.1,minPitch=0.9`，并按 Normal/Pup/Whispery/Coarse/Spear/Fat/Rivulet/Watcher 音色族取样；播放器改为每次独立 `QSoundEffect`，避免长叫被重启截断。
+- 抓取/甩动调用猫叫事件；抓取状态使用闭眼帧。高处落地调用 `apply_stun(drop_items=True,crawl=True)`，先掉手持物并直接进入匍匐。
+- 放置杆、墙、庇护所释放使用 `mouseReleaseEvent` 坐标，幼崽预览不再跑一帧重力。
