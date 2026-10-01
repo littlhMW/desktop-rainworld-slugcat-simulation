@@ -37,6 +37,8 @@ LIFE_START = 2.0                 # points[i,3].x 初值（2）
 WIDTH_FULL = 0.3                 # InverseLerp(0, 0.3, life)
 GRAV_LO, GRAV_HI = 0.1, 0.6
 LIFE_HOLD = 1.0                  # 寿命下限：只负责把重力/宽度带到稳态，不再归零
+THREAD_HOLD_TICKS = 80.0         # 拉出后先完整显示 2 秒（定步长 40fps）再开始渐隐
+THREAD_FADE_TICKS = 40.0         # 再用 1 秒渐隐到 0，这条线才真的消失
 
 
 def _lerp(a, b, t):
@@ -52,7 +54,7 @@ def _ilerp(a, b, v):
 class NeedleThread:
     """尾巴根 ↔ 针尾的一条自由点细线。"""
 
-    __slots__ = ("pts", "spear", "dead", "last_head")
+    __slots__ = ("pts", "spear", "dead", "last_head", "age", "alpha")
 
     def __init__(self, tail_xy, vx, vy, rng):
         n = rng.randint(10, 19)                     # Random.Range(10, 20)
@@ -69,6 +71,8 @@ class NeedleThread:
         self.spear = None
         self.dead = False
         self.last_head = (float(tail_xy[0]), float(tail_xy[1]))
+        self.age = 0.0                                  # 出生后经过的 tick
+        self.alpha = 1.0                                 # 整体不透明度（1=不透明）
 
     def _life(self, i):
         if i > 0:
@@ -78,8 +82,9 @@ class NeedleThread:
     def update(self, head_xy, tail_xy) -> None:
         """一 tick：自由点积分 + 相邻约束 + 寿命夹到稳态；两端钉住。
 
-        自身不会把 dead 置真 —— 这条线的生死只由外部（针实体被删 / 下一根
-        活针出现）决定，见 items._needle_thread_tick。
+        生命周期（用户口径）：拉出后完整显示 THREAD_HOLD_TICKS（2 秒），之后用
+        THREAD_FADE_TICKS 渐隐到 0 并置 dead，由 items._needle_thread_tick 回收；
+        针实体被删 / 被剪断时也会立刻消失（见那里的过滤器）。
         """
         pts = self.pts
         n = len(pts)
@@ -130,6 +135,12 @@ class NeedleThread:
         if self._life(n - 1) > 0.0:                   # 末点钉在针尾
             pts[n - 1][0], pts[n - 1][1] = tail_xy
             pts[n - 1][4] = pts[n - 1][5] = 0.0
+        self.age += 1.0
+        if self.age > THREAD_HOLD_TICKS:               # 2 秒后：渐隐
+            self.alpha = max(0.0, 1.0 - (self.age - THREAD_HOLD_TICKS)
+                             / THREAD_FADE_TICKS)
+            if self.alpha <= 0.0:
+                self.dead = True                       # 褪尽：真的消失
 
     def _shade(self, i):
         """第 i 个节点的颜色：首端（尾巴根）红 → 末端（针）黄。"""
@@ -141,13 +152,13 @@ class NeedleThread:
                 int(a[2] + (b[2] - a[2]) * t))
 
     def draw(self, painter) -> None:
-        """逐段细线：宽度 2*0.5*InverseLerp(0,0.3,life)，alpha = min(life,1)。
+        """逐段细线：宽度 2*0.5*InverseLerp(0,0.3,life)，alpha = min(life,1)*self.alpha。
 
         颜色沿线长从尾巴根的红渐变到针端的黄（用户口径）。
         """
         pts = self.pts
         n = len(pts)
-        if n < 2:
+        if n < 2 or self.alpha <= 0.0:
             return
         painter.save()
         painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -156,7 +167,7 @@ class NeedleThread:
             if life <= 0.0:
                 continue
             col = QColor(*self._shade(i))
-            col.setAlphaF(min(1.0, life))
+            col.setAlphaF(min(1.0, life) * self.alpha)
             pen = QPen(col, max(0.6, _ilerp(0.0, WIDTH_FULL, life)))
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             painter.setPen(pen)

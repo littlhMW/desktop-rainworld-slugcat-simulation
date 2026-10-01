@@ -8,7 +8,6 @@ from ..behavior.anim_intent import BEAM_LIMB_ANIMS
 from ..cats.stats import DEFAULT_STATS
 from ..core import chunkphys as cp
 from ..core.chunkphys import BodyChunk, solve_conn
-from ..core.gfxmath import POLE_CARRY_DX
 from ..core.units import K_VEL, K_IMP, lerp, inv_lerp, clampf
 from ..world import weaponphys
 from ..world.enums import ItemState
@@ -116,9 +115,10 @@ SPEAR_WOBBLE_DEG = 4.0
 SPEAR_WOBBLE_PERIOD_F = 12.0
 SPEAR_WOBBLE_PHASE_LF = 9.0
 SPEAR_WOBBLE_PHASE_RF = 3.0
-# 杆上持物：**手**现在直接贴杆（原版 absoluteHuntPos.x = MiddleOfTile ± 1），
-# 这个偏移改作用在「物」上：竖杆上把矛挪到杆侧，否则矛和杆会叠成一条线。
-# 常量本体在 core/gfxmath.py（渲染层也要读），这里只是转出供反向依赖。
+# 杆上持物：**没有任何偏移**。原版 Player.cs:5989 就是
+# ``grabbedChunk.MoveFromOutsideMyUpdate(eu, hands[i].pos)`` —— 物直接摆在手上；
+# 手贴杆（SlugcatHand.cs:201，MiddleOfTile ± 1）。R142/R145 那两版「手挪开 /
+# 物挪开」都是自造的，用户实测就是「物体悬浮、错位」。
 # 出膛点：Player.ThrowObject → thrownPos = firstChunk.pos + throwDir*10 + (0,4)（游戏 y↑）
 THROW_ORIGIN_DX = 10.0
 THROW_ORIGIN_DY = 4.0
@@ -1903,30 +1903,16 @@ class SlugcatBody:
     def on_vertical_pole(self) -> bool:
         """此刻是不是「抱着竖杆」（ClimbOnBeam / BeamTip）。
 
-        竖杆上的持物要偏到杆侧，不能正好压在杆线上看上去像插进杆里。
-        横杆（StandOnBeam / HangFromBeam / GetUpOnBeam）走 `on_horizontal_beam()`。
+        手和物都贴杆、没有任何自造侧向偏移（原版 Player.cs:5989 把物直接摆在
+        手上）。横杆（StandOnBeam / HangFromBeam / GetUpOnBeam）走
+        `on_horizontal_beam()`。
         """
         return bool(self.on_pole and self.animation in ("ClimbOnBeam", "BeamTip"))
-
-    def _pole_item_offset(self):
-        """杆上持物：手贴杆/杆身，物挪到旁边 → 返回 (dx, dy)。
-
-        一只手 = 一个状态 = 一个目标：手的位置由攀爬动画决定（贴杆），
-        **物**再相对手做一个固定的、只跟「杆的走向」有关的偏移，免得矛/果子
-        正好压在杆线上看起来像插进杆里（参考图里是并排在杆侧）。
-        """
-        if self.on_vertical_pole():
-            s = -1.0 if self.facing >= 0 else 1.0
-            return s * POLE_CARRY_DX, 0.0
-        if self.animation in ("HangFromBeam", "GetUpOnBeam"):
-            return 0.0, POLE_CARRY_DX
-        return 0.0, 0.0
 
     def on_horizontal_beam(self) -> bool:
         """此刻是不是「横杆姿态」接管双手（站杆顶 / 吊杆 / 撑上杆）。
 
-        参考图（玩家实机）：横杆上手里的东西要偏到杆**上方**，
-        不能正好压在杆身上（看上去像嵌进杆里）。
+        同样没有自造的持物偏移：手由横杆动画摆位，物直接读那只手的实际位置。
         """
         return bool(self.on_pole and self.animation in
                     ("StandOnBeam", "HangFromBeam", "GetUpOnBeam"))
@@ -1970,6 +1956,18 @@ class SlugcatBody:
         # 追过去 —— 走路时就是「矛浮在手前面 / 没在手上」（用户实测）。
         # 现在两者同一个坐标系：手被 aim 到携带点，物直接读手。
         return hw[0], hw[1], not anim
+
+    def sync_carried_to_hands(self) -> None:
+        """渲染层刚写回 hand_pos 之后：把手里/背上的东西重新对齐到这一帧的手。
+
+        ``b.step()`` 里那三次 ``_apply_carry_*`` 跑在 ``graphics.update()`` 之前，
+        读到的 ``hand_pos`` 还是上一帧的 —— 差一帧就是用户反复报的「物浮在手旁边 /
+        滞后」。这里在渲染更新之后再走同一套逻辑，物和手落在同一帧（原版
+        Player.cs:5989 也是同一次 Update 里把 grabbedChunk 摆到 hands[i].pos）。
+        """
+        self._apply_carry()
+        self._apply_carry_stone()
+        self._apply_carry_spear()
 
     def _aim_carry(self, side, aimed):
         """持物手每 tick 的落点：aimed=True 把这只手牵到**身侧携带点**。
@@ -2085,9 +2083,8 @@ class SlugcatBody:
             return
         side = self.hand_of.get("fruit")
         cx, cy, aimed = self._carry_anchor(side)
-        ox, oy = self._pole_item_offset()
         f.last_x, f.last_y = f.x, f.y
-        f.x, f.y = cx + ox, cy + oy
+        f.x, f.y = cx, cy
         f.set_rotation_to_grabber(self.chunk0.x, self.chunk0.y)
         self._aim_carry(side, aimed)
         if f.stalk is not None:
@@ -2171,8 +2168,7 @@ class SlugcatBody:
         s.last_rotation = s.rotation_deg
         s.rotation_deg = s.last_rotation
         s.spin = 0.0
-        ox, oy = self._pole_item_offset()
-        s.x, s.y = cx + ox, cy + oy
+        s.x, s.y = cx, cy
         # 统一走 _aim_carry：爬杆时 aimed=False 会把 arm_aim 清掉（不能留上一帧的
         # 瞄准值，否则攀爬手会被拽回持物点）。
         self._aim_carry(side, aimed)
@@ -2435,9 +2431,8 @@ class SlugcatBody:
             if sp is None:
                 continue
             cx, cy, aimed = self._carry_anchor(side)
-            ox, oy = self._pole_item_offset()
             sp.last_x, sp.last_y = sp.x, sp.y
-            sp.x, sp.y = cx + ox, cy + oy
+            sp.x, sp.y = cx, cy
             sp.spin = 0.0
             sp.spinning = False
             hold_angle = self.spear_hold_angle(side=side, dual=dual)

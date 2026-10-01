@@ -61,7 +61,7 @@ _TABLE = (
      ("x", "y", "vx", "vy", "state", "angle_deg", "spin", "spinning", "stuck",
       "stuck_angle", "embedded", "always_stick", "pinned",
       # 矛大师的骨针：不存这几项，重启后活着白针会退化成普通矛（不能吸食、线也没了）
-      "needle", "needle_live", "needle_type", "needle_fade",
+      "needle", "needle_live", "needle_type", "needle_fade", "needle_alpha",
       "damage", "needle_thread_cut")),
     ("scavenger", "scavengers", None,
      ("x", "y", "vx", "vy", "state", "health", "dead", "like", "variant",

@@ -859,17 +859,16 @@ class SlugcatGraphics(GraphicsDrawMixin):
             hx = px + (-flip if cond else flip)
             hy = c0.y + off_y
             # 手**贴杆**（原版 absoluteHuntPos.x = MiddleOfTile.x ± 1）。
-            # R142 曾把持物的手推开 POLE_CARRY_DX，结果手浮在杆旁边
-            # （用户实测「爬杆子手要贴着杆子」）。现在偏移改由「物」承担：
-            # 见 core/creature.py::_apply_carry_spear —— 手贴杆，矛挪到杆侧。
+            # R142 曾把持物的手推开 7px（手浮在杆旁），R145 又把 7px 加到物上
+            # （矛浮在杆旁）—— 两次都是自造。现在手和物都贴杆：
+            # 物由 core/creature.py 直接摆到手上（原版 Player.cs:5989）。
             return (hx, hy), HUNT_SPEED, HAND_QUICKNESS
         if anim in ("HangFromBeam", "GetUpOnBeam"):
             beam_y = getattr(b, "pole_y", c0.y)
             sh = 10.0 + 3.0 * math.sin(2.0 * math.pi * self.anim_frame / 20.0)
             hx = c0.x + (-1.0 if j == 0 else 1.0) * sh
             # 手**抓在杆身上**（原版 absoluteHuntPos.y = MiddleOfTile.y - 1）。
-            # 同竖杆：原来把持物的手顶开 POLE_CARRY_DX，手就浮在杆外了。
-            # 物由 core/creature.py::_pole_item_offset 挪到杆身下面。
+            # 同竖杆：手和物都不再有那个自造的 7px 偏移。
             hy = beam_y
             return (hx, hy), HUNT_SPEED, HAND_QUICKNESS
         # 站杆顶 / 撑上杆：两手向两侧张开扮演平衡（参考图）。

@@ -88,16 +88,23 @@ def draw_rope(painter, points, widths, color) -> None:
 
 
 def blit(painter, atlas, element, x, y, rotation, scale_x, scale_y, color,
-         ax=0.5, ay=0.5) -> None:
-    """画 atlas sprite；锚点 (ax,ay) 归一化，钉在 (x,y)。"""
+         ax=0.5, ay=0.5, opacity=1.0) -> None:
+    """画 atlas sprite；锚点 (ax,ay) 归一化，钉在 (x,y)。
+
+    opacity < 1 时整张精灵半透明（矛大师骨针「渐隐到 0 才真消失」用）。
+    """
     key = atlas.find_atlas(element)
     if key is None:                                # 缺帧静默跳过
+        return
+    if opacity <= 0.0:
         return
     col = _qcolor(color)
     pm = atlas.sprite(key, element, col)
     sw, sh = atlas.source_size(key, element)
     apx, apy = ax * sw, ay * sh
     painter.save()
+    if opacity < 1.0:
+        painter.setOpacity(opacity)
     painter.translate(x, y)
     if rotation:
         painter.rotate(rotation)
@@ -325,7 +332,7 @@ NEEDLE_FADE_MAX = 400       # Spear.spearmasterNeedle_fadecounter_max
 
 
 def draw_needle(painter, atlas, x, y, ang_deg, kind=0, fade=1.0, live=False,
-                pivot_at_tip=False, length=46.0, pinned=False) -> None:
+                pivot_at_tip=False, length=46.0, pinned=False, alpha=1.0) -> None:
     """矛大师的骨针（Spear.cs:1333-1356）。
 
     贴图 BioSpear{spearmasterNeedleType%3+1}；还连着尾巴时纯白，断线后按
@@ -336,14 +343,21 @@ def draw_needle(painter, atlas, x, y, ang_deg, kind=0, fade=1.0, live=False,
     旧实现把 fade clamp 到 0.01，画出来是一条近乎纯黑的针：看着「已经消失」
     实体却还在（用户报的「矛隐形但没有消失」）。钉成杆的针（pinned）是场景
     物件，褪成黑色之后要一直留着。
+
+    ``alpha`` 才是真正的整体不透明度：反编译 Spear.cs:1333-1356 只按
+    fadecounter/400 把颜色从白 Lerp 到黑，没有 alpha —— 旧实现黑到 fade==0
+    的那一 tick 直接 GONE，用户实测就是「视觉上一会儿突然消失」。现在黑化走完
+    再用 alpha 从 1 渐隐到 0（见 world/spear.needle_tick），褪尽才真消失。
     """
     if not live and fade <= 0.0 and not pinned:
+        return
+    if alpha <= 0.0:
         return
     t = 1.0 if live else clampf(fade, 0.0, 1.0)
     col = _mix_rgb((255, 255, 255), SPEAR_RGB, 1.0 - t)
     k = length / NEEDLE_ART_LEN
     blit(painter, atlas, "BioSpear%d" % (int(kind) % 3 + 1), x, y, ang_deg,
-         k, k, col, ax=0.5, ay=(0.15 if pivot_at_tip else 0.5))
+         k, k, col, ax=0.5, ay=(0.15 if pivot_at_tip else 0.5), opacity=alpha)
 
 
 def _scale_rgb(rgb, k):

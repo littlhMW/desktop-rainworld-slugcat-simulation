@@ -4,6 +4,62 @@
 
 ## 2026-10-01
 
+### R146 · 物同帧贴手（去自造偏移）+ 线/矛真实渐隐 + 矛大师爆米花规则
+
+用户实测：**「依旧大量出现物体悬浮、错位」**、要求去掉「重置窗口地形」按钮、
+**「矛大师的线要在两秒后渐隐消失」**（并指出「矛本身的渐隐消失没有真实实现：
+视觉上一会儿突然消失了」）、以及 **「矛大师不能吃爆米花，但活针扎未开荚的
+爆米花 +5 饱食度、扎已开荚的 +1」**。
+
+**① 物体悬浮 / 错位**
+
+两条自造的「物离开手」全删，并把「物跟手」收成**同一帧**：
+
+* R142 把持物的手推开 `POLE_CARRY_DX=7px`（手浮在杆旁）→ R145 又把这 7px 加到
+  **物**上（矛浮在杆旁）。原版根本没有这个偏移 —— `Player.cs:5989` 就是
+  `grabbedChunk.MoveFromOutsideMyUpdate(eu, hands[i].pos)`，物直接摆在手上。
+  `_pole_item_offset()` / `POLE_CARRY_DX` 连常量一起删；三处持物（矛 / 石头 /
+  果子）统一 `x, y = cx, cy`，手贴杆（`SlugcatHand.cs:201`，MiddleOfTile ± 1）。
+* **差一帧**：`b.step()` 跑在 `graphics.update()` 之前，里面那三次
+  `_apply_carry_*` 读到的 `hand_pos` 还是上一帧的 → 物恒定慢一帧（手一动就看
+  得见「物浮在手边 / 滞后」）。新增 `SlugcatBody.sync_carried_to_hands()`，
+  在 `petunit.step` 的 `g.update()` 之后用同一套逻辑再对齐一次：物和手落在
+  同一帧（`hand.lx/x` 与 `sp.last_x/x` 现在是同一对坐标）。
+
+**② 去掉「重置窗口地形」按钮**
+
+`ui/tabbar.py` 的按钮 + `_reset_window()` handler + 三条 i18n
+（`btn_reset_window` / `tip_reset_window` / `toast_window_reset`）一起删。
+`reset_window_geometry()` 本体保留 —— 「清除可交互实体」之后那次自动重跑还在。
+
+**③ 矛大师的有机细线：2 秒后渐隐**
+
+`NeedleThread` 加 `age` / `alpha`：拉出后完整显示 `THREAD_HOLD_TICKS=80`
+（定步长 40fps × 2s），再用 `THREAD_FADE_TICKS=40`（1s）把 alpha 褪到 0 并置
+`dead`；`draw()` 每段的 alpha 乘上它。另外 `Spear.needle_thread_done` 记住
+「这条线的寿命已经用完」，免得 `_needle_thread_tick` 下一 tick 又给同一根针重拉
+一条（被顶替的旧针也一并标记）。
+
+**④ 矛本身的渐隐：白 → 黑 → 黑保持 → 整体渐隐 → GONE**
+
+反编译 `Spear.cs:1333-1356` 只按 `fadecounter/400` 把颜色从白 Lerp 到黑，
+**没有 alpha**；旧实现是黑到 `fade==0` 的那一 tick 直接 GONE（「一会儿突然
+消失」）。`needle_tick()` 重排成三段状态机（黑化 → 黑保持 `NEEDLE_BLACK_HOLD`
+→ `NEEDLE_ALPHA_FADE=80` 把 `needle_alpha` 从 1 褪到 0），褪尽才真消失；
+钉成杆的针走完黑化就停住，仍留作场景杆。`primitives.blit()` 新增 `opacity`，
+`draw_needle()` 新增 `alpha`（alpha=0 一像素都不画）。
+
+**⑤ 矛大师与爆米花**
+
+* 矛大师**没嘴**：`diet = DIET_SPECIAL` → 爆米花（plant）不可食，
+  `_nearest_cob(feedable=True)` 与 `_st_eatcob` 的啃食分支都按 `_can_eat()` 拦住
+  （原版 `SeedCob.cs:335` 也把 Spear 排除在 `handOnExternalFoodSource` 之外）。
+* 活针吸食（原版 `Spear.cs:1096-1108`）：`_spear_needle_feed_cob()` ——
+  未开荚 `AddFood(5)` + `Open()`，已开荚 +1（用户口径）；一根针只喂一口
+  （喂完 `Spear_NeedleDisconnect`）。普通矛照旧只开荚、不喂食。
+
+回归：`e2e_r146.py`（新增）+ `e2e_r91/94/127/144` 口径同步；全量 `fails=0`。
+
 ### R145 · 持矛朝向 / 爬杆手位回归原版（反编译对拍）
 
 用户实测：**「矛在右侧、猫向左走，矛就左右翻转」**、**「爬杆子手要贴着杆子」**，

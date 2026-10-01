@@ -7039,6 +7039,8 @@ class BehaviorFSM:
             if feedable:
                 if not cb.can_feed():
                     continue
+                if not self._can_eat(cb):
+                    continue             # 没嘴的猫（矛大师）：爆米花不经嘴吃
             elif cb.opened:
                 continue
             px, py = cb.feed_point(c0.x, c0.y)
@@ -7258,6 +7260,9 @@ class BehaviorFSM:
         self.gfx.look_at = (px, py)
         self._cob_left -= 1
         if cb.can_feed():
+            if not self._can_eat(cb):
+                self._cob_end()                  # 没嘴的猫（矛大师）嚼不了爆米花
+                return
             if d > tuning.COB_FEED_R:
                 if abs(px - b.chunk0.x) > tuning.COB_FEED_R * 0.5:
                     b.walk_to(px)

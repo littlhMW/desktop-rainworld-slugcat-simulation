@@ -294,6 +294,7 @@ class PetUnit:
         b.step()
         self._cold_update(cycle_prog)
         g.update()
+        b.sync_carried_to_hands()   # 手位刚写回：物同帧对齐（不许差一帧）
         if self.gills is not None:
             self.gills.update(b.chunk0.x, b.chunk0.y, b.chunk1.x, b.chunk1.y,
                               g.look_dir[0], g.look_dir[1],

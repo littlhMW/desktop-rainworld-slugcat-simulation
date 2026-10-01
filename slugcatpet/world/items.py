@@ -212,6 +212,8 @@ def _pet_bite_death_mult(pet) -> float:
 NEEDLE_FEED_DEFAULT = 1.0
 NEEDLE_FEED_SMALL = 0.5
 NEEDLE_FEED_TINY = 0.25
+NEEDLE_FEED_COB_CLOSED = 5.0     # 原版 Spear.cs:1102：活针扎中未开荚爆米花 AddFood(5)
+NEEDLE_FEED_COB_OPEN = 1.0       # 用户口径：已开荚的再扎只回 1 格
 
 
 def _needle_feed_amount(obj) -> float:
@@ -3089,6 +3091,25 @@ class ItemInteractionMixin:
         tp.body.food_eat(_needle_feed_amount(obj))
         return True
 
+    def _spear_needle_feed_cob(self, sp, cb) -> bool:
+        """矛大师的活针扎中爆米花 → 掷出者回饱食度（反编译 Spear.cs:1096-1108）。
+
+        未开荚 +5（原版 AddFood(5)）；已开荚 +1（用户口径）。一根针只喂一口：
+        喂完 Spear_NeedleDisconnect。开荚与否**不在这里动** —— 以嘴啃爆米花是
+        另一条路（fsm._st_eatcob），矛大师没嘴，那边已经按食性拦住。
+        """
+        if not (getattr(sp, "needle", False) and getattr(sp, "needle_live", False)):
+            return False
+        tp = self._thrower_pet(getattr(sp, "thrower", None))
+        if tp is None or getattr(tp, "body", None) is None:
+            return False
+        if not getattr(getattr(tp, "cat", None), "tuning", {}).get("tail_needle"):
+            return False                         # 不是矛大师掷的针
+        sp.needle_disconnect()
+        tp.body.food_eat(NEEDLE_FEED_COB_OPEN if cb.opened
+                         else NEEDLE_FEED_COB_CLOSED)
+        return True
+
     def _step_spear_hit(self):
         """飞矛扎到猫：眩晕 + 震动；扎到蜥蜴：受伤并插在身上跟着走。"""
         for pet in self.pets:
@@ -3206,12 +3227,18 @@ class ItemInteractionMixin:
                 self._shake[1] += 0.6
                 break
             for cb in self.seedcobs:                          # 矛扎中爆米花 → 开荚 + 插住
-                if cb.opened or cb.dead:
+                if cb.dead:
                     continue
                 hit = _cob_hit(cb, sp, SPEAR_COB_PAD)
                 if hit is None:
                     continue
-                cb.open_cob()
+                # 矛大师的活针：先吸一口（未开荚 +5 / 已开荚 +1，Spear.cs:1096-1108）
+                was_open = cb.opened
+                fed = self._spear_needle_feed_cob(sp, cb)
+                if not fed and was_open:
+                    continue                  # 已开荚的荚：别的矛直接穿过去（原样）
+                if not was_open:
+                    cb.open_cob()             # 未开荚：这一扎把荚打开（原版 Spear.cs:1103）
                 kx = 1.0 if sp.vx >= 0.0 else -1.0
                 sp.vx = sp.vy = 0.0
                 sp.stuck = True
@@ -3363,10 +3390,12 @@ class ItemInteractionMixin:
     def _needle_thread_tick(self):
         """活针出手时从尾巴根拉出一条细有机线。
 
-        消失时机（用户口径，覆盖原版 Spear_NeedleDisconnect 的那几处）：
-          ① 这根针这个实体被删掉（不在 self.spears 里）；
-          ② 下一根活针出现（掷出）—— 线只跟着最新那根活针。
-        针扎中生物 / 插进墙 / 落地都不再断线（针不再喂食，线照挂）。
+        消失时机：
+          ① 拉出后 2 秒开始渐隐、约 3 秒褪尽（用户口径，见 NeedleThread.update）；
+          ② 这根针这个实体被删掉（不在 self.spears 里）；
+          ③ 下一根活针出现（掷出）—— 线只跟着最新那根活针；
+          ④ 这根针褪成黑色 / 线被剪断（needle_fade==0 / needle_thread_cut）。
+        针扎中生物 / 插进墙 / 落地都不再**立刻**断线（线照挂到寿命结束）。
         """
         ths = self.needle_threads
         live = {id(sp) for sp in self.spears}
@@ -3377,10 +3406,15 @@ class ItemInteractionMixin:
                   and not getattr(t.spear, "needle_thread_cut", False)]
         cands = [sp for sp in self.spears                                   # ②
                  if (getattr(sp, "needle", False)
-                     and getattr(sp, "needle_live", False) and sp._thrown)]
+                     and getattr(sp, "needle_live", False) and sp._thrown
+                     and not getattr(sp, "needle_thread_done", False))]
         if cands:
             keep = cands[-1]                       # 最新那根活针
             if not any(t.spear is keep for t in ths):
+                for t in ths:                      # 被顶替的旧针：不许回头再补一条线
+                    sp0 = getattr(t, "spear", None)
+                    if sp0 is not None:
+                        sp0.needle_thread_done = True
                 ths[:] = []                        # 旧的线让位
                 tail = self._thrower_tail_pos(keep)
                 if tail is not None:
@@ -3394,7 +3428,15 @@ class ItemInteractionMixin:
             if head is None:
                 head = th.last_head                  # 掷出者不在了：线头留在原地
             th.update(head, th.spear.butt())
-        ths[:] = [t for t in ths if not t.dead]
+        keep = []
+        for th in ths:                               # 褪尽的线：别再给同一根针重拉
+            if th.dead:
+                sp = getattr(th, "spear", None)
+                if sp is not None:
+                    sp.needle_thread_done = True
+            else:
+                keep.append(th)
+        ths[:] = keep
 
     def _draw_needle_threads(self, p):
         """画在猫与生物之前：细线永远压在它们下面。"""
@@ -3504,7 +3546,8 @@ class ItemInteractionMixin:
                         live=bool(getattr(sp, "needle_live", False)),
                         pivot_at_tip=bool(sp._thrown or sp.stuck_to is not None),
                         length=SPEAR_DRAW_LEN,
-                        pinned=bool(getattr(sp, "pinned", False)))
+                        pinned=bool(getattr(sp, "pinned", False)),
+                        alpha=float(getattr(sp, "needle_alpha", 1.0)))
         else:
             draw_spear(p, self.atlas, x, y, ang, length=SPEAR_DRAW_LEN)
 

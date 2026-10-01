@@ -16,8 +16,9 @@ from ..core.chunkphys import aabb_wall_collide, apply_water
 from . import weaponphys as wp
 from .enums import ItemState
 
-NEEDLE_FADE_MAX = 400    # 断线后的渐隐时长（约 10 秒）
-NEEDLE_BLACK_HOLD = 240   # 先保持完整的黑矛约 6 秒，再开始渐隐
+NEEDLE_FADE_MAX = 400    # 断线后「白 → 黑」的时长（原版 spearmasterNeedle_fadecounter_max，约 10 秒）
+NEEDLE_BLACK_HOLD = 240   # 全黑之后先保持约 6 秒，再开始整体渐隐
+NEEDLE_ALPHA_FADE = 80    # 整体渐隐（alpha 1→0）的时长，约 2 秒；褪尽才真的 GONE
 LEN = 53.0               # 杆长（原版 SmallSpear 贴图可视长度）
 HALF_W = 1.6             # 杆的半宽（贴图实测 3px）
 RAD = 5.0                # Spear.cs:287 bodyChunks[0].rad
@@ -105,7 +106,8 @@ class Spear:
                  "collide_with_objects", "held_by", "embedded", "stuck_to", "stuck_local", "_still",
                  "thrower", "no_self_t", "pinned", "pole", "toss_t",
                  "aim_cursor", "cursor_pin", "needle", "needle_live",
-                 "needle_type", "needle_fade", "needle_fade_wait", "damage", "needle_thread_cut",
+                 "needle_type", "needle_fade", "needle_fade_wait", "needle_alpha",
+                 "damage", "needle_thread_cut", "needle_thread_done",
                  "needle_world")
 
     def __init__(self, x: float, y: float, seed: int = 0, angle_deg: float = 90.0):
@@ -161,10 +163,13 @@ class Spear:
         self.needle_live = False
         self.damage = 1.0                     # spearDamageBonus（原版默认 1f）
         self.needle_type = 0                  # BioSpear1..3（Spear_makeNeedle 的 type）
-        self.needle_fade = NEEDLE_FADE_MAX    # 真正开始渐隐后的剩余计数
-        self.needle_fade_wait = 0             # 先完整保持黑色，再进入渐隐计时
+        self.needle_fade = NEEDLE_FADE_MAX    # ① 白 → 黑的剩余计数（原版 fadecounter）
+        self.needle_fade_wait = 0             # ② 全黑之后保持的剩余 tick
+        self.needle_alpha = 1.0               # ③ 整体不透明度：黑化走完才从 1 渐隐到 0
         # 线必须**立刻**断（不等褪色）：二次被捡 / 扎中的宿主被删
         self.needle_thread_cut = False
+        # 这条尾巴细线已经「拉出 → 渐隐完」：别再给同一根针重拉一条（否则永不消失）
+        self.needle_thread_done = False
         # 这根针有没有离过手（掷出去过）。刚长出来直接递到主人手里时是 False：
         # 那不算「二次捡起」，线还在。
         self.needle_world = False
@@ -204,15 +209,17 @@ class Spear:
             self.needle_live = False
             self.needle_fade = NEEDLE_FADE_MAX
             self.needle_fade_wait = NEEDLE_BLACK_HOLD
+            self.needle_alpha = 1.0
         if cut:
             self.needle_thread_cut = True
 
     def needle_tick(self) -> None:
-        """断线骨针：先由白渐成黑，褪尽后实体真正消失。
+        """断线骨针的三段生命周期：白 → 黑 → 黑保持 → 整体渐隐 → 真的消失。
 
-        原版 fadecounter 用来控制 SpearGraphics 的消退；这里把生命周期也收口到
-        同一个计数器：只有没有钉成杆（pinned=False）的骨针才会最终 GONE。
-        钉成竖/横杆的针保留为场景杆，不参加这条清除。
+        反编译 Spear.cs:1333-1356 只按 fadecounter/400 把颜色从白 Lerp 到黑，
+        没有 alpha；本作按用户口径补上「渐隐到 0 才消失」—— 旧实现是黑到
+        fade==0 的那一 tick 直接 GONE（用户实测「视觉上一会儿突然消失」）。
+        钉成竖/横杆的针保留为场景杆：黑化走完就停住，不参加渐隐清除。
         """
         if not self.needle or self.needle_live:
             return
@@ -221,18 +228,22 @@ class Spear:
             # 已经拿在手里的针不再褪：否则褪尽这一 tick 会把手上这根直接标成
             # GONE —— 用户报的「点一下（捡起来）就立刻消失」。
             return
-        if self.needle_fade_wait > 0:
+        if self.needle_fade > 0:                  # ① 白 → 黑
+            self.needle_fade -= 1
+            return
+        if self.pinned:
+            # 钉成杆的针：褪成黑色后保留为场景杆，不消失。
+            # （旧实现这里一并 return，扎在墙上的针就永远停在白色 ——
+            #  正是用户报的「白针扎墙后不黑，拔出来重投才变黑」。）
+            return
+        if self.needle_fade_wait > 0:             # ② 全黑之后停留
             self.needle_fade_wait -= 1
             return
-        if self.needle_fade > 0:
-            self.needle_fade -= 1
-        if self.needle_fade <= 0:
-            self.needle_fade = 0
-            if self.pinned:
-                # 钉成杆的针：褪成黑色后保留为场景杆，不消失。
-                # （旧实现这里一并 return，扎在墙上的针就永远停在白色 ——
-                #  正是用户报的「白针扎墙后不黑，拔出来重投才变黑」。）
-                return
+        if self.needle_alpha > 0.0:               # ③ 整体渐隐到 0 才真消失
+            self.needle_alpha = max(0.0, self.needle_alpha
+                                    - 1.0 / max(1.0, float(NEEDLE_ALPHA_FADE)))
+        if self.needle_alpha <= 0.0:
+            self.needle_alpha = 0.0
             self.state = ItemState.GONE
             self.stuck_to = None
             self.stuck_local = None
