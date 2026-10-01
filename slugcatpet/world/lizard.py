@@ -1881,42 +1881,12 @@ class Lizard(CombatTarget):
             s.x, s.y = sx, sy
 
     def _collide_static_lines(self, WL: float) -> None:
-        """**真竖杆**是实体线；只有能力决定能否主动附着攀爬。
-
-        背景区域（别人窗口的竖边）按文档三分法是**非实体**的：不挡路 —— 否则
-        「背景被当墙」会以碰撞的形式再长回来。庇护所墙体走 `_collide_solids`。
-        """
-        tq = self.terrain
-        if tq is None or self.climb_attached or self.dead:
-            return          # 尸体不再和杆碰撞（用户口径）
-        lines = [(x, top, bot) for x, top, bot in tq.vpoles()]
-        for x, top, bot in lines:
-            rr = self.head_rad + LINE_COLLIDE_PAD
-            if self.y < top - rr or self.y > bot + rr:
-                continue
-            dx = self.x - x
-            if abs(dx) >= rr:
-                continue
-            side = 1.0 if dx > 0.0 else (-1.0 if dx < 0.0 else self.chain_dir)
-            self.x = x + side * rr
-            if self.vx * side < 0.0:
-                self.vx = 0.0
+        """兼容旧调用：杆是可抓的 Climb 表面，不阻断地面运动。"""
+        return
 
     def _collide_chain_lines(self, WL: float) -> None:
-        tq = self.terrain
-        if tq is None or self.climb_attached or self.dead:
-            return
-        lines = [(x, top, bot) for x, top, bot in tq.vpoles()]
-        for s in self.seg:
-            rr = s.rad + LINE_COLLIDE_PAD
-            for x, top, bot in lines:
-                if s.y < top - rr or s.y > bot + rr:
-                    continue
-                dx = s.x - x
-                if abs(dx) >= rr:
-                    continue
-                side = 1.0 if dx > 0.0 else -1.0
-                s.x = x + side * rr
+        """杆不会把躯干链推出去；实体墙由 _collide_solids 处理。"""
+        return
 
     def _integrate(self, WL, HL) -> None:
         """自由态：重力积分 + 地面 / 侧墙（攀爬中改用墙面附着物理）。"""
@@ -1975,6 +1945,23 @@ class Lizard(CombatTarget):
         self.climb_top = None
         self.climb_bot = None
 
+    def _climb_assign(self, sx, top, bot, direction, kind) -> None:
+        """同一表面连续攀爬时保留抓附；换表面时才重新抓。"""
+        sx, top, bot = float(sx), float(top), float(bot)
+        same = (self.climb_x is not None and abs(self.climb_x - sx) <= 1.0
+                and self.climb_kind == kind and self.climb_top is not None
+                and abs(self.climb_top - top) <= 12.0 and self.climb_bot is not None
+                and abs(self.climb_bot - bot) <= 12.0)
+        if not same:
+            self.climb_attached = False
+            self.climb_side = 0
+            self._wall_dir_prev = None
+        self.climb_x = sx
+        self.climb_top = top
+        self.climb_bot = bot
+        self.climb_dir = 1 if direction >= 0 else -1
+        self.climb_kind = kind
+
     def _climb_span_ok(self) -> bool:
         """现在这条线还抓得住吗：线还在这一帧的清单里、我也还在它的高度范围内。"""
         top, bot = self.climb_top, self.climb_bot
@@ -1985,7 +1972,11 @@ class Lizard(CombatTarget):
         if not self.climb_surfaces:
             return True
         for surf in self.climb_surfaces:
-            if abs(float(surf[0]) - self.climb_x) <= 1.0:
+            kind = surf[3] if len(surf) > 3 else "pole"
+            if (kind == self.climb_kind
+                    and abs(float(surf[0]) - self.climb_x) <= 1.0
+                    and float(surf[1]) <= self.y + 12.0
+                    and float(surf[2]) >= self.y - 12.0):
                 return True
         return False
 
@@ -2007,14 +1998,18 @@ class Lizard(CombatTarget):
                     self.climb_side = -1
                 elif dx < 0.0:
                     self.climb_side = 1
+                else:
+                    self.climb_side = -1 if self.chain_dir < 0.0 else 1
             else:
                 # 走过去：朝墙挪（墙体不挡身体，与「窗口顶边可站」同一口径）
                 want = CLIMB_APPROACH_SPEED * (1.0 if dx > 0.0 else -1.0)
                 self.vx += (want - self.vx) * 0.5
                 self.vx *= 0.85
                 self.vy = (self.vy + GRAVITY * self.room_gravity) * AIR_FRICTION
+                prev_y = self.y
                 self.x += self.vx
                 self.y += self.vy
+                self._collide_solids(prev_y)
                 self._contact_floor = False
                 self.wall_dir = 0
                 if self.y > floor:
@@ -2035,11 +2030,16 @@ class Lizard(CombatTarget):
             self.vy = CLIMB_HOP * 0.7
             return
         # 已经贴上：横向用弹簧吸住（不是硬钉 x），纵向按爬速走
-        self.vx += dx * CLIMB_GRIP_SPRING
+        # 实体墙有厚度，身体停在墙面外；杆和背景可从任一侧贴住中心线。
+        anchor_x = (sx + self.climb_side * (r + LINE_COLLIDE_PAD)
+                    if self.climb_kind == "wall" else sx)
+        self.vx += (anchor_x - self.x) * CLIMB_GRIP_SPRING
         self.vx *= CLIMB_GRIP_DAMP
         self.x += self.vx
         self.vy = -CLIMB_SPEED * self.climb_dir
         self.y += self.vy
+        if self.climb_kind == "wall":
+            self._collide_solids(self.y - self.vy)
         self._contact_floor = False
         self.wall_dir = self.climb_side
         # 身体轴贴墙：前节朝爬行方向、后节反向拉开（墙面切向＝纵向）。旧实现只写
@@ -2071,8 +2071,7 @@ class Lizard(CombatTarget):
         elif top is not None and self.y < top + 4.0:
             self.y = max(r, top + 4.0)            # 到墙头：脱墙，站到墙沿上
             self.vy = 0.0
-            if self.breed.wall_detach:
-                self._climb_release()
+            self._climb_release()
 
     # ── AI ──
     # ══ 第一层：感知（同一份世界快照，不做任何决策）══
@@ -2446,8 +2445,8 @@ class Lizard(CombatTarget):
         就抓上去，否则墙底/杆底落在我这层就走过去（原版 Floor→Wall 那条连接）。
         真正的位移交给 _step_wall（附着物理），不再每帧硬钉 x。
         """
-        self._climb_release()
         if o is None or self.dead:
+            self._climb_release()
             return
         plan = self.plan
         if plan is not None and plan.alive(self._tick) and plan.mode != "lurk":
@@ -2457,16 +2456,21 @@ class Lizard(CombatTarget):
             climb = getattr(plan, "climb", None)
             if climb is not None and plan.mode in _CLIMB_MODES:
                 sx, top, bot, up = climb
-                self.climb_x = float(sx)
-                self.climb_dir = 1 if up else -1
-                self.climb_kind = _CLIMB_MODES[plan.mode]
-                self.climb_top = float(top)
-                self.climb_bot = float(bot)
-                self.climb_attached = False
+                self._climb_assign(sx, top, bot, up, _CLIMB_MODES[plan.mode])
+                return
+            # 路线已经离开竖面，结束旧的附着，交还给平地 / 跳跃执行器。
+            self._climb_release()
             return
         up = o.y < self.y - CLIMB_MIN_DY
         down = o.y > self.y + CLIMB_MIN_DY
         if not (up or down):
+            self._climb_release()
+            return
+        # 目标仍在当前这条线上时保留附着状态；否则每帧重置为未抓住，
+        # 身体只能在墙边抖动而不能真正向上移动。
+        if (self.climb_x is not None and self._climb_span_ok()
+                and self.climb_kind in ("wall", "background", "pole")):
+            self.climb_dir = 1 if up else -1
             return
         best = None
         for surf in self.climb_surfaces:
@@ -2494,12 +2498,9 @@ class Lizard(CombatTarget):
             if best is None or score < best[0]:
                 best = (score, sx, 1 if up else -1, kind, top, bot)
         if best is not None:
-            self.climb_x = best[1]
-            self.climb_dir = best[2]
-            self.climb_kind = best[3]
-            self.climb_top = best[4]
-            self.climb_bot = best[5]
-            self.climb_attached = False
+            self._climb_assign(best[1], best[4], best[5], best[2], best[3])
+        else:
+            self._climb_release()
 
     def _hop_vy(self) -> float:
         """蹬地起跳初速：按「跳跃能力」算，不是按「会不会爬」。
@@ -2557,7 +2558,7 @@ class Lizard(CombatTarget):
             self._lunge_toward(o, WL, HL)
             return
         self.look_at = (o.x, o.y)
-        if plan.mode in ("climb_wall", "climb_pole"):
+        if plan.mode in ("climb_wall", "climb_pole", "climb_background"):
             # Planner 给的是地形路线：走到上墙点，剩下的交给 _step_wall 的附着物理
             wx = plan.target[0]
             sp = self._state_speed(SNIFF_SPEED)
@@ -4240,14 +4241,8 @@ class Lizard(CombatTarget):
             self.head_x, self.head_y = _push_out(
                 self.head_x, self.head_y, r, rects,
                 getattr(chunkphys, "STEP_UP", 8.0))
-        # 真竖杆是实体；只有攀爬状态才贴上去（背景区域非实体，见 _collide_static_lines）
-        tq = self.terrain
-        if tq is not None and not self.climb_attached and not self.dead:
-            for x, top, bot in list(tq.vpoles()):
-                rr = r + LINE_COLLIDE_PAD
-                if top - rr <= self.head_y <= bot + rr and abs(self.head_x - x) < rr:
-                    self.head_x = x + (rr if self.head_x >= x else -rr)
-                    self.head_vx = 0.0
+        # 竖杆是 Climb surface，不是 Solid；头部可以穿过杆线，抓附时由
+        # `_step_wall` 的横向弹簧统一处理，避免地面移动被杆子挡住。
         lim = self._ground - r * HEAD_STAND_FAC
         if self.head_y > lim:
             self.head_y = lim

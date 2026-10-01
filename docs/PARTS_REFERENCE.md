@@ -781,3 +781,9 @@ num3 + scalesPositions.Length  num3 + scalesPositions.Length ?                  
 
 !! 找不到 C:\Users\littlh\Documents\Codex\2026-09-28\https-github-com-lingxiaojun-slugcatpet-https\work\scratch\decomp_full\ExplosionLight.cs
 
+
+## 2026-10 大改：蛞蝓猫/蜥蜴/幼崽对拍
+
+- `Player.cs:4114-4131,4641-4645`：幼崽只缩短体节连接（17→12），保留体块半径 9/8；`PlayerGraphics.cs:2687,2878-3041`：仅 BodyA 竖向压缩并使用 RenderAsPup 胸部插值和专用站立偏移。
+- `Lizard.cs` / `LizardAI.cs` 的 Climb/MovementConnection：实体墙、背景墙、杆统一为带 kind 的附着面；杆为 Climb tile，不作为 Solid。
+- `Player.cs` 的能力边界：Saint `no_spear` 在身体拾取与背槽入口统一拦截。

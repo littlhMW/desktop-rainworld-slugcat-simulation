@@ -133,8 +133,10 @@ class SlugcatBody(CombatTarget):
     collision_layer = 1              # 与果/黏菌同层互推
 
     def __init__(self, hip_xy, world_w: float, world_h: float,
-                 energy=1.0, temper=0.0, food=None, karma=None, stats=DEFAULT_STATS):
+                 energy=1.0, temper=0.0, food=None, karma=None, stats=DEFAULT_STATS,
+                 caps=None):
         self.stats = stats               # 种族数值
+        self.caps = caps                 # 种族能力（与数值分开）
         hx, hy = hip_xy
         self.W = float(world_w)
         self.H = float(world_h)
@@ -764,6 +766,8 @@ class SlugcatBody(CombatTarget):
             self.standing = False
 
     def put_spear_on_back(self, spear):
+        if getattr(self.caps, "no_spear", False):
+            return False
         if not getattr(self.stats, "back_spear", False):
             return False
         """把一支矛背到背上（原版 Player.spearOnBack）。
@@ -2355,6 +2359,11 @@ class SlugcatBody(CombatTarget):
         拔出来即 unstuck，钉出来的那截杆随 _sync_spear_poles 一起消失。
         arm=False 用于「背上那把换到手上」——同一根矛不算重新上手，不重压冷却。
         """
+        # Ability-level gate: Saint is explicitly unable to hold any spear.
+        # Keep this at the physics/hand boundary so mouse dragging, AI fetch,
+        # persistence restore, and throw controls all share one rule.
+        if getattr(self.caps, "no_spear", False):
+            return False
         if getattr(spear, "pinned", False):
             if not getattr(self.stats, "is_artificer", False):
                 return False

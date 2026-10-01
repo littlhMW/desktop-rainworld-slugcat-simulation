@@ -5,7 +5,7 @@ import os
 import random
 
 from ..behavior import tuning
-from ..core.creature import (RUN_UPPER, ZEROG_GRAB_DIST, THROW_ORIGIN_DX, THROW_ORIGIN_DY,
+from ..core.creature import (RUN_UPPER, CRAWL_SPEED, ZEROG_GRAB_DIST, THROW_ORIGIN_DX, THROW_ORIGIN_DY,
                              WALK_STOP_EPS)
 from ..planning import (GIVEUP, HOLDING, MODE_STAY, MODE_TOUCH, Goal, PlanExecutor, Planner,
                         obj_goal)
@@ -456,6 +456,7 @@ class BehaviorFSM:
         self._pole_throw_cd = 0          # 爬杆够不着目标的重试冷却
         self._crawl_left = 0
         self._crawl_from = None
+        self._crawl_social_target = None
         self._crawl_wall = False
         self._nuzzle_t = 0
         self._fetch_watch = None
@@ -1921,10 +1922,11 @@ class BehaviorFSM:
             self._social_target = tgt
             self._social_left = 0        # 随机时长交给 _social_enter 掷
             if self._social_kind == "crouch_walk" and not self.body.on_pole:
-                # 匍匐行走：交给现有的 CrawlAway（害怕强敌潜行）
+                # 保留 CrawlAway 这个状态名供状态面板/旧存档使用，但绑定同伴
+                # 目标后走专用分支；不能让它进入“无蜥蜴就立即退出”的威胁逻辑。
+                self._crawl_social_target = tgt
                 self._crawl_from = None
                 self._crawl_left = tuning.CRAWL_AWAY_TICKS
-                self._crawl_cd = T_CRAWL_RETRY
                 self._break_active_controllers()
                 self._transition("CrawlAway")
                 return True
@@ -2696,8 +2698,9 @@ class BehaviorFSM:
                 self._break_active_controllers()
                 self._transition("Socialize")
                 return True
-        if self._flee_cd > 0 and self._crawl_cd > 0:
-            # 跑和趴都还在冷却：这一轮中距离先不折腾（不然每帧重新起跑）
+        if (self._flee_cd > 0 and self._crawl_cd > 0
+                and self._threat_level() < tuning.FLEE_REACT_DANGER):
+            # 冷却只抑制远处威胁引起的重复起跑；危险重新逼近时必须应对。
             return False
         self._flee_lizard_now(th)        # ③④ 撤退（匍匐只在真的在它背后时）
         return True
@@ -4002,13 +4005,29 @@ class BehaviorFSM:
         旧实现把 kinds 写死成 ("vertical",)，横杆虽同属杆系统却永远不在候选里；
         调用方要「只要有高度的上升通道」就传 ("vertical",)，要「任何一根杆」用默认值。
         """
-        best = None
-        best_d = 0.0
-        for p in self.planner.reachable_transports(kinds):
-            d = self.planner.transport_dx(p)     # 横竖杆同一份几何（文档 §8）
-            if best is None or d < best_d:
-                best, best_d = p, d
-        return best
+        candidates = list(self.planner.reachable_transports(kinds))
+        if not candidates:
+            return None
+        # 直接按最近杆选择会让同一帧起步的猫全部锁到同一根竖杆，随后才
+        # 进入 PoleClimb 的挤位赛。先读共享交通场，再用稳定的猫序号在同分
+        # 杆之间分流；这样不依赖随机数，也不会因为每帧微小位置变化来回换杆。
+        tf = getattr(self.win, "traffic_field", None)
+        idx = int(getattr(self.win, "index", 0) or 0)
+        scored = []
+        n = len(candidates)
+        for rank, p in enumerate(sorted(candidates, key=lambda q: self.planner.transport_dx(q))):
+            d = self.planner.transport_dx(p)
+            riders = 0
+            if tf is not None and getattr(p, "kind", None) == "vertical":
+                try:
+                    riders = tf.pole_riders(getattr(p, "x", None), self.win)
+                except Exception:
+                    riders = 0
+            # 杆上已有猫时强制让位；未占用杆以 index % n 分摊首选。
+            lane_bias = ((rank - (idx % n)) % n) * 24.0
+            scored.append((d + riders * tuning.CROWD_POLE_OCCUPANCY + lane_bias,
+                           d, rank, p))
+        return min(scored, key=lambda x: (x[0], x[1], x[2]))[-1]
 
     def _pole_eat(self) -> bool:
         """杆上进食：手里的东西跟着手走，饿了就在杆上咬几口（原版 beam 上也能咬）。"""
@@ -6508,6 +6527,7 @@ class BehaviorFSM:
     def _social_cleanup(self):
         self._act_end()
         self.body.set_crawl(False)          # 匍匐类社交动作收势：站起来
+        self.body.walk_speed_target = None
         self._social_gesture = None
         self._social_press_seen = 0
         self._social_press_down = False
@@ -6545,6 +6565,7 @@ class BehaviorFSM:
             b.release_ceiling()
         elif st == "CrawlAway":
             b.set_crawl(False)
+            b.walk_speed_target = None
             self._clear_motion_and_hands()
 
         elif st == "ScoldBlocker":
@@ -6912,8 +6933,10 @@ class BehaviorFSM:
         self._revive_gave_up = False
         if social.is_crouch(kind) and not b.on_pole:   # 匍匐族：趴着做完整段（杆上不匍匐）
             b.set_crawl(True)
+            b.walk_speed_target = CRAWL_SPEED * tuning.CRAWL_FEAR_SPEED
         else:
             b.set_posture(True)
+            b.walk_speed_target = None
         self._clear_hands()
 
     def _st_socialize(self, cursor, disturbed):
@@ -8376,17 +8399,44 @@ class BehaviorFSM:
             b.set_crawl(False)
             b.set_posture(True)
             self._crawl_from = None
+            self._crawl_social_target = None
             self._crawl_left = 0          # 下一 tick 立刻收尾回 IdleStand
             return
         b.set_posture(False)
         b.set_crawl(True)
+        # 匍匐是低姿态的潜行步态，不应和普通奔跑共用顶速；身体物理层
+        # 会把这个上限应用到两节 chunk，动画步频也随实际位移自然降低。
+        b.walk_speed_target = CRAWL_SPEED * tuning.CRAWL_FEAR_SPEED
 
     def _st_crawlaway(self, cursor, disturbed):
         b = self.body
         if self.grab.active:
             b.set_crawl(False)
             self._crawl_from = None
+            self._crawl_social_target = None
             self._transition("Dragged")
+            return
+        # 社交匍匐：同伴是明确目标，不经过威胁搜索/逃生解算器。这样既保留
+        # CrawlAway 的兼容状态名，又不会因场上没有蜥蜴而第一帧收尾。
+        peer = self._crawl_social_target
+        if peer is not None:
+            pb = getattr(peer, "body", None)
+            self._crawl_left -= 1
+            if (pb is None or getattr(pb, "dead", False)
+                    or peer not in getattr(self.win, "pets", ())
+                    or self._crawl_left <= 0):
+                b.set_crawl(False)
+                self._crawl_social_target = None
+                self._crawl_cd = T_CRAWL_RETRY
+                self._transition("IdleStand")
+                return
+            d = math.hypot(pb.chunk1.x - b.chunk1.x, pb.chunk1.y - b.chunk1.y)
+            self.gfx.look_at = (pb.chunk0.x, pb.chunk0.y)
+            if d > tuning.SOCIAL_ARRIVE:
+                b.facing = 1 if pb.chunk1.x >= b.chunk1.x else -1
+                self._move(pb.chunk1.x)
+            else:
+                self._move_stop()
             return
         # 匍匐躲避要锁定**同一只**蜥蜴。每 tick 现挑最近的那只，会在两只差不多
         # 近的蜥蜴之间来回跳：away（躲开的方向）逐 tick 翻号，于是脸和身体朝

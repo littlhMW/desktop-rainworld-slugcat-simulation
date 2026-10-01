@@ -7,7 +7,7 @@ from dataclasses import replace
 from .behavior import tuning
 from .cats import PUP_VARIANT, get as get_cat_def
 from .cats.personality import individualize
-from .cats.slugpup import pup_appearance
+from .cats.slugpup import pup_appearance, pup_stats
 from .cats.saint.tongue import Tongue
 from .control.vmath import dirvec
 from .core.creature import SlugcatBody
@@ -70,9 +70,11 @@ class PetUnit:
         if self.is_pup:
             # 体色、瞳色、Size、Wideness 共用同一套稳定 ID 种子，按 Rain World
             # NPCStats 的生成顺序计算，而不是另起一套 Python 随机色板。
-            self._pup_visual = pup_appearance(_pers_seed(pet_id, 0, variant))
+            pup_seed = _pers_seed(pet_id, 0, variant)
+            self._pup_visual = pup_appearance(pup_seed)
             body_rgb, eye_rgb, _, _ = self._pup_visual
-            self.cat = replace(self.cat, body_color=body_rgb, eye_color=eye_rgb)
+            self.cat = replace(self.cat, body_color=body_rgb, eye_color=eye_rgb,
+                               stats=pup_stats(pup_seed))
         # 个体性格：在原型的连续轴上做小幅偏移（原版 IndividualVariation）。
         # 种子只取自 (族, id, index) → 同一只猫每次启动都一样，可复现。
         self.personality = individualize(
@@ -122,7 +124,7 @@ class PetUnit:
                                 temper=init_state.get("temper", 0.0),
                                 food=init_state.get("food"),
                                 karma=init_state.get("karma"),
-                                stats=self.cat.stats)
+                                stats=self.cat.stats, caps=self.cat.caps)
         # 食性（原版 SlugCatClass → NourishmentOfObjectEaten / CanEatMeat）
         self.body.diet = self.personality.diet
         self.body.cold = float(init_state.get("cold", 0.0))

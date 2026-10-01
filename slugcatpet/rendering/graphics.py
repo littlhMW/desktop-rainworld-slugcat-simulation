@@ -378,6 +378,14 @@ class SlugcatGraphics(GraphicsDrawMixin):
         self._last_draw0, self._last_draw1 = list(self.draw0), list(self.draw1)
         self.draw0 = [c0.x, c0.y]
         self.draw1 = [c1.x, c1.y]
+        # PlayerGraphics.Update：RenderAsPup 时胸部绘点向髋点插值，插值量由
+        # NPCStats.Size 决定（0.35 + (0.25 - Size*0.25)）。这是幼崽视觉变小的
+        # 关键部分；不能用整只 draw_scale 代替，否则头、手、腿和碰撞关系都会错。
+        if self.vis.get("pup_wide"):
+            pup_size = clampf(float(getattr(b, "size", 0.5)), 0.0, 1.0)
+            t = 0.35 + (0.25 - pup_size * 0.25)
+            self.draw0[0] += (self.draw1[0] - self.draw0[0]) * t
+            self.draw0[1] += (self.draw1[1] - self.draw0[1]) * t
         if b.bodyMode == "Stand":
             if b.is_moving() or b.move_dir != 0:
                 self.anim_frame += 1
@@ -481,10 +489,11 @@ class SlugcatGraphics(GraphicsDrawMixin):
 
         if b.bodyMode == "Stand":
             c = clampf(abs(c1.vx) - 0.2, 0.0, 1.0)
-            self.draw0[0] += flip * 6.0 * c
-            self.draw0[1] -= math.cos((af + 0.0) / 6.0 * TAU) * 2.0
-            self.draw1[0] -= flip * (1.5 - af / 6.0) * 1.0
-            self.draw1[1] -= 2.0 + math.sin((af + 0.0) / 6.0 * TAU) * 4.0
+            pup = bool(self.vis.get("pup_wide"))
+            self.draw0[0] += flip * (2.0 if pup else 6.0) * c
+            self.draw0[1] -= math.cos((af + 0.0) / 6.0 * TAU) * (1.5 if pup else 2.0)
+            self.draw1[0] -= flip * (1.5 - af / 6.0) * (0.25 if pup else 1.0)
+            self.draw1[1] -= 2.0 + math.sin((af + 0.0) / 6.0 * TAU) * (2.0 if pup else 4.0)
 
         elif b.bodyMode == "Crawl":
             sway_slow = math.sin(af / 21.0 * TAU)

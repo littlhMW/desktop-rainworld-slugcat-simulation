@@ -956,7 +956,14 @@ class SurfaceRoute:
         if hi <= lo:
             return x
         tx = float(getattr(threat, "x", x))
-        return float(hi if abs(hi - tx) >= abs(tx - lo) else lo)
+        left_d, right_d = abs(tx - lo), abs(hi - tx)
+        # 多只猫从同一点同时进入无路线兜底时，单纯取“离威胁更远的一头”
+        # 会把所有猫送到同一侧墙角。两侧近似等距时按稳定 index 分流，
+        # 给每只猫留出可见的横向间隔；危险明显偏向一侧时仍优先安全侧。
+        if abs(left_d - right_d) < 60.0:
+            idx = int(getattr(pet, "index", 0) or 0)
+            return float(hi if (idx & 1) == 0 else lo)
+        return float(hi if right_d > left_d else lo)
 
     def plan(self, goal):
         pet = self.pet

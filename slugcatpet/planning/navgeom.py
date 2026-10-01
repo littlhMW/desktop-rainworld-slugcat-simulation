@@ -295,7 +295,7 @@ class NavGeometry:
         HL = float(getattr(win, "_HL", 0.0) or 0.0)
         g = cls(win, WL, HL)
         from ..core import chunkphys
-        from ..world.pole import VERTICAL, HORIZONTAL, POLE_RAD
+        from ..world.pole import VERTICAL, HORIZONTAL
         from ..world.enums import ItemState
 
         # ① 地板：唯一一块恒在的可站面
@@ -322,8 +322,8 @@ class NavGeometry:
                 top, bot = min(pl.ay, pl.by), max(pl.ay, pl.by)
                 if bot - top < 8.0:
                     continue
-                g._add(Surface("vpole:%d" % k, VPOLE, x=pl.bx, top=top, bot=bot,
-                               stand=True, climb=CLIMB_POLE, solid=True, pole=pl))
+                g._add(Surface("vpole:%d" % k, VPOLE, x=pl.x, top=top, bot=bot,
+                               stand=False, climb=CLIMB_POLE, solid=False, pole=pl))
             elif getattr(pl, "kind", None) == HORIZONTAL:
                 lo, hi = max(min(pl.ax, pl.bx), 0.0), min(max(pl.ax, pl.bx), WL)
                 if hi - lo < 1.0:
@@ -399,10 +399,8 @@ class NavGeometry:
                 ob = Obstacle(ax, ay, bx, by, CAPSULE_PAD, SHELTER_WALL)
                 g.obstacles.append(ob)
                 g.grid.add(ax, ay, bx, by, ob)
-        for pl in poles:
-            ob = Obstacle(pl.ax, pl.ay, pl.bx, pl.by, POLE_RAD, "pole")
-            g.obstacles.append(ob)
-            g.grid.add(pl.ax, pl.ay, pl.bx, pl.by, ob)
+        # Beam 是可抓的 Climb tile，不是 Solid tile。尤其竖杆不能成为蜥蜴
+        # 地面行走的隐形墙；视线也不该被一根细杆完全遮断。
 
         # ── 版本：内容签名驱动，只有导航几何真的变了才 +1 ──
         g.sig = tuple(s.key() for s in g.surfaces)
