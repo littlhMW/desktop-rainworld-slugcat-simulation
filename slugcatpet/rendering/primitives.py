@@ -341,16 +341,17 @@ def draw_needle(painter, atlas, x, y, ang_deg, kind=0, fade=1.0, live=False,
 
     褪到 0 = 这根针已经没了：视觉层直接不画（逻辑层同一 tick 也会 GONE）。
     旧实现把 fade clamp 到 0.01，画出来是一条近乎纯黑的针：看着「已经消失」
-    实体却还在（用户报的「矛隐形但没有消失」）。钉成杆的针（pinned）是场景
-    物件，褪成黑色之后要一直留着。
+    实体却还在（用户报的「矛隐形但没有消失」）。``pinned``（钉成杆）只决定
+    逻辑层是不是场景杆，不改变视觉生命周期：一样要渐隐到 alpha 0 才消失。
 
     ``alpha`` 才是真正的整体不透明度：反编译 Spear.cs:1333-1356 只按
     fadecounter/400 把颜色从白 Lerp 到黑，没有 alpha —— 旧实现黑到 fade==0
     的那一 tick 直接 GONE，用户实测就是「视觉上一会儿突然消失」。现在黑化走完
     再用 alpha 从 1 渐隐到 0（见 world/spear.needle_tick），褪尽才真消失。
     """
-    if not live and fade <= 0.0 and not pinned:
-        return
+    # ``fade`` 只管颜色（白 → 黑），**可见性只看 alpha**：旧实现 fade <= 0 就整根
+    # 不画，于是「黑化走完、正在整体渐隐」的那 2 秒被整段跳过 —— 视觉上就是黑针
+    # 突然消失（用户报的「渐隐没有真实实现」）。alpha <= 0 才是真的没了。
     if alpha <= 0.0:
         return
     t = 1.0 if live else clampf(fade, 0.0, 1.0)

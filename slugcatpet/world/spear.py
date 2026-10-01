@@ -235,7 +235,10 @@ class Spear:
         反编译 Spear.cs:1333-1356 只按 fadecounter/400 把颜色从白 Lerp 到黑，
         没有 alpha；本作按用户口径补上「渐隐到 0 才消失」—— 旧实现是黑到
         fade==0 的那一 tick 直接 GONE（用户实测「视觉上一会儿突然消失」）。
-        钉成竖/横杆的针保留为场景杆：黑化走完就停住，不参加渐隐清除。
+        钉成竖/横杆的针照样跑完整条生命周期（黑化 → 保持 → 渐隐 → GONE）：
+        旧实现在这里对 pinned 早退，那根针就永远停在黑针，直到鼠标把它拔下来
+        （用户实测「卡住直到被点击才会直接消失」）。针 GONE 之后由 items 侧
+        `_sync_spear_poles()` 把对应场景杆一起撤掉。
         """
         if not self.needle or self.needle_live:
             return
@@ -249,11 +252,6 @@ class Spear:
             return
         if self.needle_fade > 0:                  # ① 白 → 黑
             self.needle_fade -= 1
-            return
-        if self.pinned:
-            # 钉成杆的针：褪成黑色后保留为场景杆，不消失。
-            # （旧实现这里一并 return，扎在墙上的针就永远停在白色 ——
-            #  正是用户报的「白针扎墙后不黑，拔出来重投才变黑」。）
             return
         if self.needle_fade_wait > 0:             # ② 全黑之后停留
             self.needle_fade_wait -= 1

@@ -59,7 +59,8 @@ def ctrl_movement_update(body):
     body.hip_sink += (target_sink - body.hip_sink) * cr.HIP_SINK_EASE
     body._floor_h = body.H + body.hip_sink * body.crawl_sink
 
-    if body.standing or move_x != 0:
+    # 只有「想站起来」才收回趴姿（旧条件带 move_x != 0，边走边趴永远压不下去）
+    if body.standing:
         body.crawl_anchor = None
         body.crawl_pose = max(0.0, body.crawl_pose - 0.08)
 
@@ -111,12 +112,20 @@ def ctrl_movement_update(body):
         dyn0 = dyn1 = cr.CRAWL_SPEED
         if inp0.y != 0:
             dyn0 = dyn1 = cr.CRAWL_SLOW     # 抬/低头减速
-        if (move_x > 0) == (c0.x < c1.x):   # 掉头减速
+        if (move_x > 0) == (c0.x < c1.x):   # 掉头减速（CrawlTurn 由 anim_forces 起）
             dyn0 *= 0.75
             dyn1 *= 0.75
-        if (move_x == 0 and c1.on_floor and not c0.pinned and not c1.pinned
-                and body._jump_pending is None):
-            body._crawl_pose()      # 勿投影头到 conn 距圆，会破坏蓄力接地判定
+        # 原版 Player.cs:9126：胸不贴地、髋又比胸低 3px 以上 → 逐帧抬髋
+        # （旧实现抄成 c0.on_floor，条件正好反过来）
+        if (move_x != 0 and not c0.on_floor and c1.cx == move_x
+                and c1.y > c0.y + 3.0):
+            c1.y -= 1.0
+        # 趴姿投影动与不动都跑；趴蹲蓄力期间不投影，防破坏蓄力接地判定
+        if (body.animation != "CrawlTurn" and c1.on_floor
+                and not c0.pinned and not c1.pinned
+                and body._jump_pending is None
+                and not getattr(body, "_ctrl_super_launch", 0)):
+            body._crawl_pose(moving=(move_x != 0))
 
     if body._ctrl_roll_direction != 0:      # 滚/滑期跑速取默认上限
         dyn0 = dyn1 = ms.DEFAULT_DYN

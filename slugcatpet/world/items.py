@@ -3408,6 +3408,16 @@ class ItemInteractionMixin:
 
     def _sync_spear_poles(self):
         """钉住的矛与杆实体保持一致（猫随时能爬上去；拔出/清除即消失）。"""
+        # 先扫幽灵杆：矛褪尽成 GONE 的那一 tick 已经从 self.spears 里剔除，
+        # 下面那圈就再也看不到它 —— 不扫的话会留下一根**看不见、却还能爬**的杆
+        # （骨针成杆后又有了渐隐生命周期，这条从「理论」变成真会走到）。
+        live = {id(sp) for sp in self.spears}
+        for pl in list(self.poles):
+            sp = getattr(pl, "from_spear", None)
+            if sp is not None and id(sp) not in live:
+                self.poles.remove(pl)
+                pl.state = ItemState.GONE
+                self.geometry_version += 1
         for sp in self.spears:
             pl = sp.pole
             if pl is not None and (not sp.pinned or sp.state != ItemState.FREE):

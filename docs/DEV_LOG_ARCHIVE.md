@@ -4,6 +4,44 @@
 
 ## 2026-10-01
 
+### R154 · 匍匐按反编译修正（趴姿投影 / 抬髋 / CrawlTurn）/ 骨针不再卡住不褪
+
+现象两件：① 匍匐与匍匐行走的动作都不对；② 矛大师的骨针褪色卡死，要等鼠标点一下才直接消失。
+两条都对着反编译（`Player.cs` / `PlayerGraphics.cs` / `Spear.cs`）核过。
+
+**① 匍匐：三处反编译抄错 + 少了一个 CrawlTurn**
+
+* **收回趴姿的条件**（`core/creature.py` 与 `control/moves.py` 两条移动路径）：旧写
+  `if self.standing or move_x != 0:` —— 「正在走」也被当成「要站起来」，于是「先走起来再想趴」
+  的猫每帧 `crawl_pose -= 0.08`，永远压不下去：立着骨架贴地滑行。改成只看 `self.standing`。
+* **趴姿投影只在原地跑**：旧写 `if move_x == 0 ...: self._crawl_pose()`，而原版
+  `PlayerGraphics.cs:2049-2060` 的 Crawl 偏移动与不动都施加。现改成 `_crawl_pose(moving=...)`
+  两态都跑；`moving=True` 时不阻尼速度、不把髋拖回 `crawl_anchor`（那是「趴着不动」才要的）。
+* **抬髋条件抄反**：原版 `Player.cs:9126` 是「胸**不**贴地（`ContactPoint.y > -1`）且髋比胸低 3px
+  → 逐帧抬髋」，旧实现写成 `c0.on_floor and c1.y > c0.y + 3.0 → c1.y -= 1.0`，条件与符号都反。
+* **补上 CrawlTurn**（原版 `Player.cs:9088-9100` + `7518-7535`）：反着爬先 `dyn *= 0.75`，
+  `crawlTurnDelay > 5` 且还在反着爬 → `animation = CrawlTurn`，每帧给身体一对反向力把身体
+  原地翻过来（已翻过来就抬上身收尾），而不是一路倒着滑。离开 `Crawl` 时清 `crawlTurnDelay`
+  （原版 `Player.cs:12425-12431`）。
+* `_crawl_pose` 里「头往身体当前那一侧摆，不跟 `facing`」：`facing` 在掉头那一帧就翻了，
+  用它会把头从髋上硬拖到另一侧（穿身而过），等翻过来再算。
+
+**② 骨针：卡住不褪 = 两处把「黑化走完」当成了终点**
+
+* `world/spear.py::needle_tick()` 的 `if self.pinned: return` —— 钉成杆的针黑化走完就永久停住，
+  直到鼠标把它拔下来。删掉：`pinned` 只决定「逻辑上是不是场景杆」，不改变视觉生命周期。
+* `rendering/primitives.py::draw_needle()` 开头的 `if not live and fade <= 0.0 and not pinned: return`
+  —— `fade=0`（黑化走完）就整根不画，于是「黑保持 240 tick + alpha 渐隐 80 tick」这约 8 秒被
+  整段跳过，实测就是「一会儿突然消失」。改成可见性**只看 `alpha <= 0`**（`fade` 只管颜色）。
+* 针 GONE 那一 tick 已经先从 `self.spears` 剔除，`_sync_spear_poles()` 的循环再也看不到它 →
+  会留下**看不见却还能爬**的杆。`_sync_spear_poles()` 开头补一段「扫幽灵杆」（按 `pl.from_spear`
+  反查是否还在 `self.spears`）。
+
+验证：新增 `work/scratch/e2e_r154.py`（30 项断言：源码口径 / 匍匐行走几何 / CrawlTurn / 骨针三段
+生命周期 / 幽灵杆 / `draw_needle` 像素口径）；全量 `run_all19.ps1`（含新脚本）：
+`=== round done; fails=0 []`。出图 `work/scratch/p154_crawl.png` 核过：站立 → 趴下的过渡自然，
+行走帧身体真的压平贴地（`dy` 由 17 收到 −1），掉头帧可见 CrawlTurn 的翻滚姿态。
+
 ### R153 · CombatTarget 接口迁移 / 杆控制器统一协议 / Spear 生命周期统一状态
 
 文档：R150 审计里当时点名「留专轮」的三条（§7 / §9 / §13），本轮一次收完。

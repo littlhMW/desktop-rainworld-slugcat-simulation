@@ -168,6 +168,7 @@ class SlugcatBody(CombatTarget):
         self.feet_stuck = None          # 钉脚锚 (x,y) or None
         self.crawl_anchor = None
         self.crawl_pose = 0.0           # 0→1 趴姿混合
+        self._crawl_turn_delay = 0      # 原版 crawlTurnDelay：反着爬连续几帧才翻身
 
         self.crawl_sink = 0.0
         self.hip_sink = 0.0
@@ -1383,7 +1384,10 @@ class SlugcatBody(CombatTarget):
         self.hip_sink += (target_sink - self.hip_sink) * HIP_SINK_EASE
         self._floor_h = self.H + self.hip_sink * self.crawl_sink
 
-        if self.standing or move_x != 0:
+        # 只有「想站起来」才收回趴姿。旧条件还带上 move_x != 0，于是
+        # 「先走起来再想趴」的猫每帧 crawl_pose -0.08，永远压不下去 ——
+        # 表现就是立着骨架贴地滑行（匍匐行走动作不对）。
+        if self.standing:
             self.crawl_anchor = None
             self.crawl_pose = max(0.0, self.crawl_pose - 0.08)
 
@@ -1432,6 +1436,8 @@ class SlugcatBody(CombatTarget):
             self.bodyMode = "Stand"
         else:
             self.bodyMode = "Crawl"
+        if self.bodyMode != "Crawl":
+            self._crawl_turn_delay = 0      # 原版 Player.cs:12425-12431
 
         dyn0 = RUN_UPPER * self.stats.runspeed_fac      # 顶速×种族因子，不乘加速度
         dyn1 = RUN_LOWER * self.stats.runspeed_fac
@@ -1444,14 +1450,33 @@ class SlugcatBody(CombatTarget):
             c1.vy += DEF_STAND_FEET
         elif self.bodyMode == "Crawl":
             dyn0 = dyn1 = CRAWL_SPEED      # 平地趴行恒速，不乘隧道爬速因子
-            # 原版 Player.cs:9126：爬行移动中髋比胸低超过 3px 就逐帧抬起髋，
-            # 让整条身体贴着地面走（不然会变成半跪着挪）。
-            if (move_x != 0 and c0.on_floor and c1.cx == move_x
+            if self.animation == "CrawlTurn":
+                if c1.on_floor:
+                    self._crawl_turn(move_x)      # 原版 Player.cs:7518-7535
+                else:
+                    self.animation = None         # 空中打断：落地别接着翻
+            elif (move_x > 0) == (c0.x < c1.x):
+                # 原版 Player.cs:9088-9100：朝身体反方向爬 → 先按 0.75 减速；
+                # 连着 5 帧以上还在反着爬就换 CrawlTurn（原地翻过来），
+                # 而不是一路倒着滑（旧实现只有减速、没有翻身）。
+                dyn0 *= 0.75
+                dyn1 *= 0.75
+                if (self._crawl_turn_delay > 5 and move_x != 0
+                        and not self.face_lock):
+                    self._crawl_turn_delay = 0
+                    self.animation = "CrawlTurn"
+            # 原版 Player.cs:9126：胸**不贴地**、髋又比胸低 3px 以上 → 逐帧抬髋，
+            # 让整条身体贴着地面走（旧实现把 ContactPoint.y > -1 抄成了 c0.on_floor，
+            # 条件正好反过来，于是「立着骨架贴地滑」）。
+            if (move_x != 0 and not c0.on_floor and c1.cx == move_x
                     and c1.y > c0.y + 3.0):
                 c1.y -= 1.0
-            if (move_x == 0 and c1.on_floor and not c0.pinned and not c1.pinned
+            # 趴姿投影：**动与不动都要跑**（旧实现只在 move_x == 0 时压身）。
+            if (self.animation != "CrawlTurn" and c1.on_floor
+                    and not c0.pinned and not c1.pinned
                     and self._jump_pending is None):
-                self._crawl_pose()
+                self._crawl_pose(moving=(move_x != 0))
+            self._crawl_turn_delay += 1
 
         if self.walk_speed_target is not None:
             dyn0 = min(dyn0, self.walk_speed_target)
@@ -1602,27 +1627,63 @@ class SlugcatBody(CombatTarget):
             self.jump_boost = self.stats.jump_boost
             # 横速由此前加速循环保留
 
-    def _crawl_pose(self):
+    def _crawl_pose(self, moving: bool = False):
+        """匍匐位姿：上身压到地面、髋钉在支撑面上，直到与髋拉开 conn_rest。
+
+        原版没有这条「趴姿投影」：它是 DownOnFours 把胸压下去之后，由连接距 +
+        重力自然稳定成的位姿（两 chunk 都贴地、相距 conn_rest，见 Player.cs:9126
+        与 PlayerGraphics.cs:2049 的 Crawl 绘制偏移）。这里复刻同一套目标几何，
+        但**动与不动都跑** —— 旧实现只在 move_x == 0 时压身，于是「先走起来再
+        想趴」的猫一直保持直立骨架贴地滑行（用户报的匍匐行走动作不对）。
+        移动时不阻尼速度、也不把髋拖回锚点：那是「趴着不动」才需要的。
+        """
         c0, c1 = self.chunk0, self.chunk1
         if self.crawl_anchor is None:
             self.crawl_anchor = c1.x
         self.crawl_pose = min(1.0, self.crawl_pose + 0.025)
-        c1.x += (self.crawl_anchor - c1.x) * 0.06
-        c1.y = self.support_y() - c1.rad
-        c1.vx *= 0.75
-        c1.vy = 0.0
+        if not moving:
+            c1.x += (self.crawl_anchor - c1.x) * 0.06
+            c1.y = self.support_y() - c1.rad
+            c1.vx *= 0.75
+            c1.vy = 0.0
         low_y = self.support_y() - c0.rad
         high_y = c1.y - max(self.conn_rest, 8.0)
         target_y = high_y + (low_y - high_y) * self.crawl_pose
         dy = max(1.0, abs(target_y - c1.y))
-        ahead = math.sqrt(max(0.0, self.conn_rest * self.conn_rest - dy * dy)) * self.facing
+        # 头往**身体当前那一侧**摆，不跟 facing：facing 在掉头那一帧就翻了，
+        # 用它会把头从髋上硬拖到另一侧（穿身而过）。等 CrawlTurn 翻过来再算。
+        side = 1.0 if self.facing >= 0 else -1.0
+        if abs(c0.x - c1.x) > 1.0:
+            side = 1.0 if c0.x > c1.x else -1.0
+        ahead = math.sqrt(max(0.0, self.conn_rest * self.conn_rest - dy * dy)) * side
         tx = c1.x + ahead
         ty = target_y
         k = 0.045 + 0.035 * self.crawl_pose
         c0.x += (tx - c0.x) * k
         c0.y += (ty - c0.y) * k
-        c0.vx *= 0.82
-        c0.vy *= 0.82
+        if not moving:
+            c0.vx *= 0.82
+            c0.vy *= 0.82
+
+    def _crawl_turn(self, move_x: int):
+        """原版 Player.cs:7518-7535 的 CrawlTurn 每帧力（本作 y↓，符号已翻）。
+
+        匍匐时朝身体反方向移动不是「倒着滑」：胸往下压、髋往后剪，整条身体原地
+        翻过来；翻过来（胸落到髋下方）后上身抬起，动画结束。
+        """
+        c0, c1 = self.chunk0, self.chunk1
+        flip = 1.0 if self.facing >= 0 else -1.0
+        c0.vx += flip
+        c1.vx -= 2.0 * flip
+        if (move_x > 0) != (c0.x < c1.x):        # 还没翻过来：继续压胸
+            c0.vy += 3.0
+            if c0.y > c1.y - 2.0:
+                self.animation = None
+                c0.vy += 1.0
+        else:                                    # 已翻过来：上身抬起
+            c0.vy -= 2.0
+        if move_x == 0:
+            self.animation = None
 
     def _breath_update(self):
         # 呼吸周期：睡眠恒定，清醒随疲劳缩短
