@@ -22,7 +22,7 @@ from PySide6.QtGui import (QColor, QLinearGradient, QPainter, QPainterPath,
                            QPolygonF)
 
 from ..core.units import clampf, lerp, inv_lerp
-from .lizard import (BODY_SCALE, BLACK_RGB, HEAD_DEFLECT_FLASH,
+from .lizard import (BODY_SCALE, BLACK_RGB, HEAD_DEFLECT_FLASH, TONGUE_W,
                      _ang_from_up, _ang_lerp)
 from . import lizard_cos as _cos
 from ..rendering.pixelmode import aa_hint
@@ -60,6 +60,8 @@ LIMB_FAR_A = 0.30              # 远侧腿色层压暗（原版 Lerp(1, 0.3, |de
 BODY_TINT = 0.30               # 体色里掺入的品种色比例（见 body_color）
 BODY_EDGE_K = 0.55
 NECK_K = _cos.NECK_RAD_K       # 颈根半径系数（相对躯干半径）
+TONGUE_RGB = (236, 214, 214)   # 舌带基色（原版舌头是偏白的淡粉，不分品种）
+TONGUE_TIP_RGB = (214, 176, 176)   # 舌尖
 
 
 def _shade(rgb, k):
@@ -272,6 +274,8 @@ def draw_lizard(p, atlas, lz, ts: float) -> None:
         rot = _ang_lerp(lz.last_head_angle, lz.head_angle, ts)
         # 低频动画噪声：个体差异（A 头微抬、B 头微低、C 尾慢摆），不是每帧随机抖
         rot += math.sin(lz._tick * 0.07 + lz.seed * 1.73) * 1.5
+        # 后空翻（文档 §9.4）：头跟着整只一起翻过去
+        rot += getattr(lz, "flip_ang", 0.0)
     else:
         rot = _ang_from_up(hpx - s0x, hpy - s0y)
     color = lz.color
@@ -288,6 +292,7 @@ def draw_lizard(p, atlas, lz, ts: float) -> None:
     # 原版挂载序：BehindHead 花纹夹在躯干与头之间，InFront 花纹压在头之上
     _draw_cosmetics(p, atlas, lz, spine, rads, ts, _cos.Z_BEHIND_HEAD)
     _draw_head(p, atlas, lz, hx, hy, s0x, s0y, rot, jaw, head_color(lz, ts), ts)
+    _draw_tongue(p, lz)                       # 舌头压在头上层（原版 drawPositions 之后）
     _draw_cosmetics(p, atlas, lz, spine, rads, ts, _cos.Z_FRONT)
     p.restore()
 
@@ -491,6 +496,41 @@ def _draw_leg(p, atlas, lz, i, ts):
           fx, fy, rot, sx, sy, 0.5, 0.5,
           opacity=LIMB_NEAR_A if lg.near else far_a)
 
+
+
+def _draw_tongue(p, lz):
+    """原版 LizardTongue：从嘴点到舌尖的一条渐细舌带（LizardGraphics 画在头上层）。
+
+    只有舌在动的时候才画 —— 平时它收在嘴里（tongue_state 为 None 一像素不动）。
+    """
+    st = getattr(lz, "tongue_state", None)
+    if st is None:
+        return
+    tx, ty = getattr(lz, "tongue_tip", (None, None))
+    if tx is None:
+        return
+    mx, my = lz._mouth_point()
+    dx, dy = tx - mx, ty - my
+    d = math.hypot(dx, dy)
+    if d < 1.0:
+        return
+    nx, ny = -dy / d, dx / d
+    w0 = TONGUE_W * getattr(lz.breed, "body_size_fac", 1.0)
+    w1 = TONGUE_W * 0.35
+    rgb = _mix(getattr(lz, "color", (230, 220, 220)), TONGUE_RGB, 0.65)
+    path = QPainterPath()
+    path.addPolygon(QPolygonF([
+        QPointF(mx + nx * w0, my + ny * w0),
+        QPointF(mx - nx * w0, my - ny * w0),
+        QPointF(tx - nx * w1, ty - ny * w1),
+        QPointF(tx + nx * w1, ty + ny * w1)]))
+    path.setFillRule(Qt.FillRule.WindingFill)
+    p.setBrush(QColor(*rgb))
+    p.drawPath(path)
+    # 舌尖（原版舌头末端那个小圆）
+    p.setBrush(QColor(*TONGUE_TIP_RGB))
+    p.drawEllipse(QPointF(tx, ty), w1 * 1.5, w1 * 1.5)
+    p.setBrush(Qt.BrushStyle.NoBrush)
 
 
 def _draw_head(p, atlas, lz, hx, hy, s0x, s0y, rot, jaw, color, ts=1.0):

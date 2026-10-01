@@ -212,8 +212,31 @@ BODY_JUMP_REAR = 0.40         # PrepareToJump：后节拿到反向速度（身�
 WIGGLE_DECAY = 0.90           # 每 tick 衰减
 WIGGLE_AMP = 0.60             # 幅度（乘在 wiggle 上）
 WIGGLE_SEG_PHASE = 0.90       # 相邻节的相位差
+WIGGLE_IDLE_P = 0.02          # 空闲时每 tick 随机抬高的概率（原版「其余时间随机抬高」）
 WIGGLE_BUMP = 0.55            # 事件（发现猎物 / 起跳 / 出声）抬高量
 HEAD_LEAD_K = 0.30            # 物理扭头：前 1~2 节被颈子带偏的比例（文档 §9.2/§10.4）
+
+# ── 原版 LizardTongue / LizardSpitTracker（文档 §六）：舌头是一段独立物理 ──
+# LizardTongue 不是「咬」，是 chunk 级的一条可伸缩舌头：LashOut 把舌尖射出，
+# 碰到猎物转 Grab 后 DragChunk 把猎物拽向嘴边，到嘴才 AttemptBite。
+# breed.tongue / tongue_range 是反编译里早就抄进来的参数，之前一直没接。
+TONGUE_SPEED = 7.5            # 射出速度（px/tick）
+TONGUE_RETRACT = 7.0          # 收回速度
+TONGUE_GRAB_R = 18.0          # 舌尖碰到猎物的判定半径
+TONGUE_MOUTH_R = 22.0         # 猎物被拽到离嘴这么近 = 到嘴，转 AttemptBite
+TONGUE_PULL = 7.0             # 每 tick 拽猎物的速度（原版 DragChunk）
+                              #   = 收舌速度：舌尖往回卷，猎物被舌尖拖着一起回到嘴边
+TONGUE_CD = 70                # 射舌冷却
+TONGUE_W = 3.2                # 舌根半宽（px，向舌尖渐细）
+TONGUE_JAW = 0.65             # 射舌时嘴至少张到这么大（原版 ShootTongue）
+
+# ── 原版后空翻（文档 §9.4）：不是「跳高一点」，是身体姿态序列的角动量 ──
+# 原版翻身的角动量来自 PrepareToJump 给各 chunk 的反向冲量；这里补上真正的
+# 「整条身体绕质心转过去」这段：起跳后 FLIP_TICKS 帧里匀速转过 FLIP_ARC。
+FLIP_TICKS = 14               # 一次翻滚的 tick 数（约 0.35s）
+FLIP_ARC = 360.0              # 整段翻过去的角（度）—— 360 收尾时与 0 等价，不跳变
+FLIP_SPEED_MIN = 1.0          # 起跳时的水平速度门槛（够快才带着翻过去）
+FLIP_GRACE = 2                # 起跳那几帧还贴着地的宽限（帧）
 
 # ── 原版关系表（StaticWorld.InitStaticWorldRelationships，decomp_full/StaticWorld.cs:3668-3726）──
 # 值 = (关系类型, 强度)。类型 -> AI 模块的映射照抄 LizardAI.ModuleToTrackRelationship
@@ -487,7 +510,7 @@ class LizardBreed:
                  # 品种差异（见文件末 BREED_TRAITS）
                  "spawn_weight", "cosmetics", "can_climb", "camo", "charge_leap",
                  "climb_wall", "climb_pole", "wall_attach", "wall_detach", "wall_jump",
-                 "jump_fac", "turn_hop",
+                 "jump_fac", "turn_hop", "flip_hop",
                  # DLC 品种（LizardBreeds.cs：SpitLizard / ZoopLizard / EelLizard）
                  "spit", "swim_speed", "leg_pairs", "lizard_spit_immune")
 
@@ -594,6 +617,7 @@ class LizardBreed:
         # 跳跃能力（≠ 会不会爬）：反编译 LizardBreedParams.loungeJumpyness
         self.jump_fac = 0.5
         self.turn_hop = True
+        self.flip_hop = False          # 跳得猛的品种才会在空中翻过去（见 BREED_TRAITS）
         self.wall_detach = False
         self.wall_jump = False
         self.can_climb = False         # = climb_wall or climb_pole（兼容旧调用点）
@@ -894,6 +918,10 @@ for _b in BREEDS:
     #   turn_hop                            = 掉头时会不会蹬一下地（同源 loungeJumpyness）
     _b.jump_fac = float(_t.get("jump_fac", 0.5))
     _b.turn_hop = bool(_t.get("turn_hop", _b.jump_fac > 0.0))
+    # flip_hop = 起跳时会不会带着身体翻过去（原版靠 PrepareToJump 的反向冲量拿到
+    # 角动量）。和 turn_hop 一样是独立能力，默认只看「跳得猛不猛」：
+    # jump_fac >= 0.9 的（蓝 0.9 / 青 0.9）与蓄力弹射的青蜥。
+    _b.flip_hop = bool(_t.get("flip_hop", _b.charge_leap or _b.jump_fac >= 0.9))
     _b.camo = bool(_t.get("camo", False))
     _b.charge_leap = bool(_t.get("charge_leap", False))
     # 咬合 / 扑击参数（文档 §8）：没登记的品种走粉蜥那一档
@@ -1042,7 +1070,12 @@ class Lizard:
                  "climb_kind", "climb_attached", "climb_side",
                  "climb_top", "climb_bot", "caps", "terrain", "_ground",
                  "_stuck", "_pack_point", "_pack_point_tick",
-                 "_blk_start", "_blk_end", "_blk_ver", "_claims", "_scanned")
+                 "_blk_start", "_blk_end", "_blk_ver", "_claims", "_scanned",
+                 # 舌头（LizardTongue）：state / 已经伸多长 / 方向 / 舌尖 / 猎物 / 冷却
+                 "tongue_state", "tongue_len", "tongue_dir", "tongue_tip",
+                 "tongue_prey", "tongue_grab", "tongue_t", "tongue_cd",
+                 # 后空翻（文档 §9.4）：剩余帧 / 方向 / 已经转过的角
+                 "flip_left", "flip_dir", "flip_ang", "flip_wait")
 
     def __init__(self, x: float, y: float, breed: LizardBreed | None = None,
                  seed: int = 0, id: int = 0):
@@ -1245,6 +1278,20 @@ class Lizard:
         self._atk_dir = (1.0, 0.0)
         # 原版 bodyWiggleCounter：停着也不像一块死物（文档 §10.5）
         self.wiggle = 0.0
+        # 舌头（文档 §六）：None / "out" / "hold" / "back"
+        self.tongue_state = None
+        self.tongue_len = 0.0
+        self.tongue_dir = (1.0, 0.0)
+        self.tongue_tip = (0.0, 0.0)
+        self.tongue_prey = None
+        self.tongue_grab = None
+        self.tongue_t = 0
+        self.tongue_cd = 0
+        # 后空翻（文档 §9.4）
+        self.flip_left = 0
+        self.flip_dir = 1
+        self.flip_ang = 0.0
+        self.flip_wait = 0
         # AI 这一 tick 的行进意图速度（物理改 vx 之前先记下来：脚支撑会把 vx 清零，
         # 不能拿积分后的 vx 当「想往哪走」）
         self._vx_intent = 0.0
@@ -1604,6 +1651,7 @@ class Lizard:
         self._step_head()
         self._step_depth()
         self._step_head_point(WL)     # 头是挂在第 0 节前方的软体末端（要在 turn_lift 之后）
+        self._tongue_tick()           # 舌头（LizardTongue）：射出 / 拽回 / 到嘴转咬合
         self._step_cosmetics()
         self._want_vx = 0.0           # 这一 tick 的意图已经用完（下一 tick AI 再写）
 
@@ -2675,6 +2723,8 @@ class Lizard:
             self.sprint = 1.0 if self.rng.random() < self.breed.lounge_tendency else 0.55
             if o.kind == "prey":
                 self.prey.hunting(o.obj, self._tick)
+            # 原版 PreySpotted 也是抬高 bodyWiggleCounter 的事件之一（文档 §10.5）
+            self.wiggle = min(1.0, self.wiggle + WIGGLE_BUMP)
         self.target, self.target_obj = (o.x, o.y), o.obj
         self.look_at = (o.x, o.y)
 
@@ -3107,6 +3157,11 @@ class Lizard:
             # 猫端着驯服食物送到嘴边（原版送礼）→ 先吃食不咬它
             if not _cat_offering_food(self.target_obj):
                 self._start_bite()
+        elif (self.target_obj is not None and self._tongue_ready()
+                and d <= self.breed.tongue_range
+                and not _cat_offering_food(self.target_obj)):
+            # 咬不着、但舌头够得到：原版 ShootTongue（白蜥那根 440px 的长舌）
+            self._shoot_tongue(self.target_obj)
         elif self._contact_floor and self.hop_cd <= 0 and (self.y - self.target[1]) > 34.0:
             self._leap()
             self.hop_cd = HOP_CD
@@ -3473,6 +3528,11 @@ class Lizard:
         伏击型，原地待机时间是别人的 LURK_IDLE_MULT 倍。
         """
         self.lurk = self.breed.key in ("white", "salamander")
+        # 原版 bodyWiggleCounter 除了事件抬高，其余时间是随机抬高的 ——
+        # 这是「停着也不像一块死物」的来源（文档 §10.5）。
+        if (not self.dead and self.wiggle < 0.25
+                and self.rng.random() < WIGGLE_IDLE_P):
+            self.wiggle = min(1.0, self.wiggle + WIGGLE_BUMP * 0.5)
         self.idle_timer -= (1.0 / LURK_IDLE_MULT) if self.lurk else 1.0
         if self.idle_timer <= 0:
             span = self.rng.uniform(-1.0, 1.0) * 120.0
@@ -3733,6 +3793,67 @@ class Lizard:
                 self.seg[k].vx -= px * ATK_PUSH_PREP * sh
                 self.seg[k].vy -= py * ATK_PUSH_PREP * sh
 
+    # ── 后空翻（文档 §9.4）：身体姿态序列的角动量，不是「跳高一点」──
+    def _start_flip(self, direction: int = None) -> bool:
+        """起跳时把整段翻滚排上（只有 flip_hop 品种会翻）。
+
+        原版翻身的角动量来自 PrepareToJump 给各 chunk 的反向冲量；这里补上真正
+        的「整条身体绕质心转过去」：之后 FLIP_TICKS 帧里匀速转过 FLIP_ARC。
+        """
+        if not self.breed.flip_hop or self.dead:
+            return False
+        if self.flip_left > 0:
+            return False
+        if abs(self.vx) < FLIP_SPEED_MIN:
+            return False                    # 原地垂直跳不翻（原版冲量不够）
+        self.flip_left = FLIP_TICKS
+        self.flip_dir = 1 if (direction or (1 if self.vx >= 0.0 else -1)) >= 0 else -1
+        self.flip_ang = 0.0
+        self.flip_wait = FLIP_GRACE
+        return True
+
+    def _step_flip(self) -> None:
+        """翻滚推进：整条身体（含驱动点）绕**质心**匀速转，头部同步旋转。
+
+        绕质心而不是绕前节：绕前节会变成「尾巴甩过头顶」，绕质心才是原版那种
+        「整只翻过去」。旋转是刚体变换，节间距离不变，所以后面的杆长约束不会被
+        打乱 —— 只有质心位置随之更新（驱动点跟着走）。
+        """
+        if self.flip_left <= 0 or self.dead:
+            self.flip_left = 0
+            self.flip_wait = 0
+            return
+        if self._contact_floor:
+            # 还没离地：给 FLIP_GRACE 帧宽限（起跳那一两帧还贴着地）。
+            # 宽限用完还没离地（比如跳被卡住了）就彻底作废 —— 不能把
+            # 一次没飞起来的起跳挂在这里，否则下次真正离地会突然翻起来。
+            if self.flip_wait <= 0:
+                self.flip_left = 0
+                self.flip_ang = 0.0
+            else:
+                self.flip_wait -= 1
+            return
+        self.flip_wait = 0
+        self.flip_left -= 1
+        n = len(self.seg)
+        if n < 2:
+            self.flip_left = 0
+            return
+        cx = sum(s.x for s in self.seg) / n
+        cy = sum(s.y for s in self.seg) / n
+        d = math.radians(FLIP_ARC / float(FLIP_TICKS)) * self.flip_dir
+        ca, sa = math.cos(d), math.sin(d)
+        for s in self.seg:
+            rx, ry = s.x - cx, s.y - cy
+            s.x = cx + rx * ca - ry * sa
+            s.y = cy + rx * sa + ry * ca
+            s.vx, s.vy = s.vx * ca - s.vy * sa, s.vx * sa + s.vy * ca
+        # 驱动点 = 第 0 节（AI 推的就是它），一起转过去，下一帧的积分从这里接着走
+        self.x, self.y = self.seg[0].x, self.seg[0].y
+        self.flip_ang += math.degrees(d)
+        if self.flip_left <= 0:
+            self.flip_ang = 0.0      # 360 与 0 等价：收尾直接归零，不跳变
+
     def _leap(self, scale: float = 1.0) -> float:
         """蹬地起跳：头点拿初速，同一份冲量灌给躯干前几节（原版 Creature.Jump）。"""
         vy = self._hop_vy() * scale
@@ -3748,7 +3869,139 @@ class Lizard:
             self.seg[1].vy += vy * BODY_JUMP_MID
             self.seg[2].vy -= vy * BODY_JUMP_REAR
         self.wiggle = min(1.0, self.wiggle + WIGGLE_BUMP)
+        # 跳得猛的品种：这一跳带着身体翻过去（文档 §9.4）
+        self._start_flip(1 if self.facing >= 0 else -1)
         return vy
+
+    # ── 原版 LizardTongue（文档 §六）：射出 → 抓住 → 拽回嘴边 → AttemptBite ──
+    def _tongue_ready(self) -> bool:
+        b = self.breed
+        return (b.tongue and b.tongue_range > 0.0 and self.tongue_state is None
+                and self.tongue_cd <= 0 and self.bite_cd <= 0 and self.bite_hold <= 0
+                and self.bite_wind <= 0 and not self.dead and self.stun <= 0
+                and self.hauled is False and self.climb_x is None
+                and self.state != ItemState.MOUSE
+                and self.carry_body is None)
+
+    def _shoot_tongue(self, o) -> bool:
+        """原版 LizardTongue.LashOut：舌尖朝目标射出去（不是「咬」，是「舔」）。
+
+        白蜥那根 440px 的长舌就是靠这个抓猫的；同时按 §10.5 抬高
+        bodyWiggleCounter（原版 ShootTongue 是抬高事件之一）。
+        """
+        px, py = _obj_pos(o)
+        if px is None:
+            return False
+        mx, my = self._mouth_point()
+        dx, dy = px - mx, py - my
+        d = math.hypot(dx, dy)
+        if d <= 1e-6:
+            return False
+        self.tongue_dir = (dx / d, dy / d)
+        self.tongue_len = 0.0
+        self.tongue_tip = (mx, my)
+        self.tongue_prey = o
+        self.tongue_grab = None
+        self.tongue_t = 0
+        self.tongue_state = "out"
+        self.tongue_cd = int(TONGUE_CD)
+        self.jaw = max(self.jaw, TONGUE_JAW)
+        self.wiggle = min(1.0, self.wiggle + WIGGLE_BUMP)
+        return True
+
+    def _tongue_reset(self) -> None:
+        self.tongue_state = None
+        self.tongue_len = 0.0
+        self.tongue_prey = None
+        self.tongue_grab = None
+        self.tongue_t = 0
+
+    def _tongue_pull(self, o) -> bool:
+        """原版 DragChunk：把咬住的猎物往嘴边拽；到嘴返回 True（该 AttemptBite）。
+
+        拽得动的只有「有物理的对象」：带 body.chunk0/1 的（蛞蝓猫）推它的 chunk
+        速度，带 vx/vy 的（蝠蝇 / 蝉乌贼 / 面条蝇）推它的速度。都没有的对象只是
+        被舔一下 —— 不硬改坐标（改别人的坐标会把别处的物理搅乱）。
+        """
+        tgt = getattr(o, "obj", o)
+        px, py = _obj_pos(tgt)
+        if px is None:
+            return True
+        mx, my = self._mouth_point()
+        dx, dy = mx - px, my - py
+        d = math.hypot(dx, dy)
+        if d <= TONGUE_MOUTH_R:
+            return True
+        k = min(1.0, TONGUE_PULL / max(1.0, d))
+        body = getattr(tgt, "body", None)
+        chunks = [c for c in (getattr(body, "chunk0", None),
+                              getattr(body, "chunk1", None)) if c is not None]
+        if chunks:
+            for c in chunks:
+                c.vx = float(getattr(c, "vx", 0.0)) + dx * k * 0.5
+                c.vy = float(getattr(c, "vy", 0.0)) + dy * k * 0.5
+            return False
+        vx, vy = getattr(tgt, "vx", None), getattr(tgt, "vy", None)
+        if isinstance(vx, (int, float)) and isinstance(vy, (int, float)):
+            tgt.vx = vx + dx * k
+            tgt.vy = vy + dy * k
+        return False
+
+    def _tongue_tick(self) -> None:
+        """舌头这一段物理：射出 → 命中 → 拽回来 → 到嘴转 AttemptBite → 收回。"""
+        if self.tongue_cd > 0:
+            self.tongue_cd -= 1
+        if self.tongue_state is None:
+            return
+        if self.dead or self.stun > 0 or self.state == ItemState.MOUSE:
+            self._tongue_reset()
+            return
+        self.tongue_t += 1
+        mx, my = self._mouth_point()
+        dx, dy = self.tongue_dir
+        st = self.tongue_state
+        if st == "out":
+            self.tongue_len += TONGUE_SPEED
+            tip = (mx + dx * self.tongue_len, my + dy * self.tongue_len)
+            # 射程到头（原版 tongueRange）→ 收回
+            if self.tongue_len >= self.breed.tongue_range:
+                self.tongue_len = self.breed.tongue_range
+                tip = (mx + dx * self.tongue_len, my + dy * self.tongue_len)
+                self.tongue_state = "back"
+            o = self.tongue_prey
+            op = _obj_pos(getattr(o, "obj", o))
+            if (o is not None and op[0] is not None
+                    and math.hypot(op[0] - tip[0], op[1] - tip[1]) <= TONGUE_GRAB_R):
+                self.tongue_grab = o          # 舌尖碰到：原版 Grab
+                self.tongue_state = "hold"
+            self.tongue_tip = tip
+            return
+        if st == "hold":
+            o = self.tongue_grab
+            if o is None:
+                self.tongue_state = "back"
+                self.tongue_tip = (mx + dx * self.tongue_len, my + dy * self.tongue_len)
+                return
+            # 原版 DragChunk：舌头往回卷，猎物被舌尖拖着一起回到嘴边（两者
+            # 同速，所以不会出现「舌头缩回了猎物还在原地」）。
+            self.tongue_len = max(0.0, self.tongue_len - TONGUE_RETRACT)
+            if self._tongue_pull(o):
+                # 到嘴了：原版接着就是 AttemptBite，舌头这一趟结束
+                self._start_bite(getattr(o, "obj", o))
+                self.tongue_grab = None
+                self.tongue_state = "back"
+            elif self.tongue_len <= 0.0:
+                # 卷到底了猎物还没到嘴：拽不动的东西（石头之类），放舌
+                self.tongue_grab = None
+                self.tongue_state = "back"
+            self.tongue_tip = (mx + dx * self.tongue_len, my + dy * self.tongue_len)
+            return
+        # back：收回
+        self.tongue_len -= TONGUE_RETRACT
+        if self.tongue_len <= 0.0:
+            self._tongue_reset()
+            return
+        self.tongue_tip = (mx + dx * self.tongue_len, my + dy * self.tongue_len)
 
     def _step_head(self) -> None:
         if not self.dead:
@@ -3796,6 +4049,12 @@ class Lizard:
         self.head_lx, self.head_ly = self.head_x, self.head_y
         tx = self.x + self._ax_c * self.head_conn
         ty = self.y - self.turn_lift
+        # 翻滚中头挂在体前的那一段也要跟着转（原版头在 bodyChunks 里一起翻）
+        if self.flip_ang:
+            fa = math.radians(self.flip_ang)
+            rx, ry = tx - self.x, ty - self.y
+            tx = self.x + rx * math.cos(fa) - ry * math.sin(fa)
+            ty = self.y + rx * math.sin(fa) + ry * math.cos(fa)
         if (self.dead or self.stun > 0 or self.held_by_hand
                 or self.state == ItemState.MOUSE):
             k = HEAD_SPRING_SOFT          # 颈子不使劲：头只被轻轻拖着
@@ -4149,6 +4408,9 @@ class Lizard:
         # bodyChunks[0] 被 AI 推着走、头挂在它前方 12*headSize；这里拓扑调成同一
         # 形状：躯干是驱动体，头是挂在体前的软体末端（见 _step_head_point）。
         self.seg[0].x, self.seg[0].y = self.x, self.y
+        # 后空翻：整条身体绕质心转（含驱动点），必须在杆长约束之前 ——
+        # 旋转是刚体变换（节距不变），先转再解约束，链子不会被掰回去。
+        self._step_flip()
         anc_x = self.x
         anc_y = self.y
         # ② BodyChunkConnection + 顺直软约束：

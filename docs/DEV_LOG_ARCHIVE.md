@@ -4,6 +4,47 @@
 
 ## 2026-10-01
 
+### R148 · LizardTongue 舌击 + 后空翻 + bodyWiggleCounter 事件
+
+回收 R146/R147 遗留的两个「字段存在但没接线」：
+反编译里 `breed.tongue / tongue_range` 早就抄进来了却从未读过，
+以及后空翻一直只是「跳高一点」。
+
+**① 舌头（文档 §六：LizardTongue / LizardSpitTracker）**
+
+* 新增 `TONGUE_SPEED 7.5 / TONGUE_RETRACT 7.0 / TONGUE_PULL 7.0 /
+  TONGUE_GRAB_R 18 / TONGUE_MOUTH_R 22 / TONGUE_CD 70 / TONGUE_W 3.2 / TONGUE_JAW 0.65`。
+* `_tongue_ready()` 门禁：有舌头且有射程、没在同一趟、不在咬合前摇/保持、
+  没死、没被打晕、没被拎着、没在爬杆、嘴里没叼东西。
+* `_shoot_tongue(o)` 等于原版 `LashOut`：舌尖从嘴点射出，开狼、
+  抬高 bodyWiggleCounter、进冷却。
+* `_tongue_tick()` 状态机：`out`（射出，射程到头自动转 `back`）→ `hold`（舌尖
+  碰到猎物 = 原版 `Grab`）→ 一边收舌一边 `DragChunk` 把猎物拖到嘴边
+  （`_tongue_pull`，拖拽速度 = 收舌速度，两者同步不会脱节）→ 到嘴转
+  `AttemptBite`（`_start_bite`）→ `back` 收回归零。拽不动的东西（石头类）舌头卷到底就放舌，
+  不永远噠着，也不硬改别人的坐标。
+* `_lunge()` 接线：咬不着但舌头够得到就射舌（白蜥那根 440px 长舌）。
+* `lizard_gfx._draw_tongue()`：从嘴点到舌尖的渐细舌带 + 舌尖圆点，只在
+  舌头在动时画（平时留在嘴里，一像素不占）。
+
+**② 后空翻（文档 §9.4：不是「跳高一点」，是身体姿态的角动量）**
+
+* `breed.flip_hop` 由跳跃能力派生（`charge_leap or jump_fac >= 0.9`：蓝 / 青 会，粉 / 绿
+  不会），和 turn_hop 一样是独立能力，不再拿「会不会爬」凑。
+* `_start_flip()` / `_step_flip()`：起跳后 `FLIP_TICKS 14` 帧里**绕质心刚体转过
+  `FLIP_ARC 360°`**（节间距离守恒，驱动点一起转）；头在翻滚时跟着转。
+  `FLIP_GRACE 2` 帧宽限等离地，宽限用尽还没离地就彻底作废（不留
+  幽灵翻滚），落地立即作废。
+
+**③ bodyWiggleCounter（文档 §10.5）**
+
+* 事件抬高：发现猎物（`_adopt`，同一目标不重复抬）、起跳、射舌。
+* 空闲随机抬高：`WIGGLE_IDLE_P 0.02` / tick，上限 0.25 以下一档——停着也
+  不像一块死物。
+
+**验证**：`work/scratch/e2e_r148.py`（60 项断言）+ `run_all19.ps1` 全量回归
+（fails=0）；离线逐帧渲染 `r148_tongue_flip.png` 目视核对舌头伸缩与翻滚姿态。
+
 ### R147 · ThreatField / CrowdField + 动态导航代价 + EscapeGoal（贴身反应排在路线之前）
 
 文档：《ThreatField 与动态导航代价（调整版）》。核心不是「离威胁多远」一个标量，
