@@ -1664,6 +1664,10 @@ class BehaviorFSM:
             self.gfx.sleeping = False
             self.body.sleeping = False
             self.gfx.sleep_curl = 0.0
+        # 移动权不跨状态：新状态要自己重新认领（见 SlugcatBody.claim_move）。
+        # 否则上一个状态残留的 walk_target_x 会继续把身体往前拖（「切态了还在走」），
+        # 而这正是同层行为（战斗/救援/逃跑）互相抢步点的入口之一。
+        self.body.move_owner = None
         self.state = new
         self.timer = 0
         self.phase = 0
@@ -2937,7 +2941,7 @@ class BehaviorFSM:
         # 起跳帧（_flee_lizard_now 刚做威胁跳）不给步点：这一跳的横速已经
         # 钉在 chunk 上，再 walk_to 会把它拽回来，跳完几乎原地落回。
         if b.on_floor() and not b.took_off() and self._flee_from is not None:
-            b.walk_to(self.planner.retreat_point(self._flee_from))
+            self._move(self.planner.retreat_point(self._flee_from))
 
     def _st_fleelizard(self, cursor, disturbed):
         b = self.body
@@ -2991,7 +2995,7 @@ class BehaviorFSM:
         # 蜥蜴在动，隔几拍重取反方向；刚落地的第一帧（步点被威胁跳清空）
         # 立刻补一个，避免落地后站着不动又被打上「退无可退」。
         if self.timer % 12 == 0 or b.walk_target_x is None:
-            b.walk_to(self._flee_goal_x(lz))
+            self._move(self._flee_goal_x(lz))
 
     def _zerog(self) -> bool:
         return getattr(self.body, "zerog", False)
@@ -3911,7 +3915,21 @@ class BehaviorFSM:
         self._clear_hands()
         self._point_end()
         self.body.stop_walk()
+        self.body.move_owner = None
         self._fight_climber_release()
+
+    def _move(self, x, facing=None) -> bool:
+        """本状态认领移动权后走向 x —— 同层行为的**唯一**移动入口。
+
+        旧实现里战斗/救援/喂食/社交各自直接写 ``body.walk_to()``：同帧里谁最后跑
+        谁说了算，且没人负责在离开时放掉步点。现在改走 ``SlugcatBody.claim_move``
+        （同一 tick 只允许一个持有者，别人认领会被拒绝），离开时由 ``_move_stop``
+        或 ``_transition`` 统一交还。"""
+        return self.body.claim_move(self.state, x, facing)
+
+    def _move_stop(self) -> None:
+        """交还移动权并停步（本状态收势；不是持有者就什么也不做）。"""
+        self.body.release_move(self.state)
 
     def _climbable_pole_available(self) -> bool:
         """此刻真有一根「我用得上的竖杆」——不是「世界上存在竖杆」。
@@ -5689,19 +5707,27 @@ class BehaviorFSM:
                 return False
         return True
 
-    def _walk_to_open(self, x: float) -> None:
+    def _walk_to_open(self, x: float, owner=None) -> None:
         """走向 x，但轻微绕开「这里已经挤了一堆猫」的落点。
 
         FightThreat / Socialize / HelpFeed 这些同层行为一直直接用 ``b.walk_to()``，
         TrafficField 只进了 Planner 的路线成本 —— 于是三只猫围同一只蜥蜴时，路线层
         根本没机会把它们散开，最后挤成一团互相顶（用户报的「一大团猫挤在一起」）。
         这里按交通代价在 ±``CROWD_SIDE_STEP`` 内挑一个更空的落点：绕开量很小，不改变
-        行为意图，只是让同层行为也吃一次交通代价。
+        行为意图，只是让同层行为也吃一次交通代价。传 ``owner`` 时顺便认领移动权
+        （``self.state``），让「谁在走」和「谁在绕」是同一笔账。
         """
         b = self.body
+
+        def go(tx):
+            if owner is None:
+                b.walk_to(tx)
+            else:
+                self._move(tx)
+
         tf = getattr(self.win, "traffic_field", None)
         if tf is None:
-            b.walk_to(x)
+            go(x)
             return
         y = b.chunk1.y
         try:
@@ -5716,9 +5742,9 @@ class BehaviorFSM:
                 c = tf.point_cost(cand, y, self.win)
                 if c < bc - 1e-6:
                     best, bc = cand, c
-            b.walk_to(best)
+            go(best)
         except Exception:
-            b.walk_to(x)
+            go(x)
 
     def _path_danger_ok(self, x1: float, y1: float) -> bool:
         """从我现在的位置**直线**走到 (x1, y1) 会不会把自己送进危险区。
@@ -5797,7 +5823,7 @@ class BehaviorFSM:
             self._rescue_exec = None
             # 救援是**走到同伴身上**（按压半径量的是最近 chunk 对），落点必须精确；
             # 让位给拥挤只用在「保持距离」的腿（战斗站位 / 社交旁观），不在这里。
-            b.walk_to(ob.chunk1.x)
+            self._move(ob.chunk1.x)
             return
         ex = self._rescue_exec
         if ex is None or ex.goal.key() != self._rescue_key(ob):
@@ -5805,7 +5831,7 @@ class BehaviorFSM:
                 self.win, self.planner, self._rescue_goal(ob))
         if ex.update() == GIVEUP:
             self._rescue_exec = None
-            self.body.walk_to(ob.chunk1.x)
+            self._move(ob.chunk1.x)
 
     def _dead_peer_near(self):
         """附近倒地的同伴（真死 / 晕着的都算）；已经有人在救的不抢。"""
@@ -6865,7 +6891,7 @@ class BehaviorFSM:
             if kind == "revive":
                 self._rescue_step(ob)    # 救援赶路：走 / 跳 / 落 / 爬杆
             else:
-                b.walk_to(ob.chunk1.x)
+                self._move(ob.chunk1.x)
             self.gfx.look_at = (ob.chunk0.x, ob.chunk0.y)
             self._clear_hands()
             if d > tuning.SOCIAL_ABANDON_R and not getattr(ob, "dead", False):
@@ -6898,9 +6924,9 @@ class BehaviorFSM:
         self.gfx.look_at = (lz.x, lz.y)
         d = math.hypot(lz.x - b.chunk1.x, lz.y - b.chunk1.y)
         if d > tuning.GIFT_APPROACH_R:
-            b.walk_to(lz.x)
+            self._move(lz.x)
             return
-        b.stop_walk()
+        self._move_stop()
         b.facing = 1 if lz.x >= b.chunk0.x else -1
         self._aim_target(lz)
         self._gift_wait += 1
@@ -7351,9 +7377,9 @@ class BehaviorFSM:
             d = math.hypot(f.x - b.chunk0.x, f.y - b.chunk0.y)
             self.gfx.look_at = (f.x, f.y)
             if d > 60.0:
-                b.walk_to(f.x)
+                self._move(f.x)
                 return
-            b.stop_walk()
+            self._move_stop()
             side = b.pick_hand("fruit")
             if side is None:
                 return
@@ -7365,9 +7391,9 @@ class BehaviorFSM:
         d = math.hypot(ob.chunk1.x - b.chunk1.x, ob.chunk1.y - b.chunk1.y)
         self.gfx.look_at = (ob.chunk0.x, ob.chunk0.y)
         if d > tuning.HELPFEED_DROP_R:
-            b.walk_to(ob.chunk1.x)
+            self._move(ob.chunk1.x)
             return
-        b.stop_walk()
+        self._move_stop()
         b.facing = 1 if ob.chunk0.x >= b.chunk0.x else -1
         self.gfx.face(True, PRIO_URGENT)     # 喂食的表情
         fruit.x, fruit.y = ob.chunk0.x, ob.chunk0.y
@@ -7786,9 +7812,9 @@ class BehaviorFSM:
             if rip is not None:
                 rd = math.hypot(rip.x - b.chunk1.x, rip.y - b.chunk1.y)
                 if rd > reach * 0.8:      # 走到真的够得到再停（不然停在手够不到的地方）
-                    b.walk_to(rip.x)
+                    self._move(rip.x)
                     return
-                b.stop_walk()
+                self._move_stop()
                 side = b.pick_hand("spear")
                 if side is None:                 # 手里攥着果子之类：腾出手再拔
                     b.drop_one_item()
@@ -7813,9 +7839,9 @@ class BehaviorFSM:
             if o is not None:
                 od = math.hypot(o.x - b.chunk1.x, o.y - b.chunk1.y)
                 if od > reach * 0.8:
-                    b.walk_to(o.x)
+                    self._move(o.x)
                     return
-                b.stop_walk()
+                self._move_stop()
                 side = b.pick_hand("spear")
                 if side is None:                 # 手里攥着果子之类：腾出手再捡
                     b.drop_one_item()
@@ -7853,11 +7879,13 @@ class BehaviorFSM:
         keep = tuning.FIGHT_ARM_KEEP
         hys = tuning.FIGHT_ARM_HYS
         if d < keep - hys:                            # 太近会被咬：边打边拉开
-            b.walk_to(b.chunk1.x - (tgt.x - b.chunk1.x))
+            # 拉开时朝向仍钉在目标上（原版战斗姿势是面对着目标后退，不是背身跑）
+            self._move(b.chunk1.x - (tgt.x - b.chunk1.x),
+                       facing=1 if tgt.x >= b.chunk1.x else -1)
         elif d > keep + hys:                          # 太远：走近到出手距离
-            self._walk_to_open(tgt.x)
+            self._walk_to_open(tgt.x, self.state)
         else:
-            b.stop_walk()
+            self._move_stop()                          # 站定：交还移动权（只本人能还）
 
         self._act_end()
         self._aim_target(tgt)
@@ -8303,9 +8331,9 @@ class BehaviorFSM:
             corner = True
         self._crawl_wall = corner
         if corner:
-            b.stop_walk()                 # 贴到那一侧的边：就地蹲着盯着它
+            self._move_stop()             # 贴到那一侧的边：就地蹲着盯着它
         else:
-            b.walk_to(goal)
+            self._move(goal)
         self.gfx.look_at = (lz.x, lz.y)
 
     def _tongue_holding_creature(self):

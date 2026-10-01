@@ -305,8 +305,13 @@ def _draw_body(p, lz, spine, rads):
     破坏迷彩效果。
     """
     rgb = body_color(lz)
-    path = _strip_path(spine, rads)       # 描边 / 裁剪用的连续带（轮廓保持连贯）
-    chunk_path = _chunked_path(spine, rads)   # 填充用的分块身体（逐节横截面）
+    # 身体 = 逐个 body chunk 横截面的**并集**（文档 §9.1）：填充 / 裁剪 / 描边用
+    # 同一个轮廓。旧版填充走分块、描边与尾部裁剪仍走连续带 _strip_path —— 于是
+    # 外轮廓又被平滑回一根软管，节点之间的横向错位只在色块内部看得见，边界上
+    # 照样抹平。simplified() 把重叠的截面多边形并成一条外轮廓：保角，且能一笔
+    # 描边（不会画出每一圈的内部接缝）。
+    chunk_path = _chunked_path(spine, rads)
+    path = chunk_path.simplified()
     if lz.body_rgb is not None:           # 白蜥：纯色，无渐变无描边
         p.setBrush(QColor(*rgb))
         p.drawPath(chunk_path)
@@ -322,8 +327,8 @@ def _draw_body(p, lz, spine, rads):
                            QPointF((x0 + x1) * 0.5 - nx * span, (y0 + y1) * 0.5 - ny * span))
     grad.setColorAt(0.0, QColor(*_shade(rgb, BODY_TOP_K)))
     grad.setColorAt(1.0, QColor(*_shade(rgb, BODY_BOT_K)))
-    # 填充走分块身体、描边仍走连续带（本函数末尾那一笔）：轮廓一笔连贯不会
-    # 出现逐节接缝，内部则按 body chunk 分块 —— 节点相对位移保留成折角。
+    # 填充走分块身体（并集填充，截面重叠处不会叠色），描边与裁剪走同一条
+    # 并集外轮廓 —— 节点相对位移直接变成轮廓上的折角。
     p.setBrush(grad)
     p.drawPath(chunk_path)
 
@@ -333,7 +338,7 @@ def _draw_body(p, lz, spine, rads):
             idx = len(spine) - n_tail
             tpts = [spine[idx - 1]] + spine[idx:]
             thw = [rads[idx - 1] * 0.98] + [r * 0.98 for r in rads[idx:]]
-            tpath = _strip_path(tpts, thw)
+            tpath = _chunked_path(tpts, thw).simplified()
             p.save()
             p.setClipPath(path, Qt.ClipOperation.IntersectClip)
             tg = QLinearGradient(QPointF(*tpts[0]), QPointF(*tpts[-1]))

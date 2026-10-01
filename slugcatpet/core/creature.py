@@ -153,6 +153,8 @@ class SlugcatBody(CombatTarget):
         self.standing = True            # True=直立 / False=趴
         self.move_dir = 0
         self.walk_target_x = None
+        self.walk_facing = None         # 走向目标期间要求的朝向（意图，见 walk_to）
+        self.move_owner = None          # 移动权持有者：同一 tick 只有一个状态能改步点
         self.walk_speed_target = None
         self._terrain_block_ticks = 0
         self._terrain_jump_cd = 0
@@ -350,15 +352,53 @@ class SlugcatBody(CombatTarget):
     def is_moving(self):
         return self.walk_target_x is not None and abs(self.walk_target_x - self.chunk1.x) > WALK_STOP_EPS
 
-    def walk_to(self, x):
+    def walk_to(self, x, facing=None):
+        """走向 x。``facing`` = 「走向这个目标期间的朝向意图」（+1 右 / -1 左）。
+
+        落点被 walk_min/walk_max 夹到墙里（dx≈0）时不再拿落点反推朝向，直接按
+        ``facing`` 收尾。旧实现只按 ``dx`` 的正负写 facing，夹墙帧 dx 一变号朝向
+        就翻面 —— 用户报的「身体朝着一侧、人却在往另一侧平移」。
+        """
         x = float(x)
         if self.walk_min is not None:
             x = min(max(x, self.walk_min), self.walk_max)
         self.walk_target_x = x
+        self.walk_facing = None if facing is None else (1 if facing > 0 else -1)
 
     def stop_walk(self):
+        """硬停：清步点与朝向意图。**不动**移动权（见 claim_move/release_move）。
+
+        旧实现只有 walk_target_x 一件事；现在移动权由 ``move_owner`` 单独记账，
+        硬停（起跳 / 被拎 / 睡觉）不必顺手把所有权也扔了 —— 那是状态切换
+        （``FSM._transition``）和收势（``_clear_motion_and_hands``）的职责。
+        """
         self.walk_target_x = None
+        self.walk_facing = None
         self.move_dir = 0
+
+    def claim_move(self, owner, x=None, facing=None) -> bool:
+        """认领移动权：同一 tick 只有一个状态能改步点。
+
+        已经被别的持有者拿走 → 拒绝并返回 False，**不覆盖**它的步点。旧实现里
+        FightThreat / Socialize / HelpFeed 这些同层行为都直接写 ``walk_to``，
+        谁最后跑谁说了算：一处刚定的落点会被另一处（或上一步残留的 walk_target_x）
+        在同帧改掉，用户看到的就是「一大团猫挤在一起互相顶」。持有者离开时用
+        ``release_move`` 交还，``FSM._transition`` 也会统一清。
+        """
+        if self.move_owner is not None and self.move_owner != owner:
+            return False
+        self.move_owner = owner
+        if x is not None:
+            self.walk_to(x, facing)
+        return True
+
+    def release_move(self, owner) -> bool:
+        """交还移动权：只有持有者本人（或本来就没人持有）能还，顺带停步。"""
+        if self.move_owner not in (None, owner):
+            return False
+        self.move_owner = None
+        self.stop_walk()
+        return True
 
     def set_posture(self, standing: bool):
         self.standing = bool(standing)
@@ -1361,7 +1401,13 @@ class SlugcatBody(CombatTarget):
                 move_x = 1 if dx > 0 else -1
                 self.facing = move_x
             else:
+                # 到站，或被 walk_min/walk_max 夹到墙里（dx≈0）：落点不再决定朝向。
+                # 有朝向意图就按意图收尾，否则夹墙帧 dx 正负抖动会让身体在目标点
+                # 前反复翻面（用户报的「朝向乱翻」）。
+                if self.walk_facing is not None:
+                    self.facing = self.walk_facing
                 self.walk_target_x = None
+                self.walk_facing = None
         else:
             move_x = self.move_dir
             if move_x > 0:
@@ -1429,16 +1475,13 @@ class SlugcatBody(CombatTarget):
             self.coyote = tuning.COYOTE_TICKS    # 踩地就续窗口（原版 canJump = 5）
         elif self.coyote > 0:
             self.coyote -= 1
-        if not on_ground:
-            self.bodyMode = "Default"
-        elif self.standing:
-            self.bodyMode = "Stand"
-        else:
-            self.bodyMode = "Crawl"
-        # 匍匐帧计数与翻身判据走**控制态同一份**实现（control/moves_posture）：
-        # 离 Crawl 自动清零（原版 Player.cs:12425-12431）。旧版 AI 与控制态各写一份，
-        # 于是出现「玩家操作的猫匍匐/转身对、AI 猫不对」—— 修一边改不到另一边。
+        # bodyMode 判据与控制态**同一份**实现（control/moves_posture.body_mode）：
+        # 旧版 AI 按 standing **意图**判、控制态按**位置**判，同一只猫在 AI 手里
+        # 和在被操纵时趴/站姿态会在边界帧抖动（用户报的「玩家操作的猫对、AI 猫
+        # 不对」）。位置判据才是原版 Player.cs 那份，统一取它。
+        # 匍匐帧计数与翻身判据同样走这一份：离 Crawl 自动清零（Player.cs:12425）。
         from ..control import moves_posture as _mp
+        self.bodyMode = _mp.body_mode(self)
         _mp.crawl_turn_delay(self)
 
         dyn0 = RUN_UPPER * self.stats.runspeed_fac      # 顶速×种族因子，不乘加速度
@@ -1595,10 +1638,11 @@ class SlugcatBody(CombatTarget):
             self.bodyMode = "Default"
             self.feet_stuck = None
             self.crawl_anchor = None
-        elif self.standing:
-            self.bodyMode = "Stand"
         else:
-            self.bodyMode = "Crawl"
+            # 这里是同一条判据的**第三份拷贝**（前两份在 _movement_update 与
+            # control/moves.py）。统一调 moves_posture.body_mode，别再各判一次。
+            from ..control import moves_posture as _mp
+            self.bodyMode = _mp.body_mode(self)
 
     def _do_jump(self, kind, move_x, hold_ticks=None):
         c0, c1 = self.chunk0, self.chunk1

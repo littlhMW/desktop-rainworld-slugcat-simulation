@@ -4,6 +4,69 @@
 
 ## 2026-10-01
 
+### R158 · 移动权单入口 / bodyMode 判据唯一实现 / 蜥蜴身体拓扑（分块并集轮廓 + 头挂在躯干链上）
+
+用户口径：「一次性做完」R157 结尾列的三项，不留尾巴。三项全部落地。
+
+**① 移动权：同一 tick 只有一个状态能改步点**
+
+* 新增 `SlugcatBody.claim_move(owner, x=None, facing=None)` / `release_move(owner)` +
+  字段 `move_owner`。**已经被别的持有者拿走 → 认领被拒（返回 False），且不覆盖它的落点**；
+  `release_move` 只认持有者本人（或本来就没人持有）。旧实现里战斗 / 救援 / 社交 / 喂食
+  各自直接写 `body.walk_to()`：同帧谁最后跑谁说了算，且没人负责在离开时放掉步点 —— 用户
+  报的「一大团猫挤在一起互相顶」。
+* `FSM._transition` 统一清权（移动权不跨状态）→ 上一个状态残留的 `walk_target_x` 不会继续
+  把身体往前拖；`_clear_motion_and_hands` 也一起放。
+* 同层行为改走唯一入口 `FSM._move(x, facing=None)` / `_move_stop()`：FightThreat
+  （拔矛 / 捡武器 / 站位滞回带三段）、救援赶路 `_rescue_step`、社交 `_st_socialize` /
+  `_st_social_gift`、喂食 `_st_helpfeed`、`_st_crawlaway`、`_st_fleelizard` /
+  `_enter_fleelizard`。`_walk_to_open(x, owner=None)` 传 owner 时顺便认领 ——
+  「绕开拥挤」与「谁在走」是同一笔账。
+* `stop_walk()` 只清步点 / 朝向意图，**不动**移动权：起跳、被拎、睡觉这些硬停不该顺手放权
+  （那是状态切换的职责）。
+* 新增朝向意图 `walk_facing`：`walk_to(x, facing=±1)`。落点被 `walk_min/max` 夹进墙里
+  （`dx ≈ 0`）时按意图收尾，不再拿 `dx` 正负反推朝向 —— 夹墙帧 `dx` 一变号身体就在目标点前
+  翻面（「身体朝着一侧、人却在往另一侧平移」）。
+
+**② bodyMode 判据唯一实现：意图为主 + 位置校正**
+
+* `control/moves_posture.py::body_mode(body)` 成为**唯一**判据：控制态（`control/moves.py`）、
+  AI（`creature._movement_update`）、悬浮态（`creature._suspended_update`，同一条判据的
+  第三份拷贝）三处都改调它。
+* 判据：离地 → `Default`；`CrawlTurn` 中 → `Crawl`；`standing` 意图 → `Stand`；想趴时只有
+  **正在播 `DownOnFours` 且身体还立着**（头抬在臀上方 3px 以上、头自己没贴地）才按 `Stand`
+  收尾，其余 → `Crawl`。
+* 为什么「想趴」这一侧不能只看位置：AI 没有 `DownOnFours` 这条过渡动画，身体是靠 Crawl
+  分支的趴姿投影压下去的。第一版按控制态原判据（纯位置）统一，结果「想趴的猫」永远进不了
+  Crawl（鸡生蛋）—— 匍匐与 CrawlTurn 整条链都起不来（`e2e_r155` 抓到）。这条正好说明
+  文档说的「意图为主 + 位置校正」比「纯位置」更接近原版。
+* `posture_entry` 的 `DownOnFours` 入口改成直接读同一份位置判据（`_upright`），并把过渡
+  帧的 `bodyMode` 压回 `Stand`：控制态（用户口径里的参照实现）逐帧行为与改动前一致。
+
+**③ 蜥蜴身体拓扑**
+
+* `lizard_gfx._draw_body`：填充 / 裁剪 / 描边 / 尾部染色**共用同一条分块并集外轮廓**
+  （`_chunked_path(...).simplified()`）。旧版只有填充走分块，描边与裁剪仍走连续带
+  `_strip_path` —— 外轮廓又被平滑回一根软管，节点之间的横向错位只在色块内部看得见。
+  `simplified()` 把重叠截面多边形并成一条外轮廓：保角，且能一笔描边（不会画出每圈接缝）。
+  实测 9 节点 ≈0.18ms、16 节点 ≈0.38ms（`_strip_path` 0.025ms），外接盒与分块身体同界，
+  不瘦身也不外扩。`_strip_path` 保留（旧调用点 / 测试还在用）。
+* 拓扑本体（「独立 head + 3 torso seg」→「3 核心 chunk + 视觉头 / 下颚 + 腿」）在 R155/R157
+  已经改成目标形状：`_step_chain` 把第 0 节躯干直接挂在 AI 驱动点上（`seg[0] = x/y`），头是
+  挂在躯干前方 `head_conn` 的**软体末端**（弹簧 + 重力 + `PushOutOfTerrain`，不是独立驱动
+  质点）。本轮加回归断言锁住它：链根 == 驱动点；驱动点跑远后头点收敛到「驱动点 + 体轴 ×
+  颈长」；腿的 IK 随后把 `seg[0]` 拉回 12px 是腿约束，不是第二个驱动源（`e2e_r158`）。
+
+**测试**
+
+* 新增 `work/scratch/e2e_r158.py`（移动权认领 / 拒绝 / 交还 / 硬停不放权 / 朝向意图 /
+  `_transition` 清权 + bodyMode 六种状态 + 拓扑断言），并加进 `run_all19.ps1`。
+* `e2e_r140` 的轮廓断言（连续带 → 分块并集）、`e2e_r156` 的 `_walk_to_open` 断言跟着更新。
+* 全量回归 `run_all19.ps1`：`fails=0`。
+
+**收尾**：R157 结尾列的「仍未做」三项（MovementController 移动权仲裁 / bodyMode 判据不一致 /
+`_strip_path` 软管拓扑与 BodyChunk 拓扑）本轮全部落地，不再留独立一轮。
+
 ### R157 · 匠伏朝向归意图层 / CrawlTurn 判据与翻身力单实现 / 蜥蝎 LashOut 与 PrepareToJump 与 爬墙身体轴
 
 用户线索：「玩家操作的蜥蝎猫匠伏和转身正确」—— 手动控制那条路

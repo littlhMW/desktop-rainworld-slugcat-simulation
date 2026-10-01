@@ -79,13 +79,10 @@ def ctrl_movement_update(body):
     mp.update_counters(body)                # 接地帧计数
     on_ground = body.on_floor()
 
-    # bodyMode 按位置判（非 standing），过渡期平滑跟随
-    if not on_ground:
-        body.bodyMode = "Default"
-    elif (c0.y < c1.y - 3.0) and body.animation != "CrawlTurn" and not c0.on_floor:
-        body.bodyMode = "Stand"
-    else:
-        body.bodyMode = "Crawl"
+    # bodyMode 按位置判（非 standing），过渡期平滑跟随；判据在
+    # moves_posture.body_mode —— 与 AI 侧（creature._movement_update）**同一份**
+    # 实现，两边各写一份正是「AI 猫姿态不对」的来源。
+    body.bodyMode = mp.body_mode(body)
 
     mp.anim_forces(body, move_x)               # 姿态过渡每帧力（可覆写 bodyMode/清 animation）
     ms.anim_forces(body, move_x, inp0, inp1)   # 滑/滚/翻/火箭每帧力（覆写 bodyMode=Default）
