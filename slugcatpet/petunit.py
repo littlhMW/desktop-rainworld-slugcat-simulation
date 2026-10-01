@@ -129,8 +129,6 @@ class PetUnit:
         self.body.diet = self.personality.diet
         self.body.cold = float(init_state.get("cold", 0.0))
         self.body.visual_floor_y = floor_y
-        if spawn_y is not None:                    # 按存档 / 生物生成的位置落地
-            self.body.teleport(cx, float(spawn_y))
         # 趴姿悬空几何补偿
         from .core import chunkphys as _cp
         _hips_half_w = w.atlas.source_size("base", "HipsA")[0] / 2.0
@@ -152,6 +150,13 @@ class PetUnit:
         for _ in range(40):
             self.body.step()
             self.gfx.update()
+        # 初始姿势收敛必须先于指定出生点。原来先 teleport 再做 40 帧重力
+        # 积分，猫崽会在构造函数里已经落回地板，与点击坐标完全脱节。
+        if spawn_y is not None:
+            dx = cx - self.body.chunk1.x
+            dy = float(spawn_y) - self.body.chunk1.y
+            self.body.teleport(cx, float(spawn_y))
+            self.gfx.translate_pose(dx, dy)
         # 尾巴/舌头（caps.tongue 关则不建）
         ax, ay = self.gfx.tail_root_world()
         self.tail = Tail(ax, ay, rad=self.gfx.tail_rad, conn=self.gfx.tail_conn)

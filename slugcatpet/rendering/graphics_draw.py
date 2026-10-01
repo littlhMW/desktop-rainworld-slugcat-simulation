@@ -604,8 +604,6 @@ class GraphicsDrawMixin:
                        else self._face_stun_frame)
         elif self.stunned:
             element = self._face_stun_frame
-        elif getattr(self, "grabbed", False):
-            element = blink_frames[min(4, len(blink_frames) - 1)]
         elif self.sleep_curl > 0.0:
             # 蜷起来睡的那一觉必须闭眼：face_special 是醒着的表情，不能盖过睡眠
             idx = int(clampf(int(_lerp(4.0, 1.0, self.sleep_curl)), 0, 8))
@@ -636,6 +634,20 @@ class GraphicsDrawMixin:
 
         self._draw_face_scar(p, atlas, element, fx, fy, rot)   # 疤在脸下、头上
         blit(p, atlas, element, fx, fy, rot, sx, 1.0, face_color, ax=0.5, ay=0.5)
+        if getattr(self, "meow_t", 0) > 0 and not self.dead:
+            # 短暂的呼声弧线只随实际发声出现；抓住但没叫时不改脸。
+            a = int(180 * min(1.0, self.meow_t / 7.0))
+            side = 1.0 if sx >= 0 else -1.0
+            p.save()
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(QPen(QColor(*self.EYE, a), pen_width(1.2)))
+            for i in (0, 1):
+                rr = 7.0 + 5.0 * i
+                cx = fx + side * (7.0 + 4.0 * i)
+                p.drawArc(QRectF(cx - rr * 0.5, fy - rr * 0.75,
+                                 rr, rr), 300 * 16 if side > 0 else 60 * 16,
+                          120 * 16)
+            p.restore()
 
     def _draw_face_scar(self, p, atlas, element, fx, fy, rot):
         """工匠面罩疤绘制。"""

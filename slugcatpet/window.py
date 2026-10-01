@@ -2382,7 +2382,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self.storm_pressure = self.storm.pressure
         self.rain.step(self.storm.rain_drive, 1.0)
         # RoomRain.cs:391-400：环境雨声随强度平滑渐变，和猫叫独立调节。
-        self.sfx.tick(self.rain.rain_drive if self.rain.active else 0.0)
+        self.sfx.tick(self.rain.intensity if self.rain.active else 0.0)
         # 震屏：雨势折算成抖动，仍旧并入既有 self._shake（不另起一套）
         if self.rain.shake > 0.0:
             amp = self.rain.shake * RAIN_SHAKE_MAX

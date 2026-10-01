@@ -1076,6 +1076,7 @@ class Lizard(CombatTarget):
                  "climb_x", "climb_dir", "climb_surfaces", "hauler",
                  "max_health", "health", "stun", "hurt_flash", "head_flash", "dead_t",
                  "rock_push", "rock_push_dir",
+                 "rock_flip_left", "rock_flip_ang", "rock_flip_dir",
                  "hauled", "haul_thrown", "is_meat", "wall_dir",
                  "anger", "anger_obj", "submitted_to",
                  "threat", "threat_obj", "threat_t",
@@ -1140,6 +1141,11 @@ class Lizard(CombatTarget):
         self.stun = 0            # 受击眩晕 tick
         self.rock_push = 0       # 被石头砸歪的剩余 tick（原版 turnedByRockCounter=20）
         self.rock_push_dir = 0
+        # 原版非红蜥被石头击中会翻身（Violence -> turnedByRockCounter）。
+        # 这里保留一个短角动量状态，让头部命中表现为翻肚皮，而不是只横向滑动。
+        self.rock_flip_left = 0
+        self.rock_flip_ang = 0.0
+        self.rock_flip_dir = 1
         self.hurt_flash = 0      # 受击白闪（渲染用）
         self.head_flash = 0      # 头甲弹开矛的头部强白闪（渲染用）
         self.dead_t = 0          # 尸体已躺 tick
@@ -4498,6 +4504,28 @@ class Lizard(CombatTarget):
                 s[2] += cx
                 s[3] += cy
 
+    def _step_rock_flip(self) -> None:
+        """推进石头击中的翻肚皮动作（Lizard.cs turnedByRockCounter）。
+
+        原版用 WeightedPush 让首尾 body chunk 在约 20 帧内翻向侧面；
+        我们同时给链体一个短角动量，渲染层通过 ``rock_flip_ang`` 同步头部，
+        因此能看到「被石头打头 → 翻身」而不是仅有横向击退。
+        """
+        if self.rock_flip_left <= 0 or self.dead:
+            self.rock_flip_ang *= 0.82
+            if abs(self.rock_flip_ang) < 0.25:
+                self.rock_flip_ang = 0.0
+            return
+        self.rock_flip_left -= 1
+        self.rock_flip_ang += self.rock_flip_dir * (180.0 / 20.0)
+        # 首尾反向冲量形成翻滚趋势；约束会把中节自然带回。
+        if len(self.seg) >= 3:
+            f = 0.32 * self.rock_flip_dir
+            self.seg[0].vy -= f
+            self.seg[2].vy += f
+        if self.rock_flip_left <= 0:
+            self.rock_flip_ang = 0.0
+
     def _step_chain(self, HL) -> None:
         """躯干+尾：逐行移植 BodyChunk.Update + BodyChunkConnection.Update。
 
@@ -4528,6 +4556,7 @@ class Lizard(CombatTarget):
         # ① BodyChunk.Update：vel 受重力、乘空气阻力，pos += vel
         for k in range(min(TURN_IMP_SEGS, len(self.seg))):
             self.seg[k].vx += self._turn_imp * (1.0 - 0.45 * k)
+        self._step_rock_flip()
         # 起跳 / 扑击 / 咬合的身体冲量：前 BODY_IMP_SEGS 节拿到全部，后面递减。
         # 施加两处：积分前（这一 tick 就动）+ 末尾的速度结算（下几 tick 仍带着
         # 它走）—— 于是「前节先出去、连接被拉长、中段和尾巴滞后跟上」。

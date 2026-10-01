@@ -165,6 +165,7 @@ class SlugcatBody(CombatTarget):
         self.dead = False
         self.coyote = 0                 # 土狼窗口剩余 tick（离地后仍可跳）
         self.item_cd = 0                # 上手冷却：拿到东西后还要等几个 tick 才用
+        self.dont_grab_ticks = 0        # Player.cs:11370 投掷后防止立即捡回
         self._jump_pending = None       # None/"stand"/"protest"
         self._jump_hold = None          # 下次跳持跳时长（None=到衰减完）
         self._jump_hold_left = None     # 本次腾空剩余持跳（None=不截断）
@@ -831,6 +832,8 @@ class SlugcatBody(CombatTarget):
         self._temper_update()
         if self.item_cd > 0:                 # 上手冷却照常走钟（晕/死/杆上也算）
             self.item_cd -= 1
+        if self.dont_grab_ticks > 0:
+            self.dont_grab_ticks -= 1
         if self._input_provider is not None:
             # 晕/死改推零包，防晕醒瞬间吃到晕期边沿
             pkg = self._input_provider()
@@ -2186,6 +2189,8 @@ class SlugcatBody(CombatTarget):
         snap_stalk=False：果柄先不断，靠 Stalk 自己被拉断（被鼠标拖着走的猫
         死死攥住摘取类食物，把果子从藤上拽下来）。
         """
+        if self.dont_grab_ticks > 0:
+            return False
         side = self._take_hand("fruit", side)
         if side is None:                             # 两手都被更重要的东西占着
             return False
@@ -2271,6 +2276,8 @@ class SlugcatBody(CombatTarget):
 
     def grab_stone(self, stone, side=None):
         """Grab stone with one hand; convert to carried (kinematic)."""
+        if self.dont_grab_ticks > 0:
+            return False
         side = self._take_hand("stone", side)
         if side is None:
             return False
@@ -2329,6 +2336,8 @@ class SlugcatBody(CombatTarget):
         s.state = "free"
         weaponphys.begin_thrown(s, dir_x, float(frc), float(dir_y))
         self.release_stone(to_free=False)
+        # Player.cs:11370：NPC 投掷后 45 tick，玩家控制 15 tick 不再抓物。
+        self.dont_grab_ticks = 15 if self._ctrl_on else 45
         c0.vx += float(dir_x) * 8.0 * recoil
         c0.vy -= float(dir_y) * 8.0 * recoil
         c1.vx -= float(dir_x) * 4.0 * recoil
@@ -2363,6 +2372,9 @@ class SlugcatBody(CombatTarget):
         # Keep this at the physics/hand boundary so mouse dragging, AI fetch,
         # persistence restore, and throw controls all share one rule.
         if getattr(self.caps, "no_spear", False):
+            return False
+        # 背矛补到手里是原版特例，不算从场景重新拾取。
+        if arm and self.dont_grab_ticks > 0:
             return False
         if getattr(spear, "pinned", False):
             if not getattr(self.stats, "is_artificer", False):
@@ -2547,6 +2559,7 @@ class SlugcatBody(CombatTarget):
             sp._f1 = True                # 第一帧扫掠也要从出手前位置起算（同 Thrown 的
                                          # firstFrameTraceFromPos，否则轻抛第一帧漏判）
             self.release_spear(to_free=False)
+            self.dont_grab_ticks = 15 if self._ctrl_on else 45
             c0.vx += float(dir_x) * 4.0 * recoil
             c1.vx -= float(dir_x) * 2.0 * recoil
             return sp
@@ -2571,6 +2584,7 @@ class SlugcatBody(CombatTarget):
         sp.enter_free(roll=False)
         weaponphys.begin_thrown(sp, dir_x, float(frc), float(dir_y))
         self.release_spear(to_free=False)
+        self.dont_grab_ticks = 15 if self._ctrl_on else 45
         if self.back_spear is not None:      # 原版掷出后背上的矛立刻补到手上
             bs = self.back_spear
             self.back_spear = None

@@ -22,6 +22,9 @@ _VARIANT_PREFIX = {
     "rivulet": "RivuletA",
     "watcher": "Watcher",
     "slugpup": "Pup",
+    # Push To Meow uses the original Sofanthiel stem for Inv (怪猫); falling
+    # back to Normal made it sound indistinguishable from Survivor.
+    "inv": "Sofanthiel",
 }
 
 
@@ -95,17 +98,21 @@ class MeowManager:
             chance *= 0.55
         return chance, danger or hungry
 
-    def _play(self, pet, long_call: bool) -> None:
+    def _play(self, pet, long_call: bool) -> bool:
         if self.root is None:
-            return
+            return False
         prefix = self._prefix(pet)
         stem = f"Meow{prefix}{'' if long_call else 'Short'}"
-        files = sorted(self.root.glob(stem + "*.wav"))
+        # A plain glob for MeowNormal* also matches MeowNormalShort*.  That
+        # silently made even requested long calls sound clipped and shrill.
+        files = sorted(p for p in self.root.glob(stem + "*.wav")
+                       if p.stem == stem or p.stem[len(stem):].isdigit())
         if not files:
             stem = "MeowNormal" + ("" if long_call else "Short")
-            files = sorted(self.root.glob(stem + "*.wav"))
+            files = sorted(p for p in self.root.glob(stem + "*.wav")
+                           if p.stem == stem or p.stem[len(stem):].isdigit())
         if not files:
-            return
+            return False
         path = self._rng.choice(files)
         # 独立实例避免 play() 重启同一个长叫，导致声音被截断。
         effect = QSoundEffect()
@@ -114,6 +121,10 @@ class MeowManager:
         effect.setVolume(self.volume / 100.0)
         effect.play()
         self._playing.append(effect)
+        gfx = getattr(pet, "gfx", None)
+        if gfx is not None:
+            gfx.meow_t = 18 if long_call else 9
+        return True
 
     def event(self, pet, kind: str) -> None:
         if not self.enabled or not self.available or pet is None:

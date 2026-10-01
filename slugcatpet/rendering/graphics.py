@@ -192,6 +192,18 @@ class Hand:
 class SlugcatGraphics(GraphicsDrawMixin):
     """sprites 由代码算位姿/帧/色，体色眼色来自 CatDef。"""
 
+    def translate_pose(self, dx: float, dy: float) -> None:
+        """出生/放置预览瞬移时同步质点骨，避免四肢拖在旧位置。"""
+        for bone in (self.head, self.legs, *self.hands):
+            bone.x += dx
+            bone.lx += dx
+            bone.y += dy
+            bone.ly += dy
+            bone.vx = bone.vy = 0.0
+        for point in (self.draw0, self.draw1, self._last_draw0, self._last_draw1):
+            point[0] += dx
+            point[1] += dy
+
     def __init__(self, body, layout=None, atlas=None, cat=None):
         self.body = body
         self.L = layout
@@ -235,6 +247,7 @@ class SlugcatGraphics(GraphicsDrawMixin):
         self.dead = False
         self.stunned = False           # 晕脸 + 头帧0耷拉
         self.grabbed = False            # 被鼠标抓住/甩动时闭眼
+        self.meow_t = 0                 # 猫叫时的短促抬头/挣扎动画
         self.face_override = None      # 表情覆写：借一族现成表情演别的状态（复活按压借晕眩脸）
         self.blink = 0
         self._blink_rng = _Rng(12345)
@@ -366,6 +379,8 @@ class SlugcatGraphics(GraphicsDrawMixin):
         self.intent.reset()      # 新一 tick：清优先级，值仍由写入方自己管
         b = self.body
         c0, c1 = b.chunk0, b.chunk1
+        if self.meow_t > 0:
+            self.meow_t -= 1
 
         if b.cold > 0.0:
             base = self.cat.body_color
@@ -425,6 +440,11 @@ class SlugcatGraphics(GraphicsDrawMixin):
             self.anim_frame = 0
 
         self._apply_drawpos_offsets()
+        if self.meow_t > 0 and not self.dead:
+            # Push To Meow 的叫声反馈：抬头、身体轻摆；眼睛保持睁开。
+            pulse = math.sin(self.meow_t * 0.8) * 0.7
+            self.head.vy -= 0.25 + 0.25 * pulse
+            self.draw0[1] -= 0.35 + 0.25 * pulse
         self._update_blink()
 
         self.last_look_dir = self.look_dir

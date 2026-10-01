@@ -596,17 +596,18 @@ class ItemInteractionMixin:
         return True
 
     def _step_stone_hit(self):
-        for pet in self.pets:
-            if pet.behavior is None:
+        # Each flying stone gets one collision pass.  The old pet-first loop
+        # tested lizards with only the *last* stone, and crashed with no stones.
+        for s in self.stones:
+            if not s.fling or s.state != ItemState.FREE:
                 continue
-            b = pet.body
-            for s in self.stones:
-                if not s.fling or s.state != ItemState.FREE:
+            if math.hypot(s.vx, s.vy) < STONE_STUN_SPEED:
+                continue
+            for pet in self.pets:
+                if pet.behavior is None or not s.fling:
                     continue
-                if s.thrower is b and s.no_self_t > 0:        # 刚出手，别砸自己
-                    continue
-                sp = math.hypot(s.vx, s.vy)
-                if sp < STONE_STUN_SPEED:
+                b = pet.body
+                if s.thrower is b and s.no_self_t > 0:
                     continue
                 for c in (b.chunk0, b.chunk1):
                     if _seg_dist(s.last_x, s.last_y, s.x, s.y,
@@ -625,8 +626,6 @@ class ItemInteractionMixin:
             for lz in self.lizards:
                 if lz.dead or not s.fling or s.state != ItemState.FREE:
                     continue
-                if math.hypot(s.vx, s.vy) < STONE_STUN_SPEED:
-                    continue
                 hit = _ball_hit(lz, s, 2.0)
                 if hit is None:
                     continue
@@ -641,6 +640,9 @@ class ItemInteractionMixin:
                     # 原版 Lizard.Violence：source is Rock 且非红蜥 → turnedByRockCounter = 20
                     lz.rock_push = 20
                     lz.rock_push_dir = 1 if s.vx >= 0.0 else -1
+                    if hit_chunk is lz:
+                        lz.rock_flip_left = 20
+                        lz.rock_flip_dir = lz.rock_push_dir
                 s.deflect(self._stun_rng)
                 s.fling = False
                 self._shake[0] += 0.5 * (1.0 if s.vx >= 0.0 else -1.0)
@@ -653,8 +655,6 @@ class ItemInteractionMixin:
                 break
             for sc in self.scavengers:
                 if sc.dead or not s.fling or s.state != ItemState.FREE:
-                    continue
-                if math.hypot(s.vx, s.vy) < STONE_STUN_SPEED:
                     continue
                 if _seg_dist(s.last_x, s.last_y, s.x, s.y, sc.x, sc.y) >= s.rad + sc.rad:
                     continue
@@ -673,8 +673,6 @@ class ItemInteractionMixin:
             for small in (*self.batflies, *self.squidcadas,
                           *self.needleworms):   # 砸中就打下来
                 if small.dead or not s.fling or s.state != ItemState.FREE:
-                    continue
-                if math.hypot(s.vx, s.vy) < STONE_STUN_SPEED:
                     continue
                 if math.hypot(s.x - small.x, s.y - small.y) >= s.rad + small.rad:
                     continue
@@ -2052,7 +2050,9 @@ class ItemInteractionMixin:
         if pup is None:
             return
         try:
+            dx, dy = cx - pup.body.chunk1.x, cy - pup.body.chunk1.y
             pup.body.teleport(cx, cy)
+            pup.gfx.translate_pose(dx, dy)
             pup.gfx.update()
             pup._tick_tail()                   # 尾巴跟着摆好，别拖在出生点
             p.save()
@@ -3268,7 +3268,7 @@ class ItemInteractionMixin:
                                  stun_bonus=SPEAR_STUN_BONUS, hit_head=head,
                                  knock_k=KNOCK_K_PER_MASS * sp.mass)
                 if shielded and not lz.dead:
-                    sp.needle_disconnect()       # 头甲弹开：原版这条也走 Mode.Free
+                    sp.enter_free(roll=True)     # 头甲弹开：原版这条也走 Mode.Free
                     # 头甲弹开：矛不插入，原速 45% 弹回（原版 directionAndMomentum / 3）
                     sp.vx, sp.vy = -sp.vx * 0.45, -sp.vy * 0.45
                     self._shake[0] += 0.6 * (1.0 if sp.vx >= 0.0 else -1.0)

@@ -276,6 +276,7 @@ def draw_lizard(p, atlas, lz, ts: float) -> None:
         rot += math.sin(lz._tick * 0.07 + lz.seed * 1.73) * 1.5
         # 后空翻（文档 §9.4）：头跟着整只一起翻过去
         rot += getattr(lz, "flip_ang", 0.0)
+        rot += getattr(lz, "rock_flip_ang", 0.0)
     else:
         rot = _ang_from_up(hpx - s0x, hpy - s0y)
     color = lz.color

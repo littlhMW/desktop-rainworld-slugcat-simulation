@@ -113,6 +113,12 @@ SLUG_DAMAGE_RESISTANCE = 1.0
 SLUG_STUN_RESISTANCE = 1.0
 # 强制欲望只从这些「没正事」的态起手
 _WANTS_FROM = frozenset(("IdleStand", "PostThrowWander", "PostThrowStand", "MakeWay"))
+# 救援可以打断玩耍和觅食；其余欲望仍只在 _WANTS_FROM 中抢班。
+# 环境避险、战斗、搬运、眩晕和已经在救援的状态不在这里。
+_RESCUE_PREEMPT_FROM = _WANTS_FROM | frozenset((
+    "FetchFruit", "ChaseCursor", "CatchFly", "HuntFly", "ItemPlay",
+    "PoleClimb", "HPole", "SeekHPole", "Socialize", "HelpFeed",
+    "PostThrowStand", "PostThrowWander"))
 # 这些态靠 _wants_break 收尾（释放墙/天花/手持、恢复行走边界）；
 # 必须保证「离开该态」时一定跑到一次，否则 walk_min/walk_max 会永久留 None
 _WANTS_STATES = frozenset(("CeilingHang", "ChaseCursor", "Socialize",
@@ -202,7 +208,9 @@ _FETCH_NEVER = frozenset(("FetchFruit", "Ascension", "Dragged", "Dead", "WakeSeq
                           # 面敌做出的决定是锁：迎战 / 掩护同伴 / 逃跑这三个态里
                           # 不许取食欲望把人拆走去吃果子（旧版漏了这三项，于是
                           # 「刚决定迎战 → 下一拍又被叫去取果」，战斗态形同虚设）
-                          "FightThreat", "CoverAlly", "FleeLizard"))
+                          "FightThreat", "CoverAlly", "FleeLizard",
+                          # 否则 FetchFood 每轮检查都能抢走正在进行的按压救援。
+                          "Socialize", "HelpFeed"))
 # play 态接管取果需果在舌头射程内
 _FETCH_PLAY = frozenset(("PoleClimb", "HPole", "CeilingHang"))
 
@@ -764,13 +772,9 @@ class BehaviorFSM:
         return bool(getattr(self.win, "is_pup", False))
 
     def _after_death_reincarnate(self):
-        """环境致死的死后收尾：普通蛞蝓猫排转世倒计时；猫崽什么都不排。"""
-        if self._pup_final():
-            self._reincarnate = False
-            self._revive_timer = 0
-            return
-        self._reincarnate = True
-        self._revive_timer = tuning.REINCARNATE_TICKS
+        """环境致死只留下尸体；只有全体成年蛞蝓猫死亡时统一转世。"""
+        self._reincarnate = False
+        self._revive_timer = 0
 
     def kill(self):
         if self.state == "Dead":
@@ -825,8 +829,7 @@ class BehaviorFSM:
     def kill_storm(self):
         """暴雨致死：没赶上进庇护所。环境致死，转世复活，不计好感。
 
-        与 kill_cold / kill_drown 同一口径；只不过倒计时在暴雨期间被 _st_dead
-        冻结，雨停了才转世。
+        与其它环境死亡同一口径：单只不会自动复活，由窗口的全员死亡门槛统一转世。
         """
         if self.state == "Dead":
             return
@@ -922,7 +925,7 @@ class BehaviorFSM:
         return self.state == "Dead" and self._revive_timer <= 0
 
     def begin_reincarnation(self) -> bool:
-        """全体转生：暴雨期间冻结；救援复活不走这里。"""
+        """全体转生：仅由窗口确认所有成年蛞蝓猫死亡后调用。"""
         if self.state != "Dead":
             return False
         if getattr(self.win, "storm_active", False):
@@ -3441,7 +3444,6 @@ class BehaviorFSM:
 
     def _st_dragged(self, cursor, disturbed):
         self.gfx.grabbed = True
-        self.gfx.blink = max(self.gfx.blink, 4)
         self._clear_hands()
         self._drag_reach_tick(cursor)     # 贴到杆/食物旁边就自己抓住
         ch = self.grab.chunk
@@ -5925,7 +5927,7 @@ class BehaviorFSM:
             self._rescue_exec = None
             self._move(ob.chunk1.x)
 
-    def _dead_peer_near(self):
+    def _dead_peer_near(self, dead_only=False):
         """附近倒地的同伴（真死 / 晕着的都算）；已经有人在救的不抢。"""
         if getattr(self.win, "is_pup", False):
             return None                     # 幼崽：不救人（也不会被救）
@@ -5935,7 +5937,7 @@ class BehaviorFSM:
             ob = p.body
             if getattr(p, "is_pup", False):
                 continue                    # 幼崽不算救援目标
-            if (not self._peer_needs_help(ob)
+            if ((not ob.dead if dead_only else not self._peer_needs_help(ob))
                     or self._revive_claimed_by(p) is not None
                     or self._carried_by_lizard(ob)):
                 continue                    # 被叼在嘴里的：不算救援目标
@@ -6066,6 +6068,39 @@ class BehaviorFSM:
         return best
 
     # ── 每 tick 的强制欲望仲裁 ──
+    def _urgent_rescue_tick(self) -> bool:
+        """给倒地的成年同伴一个稳定的救援入口。
+
+        复活原来挂在 ``_wants_tick`` 的随机分支后面，只有猫恰好处于四个
+        idle 状态且性格骰子通过才会触发；取食/玩耍等动作也会在下一帧把它
+        抢走。结果就是尸体旁的猫经常继续发呆。倒地同伴现在是高于普通欲望
+        的社交需求，只有正在逃命、战斗或不可控状态才会压过它。
+        """
+        b = self.body
+        if (self._revive_cd > 0 or self.grab.active or b.dead or b.swimming
+                or self._exhausted or self._hibernating or self._cold_urgent()
+                or self._water_urgent() or self._zerog()
+                or self.state not in _RESCUE_PREEMPT_FROM):
+            return False
+        target = self._dead_peer_near(dead_only=True)
+        if target is None:
+            # 被击晕的同伴走原有 wake/pat 流程，只有真正死亡才触发复活按压。
+            return False
+        th = self._threat_lizard()
+        if th is not None and (self._revive_target_safe(th) is not target
+                               or not self._rescue_bias(th)):
+            return False
+        if (self.state == "Socialize" and self._social_kind == "revive"
+                and self._social_target is target):
+            return True
+        self._social_kind = "revive"
+        self._social_target = target
+        self._social_left = tuning.REVIVE_APPROACH_TICKS
+        self._revive_gave_up = False
+        self._break_active_controllers()
+        self._transition("Socialize")
+        return True
+
     def _wants_tick(self, cursor):
         """社交/帮助/反击/匍匐躲避在「没正事」的态里按优先级抢班。"""
         for k in ("_social_cd", "_help_cd", "_fight_cd", "_face_cd", "_crawl_cd",
@@ -6075,6 +6110,8 @@ class BehaviorFSM:
             v = getattr(self, k)
             if v > 0:
                 setattr(self, k, v - 1)
+        if self._urgent_rescue_tick():
+            return
         if self.grab.active or self._exhausted or self._zerog():
             return
         if self.state not in _WANTS_FROM:
@@ -6132,7 +6169,8 @@ class BehaviorFSM:
                 self._break_active_controllers()
                 self._transition("Socialize")
                 return
-        # 2) 倒地的同伴（真死 / 被击晕）：过去用特殊表情扒拉救活。善良的更积极
+        # 2) 倒地的同伴（真死 / 被击晕）：紧急入口已在 _act_wants 之前处理；
+        #    这里保留旧分支作为不可抢占状态退出后的兜底。
         if self._revive_cd <= 0 and not b.swimming:
             dp = self._dead_peer_near()
             # 先看有没有倒地的同伴再掷骰：没同伴就不动随机流（随机数纪律）

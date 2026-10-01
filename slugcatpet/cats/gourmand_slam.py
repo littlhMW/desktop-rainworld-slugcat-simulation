@@ -55,10 +55,17 @@ def mount_slam(fsm):
         fsm._slam_t = 0
         fsm._slam_y0 = b.chunk1.y      # 起跳时的地面高度（原版 lastGroundY）
         fsm._slam_peak = b.chunk1.y    # 这次砸击的最高点
+        # Player.cs:6374-6455：砸击用主身体体块的下落速度与落高结算。
+        # 腾空时进入已有 Flip 骨架，头、脸和四肢随体轴翻过去。
+        b.animation = "Flip"
+        b._flip_spin = -1 if b.facing >= 0 else 1
+        b._flip_mult = 1.0
 
     def finish():
         b = fsm.body
         b.stop_walk()
+        b.animation = None
+        b._flip_spin = 0
         fsm.animation = None
         fsm._slam_target = None
         fsm._slam_cd = tuning.SLAM_CD_TICKS
@@ -67,6 +74,10 @@ def mount_slam(fsm):
     def st_slam(cursor, disturbed):
         b = fsm.body
         fsm._slam_t += 1
+        if not b.on_floor() and b.animation != "Flip":
+            b.animation = "Flip"
+            b._flip_spin = -1 if b.facing >= 0 else 1
+            b._flip_mult = 1.0
         fsm._slam_peak = min(fsm._slam_peak, b.chunk1.y)
         th = fsm._slam_target
         if fsm._slam_t > MAX_TICKS or th is None or getattr(th, "dead", False):
@@ -142,6 +153,8 @@ def mount_slam(fsm):
     def brk():
         b = fsm.body
         b.stop_walk()
+        b.animation = None
+        b._flip_spin = 0
         fsm.animation = None
         fsm._slam_target = None
 

@@ -57,7 +57,8 @@ class SoundManager:
         if effect is None:
             effect = QSoundEffect()
             effect.setSource(QUrl.fromLocalFile(str(path)))
-            effect.setLoopCount(QSoundEffect.Infinite)
+            # PySide6 6.8 exposes Infinite as an enum while the binding accepts int.
+            effect.setLoopCount(int(getattr(QSoundEffect.Infinite, "value", -2)))
             self._loops[name] = effect
             effect.play()
         effect.setVolume(self.volume / 100.0 * level)
