@@ -127,6 +127,11 @@ def system_cursor_px() -> float:
 # 窗口抖动
 SHAKE_DECAY = 0.8
 SHAKE_MAX = 6.0
+SHAKE_GOURMAND_MUL = 1.35     # 饕餮砸出来的震动略夸张一点（用户口径）
+FALL_STUN_SPEED = 22.0       # 落地竖直速度超过它 → 摔晕一会儿（≈抖动已经看得见的高度）
+FALL_STUN_TICKS = 14          # 基础晕眩时长（40 tick/s → 0.35s）
+FALL_STUN_PER_SPEED = 1.1     # 每多 1 px/tick 追加的晕眩 tick
+FALL_STUN_MAX = 60            # 晕眩上限（1.5s）
 RAIN_SHAKE_MAX = 2.2        # 雨势折算出的每 tick 抖动幅度上限（并入既有 _shake）
 SHAKE_EPS = 0.05
 
@@ -343,6 +348,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # 放杆子
         self.poles = []
         self._pole_seed = 0
+        self.extra_walls = []                  # 手绘墙条（矩形 x0,y0,x1,y1）：真碰撞
         # 光标那一小截竖杆（不渲染、不换代、不存档）
         self._cursor_world = None          # 本 tick 的光标（逻辑坐标）；矛钉光标用
         self._cursor_pin_prev = None       # 上一 tick 光标（算甩动速度）
@@ -1445,10 +1451,53 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             surf.splash_stop = 10
             break                                    # 每 tick 只溅一次
 
+    def _pet_of_chunk(self, chunk):
+        """这个 BodyChunk 属于哪只猫（不是猫的 chunk → None）。
+
+        撞击回调只拿到 chunk，不拿到主人；这里按 chunk0/chunk1 反查一次。
+        只在真的发生硬撞时才走，不在每帧路径上。
+        """
+        for p in getattr(self, "pets", ()):
+            b = getattr(p, "body", None)
+            if b is None:
+                continue
+            if chunk is b.chunk0 or chunk is b.chunk1:
+                return p
+        return None
+
+    def _fall_stun(self, pet, speed):
+        """高处落地摔晕：晕眩时长随落地速度线性加长（用户口径）。
+
+        走 FSM 的 ``apply_stun``（入 Stunned 态、松杆、清手势），没有行为层
+        的假对象退回直接写 body.stun。与砸晕/电晕不同，摔晕**不掉手上的东西**
+        （``drop_items=False``）、**醒来也不暴怒**（``rage=False``）：不然每次落地
+        都把手里的果子/矛扔了、再暴走一两分钟，取食/投掷/社交链会被反复打回原点。
+        """
+        ticks = int(FALL_STUN_TICKS + (float(speed) - FALL_STUN_SPEED)
+                    * FALL_STUN_PER_SPEED)
+        ticks = int(clampf(ticks, 1, FALL_STUN_MAX))
+        beh = getattr(pet, "behavior", None)
+        if beh is not None:
+            try:
+                beh.apply_stun(ticks, drop_items=False, rage=False)
+                return
+            except Exception:
+                pass
+        b = getattr(pet, "body", None)
+        if b is not None:
+            b.stun = max(int(getattr(b, "stun", 0) or 0), ticks)
+
     def _shake_impact(self, chunk, direction, speed, strength, ix, iy):
-        """地形硬撞回调，累加抖动偏移。"""
+        """地形硬撞回调，累加抖动偏移；够重的落地顺手把这只猫摔晕一会儿。"""
+        pet = self._pet_of_chunk(chunk)
+        if pet is not None and getattr(getattr(pet, "cat", None), "key", "") == "gourmand":
+            ix *= SHAKE_GOURMAND_MUL       # 饕餮的震动略夸张（用户口径）
+            iy *= SHAKE_GOURMAND_MUL
         self._shake[0] = clampf(self._shake[0] + ix, -SHAKE_MAX, SHAKE_MAX)
         self._shake[1] = clampf(self._shake[1] + iy, -SHAKE_MAX, SHAKE_MAX)
+        down = float(direction[1]) if isinstance(direction, (tuple, list)) else 0.0
+        if pet is not None and down > 0.0 and float(speed) >= FALL_STUN_SPEED:
+            self._fall_stun(pet, float(speed))
         # 原版 NoiseTracker / ReactToNoise（LizardAI.cs:1741）：撞击地形的响声会引来蜥蜴
         if strength > 0.0 and self.lizards:
             x, y = getattr(chunk, "x", None), getattr(chunk, "y", None)
@@ -2018,6 +2067,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         p.save()
         p.setClipRect(self._ground_clip(), Qt.ClipOperation.IntersectClip)
 
+        if self.extra_walls:
+            self._draw_walls(p)          # 手绘墙：压在猫下面，和庇护所墙体同层
         if self.spears:
             self._draw_back_spears(p)
             self._draw_low_spears(p)
@@ -2112,8 +2163,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 lx, ly = self.to_logical(e.position().x(), e.position().y())
                 if self._place_kind == "erase":
                     self.erase_at((lx, ly))       # 删除模式：删完继续留着，可连点
-                elif self._place_kind in ("vpole", "hpole", "pole"):
-                    self._begin_pole_place(lx, ly)      # 拉线放杆：记起点，松开时成杆
+                elif self._place_kind in ("vpole", "hpole", "pole", "wall"):
+                    self._begin_pole_place(lx, ly)      # 拉线放杆/放墙：松开时成地形
                 elif self._place_kind == "stone":
                     self.place_stone(lx, ly)
                 elif self._place_kind == "lamp":
@@ -2196,7 +2247,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
     def mouseMoveEvent(self, e):
         # 放庇护所：按下 → 拖 → 松开。万一「按下」那一下没落到窗口上（工具栏抢了
         # 鼠标），只要左键还按着，第一个移动事件就当作起点，拖动照样能框出矩形。
-        if self._place_mode and self._place_kind in ("shelter", "vpole", "hpole", "pole"):
+        if self._place_mode and self._place_kind in ("shelter", "vpole", "hpole",
+                                                     "pole", "wall"):
             if e.buttons() & Qt.MouseButton.LeftButton:
                 lx, ly = self.to_logical(e.position().x(), e.position().y())
                 if self._place_kind == "shelter":
@@ -2208,10 +2260,13 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
-        if self._place_mode and self._place_kind in ("shelter", "vpole", "hpole", "pole"):
+        if self._place_mode and self._place_kind in ("shelter", "vpole", "hpole",
+                                                     "pole", "wall"):
             if e.button() == Qt.MouseButton.LeftButton:
                 if self._place_kind == "shelter":
                     self._finish_shelter_place()
+                elif self._place_kind == "wall":
+                    self._finish_wall_place()
                 else:
                     self._finish_pole_place()
             return
@@ -2476,6 +2531,11 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 crows.extend(sh.cat_solid_rects())
             except Exception:
                 pass
+        # 手绘墙条：和庇护所墙体走同一张表（生物/物品用 solids，猫用 cat_solids）。
+        # 于是真碰撞、挡视线、竖墙可爬（navgeom 从 solids 读竖边）一次到位。
+        for w in (getattr(self, "extra_walls", None) or ()):
+            rects.append(tuple(w))
+            crows.append(tuple(w))
         if (list(rects) != list(chunkphys.solids())
                 or list(crows) != list(chunkphys.cat_solids())):
             chunkphys.set_solids(rects, crows)

@@ -30,6 +30,8 @@ _POLE_EDGE = QColor(20, 22, 26)
 _POLE_SHEEN = QColor(104, 112, 126)
 _POLE_CORE = QColor(40, 42, 47)
 _POLE_TILE = QColor(255, 255, 255, 12)
+_POLE_ICON = QColor(58, 34, 76)       # 杆子图标：紫黑色细线
+_WALL_ICON = QColor(104, 108, 102)    # 墙壁图标：灰石粗条
 _ICON_SAINT = QColor(*_SAINT.body_color)
 _ICON_EYE = QColor(*_SAINT.eye_color)
 _ICON_AMBER = QColor(233, 203, 138)
@@ -255,6 +257,31 @@ def _paint_symbol_icon(p, kind, r, atlas=None) -> bool:
     return True
 
 
+def _paint_pole_cross_icon(p, r):
+    """杆子图标（用户口径）：紫黑色细横线 + 细竖线组成的十字。
+
+    杆子就是「可攀爬的细线」，所以横竖两根细线画在一起 —— 同一个入口
+    横拉出横杆、竖拉出竖杆（见 items.enter_place_pole_mode）。
+    """
+    w = r.width()
+    cx, cy = r.center().x(), r.center().y()
+    pen = QPen(_POLE_ICON, max(1.6, w * 0.085))
+    pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawLine(QPointF(r.left(), cy), QPointF(r.right(), cy))     # 细横线
+    p.drawLine(QPointF(cx, r.top()), QPointF(cx, r.bottom()))     # 细竖线
+
+
+def _paint_wall_icon(p, r):
+    """墙壁图标（用户口径）：一条粗横线。"""
+    th = max(3.0, r.height() * 0.30)
+    cy = r.center().y()
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(_WALL_ICON)
+    p.drawRect(QRectF(r.left(), cy - th * 0.5, r.width(), th))
+
+
 def _paint_place_icon(p, kind, r, atlas=None):
     """在矩形 r 内画一个可交互实体图标。"""
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -264,6 +291,12 @@ def _paint_place_icon(p, kind, r, atlas=None):
     if _paint_symbol_icon(p, kind, r, atlas):
         return                       # 原版贴图优先（就是 wiki/游戏内那张）
 
+    if kind == "pole":
+        _paint_pole_cross_icon(p, r)
+        return
+    if kind == "wall":
+        _paint_wall_icon(p, r)
+        return
     if kind == "vpole":
         _paint_pole_icon(p, r, vertical=True, atlas=atlas)
     elif kind == "hpole":
@@ -700,6 +733,7 @@ class TabBar(QWidget):
         dpr = QGuiApplication.primaryScreen().devicePixelRatio()
         atlas = getattr(self.pet, "atlas", None)
         place_items = [("pole", t("tip_pole"), self._place_pole),
+                       ("wall", t("tip_wall"), self._place_wall),
                        ("fruit", t("tip_fruit"), self._place_fruit),
                        ("stone", t("tip_stone"), self._place_stone),
                        ("lamp", t("tip_lamp"), self._place_lamp),
@@ -900,6 +934,10 @@ class TabBar(QWidget):
 
     def _place_pole(self):
         self.pet.enter_place_pole_mode()
+        self._collapse()
+
+    def _place_wall(self):
+        self.pet.enter_place_wall_mode()
         self._collapse()
 
     def _place_squidcada(self):

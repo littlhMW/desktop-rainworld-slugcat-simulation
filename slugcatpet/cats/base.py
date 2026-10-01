@@ -13,6 +13,7 @@ class CatCaps:
     """能力开关：关 = 不建对应器官、不注册对应状态。"""
     tongue: bool = True
     ascension: bool = True
+    no_spear: bool = False        # 圣徒：任何形式的矛都不碰（能力级硬闸）
     gills: bool = False           # 仅 Rivulet
     pyro: bool = False            # 需配 tuning.pyro_heat_cap
     acrobat: bool = False         # 溪流撒欢（RivFlip 高后空翻状态）；后空翻寻路已全员通用

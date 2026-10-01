@@ -435,6 +435,11 @@ ESCAPE_SIDE_HYS = 8.0         # EscapeSolver 迟滞：另一侧危险度没低�
 RESCUE_PATH_DANGER_PAD = 0.25  # 救援赶路沿线允许的危险度增量：超了就放弃这次救援，
                               #   不再冲进危险区被 FaceThreat 抢回逃跑（拉锯）
 CROWD_SIDE_STEP = 18.0        # 同层行为（战斗/救援/喂食）落点让位给拥挤的横向步长
+# ── 战斗站位（两阶段，用户口径：叼尸体的蜥蜴不再让全员挤到同一个 x）──
+FIGHT_ATTACK_SLOTS = 3        # 同时占「攻击位」的猫数；其余在侧后方排队待命
+FIGHT_SLOT_STEP = 46.0        # 攻击位之间的横向间距（左右侧攻击槽）
+FIGHT_SLOT_FLIP_TICKS = 34    # 弹道被同伴挡这么久就换到另一侧攻击槽再找线
+FIGHT_STANDOFF_EXTRA = 90.0   # 排队位与目标的额外间距（别贴到攻击者屁股后面）
 CROWD_R = 180.0                   # 拥挤感知半径
 CROWD_SCALE = 55.0                # exp(-d / 它)
 CROWD_EDGE_SCALE = 25.0           # 边的拥挤代价 = Σpoint_cost * 它

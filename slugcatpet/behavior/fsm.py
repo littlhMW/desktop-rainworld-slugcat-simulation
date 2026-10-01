@@ -444,6 +444,9 @@ class BehaviorFSM:
         self._protest_target = None
         self._fight_left = 0
         self._fight_target = None
+        self._fight_slot_flip = 0        # 0/1：被队友挡线时换到另一侧攻击槽
+        self._shot_blocked = False       # 上一掷是不是被同伴挡了（_throw_weapon_at 写）
+        self._blocked_t = 0              # 连续被挡的 tick 数（够久就换槽）
         self._fight_climber = None       # 为够到高处的目标而爬的那根竖杆
         self._fight_climb_thrown = False # 本次爬杆已经出手过（爬完就收工）
         self._pole_throw_cd = 0          # 爬杆够不着目标的重试冷却
@@ -637,6 +640,7 @@ class BehaviorFSM:
         self._interaction_blockers = set()
         self.drag_takeover = None
         self.stun_takeover = None
+        self._stun_rage = True           # 这次晕眩醒来要不要带余怒（摔晕=False，只是懵一下）
         cat = getattr(self.win, "cat", None)
         # 统一动作注册表：主 tick 里所有「决定」的唯一出处（见 behavior/action.py）。
         # 先建表再 fsm_mount：角色的独有动作（preempt band）在挂载时登记进来。
@@ -699,7 +703,17 @@ class BehaviorFSM:
     def on_release(self):
         self.grab.end()
 
-    def apply_stun(self, ticks):
+    def apply_stun(self, ticks, drop_items=True, rage=True):
+        """晕眩。
+
+        ``drop_items=False`` 只打断动作/移动，不动手里的东西；``rage=False``
+        醒来直接回 IdleStand，不进 PostThrowWander 的暴怒游荡。
+
+        摔晕（window._fall_stun）同时给这两个 False：原版「高处落地」只是懵
+        一下，不该把刚摘到嘴边的果子/抓着的矛扔掉，也不该醒来暴走一两分钟
+        —— 那会让取食、投掷、社交这些链在每次落地后从头来过。
+        """
+        self._stun_rage = bool(rage)
         if self.state in ("Ascension", "Dead", "Dragged"):
             return False
         if self.state in ("CeilingHang", "ChaseCursor", "Socialize",
@@ -707,13 +721,13 @@ class BehaviorFSM:
                           "ScoldBlocker", "CatchFly", "ItemPlay"):
             self._wants_break(self.state)
         self._break_tongue()
-        if self.fetch is not None:
+        if drop_items and self.fetch is not None:
             self.fetch.release()
             self.fetch = None
         self.cursorlick = None
         self.stonethrow = None
         self.flyhunt = None
-        if self.body.carried_spear is not None:
+        if drop_items and self.body.carried_spear is not None:
             self.body.release_spear(to_free=True)
         # 外部中断只通知控制器自己 release（文档 §12）：stun 不再另写一套
         # 「把 chunk 解钉 / 清 animation / 置 None」的清理。
@@ -722,12 +736,12 @@ class BehaviorFSM:
             self.body.stop_walk()
             self._hp = None
             self._hp_phase = None
-        if self.body.carried_fruit is not None:
+        if drop_items and self.body.carried_fruit is not None:
             self.body.carried_fruit.stalk = None
             self.body.carried_fruit.state = "free"
             self.body.carried_fruit.held_by_hand = None
             self.body.release_fruit()
-        if self.body.carried_stone is not None:
+        if drop_items and self.body.carried_stone is not None:
             self.body.release_stone(to_free=True)
         self._clear_hands()
         self.body.zerog_pole = None       # 砸晕即松杆
@@ -2115,16 +2129,31 @@ class BehaviorFSM:
         """食性闸：这本猫吃不吃 f（原版 NourishmentOfObjectEaten >= 0）。"""
         return _diet.edible(getattr(self.pers, "diet", None), f)
 
+    def _no_spear(self) -> bool:
+        """能力级硬闸：这只猫种任何形式的矛都不拿（CatCaps.no_spear，圣徒）。
+
+        和性格里的 ``spear_like`` 是两回事：后者只是「多愿意用」，压到 0.15 时
+        圣徒仍会为了敲爆米花去捡矛（见 _cob_spear_willing 的例外）。所以必须单独
+        一道闸，把「找矛 / 捡矛 / 拔矛 / 背矛 / 玩矛」一次堵死。
+        """
+        caps = getattr(getattr(self.win, "cat", None), "caps", None)
+        return bool(getattr(caps, "no_spear", False))
+
     def _spear_willing(self) -> bool:
-        """肯不肯使矛（圣徒几乎不肯碰矛，够不着就用别的办法）。"""
+        """肯不肯使矛（圣徒：任何形式的矛都不碰 —— 能力闸优先于性格）。"""
+        if self._no_spear():
+            return False
         return float(getattr(self.pers, "spear_like", 1.0)) >= tuning.SPEAR_WILLING_MIN
 
     def _cob_spear_willing(self) -> bool:
-        """肯不肯为了开爆米花去捡矛：素食猫（圣徒）只吃素，不开荚就没得吃。
+        """肯不肯为了开爆米花去捡矛：素食猫只吃素，不开荚就没得吃。
 
-        原版 SeedCob.HitByWeapon（SeedCob.cs:398）确实把圣徒排除在外（圣徒的矛
-        打不开荚），这里是用户点名要求的例外：圣徒愿意拿矛敲爆米花，也敲得开。
+        原版 SeedCob.HitByWeapon（SeedCob.cs:398）把圣徒排除在外（圣徒的矛打不开
+        荚）。用户后来把这条例外收掉了：圣徒**任何形式的矛都不拿**（caps.no_spear），
+        所以这里一并关掉 —— 不再有「圣徒拿矛敲爆米花」这条路径。
         """
+        if self._no_spear():
+            return False
         return self._spear_willing() or not _diet.hunts_meat(self.pers.diet)
 
     def meat_sick(self, f) -> bool:
@@ -2678,7 +2707,8 @@ class BehaviorFSM:
         位移超过阈值）会把它甩下来，之后照常自由落体（见 items._step_cursor_pin）。
         """
         b = self.body
-        if b.carried_spear is None and b.back_spear is not None:
+        if (b.carried_spear is None and b.back_spear is not None
+                and not self._no_spear()):
             b.take_back_spear("r")           # 猎手：从背上抽矛（原版 CanRetrieveSpearFromBack）
         if b.carried_spear is None or not b.item_ready():
             return False
@@ -2905,6 +2935,8 @@ class BehaviorFSM:
 
     def _nearest_rip_spear(self, lz=None):
         """插在蜥蜴身上、够得着的矛（勇敢的猫会拔下来重投）。"""
+        if self._no_spear():
+            return None
         best, bd = None, tuning.RIP_SPEAR_R * 2.2
         c1 = self.body.chunk1
         lizzies = getattr(self.win, "lizards", ())
@@ -3786,6 +3818,17 @@ class BehaviorFSM:
         if self.body.stun <= 0:
             self.gfx.stunned = False
             self.body.set_posture(True)
+            if self._pole_scold_on_land and self._blocker_target is not None:
+                # 被从杆上挤掉、半路摔晕：醒来照样去找挤赢的那只指指点点
+                # （_st_airborne 的落地分支被 Stunned 抢了，这里补回来）。
+                self._pole_scold_on_land = False
+                self._stun_rage = True
+                self._transition("ScoldBlocker")
+                return
+            if self._stun_rage is False:      # 摔晕：懵完就接着过自己的日子
+                self._stun_rage = True
+                self._transition("IdleStand")
+                return
             if self.stun_takeover is not None and self.stun_takeover():   # 苏醒接管：超度反击
                 return
             self.anger = ANGER_TOTAL
@@ -5959,7 +6002,7 @@ class BehaviorFSM:
             d = math.hypot(s.x - c1.x, s.y - c1.y)
             if d < bd:
                 best, bd = s, d
-        for s in self.win.spears:
+        for s in (() if self._no_spear() else self.win.spears):
             if s.state != ItemState.FREE or getattr(s, "stuck_to", None) is not None:
                 continue
             if not self._spear_usable(s):        # 钉成杆的矛：只有工匠拔得动
@@ -7709,10 +7752,65 @@ class BehaviorFSM:
         self._cob_end()                      # 豆荚在掷矛线下方：站着够不着
 
     # ── 战斗：反击（投石/投矛）──
+    def _fight_rank(self, tgt):
+        """我在「同打这只目标」的猫里排第几（0 = 离得最近的那只 = 正面攻击位）。
+
+        用户口径（蜥蜴叼着同伴尸体走时全员挤成一条长龙）：不能让所有猫抢同一个
+        ``tgt.x``，攻击位只留少数几只，其余的退到侧后方排队。排序只按到目标的距离，
+        同距按稳定 id 破平 —— 每 tick 重算，谁也不用记账，天然没有残留。
+        """
+        b = self.body
+        ob = getattr(tgt, "body", None)
+        if ob is not None:
+            tx, ty = ob.chunk0.x, ob.chunk0.y
+        else:
+            tx = float(getattr(tgt, "x", 0.0))
+            ty = float(getattr(tgt, "y", 0.0))
+        d0 = math.hypot(tx - b.chunk1.x, ty - b.chunk1.y)
+        key0 = (d0, id(self.win))
+        rank = 0
+        for o in getattr(self.win, "pets", ()):
+            if o is self.win or getattr(o, "body", None) is None:
+                continue
+            beh = getattr(o, "behavior", None)
+            if beh is None or getattr(beh, "state", None) != "FightThreat":
+                continue
+            if getattr(beh, "_fight_target", None) is not tgt:
+                continue
+            obb = o.body
+            dd = math.hypot(tx - obb.chunk1.x, ty - obb.chunk1.y)
+            if (dd, id(o)) < key0:
+                rank += 1
+        return rank
+
+    def _fight_slot(self, tgt):
+        """我这一轮的战斗落点 → ``(x, 是不是攻击位)``。
+
+        位形（用户口径「两阶段站位」）：
+          rank 0            → 正面攻击槽（tgt.x）
+          rank 1/2/3 …      → 左右侧攻击槽（±FIGHT_SLOT_STEP 的整数倍，按 rank 交替）
+          rank ≥ 攻击位上限 → 排队位：退到 FIGHT_STANDOFF_EXTRA 之外待命，不往前挤
+        """
+        base = float(getattr(tgt, "x", self.body.chunk1.x))
+        rank = self._fight_rank(tgt) + int(self._fight_slot_flip)
+        if rank < tuning.FIGHT_ATTACK_SLOTS:
+            if rank <= 0:
+                return base, True
+            step = tuning.FIGHT_SLOT_STEP * ((rank + 1) // 2)
+            side = -1.0 if (rank % 2) else 1.0
+            return base + side * step, True
+        keep = tuning.FIGHT_ARM_KEEP + tuning.FIGHT_ARM_HYS
+        standoff = keep + tuning.FIGHT_STANDOFF_EXTRA
+        side = -1.0 if self.body.chunk1.x < base else 1.0
+        return base + side * standoff, False
+
     def _fight_enter(self):
         self._fight_left = tuning.FIGHT_TICKS
         self._fight_throw_t = 0
         self._throw_jumped = False
+        self._fight_slot_flip = 0
+        self._blocked_t = 0
+        self._shot_blocked = False
         self.body.set_posture(True)
         self.body.stop_walk()
 
@@ -7722,6 +7820,9 @@ class BehaviorFSM:
         self._fight_climb_thrown = False
         self._fight_cd = T_FIGHT_RETRY
         self._fight_target = None
+        self._fight_slot_flip = 0
+        self._blocked_t = 0
+        self._shot_blocked = False
         self.body.stop_walk()
         self._transition("IdleStand")
 
@@ -7828,8 +7929,9 @@ class BehaviorFSM:
                     if b.grab_spear(rip, side):        # 拔出来（grab_spear 清 stuck）
                         self._fight_throw_t = tuning.FIGHT_THROW_CD
                 return
-            if b.back_spear is not None and (not self._needle_only()
-                                             or self._own_needle(b.back_spear)):
+            if (b.back_spear is not None and not self._no_spear()
+                    and (not self._needle_only()
+                         or self._own_needle(b.back_spear))):
                 # 原版 CanRetrieveSpearFromBack：手空了但背上还备着矛 → 抽到主手
                 # （矛大师：背上那根得是活白针才抽，变黑的针不算武器）
                 if b.take_back_spear("r") is not None:
@@ -7878,12 +7980,16 @@ class BehaviorFSM:
         # 外面，否则战斗站位天然压在恐惧线里，一收手就被恐惧抢走。
         keep = tuning.FIGHT_ARM_KEEP
         hys = tuning.FIGHT_ARM_HYS
+        slot_x, aiming = self._fight_slot(tgt)
         if d < keep - hys:                            # 太近会被咬：边打边拉开
             # 拉开时朝向仍钉在目标上（原版战斗姿势是面对着目标后退，不是背身跑）
             self._move(b.chunk1.x - (tgt.x - b.chunk1.x),
                        facing=1 if tgt.x >= b.chunk1.x else -1)
-        elif d > keep + hys:                          # 太远：走近到出手距离
-            self._walk_to_open(tgt.x, self.state)
+        elif d > keep + hys:                          # 太远：走到**自己那条**攻击槽
+            self._walk_to_open(slot_x, self.state)
+        elif not aiming and abs(slot_x - b.chunk1.x) > tuning.FIGHT_SLOT_STEP * 0.5:
+            # 排队位（攻击位已满）：别贴到攻击者屁股后面，退到侧后方待命
+            self._move(slot_x)
         else:
             self._move_stop()                          # 站定：交还移动权（只本人能还）
 
@@ -7898,8 +8004,19 @@ class BehaviorFSM:
             self._throw_jumped = False
             if self._throw_weapon_at(tgt):
                 self._fight_throw_t = 0
+                self._blocked_t = 0
             else:
                 self._fight_throw_t = tuning.FIGHT_THROW_CD - tuning.FIGHT_RETRY_CD
+                if self._shot_blocked:
+                    # 队友挡着掷出线：不硬等（旧版硬 return False → 全员举着矛
+                    # 跟着蜥蜴走、一个都不投）。顶住一小段时间就换到另一侧攻击槽，
+                    # 从侧向重新找一条干净的线。
+                    self._blocked_t += 1
+                    if self._blocked_t >= tuning.FIGHT_SLOT_FLIP_TICKS:
+                        self._blocked_t = 0
+                        self._fight_slot_flip = 0 if self._fight_slot_flip else 1
+                else:
+                    self._blocked_t = 0
 
     # ── 弹道预演：物理逐行对照 world/spear.py 的 Spear.step ──
     def _shot_profile(self):
@@ -8188,11 +8305,15 @@ class BehaviorFSM:
         if b.carried_spear is None and b.carried_stone is None:
             return False
         # 一次求解（文档 §5）：能命中就直接投，弹道上有同伴就先等，够不着高度才起跳。
+        self._shot_blocked = False
         sol = self._solve_shot(tgt)
         if sol is None:
             return False
         if sol.blocked_by_friend:
-            return False                        # 弹道上有同伴：先不出手（等它让开）
+            # 弹道上有同伴：先不出手，但要让调用方知道「是被挡住的」—— 旧版这里
+            # 硬 return False，于是所有猫都只会原地硬等（全员举矛跟着走、没人投）。
+            self._shot_blocked = True
+            return False
         # 意图只在**真的出手后**记（_launch_weapon 里那一次）。这里提前记会让同伴
         # 为一次「只是起跳、根本没投」的动作白躲（文档 §1「attack_intent 过早触发」）。
         if sol.target_hit:
@@ -8679,6 +8800,8 @@ class BehaviorFSM:
     def _back_spear_tick(self):
         """原版 Player.spearOnBack：能背矛的猫闲下来会把脚边多余的矛背到背上。"""
         b = self.body
+        if self._no_spear():
+            return
         if not self.win.cat.tuning.get("back_spear"):   # 只有猎手系会背矛
             return
         if b.back_spear is not None or b.carried_spear is not None:
@@ -8732,7 +8855,8 @@ class BehaviorFSM:
             cands.append((o, math.hypot(o.x - c0.x, o.y - c0.y), "stone"))
         # 矛大师不许玩自己尾巴长的针（原版那是它唯一的取食工具，不是玩具）。
         needle_race = bool(self.win.cat.tuning.get("tail_needle"))
-        for sp in self.win.spears:
+        # 圣徒（caps.no_spear）：矛不算玩具，任何形式都不拿。
+        for sp in (() if self._no_spear() else self.win.spears):
             if sp.state != "free" or sp.stuck_to is not None:
                 continue
             if not self._spear_usable(sp):
@@ -9012,6 +9136,8 @@ class BehaviorFSM:
     # ── 觅食时捡矛（打未开荚的爆米花）──
     def _nearest_fetchable_spear(self):
         """地上可取用的矛（插着或躺着的），限 COB_SPEAR_FETCH_R 内。"""
+        if self._no_spear():
+            return None
         c0 = self.body.chunk0
         best, bd = None, tuning.COB_SPEAR_FETCH_R
         for sp in self.win.spears:

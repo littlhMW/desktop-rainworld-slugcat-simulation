@@ -63,6 +63,9 @@ FRUIT_FLESH = (0, 0, 255)
 FRUIT_OUTLINE = (0, 0, 0)
 STONE_COLOR = (74, 76, 82)
 POLE_COLOR = (28, 28, 31)
+WALL_THICK = 10.0             # 手绘墙的厚度（拉动只决定长度与走向，不决定粗细）
+WALL_MIN_LENGTH = 26.0        # 拉短了按方向补到这么长（和 wall 最短段同量级）
+WALL_COLOR = (104, 108, 102)  # 手绘墙填充（灰石调，和庇护所墙体同色系）
 # 暖灯颜色
 LAMP_STICK_COLOR = (0, 0, 0)
 LAMP_BULB_FLESH = (255, 255, 255)
@@ -759,6 +762,7 @@ class ItemInteractionMixin:
         self.clear_seeds()
         self.clear_karmaflowers()
         self.clear_poles()
+        self.clear_walls()
         self.clear_lamp()
         if clear_pups:
             self.clear_pups()
@@ -839,6 +843,131 @@ class ItemInteractionMixin:
         self._exit_place_mode()
         self.update()
         return pl
+
+    def enter_place_wall_mode(self):
+        """手绘墙壁入口（用户口径：和杆子同级的拖线入口）。
+
+        和 place_pole_line 同一套交互：按下定起点、拖动定长度与走向、松开成墙。
+        横着拉＝横墙（像窗口地面，能托住身体/尾巴），竖着拉＝竖墙（真碰撞，
+        会爬墙的蜥蜴可爬）。
+        """
+        self._place_mode = True
+        self._place_kind = "wall"
+        self._pole_drag_start = None
+        self._begin_place_capture()
+        return True
+
+    def _finish_wall_place(self):
+        if not self._place_mode or self._place_kind != "wall":
+            return None
+        st = getattr(self, "_pole_drag_start", None)
+        self._pole_drag_start = None
+        if st is None:
+            return None
+        cur = self.cursor_logical()
+        if cur is None:
+            self._exit_place_mode()
+            return None
+        return self.place_wall_line(st[0], st[1], cur[0], cur[1])
+
+    def place_wall_line(self, x0, y0, x1, y1):
+        """按一条线段放一段墙（用户口径：和杆子同级的入口）。
+
+        横着拉＝横墙、竖着拉＝竖墙；拉动只决定长度与走向，厚度恒为 WALL_THICK。
+        墙进物理层的 solids 表（见 window._refresh_shelter_solids），所以生物 /
+        物品 / 猫都撞得到、挡视线，navgeom 还会把竖墙当可爬墙面、横墙顶面当可站面。
+        """
+        dx, dy = float(x1) - float(x0), float(y1) - float(y0)
+        if abs(dx) >= abs(dy):
+            y1 = float(y0)
+            if abs(dx) < WALL_MIN_LENGTH:
+                x1 = float(x0) + (WALL_MIN_LENGTH if dx >= 0 else -WALL_MIN_LENGTH)
+        else:
+            x1 = float(x0)
+            if abs(dy) < WALL_MIN_LENGTH:
+                y1 = float(y0) + (WALL_MIN_LENGTH if dy >= 0 else -WALL_MIN_LENGTH)
+        ax, bx = sorted((clampf(float(x0), 0.0, self._WL),
+                         clampf(float(x1), 0.0, self._WL)))
+        ay, by = sorted((clampf(float(y0), 0.0, self._HL),
+                         clampf(float(y1), 0.0, self._HL)))
+        if abs(bx - ax) >= abs(by - ay):      # 横墙：以拖出的 y 为中心上下各半厚
+            rect = (ax, ay - WALL_THICK * 0.5, bx, ay + WALL_THICK * 0.5)
+        else:                                 # 竖墙：以拖出的 x 为中心左右各半厚
+            rect = (ax - WALL_THICK * 0.5, ay, ax + WALL_THICK * 0.5, by)
+        walls = getattr(self, "extra_walls", None)
+        if walls is None:
+            walls = self.extra_walls = []
+        walls.append(rect)
+        refresh = getattr(self, "_refresh_shelter_solids", None)
+        if refresh is not None:
+            refresh()
+        self.world_version += 1
+        self.geometry_version += 1
+        self._exit_place_mode()
+        self.update()
+        return rect
+
+    def _draw_walls(self, p):
+        """手绘墙条：灰石实心条 + 略深的描边（和庇护所墙体同色系）。"""
+        from PySide6.QtCore import QRectF
+        edge = QColor(max(0, WALL_COLOR[0] - 40), max(0, WALL_COLOR[1] - 40),
+                      max(0, WALL_COLOR[2] - 38))
+        p.save()
+        p.setBrush(QColor(*WALL_COLOR))
+        for (x0, y0, x1, y1) in (getattr(self, "extra_walls", None) or ()):
+            rc = QRectF(x0, y0, x1 - x0, y1 - y0)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawRect(rc)
+            p.setPen(QPen(edge, pen_width(2.0)))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRect(rc)
+            p.setBrush(QColor(*WALL_COLOR))
+        p.restore()
+
+    def _draw_wall_hint(self, p):
+        """放墙预览：拖动方向决定横/竖，厚度恒为 WALL_THICK 并跟着光标。"""
+        from PySide6.QtCore import QRectF
+        cur = self.cursor_logical()
+        if cur is None:
+            return
+        cx, cy = cur
+        if not (0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL):
+            return
+        st = getattr(self, "_pole_drag_start", None)
+        if st is None:
+            a = (cx - WALL_MIN_LENGTH * 0.5, cy)
+            b = (cx + WALL_MIN_LENGTH * 0.5, cy)
+        else:
+            sx, sy = st
+            if abs(cx - sx) >= abs(cy - sy):     # 横着拉：横墙
+                a, b = (sx, sy), (cx, sy)
+            else:                                 # 竖着拉：竖墙
+                a, b = (sx, sy), (sx, cy)
+        x0, x1 = (a[0], b[0]) if a[0] <= b[0] else (b[0], a[0])
+        y0, y1 = (a[1], b[1]) if a[1] <= b[1] else (b[1], a[1])
+        if abs(x1 - x0) >= abs(y1 - y0):
+            y0 -= WALL_THICK * 0.5
+            y1 = y0 + WALL_THICK
+        else:
+            x0 -= WALL_THICK * 0.5
+            x1 = x0 + WALL_THICK
+        p.save()
+        p.setOpacity(0.55)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(*WALL_COLOR))
+        p.drawRect(QRectF(x0, y0, x1 - x0, y1 - y0))
+        p.restore()
+
+    def clear_walls(self):
+        """清掉手绘墙（和杆子一起在「清除可交互实体」里收掉）。"""
+        if getattr(self, "extra_walls", None):
+            self.extra_walls = []
+            refresh = getattr(self, "_refresh_shelter_solids", None)
+            if refresh is not None:
+                refresh()
+            self.world_version += 1
+            self.geometry_version += 1
+            self.update()
 
     def _draw_poles(self, p):
         p.save()
@@ -2076,6 +2205,12 @@ class ItemInteractionMixin:
                 if d is None or d > ERASE_PICK_PAD or d >= bestd:
                     continue
                 best, bestd, bestname = obj, d, name
+        if best is None:              # 没有实体命中：看看是不是点在墙条上
+            for w in (getattr(self, "extra_walls", None) or ()):
+                x0, y0, x1, y1 = w
+                if (x0 - ERASE_PICK_PAD <= cx <= x1 + ERASE_PICK_PAD
+                        and y0 - ERASE_PICK_PAD <= cy <= y1 + ERASE_PICK_PAD):
+                    return (w, "walls")
         return None if best is None else (best, bestname)
 
     def erase_at(self, pos) -> bool:
@@ -2090,6 +2225,16 @@ class ItemInteractionMixin:
             self.remove_pup(obj)               # 幼崽：整只卸载（不受最后一只猫的保护）
         elif name == "lamp":
             self.clear_lamp()
+        elif name == "walls":
+            walls = getattr(self, "extra_walls", None)
+            if walls:
+                try:
+                    walls.remove(obj)
+                except ValueError:
+                    pass
+                refresh = getattr(self, "_refresh_shelter_solids", None)
+                if refresh is not None:
+                    refresh()
         else:
             pool = getattr(self, name)
             try:
@@ -2210,6 +2355,10 @@ class ItemInteractionMixin:
 
         if self._place_kind in ("vpole", "hpole", "pole"):
             self._draw_pole_hint(p)
+            return
+
+        if self._place_kind == "wall":
+            self._draw_wall_hint(p)
             return
 
         if self._place_kind == "lamp":

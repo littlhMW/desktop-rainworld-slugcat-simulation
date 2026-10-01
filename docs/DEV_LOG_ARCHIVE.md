@@ -4,6 +4,88 @@
 
 ## 2026-10-01
 
+### R159 · 落地摔晕 / 可手绘墙壁 / 杆·墙图标 / 圣徒禁一切矛 / 搬尸战斗两阶段站位
+
+用户口径一次给全，六组一起落地，不收尾角料。
+
+**① 高处落地摔晕（`window.py`）**
+
+* 新增常量 `FALL_STUN_SPEED = 22.0` / `FALL_STUN_TICKS = 14` / `FALL_STUN_PER_SPEED = 1.1`
+  / `FALL_STUN_MAX = 60`。阈值取的就是「抖动已经看得见」的那一档：`_fire_impact` 的
+  `IMPACT_SHAKE_MOMENTUM = 7.0` 除以 chunk 质量 0.35 ≈ 20，22 是它的安全余量。
+* `_shake_impact` 里 `direction[1] > 0`（往下砸）且落速 ≥ 阈值 → `_fall_stun(pet, speed)`，
+  晕眩时长按落速线性加长、封顶 1.5 s。新增 `_pet_of_chunk()` 反查撞击者是谁家的猫
+  （撞击回调只给 chunk）。没有行为层的假对象退回直接写 `body.stun`。
+
+**② 摔晕是「懵一下」，不是「被砸」**（本轮返工最多的一处）
+
+* `apply_stun(ticks, drop_items=True, rage=True)` 长出两个开关，摔晕两个都给 False：
+  * `drop_items=False` → 不扔手里的果子 / 矛 / 石头，也不 release `fetch` 目标；
+  * `rage=False` → `_st_stunned` 醒来直接回 `IdleStand`，不进 `PostThrowWander`。
+* 为什么必须这样：第一版直接复用 `apply_stun`，于是「跳起来摘到果子 → 落地」把果子
+  扔了，「摘矛 → 落地」把矛扔了，醒来还带着 `ANGER_TOTAL` 暴走一两千 tick。
+  `e2e_r85`（交点换横杆后摘果子）、`e2e_r94`（起跳投矛命中面条蝇）整条链被打回原点。
+  改成纯懵之后两条测试**原窗口原断言直接过**，没有改测试来迁就机制。
+* `_st_stunned` 补一条：`_pole_scold_on_land` 还挂着（被从杆上挤掉）时醒来直接进
+  `ScoldBlocker` —— 摔晕会抢走 `_st_airborne` 的落地分支，不然「被顶下杆的坏性格落地
+  去指指点点」这条链就断了（`e2e_r36` 抓到）。砸晕 / 电晕仍走原本的暴怒路径。
+
+**③ 饕餮的震动略夸张**（`window.py`）
+
+* `SHAKE_GOURMAND_MUL = 1.35`：`_shake_impact` 里认出击者 `cat.key == "gourmand"` 就把
+  `ix/iy` 乘上这个系数。只放大振幅，不改晕眩判定。
+
+**④ 可手绘的墙壁入口**（`world/items.py` + `window.py` + `planning/navgeom.py`）
+
+* 与杆子同构：`enter_place_wall_mode()` / `_begin_pole_place` 复用同一条拉线起点，
+  `place_wall_line(x0,y0,x1,y1)` 按拖动方向定横墙 / 竖墙，**只决定走向与长度，厚度恒为
+  `WALL_THICK = 10`**，最短 `WALL_MIN_LENGTH = 26`。落在 `window.extra_walls`（矩形列表）。
+* `_refresh_shelter_solids()` 把 `extra_walls` 同时塞进 `solids` / `cat_solids`：真挡路、
+  真挡视线，和庇护所墙体同层。绘制 `_draw_walls` 压在猫下面；拖动时 `_draw_wall_hint` 预览。
+* 删除模式认得墙条（命中池名 `"walls"`）、`clear_all_items()` 里 `clear_walls()` 一起收。
+* `navgeom`：竖墙补左右两条 `SHELTER_WALL + CLIMB_WALL` 可爬面，横墙补一条 `PLATFORM`
+  顶面（`walltop:%d`），让导航层和新地形对齐。
+
+**⑤ 杆子 / 墙壁图标**（`ui/tabbar.py` + `i18n.py`）
+
+* `_paint_pole_cross_icon`：紫黑（`58,34,76`）细横线 + 细竖线的十字 —— 杆子本来就是
+  「可攀爬的细线」，横竖画在一起对应同一个入口两种拉法。
+* `_paint_wall_icon`：`104,108,102` 的一条粗横线（厚度 0.30·高）。两者都插在
+  `_paint_place_icon` 最前面，不再借用原版贴图。图标盘在 pole 后插 `("wall", tip_wall, ...)`。
+
+**⑥ 圣徒不再拿任何形式的矛**（`cats/base.py` + `cats/saint/__init__.py` + `fsm.py`）
+
+* 新增能力位 `CatCaps.no_spear`（默认 False，品种表明确打开），圣徒 `no_spear=True`。
+  这正是「默认全关、品种表打开」的方向 —— 新加的品种不写 trait 不会白捡能力。
+* `FSM._no_spear()` 读的是**猫自己的** `cat.caps`（FSM 的 `win` 是 PetUnit，不是窗口）。
+* 一处堵死全部入口：`_spear_willing` / `_cob_spear_willing` 直接 False，`_nearest_ground_weapon`
+  / `_nearest_rip_spear` / `_nearest_fetchable_spear` / `_nearest_play_item` / `_back_spear_tick`
+  / 抽背矛 / 背矛分支全部加闸。R47 时代「圣徒愿意拿矛敲爆米花」的例外按用户口径撤销。
+
+**⑦ 搬尸战斗：两阶段站位 + 挡线换槽**（`behavior/tuning.py` + `fsm.py`）
+
+* 现象：蜥蜴叼着同伴尸体去巢穴，后面几只猫拿矛贴着走、举矛预备却不出手，直到尸体
+  进巢才突然集体开火。
+* 新增 `FIGHT_ATTACK_SLOTS = 3` / `FIGHT_SLOT_STEP = 46` / `FIGHT_SLOT_FLIP_TICKS = 34`
+  / `FIGHT_STANDOFF_EXTRA = 90`。
+* `_fight_rank(tgt)`：同样在打这只目标的猫按距离排序（同距用 `id` 破平，每 tick 重算，
+  不记账、无残留）。`_fight_slot(tgt)` 给出落点与「是不是攻击位」：rank 0 正面、
+  rank 1/2 左右侧攻击槽、rank ≥ 3 退到 standoff 之外排队。战斗「太远」那一腿改走
+  `self._walk_to_open(slot_x, self.state)`，排队位另有 `_move(slot_x)`。
+* `_throw_weapon_at` 把 `sol.blocked_by_friend` 记到 `_shot_blocked`；连续被挡
+  `FIGHT_SLOT_FLIP_TICKS` 就把 `_fight_slot_flip` 翻面换到另一侧攻击槽再找线 ——
+  原来 `_shot_hits_pet` 是硬阻塞，友军挡线就谁也不投，退化成全员举矛跟随。
+
+**受影响的旧测试口径**
+
+* `e2e_r26`：第 6 段「睡醒指向鼠标」原来从半空丢猫下来。R159 起落地会摔晕、起手被打断，
+  改成**贴地落点**（`w._HL - 20`），断言语义不变。
+* `e2e_r47`：第 2 段从「圣徒愿意拿矛敲爆米花」改成「圣徒任何形式的矛都不拿」；里面的
+  `wsaint.cat.caps` 是笔误（`PetWindow` 没有 `.cat`），改成 `ps.cat.caps`。
+* `e2e_r156`：源码断言里的 `_walk_to_open(tgt.x, self.state)` 跟着改成 `slot_x`。
+* `e2e_r36` / `e2e_r85` / `e2e_r94`：**没有改**。三只都是被上面 ② 的返工救回来的，
+  窗口与断言保持原样。
+
 ### R158 · 移动权单入口 / bodyMode 判据唯一实现 / 蜥蜴身体拓扑（分块并集轮廓 + 头挂在躯干链上）
 
 用户口径：「一次性做完」R157 结尾列的三项，不留尾巴。三项全部落地。
