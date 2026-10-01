@@ -63,8 +63,8 @@ FRUIT_FLESH = (0, 0, 255)
 FRUIT_OUTLINE = (0, 0, 0)
 STONE_COLOR = (74, 76, 82)
 POLE_COLOR = (28, 28, 31)
-WALL_THICK = 10.0             # 手绘墙的厚度（拉动只决定长度与走向，不决定粗细）
-WALL_MIN_LENGTH = 26.0        # 拉短了按方向补到这么长（和 wall 最短段同量级）
+WALL_MIN_W = 16.0             # 手绘墙矩形的最小宽（拖太窄按它补齐）
+WALL_MIN_H = 16.0             # 手绘墙矩形的最小高
 WALL_COLOR = (104, 108, 102)  # 手绘墙填充（灰石调，和庇护所墙体同色系）
 # 暖灯颜色
 LAMP_STICK_COLOR = (0, 0, 0)
@@ -845,55 +845,73 @@ class ItemInteractionMixin:
         return pl
 
     def enter_place_wall_mode(self):
-        """手绘墙壁入口（用户口径：和杆子同级的拖线入口）。
+        """手绘墙壁入口（用户口径：画一个实心矩形，像庇护所但是实心的）。
 
-        和 place_pole_line 同一套交互：按下定起点、拖动定长度与走向、松开成墙。
-        横着拉＝横墙（像窗口地面，能托住身体/尾巴），竖着拉＝竖墙（真碰撞，
-        会爬墙的蜥蜴可爬）。
+        和放庇护所同一套交互：按下定一角 → 拖出矩形 → 松开成墙。整块都是实体，
+        进物理层的 solids 表（见 window._refresh_shelter_solids），所以生物 /
+        物品 / 猫都撞得到、挡视线，navgeom 还会把左右竖边当可爬墙面、顶面当可站面。
         """
         self._place_mode = True
         self._place_kind = "wall"
-        self._pole_drag_start = None
+        self._wall_drag_start = None
         self._begin_place_capture()
         return True
+
+    def _begin_wall_place(self, lx, ly):
+        self._wall_drag_start = (lx, ly)
+
+    def _wall_drag_rect(self):
+        """当前拖出来的预览墙矩形（和庇护所一样是任意矩形，不贴地）。"""
+        cur = self.cursor_logical()
+        if cur is None:
+            return None
+        st = getattr(self, "_wall_drag_start", None)
+        if st is None:
+            # 还没按下：光标处给一个默认大小的方块
+            w = max(WALL_MIN_W, 90.0)
+            h = max(WALL_MIN_H, 90.0)
+            x0, y0 = cur[0] - w * 0.5, cur[1] - h * 0.5
+        else:
+            x0, y0 = min(st[0], cur[0]), min(st[1], cur[1])
+            w, h = abs(cur[0] - st[0]), abs(cur[1] - st[1])
+            w, h = max(w, WALL_MIN_W), max(h, WALL_MIN_H)
+        x0 = clampf(x0, 0.0, max(0.0, self._WL - w))
+        y0 = clampf(y0, 0.0, max(0.0, self._HL - h))
+        return (x0, y0, min(self._WL, x0 + w), min(self._HL, y0 + h))
 
     def _finish_wall_place(self):
         if not self._place_mode or self._place_kind != "wall":
             return None
-        st = getattr(self, "_pole_drag_start", None)
-        self._pole_drag_start = None
+        st = getattr(self, "_wall_drag_start", None)
+        self._wall_drag_start = None
         if st is None:
+            # 没有「按下」就没有框选出来的矩形：忽略这次松开、留在放置模式
+            # （和放庇护所同一条规则，工具栏按钮那一下的松开会漏进来）。
             return None
         cur = self.cursor_logical()
         if cur is None:
             self._exit_place_mode()
             return None
-        return self.place_wall_line(st[0], st[1], cur[0], cur[1])
+        return self.place_wall_rect(st[0], st[1], cur[0], cur[1])
 
-    def place_wall_line(self, x0, y0, x1, y1):
-        """按一条线段放一段墙（用户口径：和杆子同级的入口）。
+    def place_wall_rect(self, x0, y0, x1, y1):
+        """按一个矩形放一块实心墙（用户口径：像庇护所但是实心）。
 
-        横着拉＝横墙、竖着拉＝竖墙；拉动只决定长度与走向，厚度恒为 WALL_THICK。
-        墙进物理层的 solids 表（见 window._refresh_shelter_solids），所以生物 /
-        物品 / 猫都撞得到、挡视线，navgeom 还会把竖墙当可爬墙面、横墙顶面当可站面。
+        整块都是实体 —— 进 solids 表（见 window._refresh_shelter_solids），
+        生物 / 物品 / 猫都撞得到、挡视线；navgeom 把左右竖边当可爬墙面、
+        顶面当可站面。拖出来的两个角随便哪个是起点都行。
         """
-        dx, dy = float(x1) - float(x0), float(y1) - float(y0)
-        if abs(dx) >= abs(dy):
-            y1 = float(y0)
-            if abs(dx) < WALL_MIN_LENGTH:
-                x1 = float(x0) + (WALL_MIN_LENGTH if dx >= 0 else -WALL_MIN_LENGTH)
-        else:
-            x1 = float(x0)
-            if abs(dy) < WALL_MIN_LENGTH:
-                y1 = float(y0) + (WALL_MIN_LENGTH if dy >= 0 else -WALL_MIN_LENGTH)
         ax, bx = sorted((clampf(float(x0), 0.0, self._WL),
                          clampf(float(x1), 0.0, self._WL)))
         ay, by = sorted((clampf(float(y0), 0.0, self._HL),
                          clampf(float(y1), 0.0, self._HL)))
-        if abs(bx - ax) >= abs(by - ay):      # 横墙：以拖出的 y 为中心上下各半厚
-            rect = (ax, ay - WALL_THICK * 0.5, bx, ay + WALL_THICK * 0.5)
-        else:                                 # 竖墙：以拖出的 x 为中心左右各半厚
-            rect = (ax - WALL_THICK * 0.5, ay, ax + WALL_THICK * 0.5, by)
+        if bx - ax < WALL_MIN_W:              # 拖太窄：就地补齐，别放出一根线
+            bx = min(self._WL, ax + WALL_MIN_W)
+            ax = max(0.0, bx - WALL_MIN_W)
+        if by - ay < WALL_MIN_H:
+            by = min(self._HL, ay + WALL_MIN_H)
+            ay = max(0.0, by - WALL_MIN_H)
+        rect = (ax, ay, bx, by)
         walls = getattr(self, "extra_walls", None)
         if walls is None:
             walls = self.extra_walls = []
@@ -908,7 +926,7 @@ class ItemInteractionMixin:
         return rect
 
     def _draw_walls(self, p):
-        """手绘墙条：灰石实心条 + 略深的描边（和庇护所墙体同色系）。"""
+        """手绘墙块：灰石实心矩形 + 略深的描边（和庇护所墙体同色系）。"""
         from PySide6.QtCore import QRectF
         edge = QColor(max(0, WALL_COLOR[0] - 40), max(0, WALL_COLOR[1] - 40),
                       max(0, WALL_COLOR[2] - 38))
@@ -925,32 +943,14 @@ class ItemInteractionMixin:
         p.restore()
 
     def _draw_wall_hint(self, p):
-        """放墙预览：拖动方向决定横/竖，厚度恒为 WALL_THICK 并跟着光标。"""
+        """放墙预览：和庇护所一样拖出实心矩形（松手就落成同尺寸的墙块）。"""
         from PySide6.QtCore import QRectF
-        cur = self.cursor_logical()
-        if cur is None:
+        rc = self._wall_drag_rect()
+        if rc is None:
             return
-        cx, cy = cur
-        if not (0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL):
+        x0, y0, x1, y1 = rc
+        if x1 - x0 <= 0.0 or y1 - y0 <= 0.0:
             return
-        st = getattr(self, "_pole_drag_start", None)
-        if st is None:
-            a = (cx - WALL_MIN_LENGTH * 0.5, cy)
-            b = (cx + WALL_MIN_LENGTH * 0.5, cy)
-        else:
-            sx, sy = st
-            if abs(cx - sx) >= abs(cy - sy):     # 横着拉：横墙
-                a, b = (sx, sy), (cx, sy)
-            else:                                 # 竖着拉：竖墙
-                a, b = (sx, sy), (sx, cy)
-        x0, x1 = (a[0], b[0]) if a[0] <= b[0] else (b[0], a[0])
-        y0, y1 = (a[1], b[1]) if a[1] <= b[1] else (b[1], a[1])
-        if abs(x1 - x0) >= abs(y1 - y0):
-            y0 -= WALL_THICK * 0.5
-            y1 = y0 + WALL_THICK
-        else:
-            x0 -= WALL_THICK * 0.5
-            x1 = x0 + WALL_THICK
         p.save()
         p.setOpacity(0.55)
         p.setPen(Qt.PenStyle.NoPen)
@@ -2128,6 +2128,7 @@ class ItemInteractionMixin:
         self._place_kind = None
         self._slime_preview = None
         self._pole_drag_start = None
+        self._wall_drag_start = None
         self._pup_pending = None       # 取消放置：丢掉预留的幼崽身份
         self._pup_preview = None
         hk = getattr(self, "_hotkey_filter", None)

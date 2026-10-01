@@ -346,17 +346,16 @@ class NavGeometry:
             g._add(Surface("swall:%d:1" % n, SHELTER_WALL, x=x1, top=y0, bot=y1,
                            stand=True, climb=CLIMB_WALL, solid=True))
 
-        # ⑤c 手绘墙条（用户入口拉出来的墙）：竖墙＝两条可爬墙面，横墙＝顶面可站。
-        #     障碍（LOS / 碰撞）已经在下面第 ⑦ 段按 solids() 统一铺过。
+        # ⑤c 手绘墙块（用户入口框出来的实心矩形）：左右两条竖边可爬、顶面可站。
+        #     和庇护所墙体同一套语义，只是整块实心。障碍（LOS / 碰撞）已经在
+        #     下面第 ⑦ 段按 solids() 统一铺过，这里只补「面」。
         for n, (wx0, wy0, wx1, wy1) in enumerate(getattr(win, "extra_walls", ()) or ()):
-            if (wx1 - wx0) <= (wy1 - wy0):
-                g._add(Surface("wall:%d:0" % n, SHELTER_WALL, x=wx0, top=wy0,
-                               bot=wy1, stand=True, climb=CLIMB_WALL, solid=True))
-                g._add(Surface("wall:%d:1" % n, SHELTER_WALL, x=wx1, top=wy0,
-                               bot=wy1, stand=True, climb=CLIMB_WALL, solid=True))
-            else:
-                g._add(Surface("walltop:%d" % n, PLATFORM, y=wy0, lo=wx0, hi=wx1,
-                               stand=True, solid=True))
+            g._add(Surface("wall:%d:0" % n, SHELTER_WALL, x=wx0, top=wy0,
+                           bot=wy1, stand=True, climb=CLIMB_WALL, solid=True))
+            g._add(Surface("wall:%d:1" % n, SHELTER_WALL, x=wx1, top=wy0,
+                           bot=wy1, stand=True, climb=CLIMB_WALL, solid=True))
+            g._add(Surface("walltop:%d" % n, PLATFORM, y=wy0, lo=wx0, hi=wx1,
+                           stand=True, solid=True))
 
         # ⑤b 背景区域 BackgroundRegion（别人窗口露出来的竖边）。
         #     三分法：背景**不是**墙 —— 不是实体（不挡路 / 不挡视线 / 不参与

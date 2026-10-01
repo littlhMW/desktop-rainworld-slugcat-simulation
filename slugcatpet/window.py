@@ -348,7 +348,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # 放杆子
         self.poles = []
         self._pole_seed = 0
-        self.extra_walls = []                  # 手绘墙条（矩形 x0,y0,x1,y1）：真碰撞
+        self.extra_walls = []                  # 手绘墙块（矩形 x0,y0,x1,y1）：实心，真碰撞
+        self._wall_drag_start = None           # 放墙的框选起点（按下定一角，松开成块）
         # 光标那一小截竖杆（不渲染、不换代、不存档）
         self._cursor_world = None          # 本 tick 的光标（逻辑坐标）；矛钉光标用
         self._cursor_pin_prev = None       # 上一 tick 光标（算甩动速度）
@@ -2163,8 +2164,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 lx, ly = self.to_logical(e.position().x(), e.position().y())
                 if self._place_kind == "erase":
                     self.erase_at((lx, ly))       # 删除模式：删完继续留着，可连点
-                elif self._place_kind in ("vpole", "hpole", "pole", "wall"):
-                    self._begin_pole_place(lx, ly)      # 拉线放杆/放墙：松开时成地形
+                elif self._place_kind in ("vpole", "hpole", "pole"):
+                    self._begin_pole_place(lx, ly)      # 拉线放杆：松开时成杆
+                elif self._place_kind == "wall":
+                    self._begin_wall_place(lx, ly)      # 框一块实心墙：松开时成墙
                 elif self._place_kind == "stone":
                     self.place_stone(lx, ly)
                 elif self._place_kind == "lamp":
@@ -2254,6 +2257,9 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 if self._place_kind == "shelter":
                     if self._shelter_drag_start is None:
                         self._shelter_drag_start = (lx, ly)
+                elif self._place_kind == "wall":
+                    if getattr(self, "_wall_drag_start", None) is None:
+                        self._wall_drag_start = (lx, ly)
                 elif getattr(self, "_pole_drag_start", None) is None:
                     self._pole_drag_start = (lx, ly)
             return
