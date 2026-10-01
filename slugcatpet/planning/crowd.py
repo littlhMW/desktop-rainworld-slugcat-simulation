@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
-"""CrowdField：共享世界层「哪里挤」（文档 §CrowdField）。
+"""TrafficField：共享世界层「哪里挤」（文档 §14）。
 
-board.py 的 crowd 是**目标级**拥挤（5 只猫抢同一个果子 → 分位置）。它解决
-不了**导航级**拥挤：5 只猫的目标各不相同，却都要经过同一条 100px 宽的平台。
+和 ``Board.target_crowd`` 不是同一个系统，只是名字过去很像（文档 §14 建议改名
+避免看混）：``target_crowd`` 是**目标级**拥挤（5 只猫抢同一个果子 → 分位置），
+本模块是**路线级**交通（5 只猫目标各不相同，却都要经过同一条 100px 宽的
+平台）。
 
 本模块只回答一个问题：某个位置 / 某条边现在有多少只猫。代价折进 A* 之后，
 「左边 base=30 / crowd=80，右边 base=40 / crowd=10」会自己选右边 —— 而不用在
@@ -19,7 +21,7 @@ from ..behavior import tuning
 POLE_LANE_EPS = 10.0       # 「在不在同一根竖杆上」的横向容差
 
 
-class CrowdField:
+class TrafficField:
     """整张「哪里挤」的表：世界一份，每 tick update() 一次。"""
 
     __slots__ = ("win", "actors")

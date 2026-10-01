@@ -17,7 +17,7 @@ from .rendering.primitives import blit
 from .rendering import pixelmode
 from .rendering.pixelmode import aa_hint
 from .petunit import PetUnit
-from .planning.crowd import CrowdField
+from .planning.crowd import TrafficField
 from .planning.threat import ThreatField
 from .core import chunkphys
 from .core.units import clampf, lerp
@@ -423,7 +423,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # 共享世界层（文档 §二 的数据流）：危险 / 拥挤各更新一份，所有猫共用。
         # 场是「世界的」，上下文是「每只猫的」——所以这里放世界，NavContext 放猫。
         self.threat_field = ThreatField(self)
-        self.crowd_field = CrowdField(self)
+        self.traffic_field = TrafficField(self)
         self._all_dead_t = 0        # 全员死亡守灵计时
         self._reincarnate_cleanup_pending = False   # 转生：全体复活那一瞬才清场
         self._build_pets()
@@ -1175,7 +1175,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
         # 危险 / 拥挤：本 tick 先各采一次，之后所有猫的寻路读的都是同一份快照
         self.threat_field.update(self)
-        self.crowd_field.update(self)
+        self.traffic_field.update(self)
 
         for pet in self.pets:
             pet.step(cur, cycle_prog)

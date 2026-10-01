@@ -686,7 +686,7 @@ class SurfaceGraph(NavGraph):
         if self.start is None or not self.nodes:
             return None
         tf = getattr(context, "threat_field", None)
-        cf = getattr(context, "crowd_field", None)
+        cf = getattr(context, "traffic_field", None)
         me = getattr(context, "me", None)
         lo_safety = tuning.ESCAPE_MIN_SAFETY if min_safety is None else float(min_safety)
         lo_dist = tuning.ESCAPE_MIN_DIST if min_dist is None else float(min_dist)
@@ -888,7 +888,7 @@ class SurfaceRoute:
             ctx = self._ctx = NavContext(me=pet, body=pet.body)
         win = getattr(pet, "window", None)
         ctx.threat_field = getattr(win, "threat_field", None)
-        ctx.crowd_field = getattr(win, "crowd_field", None)
+        ctx.traffic_field = getattr(win, "traffic_field", None)
         return ctx
 
     def _nav_off(self) -> bool:
@@ -941,6 +941,22 @@ class SurfaceRoute:
         return RoutePlan(point_goal(dest.anchor, dest.y, contact="travel"),
                          legs, t + walk0 * OPTIMISM,
                          e + walk0 * tuning.PLAN_EN_RATE_LIGHT)
+
+    def retreat_point(self, threat):
+        """同一块支撑面上的撤退点：走不通时「就地往哪退」也由导航层给。
+
+        文档 §四：``FSM._flee_target_x`` 是第二套逃生算法（当前 x + 反方向
+        FLEE_GAP 再 clamp），早就该消掉。这里用**同一条支撑面**（floor / 窗口
+        顶边 / 屋顶 —— 走 ``_here()``，和 ``plan_escape`` 同一份口径）的可行走
+        带，取离威胁更远的那一头：不跨缺口、不猜墙体，FSM 只剩「要不要逃」。
+        """
+        pet = self.pet
+        _y, lo, hi = self._here()
+        x = float(pet.body.chunk1.x)
+        if hi <= lo:
+            return x
+        tx = float(getattr(threat, "x", x))
+        return float(hi if abs(hi - tx) >= abs(tx - lo) else lo)
 
     def plan(self, goal):
         pet = self.pet

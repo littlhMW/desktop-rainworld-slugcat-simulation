@@ -408,7 +408,7 @@ FEAR_JUMP_VX = 5.6            # 跳过它时的水平初速（比奔跑顶速高
 FEAR_SAME_POLE_R = 150.0      # 同一根竖杆上的威胁：纵向这么近就算「贴脸」
                               # （欧氏距离在这里不够用，见 ThreatField.same_pole）
 
-# ── ThreatField / CrowdField：共享世界危险层 → 动态导航代价 ──
+# ── ThreatField / TrafficField：共享世界危险层 → 动态导航代价 ──
 # 文档口径：代价量级「威胁代价 > 拥挤代价 > 普通移动代价」。
 THREAT_SENSE_R = 220.0            # 威胁感知半径（danger 的指数衰减尺度）
 THREAT_SAME_POLE_MUL = 5.0        # 同一根竖杆上的威胁：权重乘数

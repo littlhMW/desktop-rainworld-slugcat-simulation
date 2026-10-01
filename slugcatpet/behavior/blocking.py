@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from ..core.creature import WALK_STOP_EPS
 
-# 横杆位姿（HangFromBeam/GetUpOnBeam/StandOnBeam）；其余 on_pole 位姿按竖杆算
-BEAM_ANIMS = ("HangFromBeam", "GetUpOnBeam", "StandOnBeam")
 # 竖杆上「在同一条线上」的横向容差（杆径很窄，隔壁杆上的猫不算挡路）
 POLE_LANE_EPS = 10.0
 # 两只都蹲在杆头：杆头只许一只猫，摇摆出的横向偏移不能把对方判成「不在一条线上」
@@ -15,8 +13,8 @@ def on_same_pole(a, b) -> bool:
     """两只都在杆上且是同一根杆（竖杆比 pole_x、横杆比 pole_y）。"""
     if not (getattr(a, "on_pole", False) and getattr(b, "on_pole", False)):
         return False
-    a_beam = getattr(a, "animation", None) in BEAM_ANIMS
-    if a_beam != (getattr(b, "animation", None) in BEAM_ANIMS):
+    a_beam = is_beam(a)
+    if a_beam != is_beam(b):
         return False
     if a_beam:
         pa, pb = getattr(a, "pole_y", None), getattr(b, "pole_y", None)
@@ -29,7 +27,7 @@ def pole_in_the_way(a, b, dist) -> bool:
     """同杆上贴得够近 → 互相挡路（竖杆看纵向、横杆看横向）。"""
     if not on_same_pole(a, b):
         return False
-    if getattr(a, "animation", None) in BEAM_ANIMS:
+    if is_beam(a):
         return (abs(a.chunk1.x - b.chunk1.x) < dist
                 and abs(a.chunk0.y - b.chunk0.y) < dist)
     lane = POLE_TIP_LANE_EPS if (at_beam_tip(a) and at_beam_tip(b)) else POLE_LANE_EPS
@@ -42,19 +40,14 @@ POLE_ALONG_EPS = 3.0
 
 
 def is_beam(body) -> bool:
-    """横杆位姿（HangFromBeam/GetUpOnBeam/StandOnBeam）；其余 on_pole 视作竖杆。
+    """横杆位姿 → True；其余 on_pole 位姿按竖杆算。
 
-    统一问身体自己的战斗站位查询（``creature.combat_position``，文档 §7：
-    FSM / blocking 不该再知道 ClimbOnBeam / StandOnBeam / HangFromBeam 这些
-    名字）。老身体对象没有这个查询时才回落到 animation 字符串。
+    统一问身体自己的战斗站位查询（``creature.combat_position``，文档 §7/§11：
+    站位状态的定义归 Creature，FSM / blocking 都不再知道 ClimbOnBeam /
+    StandOnBeam / HangFromBeam 这些 animation 名字 —— 旧实现还留着一层
+    animation 字符串 fallback，等于状态定义有两处）。
     """
-    cp = getattr(body, "combat_position", None)
-    if callable(cp):
-        try:
-            return cp() == "horizontal"
-        except Exception:
-            pass
-    return getattr(body, "animation", None) in BEAM_ANIMS
+    return bool(body.combat_position() == "horizontal")
 
 
 def pole_along(body) -> float:
@@ -96,14 +89,8 @@ def pole_rivals(bodies, me, dist) -> list:
 
 
 def at_beam_tip(body) -> bool:
-    """是否蹲在竖杆杆头上（原版 BeamTip）——优先问身体自己的查询。"""
-    fn = getattr(body, "on_beam_tip", None)
-    if callable(fn):
-        try:
-            return bool(fn())
-        except Exception:
-            pass
-    return getattr(body, "animation", None) == "BeamTip"
+    """是否蹲在竖杆杆头上（原版 BeamTip）——问身体自己的查询。"""
+    return bool(body.on_beam_tip())
 
 
 def _sign(v: float) -> float:

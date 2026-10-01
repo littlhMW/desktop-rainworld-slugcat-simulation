@@ -465,9 +465,9 @@ class Spear:
         # 原版 Spear.Update 的 vel.y += 0.45f（半重力自然下落）。没掷出的照常吃满重力。
         # 重力（掷出的矛过了平飞段只吃半重力）走 world/trajectory：AI 预演
         # 调的是同一个函数，不再有第二套弹道。
-        self.vy += traj.gravity_delta(self.x, self.y, self._throw_x, self._throw_y,
-                                      self._thrown, self.gravity,
-                                      self.room_gravity)
+        self.vy += traj.SPEAR_PROFILE.gravity_delta(
+            self.x, self.y, self._throw_x, self._throw_y,
+            self._thrown, self.room_gravity)
         self.angle_deg = (self.angle_deg + self.spin) % 360.0
         # 掷出的矛过了平飞段开始自然下落：矛身朝向改为跟随速度方向（矛头在前），
         # 而不是出手后把角度永久锁死 —— 否则下坠的矛看起来还是一条水平线。

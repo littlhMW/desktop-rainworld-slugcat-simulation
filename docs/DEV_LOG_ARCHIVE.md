@@ -4,6 +4,104 @@
 
 ## 2026-10-01
 
+### R151 · R150 后的收口：档位飞行模型 / 单一危险值 / 唯一逃生目标 / AimSolution / 控制器释放
+
+文档：本轮「R150 审计整理」（15 条）。结论是「新架构已建立，旧架构残留在几个边界」，按文档给的收口顺序
+做前五条，再补 §6 / §8 / §10 / §11 / §12 / §14 / §15，共收干净 13 条；没做的三条列在最后。
+
+**① 档位即飞行模型：石头不再吃矛的平飞（文档 §1，本轮唯一实际行为矛盾）**
+
+* 旧：`trajectory.preview()` 对所有档位都传 `thrown=True, gravity=profile.gravity`，而 `gravity_delta()`
+  里写死 `if flight_far(...): return g - SPEAR_FLIGHT_LIFT` —— 石头预演吃「110px 平飞 + 半重力」，真实
+  `Stone.step()` 吃满重力，预演与真值两套弹道。AI 按矛的口径算石头，正是「算能中却打不中」的来源。
+* 新：`ProjectileProfile` 多两个字段 `flight_lift / flat_distance`，并带自己的 `gravity_delta()`；
+  `gravity_delta(x, y, ox, oy, thrown, gravity, room_gravity, lift, flat)` 由调用方给模型；
+  `preview(..., profile=profile)` 整段跟档位走。矛 = `(0.45, 110.0)`，石头 = `(0, 0)` → 满重力。
+* `Spear.step` 改调 `traj.SPEAR_PROFILE.gravity_delta(...)`；豆荚预演显式传 `SPEAR_PROFILE`。
+* 验证：`e2e_r151` 把 `Stone.step` 与 `preview(profile=STONE_PROFILE)` 逐帧对拍 40 帧（误差 < 1e-6），
+  并断言同初速下石头比矛掉得多（不再是同一条弹道）。
+
+**② 杆几何全部归 Pole（文档 §8）**
+
+* `world/pole.py` 新增 `anchor() / free_end() / span_x() / span_y() / mid_x() / cross_coord() /
+  axis_coord() / clamp_axis() / spans() / nearest()`。
+* `fsm.py` 里 34 处 `p.ax / p.ay / p.bx / p.by` 全部改走这些接口（`_horizontal_pole_near` /
+  `_pole_near_point` / 零重力抓杆整段重写）；现在 `Select-String "\.ax\b|\.ay\b|\.bx\b|\.by\b"` 在
+  `fsm.py` 里是 0 条。
+* 顺带删掉 `_nearby_lizard()`（确认全库无调用方的死代码）。
+
+**③ 危险值只有 ThreatField 一个来源（文档 §3）**
+
+* `_threat_level()` 改成先问 `ThreatField.sample(x, y, radius=恐惧半径).danger`（clamp 到 0..1）；
+  半径仍由 FSM 给（恐惧圈是战术参数，不是危险模型）。
+* 只有「危险表里居然没有这条威胁」（表这一 tick 还没刷新 / 单测直接调 body）时才回落旧的距离口径 ——
+  否则「表是空的」会被读成「天下太平」。
+* `_threat_too_close()`（贴脸反应）按文档保留，不再自称 danger 标量。
+
+**④ 「逃去哪」只有导航层一个来源（文档 §四）**
+
+* 删 `FSM._flee_target_x()` 与 `FLEE_GAP` —— 那是第二套横向撤退算法（`当前 x + 反方向 GAP` 再 clamp）。
+* 新增 `SurfaceRoute.retreat_point(threat)`：用 `_here()`（和 `plan_escape` 同一份支撑面口径）取
+  「同表面离威胁最远的那一头」，不跨缺口、不猜墙体；`Planner.retreat_point()` 转发。
+* FSM 侧只剩 `_flee_plan_cached()`（带保鲜期的 A*）与 `_flee_goal_x()`（有安全节点用它，否则用
+  `retreat_point`）；`_cornered_by` / `_enter_fleelizard` 的回落 / `_st_fleelizard` 的步点三处全改走它们。
+
+**⑤ AimSolution：一次投掷一次求解（文档 §5）**
+
+* 新 `planning/aim.py`：`AimSolution(profile, direction, origin, velocity, path, target_hit,
+  friendly_blocker, requires_jump, block_ticks)` + `hit_now` / `blocked_by_friend`。
+* `fsm._solve_shot(tgt, dir_x=None, force=False)` 一次算完：初速 → 弹道 → 目标命中 → 同伴遮挡
+  （只看「自己到目标」那一段，目标在背后就整段不看）→ 需不需要起跳。
+* `_throw_weapon_at` 只解一次，然后 `blocked_by_friend → 等 / target_hit → 投 / requires_jump → 跳`；
+  `_launch_weapon(dir_x, tgt, sol=None)` 不再重算同伴避让；`_shot_would_hit` / `_shot_path_clear`
+  退化成「读解」；纯别名的 `_throw_line_blocked` 删除。
+* 旧实现同一帧会把同一条弹道预演 2~3 遍，现在一次。
+
+**⑥ 友军避让几何跟档位统一（文档 §6）**
+
+* `_shot_hits_body(pts, ob, pad, profile=None)`：投掷物半径取 `profile.radius`，补长取
+  `max(pad, profile.hit_pad)`；`_shot_hits_pet(..., profile=...)` 透传，躲同伴 / 躲来袭弹道也读同一档位。
+  旧实现打敌人用 projectile 半径 + pad、躲同伴用 `brad=0 + 另一个 pad`，两套口径。
+
+**⑦ 站位状态只由 Creature 定义（文档 §10 / §11）**
+
+* `on_vertical_pole()` / `on_horizontal_beam()` 改成 `combat_position() == "vertical" / "horizontal"`；
+  动画字符串只在 `combat_position()` 里认一次。
+* `blocking.is_beam()` / `at_beam_tip()` 去掉 animation fallback（`BEAM_ANIMS` 常量删除），
+  `on_same_pole()` / `pole_in_the_way()` 也改走 `is_beam()`。
+
+**⑧ 控制器释放唯一入口（文档 §12）**
+
+* 新增 `FSM._release_controllers()`：poleclimb / hpole / climb 各自 `release()`，幂等。
+* `apply_stun()` 不再自己拆「解钉 / 清 animation / 置 None」那一套；`_break_active_controllers()`
+  先调它，再删掉 PoleClimb / HPole 两支 —— 外部中断只通知控制器自己 release。
+
+**⑨ 改名（文档 §14 / §15）**
+
+* `Board.crowd()` → `target_crowd()`（目标级拥挤）；`CrowdField` → `TrafficField`（路线级交通），
+  窗口属性 `crowd_field` → `traffic_field`，`NavContext.crowd_field` → `traffic_field`。
+* `Creature.muzzle()` → `throw_origin()`：它就是投掷物的生成点（`chunk0` 前上方锚点），不是手位，
+  旧名字与实现错位；投掷物真的从这里生成，所以按真语义改名，而不是把「手位」塞进来让预演与生成点分裂。
+
+**验证**
+
+* 新增 `work/scratch/e2e_r151.py`（8 组，40 项断言）。
+* 同步更新旧断言：`e2e_r149`（`muzzle` → `throw_origin`、命中分支顺序改成读 `sol.*`）、
+  `e2e_r147`（`TrafficField`）、`e2e_r70`（`target_crowd`）、`e2e_r49` / `e2e_r113b`
+  （`_throw_line_blocked` → `_shot_path_clear`）、`e2e_r36`（假 body 补 `combat_position` /
+  `on_beam_tip`）、`e2e_r150`（修正一处空切片造成的假断言）。
+* `run_all19.ps1` 全量（含新增脚本）：`=== round done; fails=0 []`。
+
+**仍未收（文档里有、本轮没做）**
+
+* §7 `hitgeom.target_chunks()` 的 legacy fallback 降级链：要把普通对象都补上
+  `chunks() / preferred_point() / hit_radius()` 才能删 fallback，属长期迁移。
+* §9 竖杆 / 横杆控制器的统一协议：`PoleClimber` 与 `HPoleController` 的方法名已高度重合，但物理本就
+  分开（沿 Y 攀爬 vs 沿 X 移动 / 吊挂 / 撑起），文档也明说「不要合成一个几百行的大 Controller」，
+  留作专轮。
+* §13 `SpearLifecycle` 目前仍是「统一读取」而非「统一状态」（`stuck / pinned / pole / state` 各处分开写），
+  文档说不用急着改，属最后一层。
+
 ### R150 · R149 后的收口：意图时机 / 唯一积分 / 武器档位 / transport 查询 / EscapeSolver / 统一杆几何
 
 文档：本轮「R149 后收口状态」审计（16 条）。判断是 R149 方向对、进入**继续收口**而不是继续加功能，

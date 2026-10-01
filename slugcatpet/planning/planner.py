@@ -163,6 +163,13 @@ class Planner:
             self._route = SurfaceRoute(self.pet)
         return self._route.plan_escape(threat)
 
+    def retreat_point(self, threat):
+        """同表面撤退点（无路可逃时的「就地最远处」）：同样属于导航层。"""
+        if self._route is None:
+            from .surface import SurfaceRoute
+            self._route = SurfaceRoute(self.pet)
+        return self._route.retreat_point(threat)
+
     def surface_route(self, goal):
         """多段寻路：Goal → 表面图 → 最优两段路线。返回 SurfaceHop 或 None。
 

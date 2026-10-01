@@ -50,7 +50,7 @@ def interest_noise(unit, obj, amp: float) -> float:
 
 def crowd_cost(unit, obj) -> float:
     """目标旁边围着几只别的猫（指数衰减，已封顶）；用来把猫自然摊开。"""
-    return board_for(unit).crowd(unit, obj)
+    return board_for(unit).target_crowd(unit, obj)
 
 
 def taken_by_peer(unit, obj) -> bool:

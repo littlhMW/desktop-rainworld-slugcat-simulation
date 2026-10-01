@@ -283,8 +283,12 @@ class Board:
         self._seat()
 
     # ── 查询 ──
-    def crowd(self, unit, obj) -> float:
-        """目标旁边还围着几只别的猫（越近权重越大，指数衰减）。"""
+    def target_crowd(self, unit, obj) -> float:
+        """**目标级**拥挤：这个目标旁边还围着几只别的猫（越近权重越大）。
+
+        与 ``planning/crowd.TrafficField``（路线级交通）不是同一件事，改名只为
+        避免看混（文档 §14）。
+        """
         o = point_of(obj)
         if o is None:
             return 0.0

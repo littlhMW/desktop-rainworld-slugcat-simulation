@@ -1918,11 +1918,15 @@ class SlugcatBody:
             return "vertical"
         return "ground" if self.on_floor() else "airborne"
 
-    def muzzle(self, dir_x=1):
-        """出手点（矛从这只手掷出）：和 weaponphys.throw_velocity 的起点一致。
+    def throw_origin(self, dir_x=1):
+        """掷出物的**生成点**：和 weaponphys.throw_velocity 的起点一致。
 
         高度对齐一律用它，不再拿 chunk0 —— 爬杆时 chunk0 被钉在抓杆手上，
         比胸口低十几像素，「到同一高度就投」的判据于是永远不成立。
+
+        文档 §15：旧名 ``muzzle``（「矛从这只手掷出」）与实现（chunk0 前上方的
+        锚点，不是手位）对不上。投掷物真的**从这里生成**，所以按它真正的语义
+        改名 —— 而不是把「手位」硬塞进来，那会让 AI 预演与真实生成点分裂。
         """
         c0 = self.chunk0
         return (c0.x + float(dir_x) * THROW_ORIGIN_DX, c0.y - THROW_ORIGIN_DY)
@@ -1933,8 +1937,11 @@ class SlugcatBody:
         手和物都贴杆、没有任何自造侧向偏移（原版 Player.cs:5989 把物直接摆在
         手上）。横杆（StandOnBeam / HangFromBeam / GetUpOnBeam）走
         `on_horizontal_beam()`。
+
+        动画字符串只认一次：这里直接问 ``combat_position()``（文档 §10：站位判定
+        归一处，不再让 body / FSM / blocking 各判一遍 on_pole + animation）。
         """
-        return bool(self.on_pole and self.animation in ("ClimbOnBeam", "BeamTip"))
+        return self.combat_position() == "vertical"
 
     def on_beam_tip(self) -> bool:
         """此刻是不是蹲在竖杆杆头上（原版 BeamTip）。"""
@@ -1944,9 +1951,9 @@ class SlugcatBody:
         """此刻是不是「横杆姿态」接管双手（站杆顶 / 吊杆 / 撑上杆）。
 
         同样没有自造的持物偏移：手由横杆动画摆位，物直接读那只手的实际位置。
+        同 `on_vertical_pole()`：站位只问 ``combat_position()``。
         """
-        return bool(self.on_pole and self.animation in
-                    ("StandOnBeam", "HangFromBeam", "GetUpOnBeam"))
+        return self.combat_position() == "horizontal"
 
     def hand_world(self, side):
         """这只手此刻的世界坐标（渲染层每帧写回的真值）；没跑过渲染帧时 None。"""

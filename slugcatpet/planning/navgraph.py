@@ -55,8 +55,8 @@ class NavigationEdge:
         self.capability = capability
         self.plan = plan
         self.extra = extra
-        # 静态占用（文档 §CrowdField：「这条边附近常驻几只猫」的固定部分）。
-        # **每 tick 变化**的拥挤在 CrowdField.edge_cost 里，不写回这条边 ——
+        # 静态占用（文档 §TrafficField：「这条边附近常驻几只猫」的固定部分）。
+        # **每 tick 变化**的拥挤在 TrafficField.edge_cost 里，不写回这条边 ——
         # 图是按几何缓存的，往缓存边上写每 tick 的数会串味。
         self.occupancy_cost = float(occupancy_cost)
 
@@ -425,19 +425,19 @@ def edge_dst(e):
 class NavContext:
     """一只生物这一 tick 的导航上下文（文档 §二 的那条数据流）。
 
-        World → ThreatField.update() → CrowdField.update()
+        World → ThreatField.update() → TrafficField.update()
               → 每只生物 → NavContext → Planner → Route → Executor
 
-    ThreatField / CrowdField 是**共享世界层**，不写进 FSM：以后新增拾荒者 /
+    ThreatField / TrafficField 是**共享世界层**，不写进 FSM：以后新增拾荒者 /
     秃鹫 / 利维坦，只往 ThreatField 注册一种，不给 FSM 加新的逃跑分支。
     """
 
-    __slots__ = ("threat_field", "crowd_field", "me", "body", "pos")
+    __slots__ = ("threat_field", "traffic_field", "me", "body", "pos")
 
-    def __init__(self, threat_field=None, crowd_field=None, me=None, body=None,
+    def __init__(self, threat_field=None, traffic_field=None, me=None, body=None,
                  pos=None):
         self.threat_field = threat_field
-        self.crowd_field = crowd_field
+        self.traffic_field = traffic_field
         self.me = me              # 这只生物本体（拥挤场用它排除自己）
         self.body = body          # 它的身体（脚 / 杆判定用）
         self.pos = pos            # 节点下标 → (x, y)，蜥蜴侧边只带下标时用
@@ -456,7 +456,7 @@ def dynamic_edge_cost(edge, context):
     tf = getattr(context, "threat_field", None)
     if tf is not None:
         cost += tf.edge_cost(edge, context)
-    cf = getattr(context, "crowd_field", None)
+    cf = getattr(context, "traffic_field", None)
     if cf is not None:
         cost += cf.edge_cost(edge, context)
     return cost

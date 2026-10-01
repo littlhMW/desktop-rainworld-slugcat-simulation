@@ -146,6 +146,53 @@ class Pole:
         """(x, y) 附近的表面类型：普通杆给它的 kind（竖/横）。"""
         return self.kind
 
+    def anchor(self):
+        """锚边那一端 ``(ax, ay)``（拖动时按下的那一点）。"""
+        return (self.ax, self.ay)
+
+    def free_end(self):
+        """松开鼠标那一端 ``(bx, by)``（拖动时松手的那一点）。"""
+        return (self.bx, self.by)
+
+    def span_x(self):
+        """x 方向跨度 ``(lo, hi)``（与 kind 无关，横杆就是它的长度范围）。"""
+        return (self.ax, self.bx) if self.ax <= self.bx else (self.bx, self.ax)
+
+    def span_y(self):
+        """y 方向跨度 ``(top, bottom)``（top 是 y 较小的一端）。"""
+        return (self.top_y, self.bottom_y)
+
+    def mid_x(self) -> float:
+        """两端 x 的中点。"""
+        return (self.ax + self.bx) * 0.5
+
+    def cross_coord(self) -> float:
+        """杆「横截面」所在的那条线：竖杆＝杆心 x，横杆＝杆面 y。
+
+        FSM 里到处写 ``p.ay``（横杆杆面）与 ``p.x``（竖杆杆心）其实是同一件事，
+        这里给一个名字，调用方不必知道自己拿的是竖杆还是横杆。
+        """
+        return self.x if self.kind == VERTICAL else self.ay
+
+    def axis_coord(self, x, y) -> float:
+        """沿杆方向的坐标：竖杆取 y，横杆取 x。"""
+        return float(y) if self.kind == VERTICAL else float(x)
+
+    def clamp_axis(self, v: float, pad: float = 0.0) -> float:
+        """把一个沿杆坐标夹进杆的跨度内（可选两端各留 pad）。"""
+        lo, hi = self.span_y() if self.kind == VERTICAL else self.span_x()
+        return min(max(float(v), lo + pad), hi - pad)
+
+    def spans(self, v: float, r: float = 0.0) -> bool:
+        """这个沿杆坐标是否落在杆的跨度内（含 r 余量）。"""
+        lo, hi = self.span_y() if self.kind == VERTICAL else self.span_x()
+        return lo - r <= float(v) <= hi + r
+
+    def nearest(self, x, y):
+        """最近点与距离 ``(cx, cy, d)``（点-段距离的唯一口径）。"""
+        cx, cy = self.nearest_point(x, y)
+        return (cx, cy, math.hypot(float(x) - cx, float(y) - cy))
+
     def step(self, WL: float, HL: float) -> None:
         """静态，无积分。"""
         return

@@ -6,7 +6,7 @@ import random
 
 from ..behavior import tuning
 from ..core.creature import (RUN_UPPER, ZEROG_GRAB_DIST, THROW_ORIGIN_DX, THROW_ORIGIN_DY,
-                             WALK_STOP_EPS, _closest_on_segment)
+                             WALK_STOP_EPS)
 from ..planning import (GIVEUP, HOLDING, MODE_STAY, MODE_TOUCH, Goal, PlanExecutor, Planner,
                         obj_goal)
 from ..planning.fly_reach import in_reach
@@ -222,7 +222,6 @@ _IDLE_SOCIAL_FROM = frozenset(("IdleStand",))
 # ── 躲蜥蜴（原版 Player 见威胁逃逸）──
 FLEE_R = 110.0            # 蜥蜴进入此水平距离 → 掉头跑
 FLEE_SAFE_R = 150.0       # 拉开到此距离 → 安全，收工
-FLEE_GAP = 90.0           # 逃跑目标：离蜥蜴这么远
 FLEE_MAX_TICKS = 200      # 单次逃跑上限
 FLEE_COOLDOWN = 300       # 两次躲之间至少隔这么久（进场即计时）
 # 只从「没事干」的态里起跑：取果/送礼这类有目的的态不打断
@@ -701,7 +700,6 @@ class BehaviorFSM:
                           "ScoldBlocker", "CatchFly", "ItemPlay"):
             self._wants_break(self.state)
         self._break_tongue()
-        self.climb = None
         if self.fetch is not None:
             self.fetch.release()
             self.fetch = None
@@ -710,15 +708,9 @@ class BehaviorFSM:
         self.flyhunt = None
         if self.body.carried_spear is not None:
             self.body.release_spear(to_free=True)
-        if self.poleclimb is not None:
-            self.body.chunk0.pinned = False
-            self.body.chunk1.pinned = False
-            self.body.on_pole = False
-            self.body.animation = None
-            self.poleclimb = None
-        if self.hpole is not None:
-            self.hpole.release()
-            self.hpole = None
+        # 外部中断只通知控制器自己 release（文档 §12）：stun 不再另写一套
+        # 「把 chunk 解钉 / 清 animation / 置 None」的清理。
+        self._release_controllers()
         if self.state == "SeekHPole":
             self.body.stop_walk()
             self._hp = None
@@ -930,8 +922,24 @@ class BehaviorFSM:
         self._revive_timer = 0
         self._flower_planted = True      # 持久化恢复：不补长花
 
+    def _release_controllers(self) -> None:
+        """收掉接管身体的控制器：竖杆 / 横杆 / 攀爬（幂等）。
+
+        文档 §12：stun、``_break_active_controllers``、``_transition`` 过去各拆
+        一套清理，所有权是重复的。现在外部中断（stun / 死亡 / 被抓 / 入水 /
+        无重力）统一走这里 —— 谁在跑就先让谁 ``release()``，释放权归控制器。
+        """
+        if self.poleclimb is not None:
+            self._pole_release()
+        if self.hpole is not None:
+            self._hpole_release()
+        if self.climb is not None:
+            self.climb.release()
+            self.climb = None
+
     def _break_active_controllers(self):
         st = self.state
+        self._release_controllers()
         brk = self._ext_breaks.get(st)
         if brk is not None:
             brk()
@@ -939,10 +947,6 @@ class BehaviorFSM:
             self._angrystone_release()
         elif st == "HuntFly":
             self._flyhunt_release()
-        elif st == "PoleClimb":
-            self._pole_release()
-        elif st == "HPole":
-            self._hpole_release()
         elif st == "FetchFruit":
             self._break_tongue()
             self._fetch_release()
@@ -1919,7 +1923,7 @@ class BehaviorFSM:
         for f in self.win.edibles():
             c.append((f, (f.x, f.y), tuning.LOOK_ITEM_BASE, 0.0))
         for p in self.win.poles:
-            c.append((p, (p.bx, p.by), tuning.LOOK_ITEM_BASE, 0.0))
+            c.append((p, p.free_end(), tuning.LOOK_ITEM_BASE, 0.0))
         for s in self.win.stones:
             c.append((s, (s.x, s.y), tuning.LOOK_ITEM_BASE, 0.0))
         return c
@@ -2672,39 +2676,37 @@ class BehaviorFSM:
         """逗弄生物的概率：上限就是基准 1/8，舌头好奇心只在 0.75×~1× 之间微调。"""
         return clampf(LICK_PLAY_P * (0.75 + 0.25 * self._tongue_curiosity()), 0.0, 1.0)
 
-    def _nearby_lizard(self):
-        """水平距离最近且在威胁圈内的威胁（蜥蜴 / 愤怒的面条蝇成体）；没有则 None。"""
-        x = self.body.chunk1.x
-        best, bd = None, self._threat_r()
-        for lz in getattr(self.win, "lizards", ()):
-            if getattr(lz, "state", None) != ItemState.FREE:
-                continue
-            # 环境伪装（白蜥）：折算成「更远」，蛞蝓猫更晚才发现它
-            d = abs(lz.x - x) * getattr(getattr(lz, "breed", None), "camo_fac", 1.0)
-            if d < bd:
-                best, bd = lz, d
-        for f in getattr(self.win, "needleworms", ()):
-            if not self._hostile_fly(f):
-                continue
-            d = abs(f.x - x)
-            if d < bd:
-                best, bd = f, d
-        return best
+    def _flee_plan_cached(self, lz):
+        """这次逃跑的路线（Planner 的 EscapeGoal → 锚点图 A*），带保鲜期。
 
-    def _flee_target_x(self, lz) -> float:
-        """逃向蜥蜴的反面，至少隔开 FLEE_GAP；夹在可行走范围内。"""
-        b = self.body
-        lo = WALL_MARGIN if b.walk_min is None else max(b.walk_min, WALL_MARGIN)
-        hi = (self.WL - WALL_MARGIN if b.walk_max is None
-              else min(b.walk_max, self.WL - WALL_MARGIN))
-        if hi < lo:
-            lo, hi = WALL_MARGIN, self.WL - WALL_MARGIN
-        x = b.chunk1.x
-        side = 1.0 if x >= lz.x else -1.0
-        # 目标点 = 「从我现在的位置再往外退 FLEE_GAP」再夹进可行走范围。
-        # 旧版写的是「离敌人 FLEE_GAP 的那个点」——猫本来就在 GAP 之外时，
-        # 那个点反而在它和敌人之间，猫会朝敌人走过去（用户看到的「贴着敌人」）。
-        return min(max(x + side * FLEE_GAP, lo), hi)
+        威胁在场时这个入口可能每 tick 都被叫到（几 tick 内威胁位置与地形都没变，
+        没必要重跑 A*）。
+        """
+        plan = self._flee_plan
+        if plan is None or self._flee_plan_age <= 0:
+            self._flee_plan_age = tuning.ESCAPE_REPLAN_TICKS
+            try:
+                plan = self.planner.escape_route(lz)
+            except Exception:
+                plan = None
+            self._flee_plan = plan
+        return plan
+
+    def _flee_goal_x(self, lz) -> float:
+        """「逃去哪」的唯一来源（文档 §四）：导航层选定的落点 x。
+
+        有安全节点就用那个点；连路线都给不出（只有一块地板 / 被围在死点）时，
+        用导航层给的同表面最远处（``Planner.retreat_point``）。FSM 不再自己算
+        「当前 x + 反方向 FLEE_GAP」那第二套横向撤退。
+        """
+        plan = self._flee_plan_cached(lz)
+        goal = getattr(plan, "original_goal", None)
+        if goal is not None:
+            try:
+                return float(goal.pos()[0])
+            except Exception:
+                pass
+        return float(self.planner.retreat_point(lz))
 
     def _flee_lizard_now(self, lz) -> None:
         """立刻躲开这只敌人：先让 Planner 找安全节点，再回落旧的横向撤退。
@@ -2767,18 +2769,12 @@ class BehaviorFSM:
             return
         # 贴身反应都不适用：让 Planner 找一块「威胁到不了、我又到得了」的安全区
         # （EscapeGoal → 锚点图 A* → RouteExecutor），爬杆 / 跳平台 / 掉下层自然
-        # 成为路线的一环。找不到任何安全节点（只有一块地板 / 被围在死点）才回落
-        # 到最后的横向撤退。
+        # 成为路线的一环。找不到任何安全节点（只有一块地板 / 被围在死点）时，
+        # 「往哪退」仍然由导航层给（Planner.retreat_point = 同表面最远处）——
+        # FSM 不再自己算第二套横向撤退（文档 §四）。
         # 路线有保鲜期：A* 走一遍整张锚点图不便宜，而威胁在场时这个入口可能
         # 每 tick 都被叫到（几 tick 内地形与威胁位置都没变，没必要重算）。
-        plan = self._flee_plan
-        if plan is None or self._flee_plan_age <= 0:
-            self._flee_plan_age = tuning.ESCAPE_REPLAN_TICKS
-            try:
-                plan = self.planner.escape_route(lz)
-            except Exception:
-                plan = None
-            self._flee_plan = plan
+        self._flee_plan_cached(lz)
         self._flee_from = lz
         self._crawl_cd = T_CRAWL_RETRY
         self._break_active_controllers()
@@ -2847,7 +2843,10 @@ class BehaviorFSM:
             return False
         if self._near_wall():
             return True
-        return abs(self._flee_target_x(lz) - b.chunk1.x) < tuning.FEAR_JUMP_MIN_GAIN
+        # 「反方向也挪不动」：问导航层「这次要去的落点离我还有多远」——
+        # FSM 不再自己算第二套撤退点（文档 §四）。
+        return (abs(self._flee_goal_x(lz) - b.chunk1.x)
+                < tuning.FEAR_JUMP_MIN_GAIN)
 
     def _jump_over(self, lz) -> bool:
         """面向威胁，从它头上跳到对面去（不是往墙角里跳）。
@@ -2903,11 +2902,12 @@ class BehaviorFSM:
                 self.win, self.planner, plan.original_goal, mode=MODE_STAY,
                 route_fn=self._escape_replan, plan=plan)
             return
-        # 没有安全节点可去（导航层给不出路线）：走旧的横向撤退。
+        # 没有安全节点可去（导航层给不出路线）：退到同表面离威胁最远的那一头 ——
+        # 落点仍然由导航层给（Planner.retreat_point），FSM 不自己算撤退 x。
         # 起跳帧（_flee_lizard_now 刚做威胁跳）不给步点：这一跳的横速已经
         # 钉在 chunk 上，再 walk_to 会把它拽回来，跳完几乎原地落回。
         if b.on_floor() and not b.took_off() and self._flee_from is not None:
-            b.walk_to(self._flee_target_x(self._flee_from))
+            b.walk_to(self.planner.retreat_point(self._flee_from))
 
     def _st_fleelizard(self, cursor, disturbed):
         b = self.body
@@ -2958,7 +2958,7 @@ class BehaviorFSM:
         # 蜥蜴在动，隔几拍重取反方向；刚落地的第一帧（步点被威胁跳清空）
         # 立刻补一个，避免落地后站着不动又被打上「退无可退」。
         if self.timer % 12 == 0 or b.walk_target_x is None:
-            b.walk_to(self._flee_target_x(lz))
+            b.walk_to(self._flee_goal_x(lz))
 
     def _zerog(self) -> bool:
         return getattr(self.body, "zerog", False)
@@ -3083,9 +3083,7 @@ class BehaviorFSM:
     def _zerog_on_pole(self, b):
         """已抓杆：滑向目标，或赖杆来回滑玩够松开。"""
         pole = b.zerog_pole
-        lx, ly = pole.bx - pole.ax, pole.by - pole.ay
-        ll = math.hypot(lx, ly) or 1.0
-        axis_x, axis_y = lx / ll, ly / ll
+        axis_x, axis_y = pole.axis()      # 杆几何归 Pole，FSM 不再自己算端点差
         perp_x, perp_y = -axis_y, axis_x
         t = self._zerog_target
         if t is None:
@@ -3113,7 +3111,7 @@ class BehaviorFSM:
         best = None
         best_d = ZEROG_GRAB_DIST
         for p in self.win.poles:
-            d = _closest_on_segment(x, y, p.ax, p.ay, p.bx, p.by)[2]
+            d = p.nearest(x, y)[2]
             if d < best_d:
                 best_d = d
                 best = p
@@ -3124,7 +3122,7 @@ class BehaviorFSM:
         best = None
         best_d = ZEROG_POLE_SEEK_R
         for p in self.win.poles:
-            d = _closest_on_segment(x, y, p.ax, p.ay, p.bx, p.by)[2]
+            d = p.nearest(x, y)[2]
             if d < best_d:
                 best_d = d
                 best = p
@@ -3137,9 +3135,7 @@ class BehaviorFSM:
         pole = self._zerog_nearest_pole(b.chunk0.x, b.chunk0.y)
         if pole is None:
             return False
-        lx, ly = pole.bx - pole.ax, pole.by - pole.ay
-        ll = math.hypot(lx, ly) or 1.0
-        axis_x, axis_y = lx / ll, ly / ll
+        axis_x, axis_y = pole.axis()
         rx, ry = tx - b.chunk0.x, ty - b.chunk0.y
         along = rx * axis_x + ry * axis_y
         s = 1.0 if along > ZEROG_GRAB_ALIGN else (-1.0 if along < -ZEROG_GRAB_ALIGN else 0.0)
@@ -3157,8 +3153,7 @@ class BehaviorFSM:
             b = self.body
             pole = self._zerog_seek_pole(b.chunk0.x, b.chunk0.y)
             if pole is not None:
-                cx, cy, _ = _closest_on_segment(b.chunk0.x, b.chunk0.y,
-                                                pole.ax, pole.ay, pole.bx, pole.by)
+                cx, cy, _ = pole.nearest(b.chunk0.x, b.chunk0.y)
                 self._zerog_target = (cx, cy)
                 return self._zerog_target
         if cursor is not None and self.rng.random() < ZEROG_CURSOR_FRAC:
@@ -3476,17 +3471,9 @@ class BehaviorFSM:
         return math.hypot(item.x - chunk.x, item.y - chunk.y)
 
     def _pole_near_point(self, p):
-        """杆上离本猫最近的点 (x, y) 与距离：竖杆按 y 夹、横杆按 x 夹。"""
-        from ..world.pole import HORIZONTAL
+        """杆上离本猫最近的点 (x, y) 与距离（统一走 Pole.nearest_point）。"""
         b = self.body
-        if p.kind == HORIZONTAL:
-            lo, hi = (p.ax, p.bx) if p.ax <= p.bx else (p.bx, p.ax)
-            x = min(max(b.chunk0.x, lo), hi)
-            y = p.ay
-        else:
-            lo, hi = (p.ay, p.by) if p.ay <= p.by else (p.by, p.ay)
-            x = p.bx
-            y = min(max(b.chunk0.y, lo), hi)
+        x, y = p.nearest_point(b.chunk0.x, b.chunk0.y)
         d = min(math.hypot(x - b.chunk0.x, y - b.chunk0.y),
                 math.hypot(x - b.chunk1.x, y - b.chunk1.y))
         return x, y, d
@@ -3577,8 +3564,7 @@ class BehaviorFSM:
         if self.body.on_floor():
             self._air_pole_target = None
             return
-        px = (p.x if getattr(p, "kind", None) == "vertical"
-              else (p.ax + p.bx) * 0.5)
+        px = p.mid_x()
         c0 = self.body.chunk0
         if px > c0.x + 1.0:
             self.body.move_dir = 1
@@ -3599,7 +3585,7 @@ class BehaviorFSM:
             if p is self._left_pole and self._air_pole_cd > 0:
                 continue                      # 刚放开的杆别立刻抓回来（防粘杆）
             if getattr(p, "kind", None) == "vertical":
-                top, bot = min(p.ay, p.by), max(p.ay, p.by)
+                top, bot = p.span_y()
                 if not (abs(c0.x - p.x) <= tuning.POLE_AIRGRAB_R
                         and top - tuning.POLE_AIRGRAB_PAD <= c0.y
                         <= bot + tuning.POLE_AIRGRAB_PAD):
@@ -3609,9 +3595,9 @@ class BehaviorFSM:
                 self._poleclimb_start = None
                 self._transition("PoleClimb")
                 return True
-            lo, hi = min(p.ax, p.bx), max(p.ax, p.bx)
+            lo, hi = p.span_x()
             if not (lo - tuning.POLE_AIRGRAB_PAD <= c0.x <= hi + tuning.POLE_AIRGRAB_PAD
-                    and abs(c0.y - p.ay) <= tuning.HPOLE_AIRGRAB_Y):
+                    and abs(c0.y - p.cross_coord()) <= tuning.HPOLE_AIRGRAB_Y):
                 continue
             self._air_pole_target = None
             self._hpole_pole = p
@@ -4024,7 +4010,7 @@ class BehaviorFSM:
             vp = self.poleclimb.pole
             hp = cross_partner(vp, self.win.poles)
             if (hp is target_hp
-                    and abs(self.body.chunk0.y - hp.ay) <= tuning.CROSS_PAD):
+                    and abs(self.body.chunk0.y - hp.cross_coord()) <= tuning.CROSS_PAD):
                 self._pole_release()
                 self._pole_handoff(("h", hp, vp.x))
                 return
@@ -4091,8 +4077,8 @@ class BehaviorFSM:
         for p in self.win.poles:
             if p.kind != "horizontal":
                 continue
-            lo, hi = (p.ax, p.bx) if p.ax <= p.bx else (p.bx, p.ax)
-            if lo <= cx <= hi and abs(cy - p.ay) <= HPOLE_NEAR_Y:
+            lo, hi = p.span_x()
+            if lo <= cx <= hi and abs(cy - p.cross_coord()) <= HPOLE_NEAR_Y:
                 return p
         return None
 
@@ -4108,12 +4094,11 @@ class BehaviorFSM:
         self.hpole = (HPoleController(self.win, pole, self.rng, start=start, start_x=start_x)
                       if pole is not None else None)
         if self.hpole is not None and self._hp_goal_x is not None:
-            self.hpole.goal_x = max(min(pole.ax, pole.bx) + 2.0,
-                                    min(max(pole.ax, pole.bx) - 2.0, self._hp_goal_x))
+            self.hpole.goal_x = pole.clamp_axis(self._hp_goal_x, 2.0)
             g = self._hp_goal_obj
             gy = (getattr(g, "y", None) if g is not None else None)
             self.hpole.want = (float(self._hp_goal_x),
-                               float(pole.ay if gy is None else gy))
+                               float(pole.cross_coord() if gy is None else gy))
 
     def _st_hpole(self, cursor, disturbed):
         if self.grab.active:
@@ -4159,11 +4144,10 @@ class BehaviorFSM:
         for p in self.win.poles:
             if p.kind != "horizontal":
                 continue
-            lo = min(p.ax, p.bx)
-            hi = max(p.ax, p.bx)
-            if not (lo - tuning.HPOLE_GOAL_EPS <= f.x <= hi + tuning.HPOLE_GOAL_EPS):
+            if not self._hpole_spans(p, x=f.x, r=tuning.HPOLE_GOAL_EPS):
                 continue
-            if not (p.ay - tuning.HPOLE_GOAL_R <= f.y <= p.ay + tuning.HPOLE_HAND_DOWN):
+            if not (p.cross_coord() - tuning.HPOLE_GOAL_R <= f.y
+                    <= p.cross_coord() + tuning.HPOLE_HAND_DOWN):
                 continue
             return p
         return None
@@ -4204,8 +4188,8 @@ class BehaviorFSM:
                     continue
                 # 杆面能拿到的高度带：杆上跳得到（上方 HPOLE_GOAL_R）或贴杆探得到（下方
                 # HPOLE_HAND_DOWN）。再低的就是摆在窗口顶边上的，得下杆去捡（见 _hpole_step_off）
-                if not (p.ay - tuning.HPOLE_GOAL_R <= f.y
-                        <= p.ay + tuning.HPOLE_HAND_DOWN):
+                if not (p.cross_coord() - tuning.HPOLE_GOAL_R <= f.y
+                        <= p.cross_coord() + tuning.HPOLE_HAND_DOWN):
                     continue
                 g = p
                 break
@@ -4235,8 +4219,7 @@ class BehaviorFSM:
             h = self.hpole
             p = h.pole
             if p is not None:
-                h.goal_x = max(min(p.ax, p.bx) + 2.0,
-                               min(max(p.ax, p.bx) - 2.0, f.x))
+                h.goal_x = p.clamp_axis(f.x, 2.0)
             h.want = (float(f.x), float(f.y))
             return True
         if self._hpole_entry() is None:      # 没有可行的上杆路线
@@ -4381,7 +4364,7 @@ class BehaviorFSM:
             if (getattr(f, "state", None) not in ("free", "hanging")
                     or surf is None or b.food >= b.food_max
                     or not self._hpole_spans(p, x=f.x)
-                    or not (surf[0] > p.ay + tuning.HPOLE_STEP_MIN_DROP)):
+                    or not (surf[0] > p.cross_coord() + tuning.HPOLE_STEP_MIN_DROP)):
                 f = self._hp_step_obj = None
         if f is None:
             if self._hp_step_cd > 0:
@@ -4395,12 +4378,12 @@ class BehaviorFSM:
                 if not self._can_eat(cand):
                     continue
                 if (self._hpole_spans(p, x=cand.x)
-                        and cand.y <= p.ay + tuning.HPOLE_HAND_DOWN):
+                        and cand.y <= p.cross_coord() + tuning.HPOLE_HAND_DOWN):
                     continue                 # 杆面（贴杆伸手/杆上跳）够得到：交给普通杆上流程
                 surf = self._platform_under(cand)
                 if surf is None:
                     continue                 # 地板上的东西由 _pole_leave_for_food 负责
-                if not (surf[0] > p.ay + tuning.HPOLE_STEP_MIN_DROP):
+                if not (surf[0] > p.cross_coord() + tuning.HPOLE_STEP_MIN_DROP):
                     continue                 # 那块面不比杆面低：不是「跳下去」能解决的
                 d = abs(cand.x - c0.x)
                 if best is None or d < best[0]:
@@ -4419,8 +4402,7 @@ class BehaviorFSM:
         tx = f.x + step
         if sx1 - sx0 > 36.0:
             tx = min(max(tx, sx0 + 8.0), sx1 - 8.0)
-        lo, hi = (p.ax, p.bx) if p.ax <= p.bx else (p.bx, p.ax)
-        tx = min(max(tx, lo + 2.0), hi - 2.0)
+        tx = p.clamp_axis(tx, 2.0)
         if abs(c0.x - tx) > tuning.HPOLE_GOAL_EPS:
             h.goal_x = tx
             h.goal_eps = tuning.HPOLE_GOAL_EPS
@@ -4535,11 +4517,11 @@ class BehaviorFSM:
         """
         if getattr(f, "state", None) not in ("free", "hanging"):
             return False
-        lo, hi = min(p.ax, p.bx), max(p.ax, p.bx)
-        if lo <= f.x <= hi:
+        lo, hi = p.span_x()
+        if p.spans(f.x):
             return False                     # 在杆面跨内：那是 _hpole_spans 的事
         surf = self._platform_under(f)
-        if surf is None or surf[0] <= p.ay + tuning.HPOLE_STEP_MIN_DROP:
+        if surf is None or surf[0] <= p.cross_coord() + tuning.HPOLE_STEP_MIN_DROP:
             return False                     # 不在窗口顶边上 / 不比杆面低
         stats = getattr(getattr(self.win, "cat", None), "stats", None)
         if stats is None:
@@ -4547,7 +4529,7 @@ class BehaviorFSM:
         from ..core import chunkphys
         from ..planning.pole_hop import platform_hop_plan
         px = max(lo + 14.0, min(hi - 14.0, hi if f.x > hi else lo))
-        py = p.ay - 5.0                      # 杆面站姿（HPoleController.STAND_HOVER）
+        py = p.cross_coord() - 5.0           # 杆面站姿（HPoleController.STAND_HOVER）
         pf = platform_hop_plan(stats, chunkphys.platforms(), px, py, want=(f.x, f.y))
         if pf is None:
             return False
@@ -4586,8 +4568,7 @@ class BehaviorFSM:
             return True
         if r is None:
             r = tuning.HPOLE_GOAL_EPS
-        lo, hi = min(p.ax, p.bx), max(p.ax, p.bx)
-        return lo - r <= x <= hi + r
+        return p.spans(x, r)
 
     def _hpole_entry(self):
         """横杆可达入口（原版三条路）：('tongue'|'climb'|'jump', 横杆[, 交叉竖杆])。
@@ -4619,10 +4600,10 @@ class BehaviorFSM:
         c0 = self.body.chunk0
         if stats is None or not self.body.on_floor():
             return False
-        lo, hi = min(p.ax, p.bx), max(p.ax, p.bx)
+        lo, hi = p.span_x()
         if hi - lo < 16.0:                         # 杆面太短，站不到杆下
             return False
-        dy = p.ay - c0.y
+        dy = p.cross_coord() - c0.y
         for md in (0, 1, -1):
             for hold in tuning.PLAN_JUMP_HOLD_GEARS:
                 if sweep_hit(get_arc(stats, hold, md), 0.0, dy, tuning.HPOLE_JUMP_GRAB) is not None:
@@ -4635,8 +4616,8 @@ class BehaviorFSM:
         for p in self.win.poles:
             if p.kind != "horizontal":
                 continue
-            midx = (p.ax + p.bx) * 0.5
-            if best is None or abs(midx - hx) < abs((best.ax + best.bx) * 0.5 - hx):
+            midx = p.mid_x()
+            if best is None or abs(midx - hx) < abs(best.mid_x() - hx):
                 best = p
         return best
 
@@ -4658,8 +4639,7 @@ class BehaviorFSM:
         if p is None:
             self._hp_phase = "done"
             return
-        self._hp_lo = min(p.ax, p.bx)
-        self._hp_hi = max(p.ax, p.bx)
+        self._hp_lo, self._hp_hi = p.span_x()
         if self._hp_entry == "climb":       # 无舌：爬交叉竖杆，交点换横杆
             self._hp_cv = entry[2]
             self._hp_kind = "climb"
@@ -4673,14 +4653,14 @@ class BehaviorFSM:
             return
         mox, moy = self.gfx.mouth_world()
         reach = self.win.tongue.total * HPOLE_REACH_FRAC
-        if p.ay >= moy - reach:    # 低杆直舔，高杆先到锚墙脚再爬
+        if p.cross_coord() >= moy - reach:   # 低杆直舔，高杆先到锚墙脚再爬
             self._hp_kind = "low"
             self._hp_ux = max(self._hp_lo + 8.0, min(self._hp_hi - 8.0, b.chunk1.x))
             self._hp_phase = "walk_under"
             b.walk_to(self._hp_ux)
         else:
             self._hp_kind = "high"
-            self._hp_side = -1 if p.ax < self.WL * 0.5 else 1
+            self._hp_side = -1 if p.anchor()[0] < self.WL * 0.5 else 1
             self._hp_phase = "to_wall"
             b.walk_to(b.walk_max if self._hp_side > 0 else b.walk_min)
 
@@ -4690,7 +4670,8 @@ class BehaviorFSM:
         lo, hi = self._hp_lo, self._hp_hi
         if tg.attached:
             ax, ay = tg.anchor if tg.anchor is not None else (None, None)
-            if ax is not None and abs(ay - p.ay) < 24.0 and lo - 6.0 <= ax <= hi + 6.0:
+            if (ax is not None and abs(ay - p.cross_coord()) < 24.0
+                    and lo - 6.0 <= ax <= hi + 6.0):
                 self._hpole_pole = p
                 self._hp = None
                 self._transition("HPole")
@@ -4698,8 +4679,8 @@ class BehaviorFSM:
         if tg.is_idle():
             mox, moy = self.gfx.mouth_world()
             tx = max(lo + 6.0, min(hi - 6.0, mox))
-            if math.hypot(mox - tx, moy - p.ay) <= tg.total * HPOLE_REACH_FRAC:
-                self.win.fire_tongue_at(tx, p.ay)
+            if math.hypot(mox - tx, moy - p.cross_coord()) <= tg.total * HPOLE_REACH_FRAC:
+                self.win.fire_tongue_at(tx, p.cross_coord())
                 self._hp_tries += 1
                 return True
             return False
@@ -4718,7 +4699,7 @@ class BehaviorFSM:
             self._transition("IdleStand" if b.on_floor() else "Airborne")
             return
         lo, hi = self._hp_lo, self._hp_hi
-        self.gfx.look_at = ((lo + hi) * 0.5, p.ay)
+        self.gfx.look_at = (p.mid_x(), p.cross_coord())
         ph = self._hp_phase
 
         if ph == "to_climb":         # 无舌：交给竖杆攀爬，交点处自动换横杆
@@ -4741,8 +4722,8 @@ class BehaviorFSM:
         if ph == "jump_grab":        # 无舌：起跳贴杆转 HPole
             c0 = b.chunk0
             ax = max(self._hp_lo + 2.0, min(self._hp_hi - 2.0, c0.x))
-            self.gfx.look_at = (ax, p.ay)
-            if math.hypot(ax - c0.x, p.ay - c0.y) <= tuning.HPOLE_JUMP_GRAB:
+            self.gfx.look_at = (ax, p.cross_coord())
+            if math.hypot(ax - c0.x, p.cross_coord() - c0.y) <= tuning.HPOLE_JUMP_GRAB:
                 self._hpole_pole = p
                 self._hpole_start = "hang"
                 self._hpole_start_x = c0.x
@@ -4798,7 +4779,8 @@ class BehaviorFSM:
 
         if ph == "climb":            # 高杆爬锚墙到够杆端
             mox, moy = self.gfx.mouth_world()
-            if math.hypot(mox - p.ax, moy - p.ay) <= self.win.tongue.total * HPOLE_GRAB_REACH:
+            if (math.hypot(mox - p.anchor()[0], moy - p.cross_coord())
+                    <= self.win.tongue.total * HPOLE_GRAB_REACH):
                 self._break_tongue()
                 self.climb = None
                 self._hp_phase = "grab"
@@ -4807,7 +4789,8 @@ class BehaviorFSM:
             wall_x = 0.0 if self._hp_side < 0 else self.WL
             if self.climb is None:
                 self.climb = TongueClimber(self.win, self._hp_side,
-                                           target=(wall_x, p.ay), stop_dist=40.0)
+                                           target=(wall_x, p.cross_coord()),
+                                           stop_dist=40.0)
             done = self.climb.update()
             if getattr(self.climb, "giveup", False):
                 self._hp_reclimb(b)
@@ -5430,11 +5413,25 @@ class BehaviorFSM:
         return best
 
     def _threat_level(self) -> float:
+        """危险程度 0..1：有 ThreatField 就问它，FSM 不再自造第二个 danger 标量。
+
+        文档 §3：危险值 / 危险来源 / ETA / 地形关系都属于 ThreatField，FSM 只
+        根据危险等级选反应。半径仍然由 FSM 给（``_threat_r`` 是这只猫的「恐惧圈」
+        战术参数，不是危险模型）。只有「危险表里居然没有这条威胁」（表这一 tick
+        还没刷新 / 单测直接调 body）时才回落旧的距离口径 —— 否则「表是空的」会被
+        读成「天下太平」。
+        """
         lz = self._threat_lizard()
         if lz is None:
             return 0.0
         c1 = self.body.chunk1
-        return clampf(1.0 - math.hypot(lz.x - c1.x, lz.y - c1.y) / self._threat_r(), 0.0, 1.0)
+        r = self._threat_r()
+        tf = self._threat_field()
+        if tf is not None:
+            d = float(tf.sample(c1.x, c1.y, radius=r).danger)
+            if d > 0.0:
+                return clampf(d, 0.0, 1.0)
+        return clampf(1.0 - math.hypot(lz.x - c1.x, lz.y - c1.y) / r, 0.0, 1.0)
 
     def _threat_r(self) -> float:
         """恐惧半径 ≈ 1/3 桌面宽度（原版 Player 见威胁的恐惧圈按窗口缩放，不写死）。"""
@@ -7341,7 +7338,7 @@ class BehaviorFSM:
     # ── 打未开荚的爆米花：原版只能横着发射，所以要先让自己和豆荚同高 ──
     def _throw_line(self) -> float:
         """水平掷矛经过的高度（原版 firstChunk.pos + dir*10 + (0,4) 的 y）。"""
-        return self.body.muzzle()[1]
+        return self.body.throw_origin()[1]
 
     def _cob_band(self, cb):
         """豆荚两个 chunk 组成的可命中竖直区间（含命中半径）。"""
@@ -7381,7 +7378,7 @@ class BehaviorFSM:
         # 弹道走统一积分（world/trajectory），命中走统一扫掠（world/hitgeom._cob_hit）：
         # 这一条和真实飞行、AI 预演用的是同一套几何（文档 §8/§11）。
         from ..world import trajectory as traj
-        pts = traj.preview(x, y, vx, vy, 64, gravity=GRAVITY,
+        pts = traj.preview(x, y, vx, vy, 64, profile=traj.SPEAR_PROFILE,
                            room_gravity=self.win.room_gravity, thrown=not toss)
         probe = _ShotProbe(SPEAR_RAD)
         # 第一帧的扫掠起点＝出手前的位置（原版 firstFrameTraceFromPos，与
@@ -7744,7 +7741,7 @@ class BehaviorFSM:
         else:
             vx, vy = weaponphys.throw_velocity(c0, dir_x, profile.is_spear,
                                                weaponphys.frc(weak=weak))
-        ox, oy = self.body.muzzle(dir_x)
+        ox, oy = self.body.throw_origin(dir_x)
         return (ox, oy, vx, vy)
 
     def _shot_arc(self, ox, oy, vx, vy, ticks=SHOT_PROBE_TICKS, profile=None):
@@ -7757,24 +7754,33 @@ class BehaviorFSM:
         if profile is None:
             profile = self._shot_profile()
         return traj.preview(
-            ox, oy, vx, vy, ticks, gravity=profile.gravity,
+            ox, oy, vx, vy, ticks, profile=profile,
             room_gravity=float(getattr(self.win, "room_gravity", 1.0)))
 
-    def _shot_hits_body(self, pts, ob, pad) -> bool:
-        """预演弹道会不会打到这具身体（同伴也在动：按它的速度预测同一 tick 的位置）。"""
+    def _shot_hits_body(self, pts, ob, pad, profile=None) -> bool:
+        """预演弹道会不会打到这具身体（同伴也在动：按它的速度预测同一 tick 的位置）。
+
+        几何口径与真实命中同一套（文档 §6）：投掷物半径取档位，补长取「档位的
+        命中补长」和调用方给的安全余量里更大的那个 —— 友军避让不再自己造一个
+        pad（旧实现 brad=0.0 + 另一个常数，和打敌人的几何是两套口径）。
+        """
         # 逐段走统一扫掠（world/hitgeom）：旧实现是「点到这一帧位置」的点判定，
         # 40px/帧 的矛一帧就能跨过整具身体。
         from ..world import hitgeom as HG
         if not pts:
             return False
+        brad = 0.0
+        if profile is not None:
+            brad = float(profile.radius)
+            pad = max(float(pad), float(profile.hit_pad))
         ax, ay = pts[0]
         for k, (nx, ny) in enumerate(pts):
-            if HG.sweep_hit_predicted(ob, ax, ay, nx, ny, 0.0, pad, float(k + 1)):
+            if HG.sweep_hit_predicted(ob, ax, ay, nx, ny, brad, pad, float(k + 1)):
                 return True
             ax, ay = nx, ny
         return False
 
-    def _shot_hits_pet(self, pts, pad=THROW_BLOCK_R, skip=None):
+    def _shot_hits_pet(self, pts, pad=THROW_BLOCK_R, profile=None, skip=None):
         """预演弹道上第一个被打到的**别的**同伴（没有 None）。
 
         skip＝这一掷瞄着的目标本身：瞄着它就不算「它挡道」，否则「打一只猫」永远
@@ -7787,7 +7793,7 @@ class BehaviorFSM:
                 continue
             if o is skip or (skip_body is not None and ob is skip_body):
                 continue
-            if self._shot_hits_body(pts, ob, pad):
+            if self._shot_hits_body(pts, ob, pad, profile):
                 return o
         return None
 
@@ -7799,36 +7805,67 @@ class BehaviorFSM:
         """
         return True
 
+    def _solve_shot(self, tgt=None, dir_x=None, force=False):
+        """一次算完这一掷的全部结果（文档 §5「AimSolution」）。
+
+        旧实现把一次投掷拆成 ``_shot_path_clear`` / ``_shot_would_hit`` /
+        ``_launch_weapon`` 三次并列查询，同一帧同一条弹道要预演两三遍，而且每
+        加一种投掷物（石头 / 不同猫种）都得在每个分支各补一次判断。现在只有这
+        一个求解入口，调用方读 :class:`planning.aim.AimSolution`。
+
+        ``tgt=None``（玩耍乱掷）时只算弹道与同伴避让，不做目标命中判定。
+        """
+        from ..planning.aim import AimSolution
+        from ..world import hitgeom as HG
+        profile = self._shot_profile()
+        b = self.body
+        c0 = b.chunk0
+        body_of = getattr(tgt, "body", tgt) if tgt is not None else None
+        if dir_x is None:
+            tx0 = float(getattr(tgt, "x", c0.x)) if tgt is not None else c0.x - b.facing
+            dir_x = 1 if tx0 - c0.x >= 0.0 else -1
+        dir_x = 1 if float(dir_x) >= 0.0 else -1
+        ox, oy, vx, vy = self._shot_velocity(dir_x, profile)
+        pts = self._shot_arc(ox, oy, vx, vy, profile=profile)
+        # 打不打得到目标：统一扫掠 + 统一积分（和真实命中同一个函数）
+        hit = False
+        ax, ay = ox, oy
+        for k, (nx, ny) in enumerate(pts):
+            if body_of is not None and HG.sweep_hit_predicted(
+                    body_of, ax, ay, nx, ny, profile.radius,
+                    profile.hit_pad, float(k + 1)):
+                hit = True
+                break
+            ax, ay = nx, ny
+        # 同伴只看「自己到目标」那一段；目标在背后就整段不看（旧口径）
+        tx = float(getattr(tgt, "x", ox)) if tgt is not None else None
+        block_ticks = int(SHOT_PROBE_TICKS)
+        if tx is not None and (tx - ox) * float(dir_x) <= 0.0:
+            block_ticks = 0
+        elif tx is not None:
+            spd = max(1e-6, abs(vx))
+            block_ticks = int(max(4.0, min(float(SHOT_PROBE_TICKS),
+                                           abs(tx - ox) / spd)))
+        blocker = None
+        if force or self._avoid_friendly():
+            blocker = self._shot_hits_pet(pts[:block_ticks], THROW_BLOCK_R,
+                                          profile, skip=tgt)
+        dy = float(getattr(tgt, "y", c0.y)) - c0.y if tgt is not None else 0.0
+        jump = bool(tgt is not None and not hit and abs(dy) > THROW_JUMP_DY
+                    and b.combat_position() == "ground")
+        return AimSolution(profile, dir_x, (ox, oy), (vx, vy), pts,
+                           hit, blocker, jump, block_ticks)
+
     def _shot_path_clear(self, dir_x, tgt=None, force=False) -> bool:
         """这一掷打出去，弹道上有没有同伴。tgt 给了就只看自己到目标那一段。
 
         force=True 无视设置开关（玩耍用：玩到一半把人扎死没法解释）。
+        求解走 :meth:`_solve_shot`，这里只读结果。
         """
         if not force and not self._avoid_friendly():
             return True
-        ox, oy, vx, vy = self._shot_velocity(dir_x)
-        ticks = int(SHOT_PROBE_TICKS)
-        if tgt is not None:
-            tx = getattr(tgt, "x", None)
-            if tx is None:
-                return True
-            if (float(tx) - ox) * float(dir_x) <= 0.0:
-                return True                  # 目标在背后：交给调用方处理
-            spd = max(1e-6, abs(vx))
-            ticks = int(max(4.0, min(float(SHOT_PROBE_TICKS),
-                                     abs(float(tx) - ox) / spd)))
-        return self._shot_hits_pet(self._shot_arc(ox, oy, vx, vy, ticks),
-                                   skip=tgt) is None
-
-    def _throw_line_blocked(self, dir_x, tgt=None) -> bool:
-        """自己→目标之间站着别的蛞蝓猫 → 这一掷取消。
-
-        旧版只看「与胸口同高的一条水平线段」；矛是会飞十几帧的实体（平飞段之后
-        半重力下落，同伴自己也在走），所以改成整条**预测弹道**逐帧和同伴的预测
-        位置比距离。给了 tgt 就只用「自己到目标」那一段，免得把目标身后的同伴
-        也算进去。
-        """
-        return not self._shot_path_clear(dir_x, tgt)
+        sol = self._solve_shot(tgt, dir_x, force=force)
+        return sol.friendly_blocker is None
 
     # ── 攻击意图：让同伴提前知道「他要掷了」 ──
     def _note_attack_intent(self, dir_x, tgt=None) -> None:
@@ -7869,7 +7906,7 @@ class BehaviorFSM:
                 return o                  # 明确瞄着我：先让开
             pts = self._shot_arc(it["ox"], it["oy"], it["vx"], it["vy"],
                                  profile=it.get("profile"))
-            if self._shot_hits_body(pts, me, SHOT_DODGE_R):
+            if self._shot_hits_body(pts, me, SHOT_DODGE_R, it.get("profile")):
                 return o
         return None
 
@@ -7891,14 +7928,20 @@ class BehaviorFSM:
             return 1 if me.x >= float(it["ox"]) else -1
         return 1 if g_r > g_l else -1
 
-    def _launch_weapon(self, dir_x, tgt=None) -> bool:
-        """按原版水平掷出手里的矛/石头（不做高度判断，由调用方负责对准）。"""
+    def _launch_weapon(self, dir_x, tgt=None, sol=None) -> bool:
+        """按原版水平掷出手里的矛/石头（不做高度判断，由调用方负责对准）。
+
+        ``sol`` 是调用方已经解好的 :class:`planning.aim.AimSolution` —— 出手前
+        不再把弹道重算一遍（文档 §5）。
+        """
         b = self.body
         if not b.item_ready():
             return False                 # 上手冷却没走完：先攥着不扔
         if self._needle_only() and not self._own_needle(b.carried_spear):
             return False                 # 矛大师：白针以外的家伙一律不出手（用户口径）
-        if self._throw_line_blocked(dir_x, tgt):
+        if sol is None:
+            sol = self._solve_shot(tgt, dir_x)
+        if sol is not None and sol.blocked_by_friend:
             return False                     # 同伴挡在掷出线上：不出手
         spear = b.carried_spear
         if (spear is not None and b.carried_stone is not None
@@ -7925,23 +7968,10 @@ class BehaviorFSM:
 
         用户口径：先问「现在直接投能不能中」，能中就直接投，不能中才调整姿态
         （跳起来 / 爬杆）。判定走的是 world/hitgeom 的扫掠，和真实命中同一个函数。
+        现在它只是 :meth:`_solve_shot` 的一个字段（文档 §5）。
         """
-        from ..world import hitgeom as HG
-        profile = self._shot_profile()          # 矛 / 石头各一套半径与补长（文档 §3）
-        ob = getattr(tgt, "body", tgt)
-        if ob is None:
-            return False
-        ox, oy, vx, vy = self._shot_velocity(dir_x, profile)
-        pts = self._shot_arc(ox, oy, vx, vy, profile=profile)
-        if not pts:
-            return False
-        ax, ay = ox, oy
-        for k, (nx, ny) in enumerate(pts):
-            if HG.sweep_hit_predicted(ob, ax, ay, nx, ny, profile.radius,
-                                      profile.hit_pad, float(k + 1)):
-                return True
-            ax, ay = nx, ny
-        return False
+        sol = self._solve_shot(tgt, dir_x)
+        return bool(sol is not None and sol.target_hit)
 
     def _throw_weapon_at(self, tgt) -> bool:
         """原版水平投掷：throwDir = IntVector2(sign(x), 0)，初速走 Weapon.Thrown（40*frc）。
@@ -7951,28 +7981,25 @@ class BehaviorFSM:
         目标偏高时先起跳对齐高度（跳着发射，原版也是这么打空中猎物的）。
         """
         b = self.body
-        c0 = b.chunk0
         if tgt is None:
             return False
         if b.carried_spear is None and b.carried_stone is None:
             return False
-        dx = tgt.x - c0.x
-        dy = tgt.y - c0.y                       # y↓：<0 目标在上方
-        dir_x = 1 if dx >= 0.0 else -1
-        if not self._shot_path_clear(dir_x, tgt):
+        # 一次求解（文档 §5）：能命中就直接投，弹道上有同伴就先等，够不着高度才起跳。
+        sol = self._solve_shot(tgt)
+        if sol is None:
+            return False
+        if sol.blocked_by_friend:
             return False                        # 弹道上有同伴：先不出手（等它让开）
         # 意图只在**真的出手后**记（_launch_weapon 里那一次）。这里提前记会让同伴
         # 为一次「只是起跳、根本没投」的动作白躲（文档 §1「attack_intent 过早触发」）。
-        # 先预演「当前姿态的真实弹道」：能命中就直接投，不能中才起跳对齐高度。
-        # （旧实现只看高度差，能中的也先跳一下 —— 用户报的「可直接投矛命中时
-        #  AI 仍选择跳跃投掷，导致打空」。）
-        if self._shot_would_hit(tgt, dir_x):
-            return self._launch_weapon(dir_x, tgt)
-        if b.combat_position() == "ground" and abs(dy) > THROW_JUMP_DY:
+        if sol.target_hit:
+            return self._launch_weapon(sol.direction, tgt, sol)
+        if sol.requires_jump:
             b.request_jump("stand")             # 站在地上：跳到那一层再水平掷出
             self._throw_jumped = True           # 告诉调用方「这是起跳，不是出手」
             return False                        # 已经在空中就直接掷（原版空中投矛）
-        return self._launch_weapon(1 if dx >= 0.0 else -1, tgt)
+        return self._launch_weapon(sol.direction, tgt, sol)
 
     # ── 恐惧：匍匐潜行挪开 ──
     def _behind_creature(self, c) -> bool:
