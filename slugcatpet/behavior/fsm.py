@@ -6566,6 +6566,7 @@ class BehaviorFSM:
         elif st == "CrawlAway":
             b.set_crawl(False)
             b.walk_speed_target = None
+            self._crawl_social_target = None
             self._clear_motion_and_hands()
 
         elif st == "ScoldBlocker":
