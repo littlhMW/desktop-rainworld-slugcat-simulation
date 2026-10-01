@@ -8,6 +8,7 @@ from ..behavior.anim_intent import BEAM_LIMB_ANIMS
 from ..cats.stats import DEFAULT_STATS
 from ..core import chunkphys as cp
 from ..core.chunkphys import BodyChunk, solve_conn
+from ..core.gfxmath import POLE_CARRY_DX
 from ..core.units import K_VEL, K_IMP, lerp, inv_lerp, clampf
 from ..world import weaponphys
 from ..world.enums import ItemState
@@ -105,9 +106,9 @@ DUAL_SPEAR_SPLAY = 40.0
 # 双持时前倾剔弱到 35%：参考图里两支矛是围着**竖直方向**对称的，
 # 而不是围着单持的 25° 前倾对称（不降的话左手那支几乎竖直，不像外八字）。
 DUAL_SPEAR_BASE_K = 0.35
-# 抱竖杆时手里的东西横向偏出杆线这么多像素：不偏的话矛/石头正好压在杆上，
-# 看上去像「插进杆里」（用户参考图：杆上持物画在杆侧面）。
-POLE_CARRY_DX = 7.0
+# 杆上持物：这个偏移现在作用在**手**上（见 rendering/graphics.py::
+# _beam_hand_target），不再改“物”的位置 —— 物永远粘在手上。
+# 常量本体在 core/gfxmath.py（渲染层也要读），这里只是转出供反向依赖。
 # 出膛点：Player.ThrowObject → thrownPos = firstChunk.pos + throwDir*10 + (0,4)（游戏 y↑）
 THROW_ORIGIN_DX = 10.0
 THROW_ORIGIN_DY = 4.0
@@ -1916,10 +1917,10 @@ class SlugcatBody:
         hw = self.hand_world(side)
         if hw is None:                       # 还没跑过渲染帧：物暂留携带点，但别 aim
             return cx, cy, False
-        if self.on_vertical_pole():          # 抱着竖杆：物偏到杆侧，别画进杆里
-            hw = (hw[0] + (-POLE_CARRY_DX if side == "l" else POLE_CARRY_DX), hw[1])
-        elif self.on_horizontal_beam():      # 横杆：物偏到杆上方，别压在杆身上
-            hw = (hw[0], hw[1] - POLE_CARRY_DX)
+        # 物永远 = 那只手的实际位置，**不再自己另加一个偏移**。
+        # 上一版在这里把物从手上挪开（竖杆横向 ±7px / 横杆向上 7px），
+        # 结果是「矛没在手上、浮在杆旁边」（用户实测截图）。
+        # 现在由渲染层把**手**从杆上伸出去 POLE_CARRY_DX，手到哪里物到哪里。
         return hw[0], hw[1], False
 
     def reach_for(self, fruit, side):

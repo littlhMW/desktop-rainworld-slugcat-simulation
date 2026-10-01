@@ -6,7 +6,7 @@ import re
 from ..core.units import K_VEL, K_IMP, damp60, clampf, inv_lerp
 from ..core.gfxmath import (_hsl2rgb, _ang_from_up, _rot, _lerp, _catmull,
                            SHOULDER_OFF_X, SHOULDER_OFF_Y, ARM_DIV, ARM_MAX,
-                           TAIL_RAD, TONGUE_WIDTH_SCALE)
+                           TAIL_RAD, TONGUE_WIDTH_SCALE, POLE_CARRY_DX)
 from ..behavior.anim_intent import (AnimationController, PRIO_ACTION, point_of,
                                    BEAM_LIMB_ANIMS)
 
@@ -835,6 +835,13 @@ class SlugcatGraphics(GraphicsDrawMixin):
             if drv is not None:                   # 手势驱动的手：持物跟着它走
                 drv[side] = gesture
 
+    def _hand_carrying(self, side) -> bool:
+        """这只手此刻是否拿着东西（决定杆上手要不要伸出去）。"""
+        try:
+            return self.body.hand_items().get(side) is not None
+        except Exception:
+            return False
+
     def _beam_hand_target(self, j, anim, axis):
         """爬杆 / 站顶的手目标。"""
         b = self.body
@@ -851,12 +858,23 @@ class SlugcatGraphics(GraphicsDrawMixin):
             off_y = (-3.0 if cond else 3.0) + 6.0 * f
             hx = px + (-flip if cond else flip)
             hy = c0.y + off_y
+            # 拿着东西的手：从杆线上伸出去，手持与否决定伸不伸。
+            # 物体本身不再自己挪位置（_carry_anchor 只返回手位）。
+            if j == 0:
+                hx -= POLE_CARRY_DX if self._hand_carrying("l") else 0.0
+            else:
+                hx += POLE_CARRY_DX if self._hand_carrying("r") else 0.0
             return (hx, hy), HUNT_SPEED, HAND_QUICKNESS
         if anim in ("HangFromBeam", "GetUpOnBeam"):
             beam_y = getattr(b, "pole_y", c0.y)
             sh = 10.0 + 3.0 * math.sin(2.0 * math.pi * self.anim_frame / 20.0)
             hx = c0.x + (-1.0 if j == 0 else 1.0) * sh
-            return (hx, beam_y), HUNT_SPEED, HAND_QUICKNESS
+            # 手就在杆身上：拿东西的手往上撑 POLE_CARRY_DX，
+            # 否则物（矛心）恰好压在杆身里。空手不动。
+            hy = beam_y
+            if self._hand_carrying("l" if j == 0 else "r"):
+                hy -= POLE_CARRY_DX
+            return (hx, hy), HUNT_SPEED, HAND_QUICKNESS
         # 站杆顶 / 撑上杆：两手向两侧张开扮演平衡（参考图）。
         #
         # 旧版这里还有一段 `if anim == "StandOnBeam" and self.disbalance < 40.0`
