@@ -2,6 +2,62 @@
 
 此文件保留历史开发阶段的主要修复记录。README 只保留当前使用所需信息。
 
+## 2026-10-02
+
+### R161 · 威胁范围限制取消（1/3 屏幕不再截断）+ 自然生成间隔滑条 + 删除光标压墙块不再让整窗空白
+
+**① 威胁范围限制取消（`behavior/fsm.py`）**
+
+用户口径：那个「1/3 屏幕距离内才不睡觉 / 才迎战 / 才救人」的范围限制取消，
+改成 **场上只要有威胁就这些逻辑**（救猫同理）。
+
+* 单点收口在 `_threat_lizard()`：新增模块常量
+  `_THREAT_SEARCH_R = float("inf")`，搜索半径从 `self._threat_r()` 换成它。
+  这一处同时喂着 `_threat_present()`（睡觉闸 / 醒来的 `WakeOnThreat` /
+  闲聊闸）、`_face_threat_tick()`（迎战 / 捡家伙 / 拔矛 / 救人 / 撤退）、
+  `_coverally`、`_threat_pressure_tick` 与各品种的特殊态，所以「不睡觉 /
+  迎战 / 救人」是一起解开的，不是一条条打补丁。
+* `_threat_r()` 保留原值 `max(THREAT_MIN_R, WL × THREAT_WIN_FRAC)`，但语义收窄成
+  **危险强度的距离衰减尺度**（只给 `_threat_level()` 用）：距离仍然决定
+  「多怕」，不再决定「有没有威胁」。`_threat_level()` 的 ThreatField 采样
+  半径与回落口径都没动。
+* 观感实测（单猫 + 单蜥蜴，600 tick）：蜥蜴在 1/3 圈外的远端 → `IdleStand`
+  577 / `FleeLizard` 23（保持清醒、偶尔警觉地撤一段），不是「一直逃」；
+  中距离变成蹲行 / 撤退混合；贴脸照旧会被咬。逃跑的收尾仍由
+  `_safe_from()`（威胁 ETA vs 逃生 ETA）与 `FACE_REENGAGE_TICKS` 控制。
+
+**② 设置面板增加「生成间隔」滑条（`ui/settings.py` / `window.py` / `i18n.py`）**
+
+* 「自然生成」栏里加 **一个** `QSlider`（`settings_spawn_period`），范围
+  `SPAWN_PERIOD_MIN_S = 2` ～ `SPAWN_PERIOD_MAX_S = 120` 秒，右侧实时显示秒数。
+  上面勾了几种自动生成都**共用这一个频率**（本来就只有一个 `_spawn_timer`）。
+* `NATURAL_SPAWN_TICKS = 900` 保留为默认值，新增
+  `SPAWN_TICK_RATE = 40` / `SPAWN_PERIOD_DEF_S = 22`；`window` 新增
+  `spawn_period_s()` / `set_spawn_period_s()` / `_spawn_period_ticks()`，
+  落盘 `params["spawn_period_s"]`（读回时做范围校验，坏值回落默认）。
+  改间隔会立刻把当前倒计时夹到新周期以内，不会出现「拖到 2s 还要等 22s」。
+
+**③ 删除模式光标停在手绘墙块上 → 整窗空白（`world/items.py` / `window.py`）**
+
+* 根因：`erase_target()` 对手绘墙返回的是 **4 元 tuple** `(x0,y0,x1,y1)`，
+  而 `_draw_erase_hint()` 的 else 分支走 `getattr(obj, "x", None)` → 落到
+  `obj.ax` 时 `AttributeError`；异常从 `paintEvent` 冒出去（那里只有
+  `finally: p.end()`，没有 except），整帧绘制中断 → 「所有东西不可见」。
+* `_draw_erase_hint()` 补一条 `hit[1] == "walls"` 分支（和庇护所同构：
+  按矩形描边），不再把 tuple 当实体读 `.x / .ax`。
+* `paintEvent` 补 `except Exception → log_error("paintEvent failed: ...")`：
+  单条绘制异常只丢那一帧的绘制，不再让整个窗口变成空白。
+
+**测试**
+
+* 新增 `e2e_r161.py`：① 圈外（376px > 133px）的蜥蜴照样算威胁、`_sleep_roll`
+  恒 False、威胁离场后恢复、远处威胁也进 `_face_threat_tick`；② 滑条范围 /
+  夹取 / 落盘往返 / 「只有一个 QSlider」/ 2s 档真的按时补出生成物；
+  ③ 光标压在墙块上整帧绘制不抛异常且不是空白帧。
+* `e2e_r41.py`（第 41 轮那套「1/3 屏幕威胁圈」）里唯一一条与新口径冲突的断言
+  「圈外不算威胁」改成「圈外照样算威胁」，并加了「测试前提：蜥蜴确实在圈外」
+  的守卫；半径口径那一条原样保留。全量回归 `fails=0`。
+
 ## 2026-10-01
 
 ### R160 · 手绘墙壁改成实心矩形（和庇护所同一套框选）

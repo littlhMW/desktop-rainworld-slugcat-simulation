@@ -58,6 +58,10 @@ _STR = {
 
     # —— settings：自然生成生物列表 ——
     "settings_spawn_section": {"zh": "自然生成", "en": "Natural spawn"},
+    "settings_spawn_period": {"zh": "生成间隔", "en": "Spawn interval"},
+    "settings_spawn_period_val": {"zh": "{n} 秒", "en": "{n}s"},
+    "settings_spawn_period_tip": {"zh": "所有勾选的自动生成类型共用这一个频率（越短越密）",
+                                  "en": "Shared by every checked auto-spawn type (shorter = more often)"},
     "tip_erase":   {"zh": "删除模式（点谁删谁）", "en": "Erase mode (click to delete)"},
 
     # —— 左下角暴雨 HUD ——

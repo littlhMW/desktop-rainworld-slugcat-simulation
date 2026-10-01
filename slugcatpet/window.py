@@ -34,7 +34,13 @@ from .rendering import storm_hud
 MAX_PETS = 10
 
 # ── 自然生成（设置面板里的「生物列表」）──
-NATURAL_SPAWN_TICKS = 900     # 每约 22s 补一只（勾选哪几种就生成哪几种，不限数量）
+NATURAL_SPAWN_TICKS = 900     # 默认间隔：每约 22s 补一只（勾选哪几种就生成哪几种，不限数量）
+# 自然生成间隔（秒）：设置面板里那一个滑条改的就是它，**所有勾选的类型共用同一个频率**。
+# 物理 40 tick/s（见 _PHYS_DT）。
+SPAWN_TICK_RATE = 40
+SPAWN_PERIOD_MIN_S = 2        # 滑条下限：最密约 2s 一只
+SPAWN_PERIOD_MAX_S = 120      # 滑条上限：最疏两分钟一只
+SPAWN_PERIOD_DEF_S = int(NATURAL_SPAWN_TICKS / SPAWN_TICK_RATE)      # 默认 22s
 SPAWN_GROUND_KINDS = frozenset(("seedcob", "karmaflower"))   # 只长在地面上的
 # 暂时隐藏的生成入口：代码保留，但不出现在「生物生成」列表与图标盘里。
 HIDDEN_PLACE_KINDS = frozenset(("scavenger",))
@@ -367,7 +373,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         saved_spawn = self._params.get("spawn_kinds")
         kinds = set(saved_spawn) if isinstance(saved_spawn, (list, tuple)) else set()
         self._spawn_kinds = kinds & set(spawnable_kinds())
-        self._spawn_timer = NATURAL_SPAWN_TICKS
+        # 生成间隔（秒）：一个滑条管全部「自然生成」类型的共同频率（第 161 轮）。
+        _sp = self._params.get("spawn_period_s")
+        ok_sp = (isinstance(_sp, (int, float)) and not isinstance(_sp, bool)
+                 and SPAWN_PERIOD_MIN_S <= int(_sp) <= SPAWN_PERIOD_MAX_S)
+        self._spawn_period_s = int(_sp) if ok_sp else SPAWN_PERIOD_DEF_S
+        self._spawn_timer = self._spawn_period_ticks()
 
         # 寒冷系统
         self.blizzard_on = not tuning.COLD_BLIZZARD_DEFAULT_OFF
@@ -1220,6 +1231,25 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         """当前勾选「自然生成」的类型集合。"""
         return set(self._spawn_kinds)
 
+    def _spawn_period_ticks(self) -> int:
+        """「生成间隔（秒）」换算成 tick（至少 1）。"""
+        return max(1, int(round(self._spawn_period_s * SPAWN_TICK_RATE)))
+
+    def spawn_period_s(self) -> int:
+        """设置面板读它：自然生成间隔（秒，所有自动生成类型共用这一个频率）。"""
+        return int(self._spawn_period_s)
+
+    def set_spawn_period_s(self, sec) -> None:
+        """设置滑条：改共同生成间隔（秒），写盘并立刻夹住当前倒计时。"""
+        try:
+            v = int(sec)
+        except (TypeError, ValueError):
+            return
+        v = max(SPAWN_PERIOD_MIN_S, min(SPAWN_PERIOD_MAX_S, v))
+        self._spawn_period_s = v
+        self._params["spawn_period_s"] = v
+        self._spawn_timer = min(self._spawn_timer, self._spawn_period_ticks())
+
     def set_spawn_kind(self, key: str, on: bool) -> None:
         """勾/取消一种自然生成（写进 params，存档时一并落盘）。"""
         if key not in spawnable_kinds():
@@ -1231,13 +1261,13 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._params["spawn_kinds"] = sorted(self._spawn_kinds)
 
     def _natural_spawn_tick(self) -> None:
-        """每 NATURAL_SPAWN_TICKS 按勾选列表补一只（不限数量）。"""
+        """每「生成间隔」按勾选列表补一只（不限数量，间隔由设置滑条统一控制）。"""
         if not self._spawn_kinds:
             return
         self._spawn_timer -= 1
         if self._spawn_timer > 0:
             return
-        self._spawn_timer = NATURAL_SPAWN_TICKS
+        self._spawn_timer = self._spawn_period_ticks()
         key = random.choice(sorted(self._spawn_kinds))
         fn = getattr(self, "place_" + key, None)
         if fn is None:                       # 旧的存档里留了已删掉的类型
@@ -2025,6 +2055,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             self._paint_world(p)
             if self._place_mode:
                 self._alpha_pad(p)
+        except Exception as exc:            # 单条绘制异常不许把整窗拖成空白
+            log_error("paintEvent failed: %r" % (exc,))
         finally:
             p.end()
 

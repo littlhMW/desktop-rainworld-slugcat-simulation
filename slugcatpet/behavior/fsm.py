@@ -224,6 +224,10 @@ _IDLE_SOCIAL_FROM = frozenset(("IdleStand",))
 # ── 躲蜥蜴（原版 Player 见威胁逃逸）──
 FLEE_R = 110.0            # 蜥蜴进入此水平距离 → 掉头跑
 FLEE_SAFE_R = 150.0       # 拉开到此距离 → 安全，收工
+# 威胁搜索半径＝无穷：**场上只要有威胁就算数**（第 161 轮，用户口径）。
+# 距离不再决定「有没有威胁」（那是旧的 1/3 屏幕截断口径），只决定危险强度
+# （``_threat_level`` 里的距离衰减）。
+_THREAT_SEARCH_R = float("inf")
 FLEE_MAX_TICKS = 200      # 单次逃跑上限
 FLEE_COOLDOWN = 300       # 两次躲之间至少隔这么久（进场即计时）
 # 只从「没事干」的态里起跑：取果/送礼这类有目的的态不打断
@@ -5532,12 +5536,21 @@ class BehaviorFSM:
         return clampf(1.0 - math.hypot(lz.x - c1.x, lz.y - c1.y) / r, 0.0, 1.0)
 
     def _threat_r(self) -> float:
-        """恐惧半径 ≈ 1/3 桌面宽度（原版 Player 见威胁的恐惧圈按窗口缩放，不写死）。"""
+        """恐惧半径 ≈ 1/3 桌面宽度 —— **只用来量危险强度**，不再截断「看不看得见」。
+
+        用户口径（第 161 轮）：场上只要有威胁，「不睡觉 / 迎战 / 救人」这些逻辑
+        就该生效，和它离我多远无关。所以这个半径现在只给 ``_threat_level``
+        当距离衰减的尺度；威胁的**存在性**是全屏的（见 ``_threat_lizard``）。
+        """
         return max(tuning.THREAT_MIN_R, self.WL * tuning.THREAT_WIN_FRAC)
 
     def _threat_lizard(self):
-        """威胁圈内最近的活威胁：蜥蜴 + 愤怒的面条蝇成体（唤醒/持械/超度/逃跑都用它）。"""
-        return self._nearest_throw_target(self._threat_r())
+        """最近的活威胁：蜥蜴 + 愤怒的面条蝇成体（唤醒/持械/超度/逃跑都用它）。
+
+        **全屏**（``_THREAT_SEARCH_R`` ＝ 无穷）：距离只影响 ``_threat_level``
+        的危险强度，不影响「有没有威胁」。
+        """
+        return self._nearest_throw_target(_THREAT_SEARCH_R)
 
     # ── ThreatField：共享世界危险层（文档 §ThreatField）──
     def _threat_field(self):

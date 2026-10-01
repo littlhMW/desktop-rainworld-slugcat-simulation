@@ -2275,7 +2275,10 @@ class ItemInteractionMixin:
         hit = self.erase_target(cx, cy)
         if hit is not None:
             obj = hit[0]
-            if hasattr(obj, "safe_rect"):                  # 庇护所：整间描边
+            if hit[1] == "walls":                          # 手绘墙块：4 元 tuple，整块描边
+                x0, y0, x1, y1 = obj
+                p.drawRect(x0, y0, x1 - x0, y1 - y0)
+            elif hasattr(obj, "safe_rect"):                # 庇护所：整间描边
                 x0, y0, x1, y1 = obj.safe_rect()
                 p.drawRect(x0, y0, x1 - x0, y1 - y0)
             elif getattr(obj, "is_pup", False) and getattr(obj, "body", None) is not None:

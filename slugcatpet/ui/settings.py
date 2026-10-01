@@ -2,13 +2,13 @@
 from __future__ import annotations
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                                QCheckBox, QRadioButton, QButtonGroup, QFrame, QDialog,
-                               QGridLayout, QSpinBox)
+                               QGridLayout, QSpinBox, QSlider)
 from PySide6.QtCore import Qt
 
 from ..cats import REGISTRY, pickable_variants
 from ..i18n import t
 from .._paths import log_error, resource_dir
-from ..window import MAX_PETS, spawnable_kinds
+from ..window import MAX_PETS, spawnable_kinds, SPAWN_PERIOD_MIN_S, SPAWN_PERIOD_MAX_S
 from .catmenu import variant_label, pet_label
 from .dialogs import ConfirmDialog, PickDialog
 
@@ -155,6 +155,33 @@ class SettingsWindow(QWidget):
             chk.toggled.connect(lambda checked, k=key: self._on_spawn_toggled(k, checked))
             grid.addWidget(chk, i // 2, i % 2)
         v.addLayout(grid)
+        # 生成频率：**只有一个滑条**，上面勾了几种都共用这一个间隔（用户规格）。
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        lbl = QLabel(t("settings_spawn_period"))
+        lbl.setToolTip(t("settings_spawn_period_tip"))
+        row.addWidget(lbl)
+        sld = QSlider(Qt.Orientation.Horizontal)
+        sld.setRange(SPAWN_PERIOD_MIN_S, SPAWN_PERIOD_MAX_S)
+        sld.setValue(self._window.spawn_period_s())
+        sld.setSingleStep(1)
+        sld.setPageStep(5)
+        sld.setToolTip(t("settings_spawn_period_tip"))
+        val = QLabel(t("settings_spawn_period_val", n=self._window.spawn_period_s()))
+        val.setObjectName("dim")
+        val.setMinimumWidth(52)
+        sld.valueChanged.connect(lambda n, lb=val: self._on_spawn_period(n, lb))
+        row.addWidget(sld, 1)
+        row.addWidget(val)
+        v.addLayout(row)
+        self._spawn_slider = sld          # 供测试 / 反向同步读它
+
+    def _on_spawn_period(self, seconds, label=None):
+        """滑条动了：改全类型共用的生成间隔，并刷新旁边的秒数标签。"""
+        self._window.set_spawn_period_s(seconds)
+        if label is not None:
+            label.setText(t("settings_spawn_period_val",
+                            n=self._window.spawn_period_s()))
 
     def _on_spawn_toggled(self, key, checked):
         self._window.set_spawn_kind(key, checked)
