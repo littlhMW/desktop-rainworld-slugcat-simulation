@@ -1,15 +1,12 @@
-# SlugcatPet Extended
+# 桌面雨世界-蛞蝓猫模拟
 
-Rain World 桌面宠物扩展版。基于 `lingxiaojun/slugcatpet`，重点扩展生物、物件、行为、环境与场景系统。
+面向蛞蝓猫桌宠的 Rain World 生态模拟器。项目重点是蛞蝓猫的日常行为、AI、寻路、物理与互动，同时提供一个可运行的雨世界生态沙盒。
 
-## 扩展内容
+## 项目内容
 
-- **更多生物**：蜥蜴、禅乌贼、面条蝇、猫崽等。
-- **更多物件**：珍珠、矛、石头、食物、业力花、杆等，并支持更完整的抓取、携带、投掷与交互。
-- **更多行为**：扩展生物行为、社交、追逐、逃避、攀爬、飞行与物件交互。
-- **环境系统**：增加雨循环计时器、雨眠、庇护所及相关生物状态处理。
-- **场景存档**：支持世界状态及物件状态保存与恢复。
-- **解锁上限**：移除原有物品数量上限并优化性能。
+- **蛞蝓猫桌宠**：不同角色的 AI、社交、寻路、步态、物理和物件互动。
+- **雨世界生态**：蜥蜴、禅乌贼、面条蝇、猫崽、植物和食物等生物与物件。
+- **环境与场景**：雨循环、庇护所、杆、墙和可保存的场景状态。
 
 ## 运行要求
 
@@ -27,7 +24,7 @@ pip install -e .
 python run_slugcatpet.py
 ```
 
-也可以直接构建 Windows 可执行文件：
+也可以构建 Windows 可执行文件 `RainWorldSlugcatSimulation.exe`：
 
 ```powershell
 .\build_exe.ps1
@@ -60,11 +57,15 @@ python run_slugcatpet.py
 - 蛞蝓猫幼崽（Slugpup）
 - 怪猫（Inv）
 
-## 项目来源
+## 来源、致谢与独立维护
 
-本项目基于 [lingxiaojun/slugcatpet](https://github.com/lingxiaojun/slugcatpet) 进行扩展，目前作为独立衍生项目维护。
+本项目现为独立维护的衍生作品。早期版本参考并基于
+[lingxiaojun/slugcatpet](https://github.com/lingxiaojun/slugcatpet)，感谢其公开代码与创意；
+后续生物生态、AI、寻路、物理、渲染、环境和工具链由本项目大规模重写与新增；仓库仍保留部分早期代码及其许可声明。
 
-Rain World 及其游戏素材归原权利人所有。本项目不分发 Rain World 游戏素材，程序仅读取用户本机安装的游戏资源。
+当前维护者：littlhMW。历史作者与上游归属保留在 Git 历史、[NOTICE](NOTICE) 和许可证中。
+
+Rain World 及其游戏素材归原权利人所有。程序运行时读取用户本机安装的游戏资源；仓库中少量界面图标与音效的来源和许可边界见 [NOTICE](NOTICE)。
 
 ## 许可
 
@@ -72,18 +73,15 @@ Rain World 及其游戏素材归原权利人所有。本项目不分发 Rain Wor
 
 ---
 
-# SlugcatPet Extended
+# Desktop Rain World — Slugcat Simulation
 
-An extended Rain World desktop pet based on `lingxiaojun/slugcatpet`, focused on expanding creatures, objects, behaviors, environmental systems, and scene state.
+A Rain World desktop ecology simulator focused on slugcat pets, with creature behavior, pathfinding, physics, interactions, environmental systems, and persistent scenes.
 
-## Extensions
+## Features
 
-- **More creatures**: Lizards, Squidcada, Noodleflies, Slugpups, and more.
-- **More objects**: Pearls, spears, rocks, food, Karma Flowers, poles, with expanded grabbing, carrying, throwing, and object interactions.
-- **More behaviors**: Extended creature behavior, social interactions, chasing, fleeing, climbing, flying, and object interaction.
-- **Environmental systems**: Rain-cycle timer, rain sleep, shelters, and related creature state handling.
-- **Scene persistence**: Save and restore world state and object state.
-- **Removed item limits**: Removes the original item-count limits and includes performance improvements.
+- **Slugcat pets**: Character-specific AI, social behavior, pathfinding, gait, physics, and item interactions.
+- **Rain World ecology**: Lizards, Squidcada, Noodleflies, Slugpups, plants, food, and other creatures and objects.
+- **Environment and scenes**: Rain cycles, shelters, poles, walls, and persistent scene state.
 
 ## Requirements
 
@@ -101,7 +99,7 @@ pip install -e .
 python run_slugcatpet.py
 ```
 
-To build a Windows executable:
+To build the Windows executable `RainWorldSlugcatSimulation.exe`:
 
 ```powershell
 .\build_exe.ps1
@@ -134,11 +132,15 @@ Currently included:
 - Slugpup
 - Inv
 
-## Project Origin
+## Origin, acknowledgement, and independent maintenance
 
-This project is an extended derivative of `lingxiaojun/slugcatpet` and is maintained independently.
+This project is independently maintained. Early versions referenced and built on
+[lingxiaojun/slugcatpet](https://github.com/lingxiaojun/slugcatpet); thanks to that project for its public code and ideas.
+The ecology, AI, pathfinding, physics, rendering, environment systems, and tooling have since been substantially rewritten and expanded here; some early code and its license notice remain in the repository.
 
-Rain World and its game assets belong to their respective rights holders. This repository does not distribute Rain World game assets; the program reads required assets from the user's local installation.
+Current maintainer: littlhMW. Historical authorship and upstream attribution remain documented in Git history, [NOTICE](NOTICE), and the license.
+
+Rain World and its game assets belong to their respective rights holders. The program reads game resources from the user's local installation; see [NOTICE](NOTICE) for the provenance and licensing boundaries of the repository's small set of interface icons and audio files.
 
 ## License
 

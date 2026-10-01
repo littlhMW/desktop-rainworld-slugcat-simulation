@@ -18,7 +18,7 @@ LANG = _detect_lang()
 
 _STR = {
     # —— 通用 / 产品名 ——
-    "app_title":      {"zh": "蛞蝓猫桌宠", "en": "Slugcat Pet"},
+    "app_title":      {"zh": "桌面雨世界-蛞蝓猫模拟", "en": "Desktop Rain World — Slugcat Simulation"},
 
     # —— setup_panel：首次导入面板 ——
     "setup_importing":   {"zh": "正在导入素材…", "en": "Importing assets…"},
@@ -283,7 +283,7 @@ _STR = {
     "btn_open_settings": {"zh": "打开设置", "en": "Open settings"},
 
     # —— main：单实例 ——
-    "already_running": {"zh": "蛞蝓猫桌宠已在运行", "en": "Slugcat Pet is already running"},
+    "already_running": {"zh": "桌面雨世界-蛞蝓猫模拟已在运行", "en": "Desktop Rain World — Slugcat Simulation is already running"},
 
     # —— main：托盘菜单 / 通知 ——
     "tray_settings": {"zh": "设置", "en": "Settings"},

@@ -779,7 +779,7 @@ num3 + scalesPositions.Length  num3 + scalesPositions.Length ?                  
 
 ## 爆炸特效（ExplosionLight）
 
-!! 找不到 C:\Users\littlh\Documents\Codex\2026-09-28\https-github-com-lingxiaojun-slugcatpet-https\work\scratch\decomp_full\ExplosionLight.cs
+!! 找不到 work/scratch/decomp_full/ExplosionLight.cs
 
 
 ## 2026-10 大改：蛞蝓猫/蜥蜴/幼崽对拍
@@ -792,5 +792,5 @@ num3 + scalesPositions.Length  num3 + scalesPositions.Length ?                  
 
 - `RoomRain.cs:391-400`：Normal/Heavy/Death 雨声按 intensity 平滑更新；`SoundManager` 用独立 `rain_loop.wav` 循环并按雨势渐变。`SoundID.cs` 的 `Lizard_Jaws_Bite_Do_Damage`、`UI_Slugcat_Stunned_*` 对应咬合与眩晕音效入口。
 - Push To Meow `sounds.txt`：猫叫按 `vol=0.6,maxPitch=1.1,minPitch=0.9`，并按 Normal/Pup/Whispery/Coarse/Spear/Fat/Rivulet/Watcher 音色族取样；播放器改为每次独立 `QSoundEffect`，避免长叫被重启截断。
-- 抓取/甩动调用猫叫事件；抓取状态使用闭眼帧。高处落地调用 `apply_stun(drop_items=True,crawl=True)`，先掉手持物并直接进入匍匐。
+- 抓取/甩动调用猫叫事件；仅实际发声时有抬头与呼声反馈，抓取本身不强制闭眼。高处落地调用 `apply_stun(drop_items=True,crawl=True)`，先掉手持物并直接进入匍匐。
 - 放置杆、墙、庇护所释放使用 `mouseReleaseEvent` 坐标，幼崽预览不再跑一帧重力。

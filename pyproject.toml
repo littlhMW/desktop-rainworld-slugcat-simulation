@@ -3,13 +3,13 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "slugcatpet"
+name = "desktop-rainworld-slugcat-simulation"
 version = "1.0.1"
-description = "Rain World desktop pet extended with creatures, items, AI, taming, storms and shelter systems."
+description = "Rain World ecology simulator focused on slugcat desktop pets, AI, pathfinding, physics, creatures and storms."
 readme = "README.md"
 license = "MIT"
 authors = [
-    { name = "patatachip8", email = "patatachip8@outlook.com" },
+    { name = "littlhMW", email = "littlhMW@users.noreply.github.com" },
 ]
 requires-python = ">=3.10"
 classifiers = [
@@ -28,13 +28,14 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/littlhMW/slugcatpet-extended"
+Repository = "https://github.com/littlhMW/desktop-rainworld-slugcat-simulation"
 
 [project.gui-scripts]
+desktop-rainworld-slugcat-simulation = "slugcatpet.main:main"
 slugcatpet = "slugcatpet.main:main"
 
 [tool.setuptools.packages.find]
 include = ["slugcatpet*"]
 
 [tool.setuptools.package-data]
-slugcatpet = ["resources/icons/*.svg", "resources/layouts/*.json"]
+slugcatpet = ["resources/icons/*.svg", "resources/icons/*.png", "resources/audio/*.wav", "resources/layouts/*.json"]

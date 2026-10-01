@@ -1,0 +1,11 @@
+桌面雨世界-蛞蝓猫模拟
+Desktop Rain World — Slugcat Simulation
+
+当前维护者 / Current maintainer: littlhMW
+
+本项目早期版本参考并基于 lingxiaojun/slugcatpet。上游项目的 MIT 许可与原始版权声明继续适用于其保留的代码；请同时参阅 LICENSE 与 Git 历史。
+
+Early versions of this project referenced and were based on lingxiaojun/slugcatpet. The upstream project's MIT license and original copyright notice remain applicable to retained upstream code; see LICENSE and the Git history.
+
+Rain World 及其游戏素材归原权利人所有。程序运行时读取用户本机合法安装的资源。`slugcatpet/resources/icons/*.png` 中的部分界面图标由 Rain World Wiki 图像改编；`slugcatpet/resources/audio/*.wav` 是本项目添加的游戏相关音效。这些媒体文件不因源码采用 MIT 许可而自动获得 MIT 许可；各原始素材的权利仍归其权利人。
+Rain World and its game assets belong to their respective rights holders. The program reads resources from the user's legally installed copy. Some interface PNG icons in `slugcatpet/resources/icons/` were adapted from Rain World Wiki images; the WAV files in `slugcatpet/resources/audio/` are game-related effects added by this project. The source-code MIT license does not automatically license these media files; rights in original assets remain with their respective owners.

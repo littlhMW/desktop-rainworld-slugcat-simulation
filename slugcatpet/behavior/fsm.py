@@ -173,7 +173,7 @@ HPOLE_NEAR_Y = 20.0
 HPOLE_REACH_FRAC = 0.85
 HPOLE_GRAB_REACH = 0.60
 
-# 精力 energy（tick）：原仓库的口径 —— 只有剧烈/轻度「玩法态」耗体力，
+# 精力 energy（tick）：兼容历史行为口径 —— 只有剧烈/轻度「玩法态」耗体力，
 # 其它行动不额外扣，也不吃饱食度（体力经济已移除）。
 EN_DRAIN_VIGOROUS = 1.0 / 1200.0
 EN_DRAIN_LIGHT = 1.0 / 4800.0
@@ -3727,7 +3727,7 @@ class BehaviorFSM:
         return False
 
     def _air_catch_item(self) -> bool:
-        """空中伸手摘路过的东西（果子/珍珠/种子…）——原仓库版那种空中互动。
+        """空中伸手摘路过的东西（果子/珍珠/种子…）——兼容历史空中互动行为。
 
         原版蛞蝓猫在空中本来就能上手抓（Player.cs 抓住判据不看是否踩地），
         杆上跳起来摘我们已经有；这里补上「下落途中路过就顺手摘」。

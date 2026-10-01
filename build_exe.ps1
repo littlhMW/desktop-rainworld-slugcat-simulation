@@ -2,7 +2,7 @@
 # 用法: powershell -ExecutionPolicy Bypass -File build_exe.ps1 [-DistPath <目录>]
 param(
     [string]$Python = "python",
-    [string]$Name = "SlugcatPet",
+    [string]$Name = "RainWorldSlugcatSimulation",
     [string]$DistPath
 )
 $ErrorActionPreference = "Stop"

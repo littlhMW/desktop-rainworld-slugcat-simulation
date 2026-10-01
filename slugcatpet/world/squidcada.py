@@ -381,7 +381,7 @@ class Squidcada(CombatTarget):
         self.blink -= 1
         if self.blink < -15 or (self.blink < -2 and self._rng.random() < 1.0 / 3.0):
             self.blink = self._rng.randrange(10, 300)
-        # 被吃掉的部分：每少一口就多收一对翅（原仓库「食物越吃越少、外观跟着变」）
+        # 被吃掉的部分：每少一口就多收一对翅（兼容历史的食物外观反馈）
         eaten_fold = max(0, 3 - int(self.bites)) * 2
         for idx in range(min(eaten_fold, 4)):
             self.wing_dep[idx] = 0.0
