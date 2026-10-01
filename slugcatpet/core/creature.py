@@ -100,12 +100,12 @@ CARRY_OFF_X = 20.0
 CARRY_OFF_Y = 12.0
 # 持矛倾角：矛尖朝前上方，杆离竖直 25°（原版 PlayerGraphics 持矛贴图 / 用户参考图）
 SPEAR_HOLD_TILT = 25.0
-# 双持（两只手各一支矛）时额外向外撇的角度：两支矛合成「\ /」外八字，
-# 尾端在胸前交叉、矛尖朝外上方（用户给的猎手双持参考图）。单持不撇。
-DUAL_SPEAR_SPLAY = 40.0
-# 双持时前倾剔弱到 35%：参考图里两支矛是围着**竖直方向**对称的，
-# 而不是围着单持的 25° 前倾对称（不降的话左手那支几乎竖直，不像外八字）。
-DUAL_SPEAR_BASE_K = 0.35
+# 双持（两只手各一支矛）：**基准姿态两支矛同角度、同方向（平行）**。
+# 用户口径：截图里看到「两边角度不一样」是叠加在上面的步态**摆动相位**
+# （原版 (animationFrame + (leftFoot?9:3))/12*2π 的那种 ±4° 摇摆，两只手差
+# 半个周期），不是基准。旧版 ±40° 外八字（尾端在胸前交叉）是错的，已废弃。
+DUAL_SPEAR_SPLAY = 0.0        # 保留常量名供旧调用点 import；恒 0
+DUAL_SPEAR_BASE_K = 1.0       # 恒 1：双持与单持同一个基准角
 # 杆上持物：这个偏移现在作用在**手**上（见 rendering/graphics.py::
 # _beam_hand_target），不再改“物”的位置 —— 物永远粘在手上。
 # 常量本体在 core/gfxmath.py（渲染层也要读），这里只是转出供反向依赖。
@@ -1904,24 +1904,41 @@ class SlugcatBody:
     def _carry_anchor(self, side):
         """持物锚点唯一真值源 → ``(x, y, aimed)``。
 
-        攀爬/吊挂动画接管双手时，物品跟随**那只手的实际位置**（渲染层每帧写回
-        的 ``hand_pos``）——「攀爬动画决定左右两只手的最终位置，任何被该手持有的
-        物品都跟随这只实际手的位置移动」。aimed=False 表示「别去动这只手」。
+        「一只手 = 一个状态 = 一个目标 = 一套视觉手臂 = 一个对应物品」：
+        物**永远**读那只手的实际位置（渲染层每帧写回的 ``hand_pos``），
+        不再自己算第二套手部坐标。
 
-        其余状态才回落到身体偏移算出的携带点，由 ``arm_aim`` 把手牵过去
-        （手跟物），这一档行为与旧版逐位一致。
+        * 攀爬 / 吊挂 / 手势驱动的这只手：手位由动画决定，aimed=False（别去动它）。
+        * 其余状态：aimed=True，把这只手牵到身侧携带点 ``_carry_pos``；
+          手跟目标走、物跟手走，两者同一个坐标系。
+
+        ``hand_pos`` 还没被渲染帧写过（离屏 / 第一帧）时才回落到携带点当占位。
         """
         cx, cy = self._carry_pos(side)
-        if not (self.hands_on_anim() or self.hand_anim_driven.get(side)):
-            return cx, cy, True
+        # 攀爬 / 吊挂动画接管这只手：手位由动画决定，物只读手位，不再 aim。
+        anim = self.hands_on_anim() or self.hand_anim_driven.get(side)
         hw = self.hand_world(side)
-        if hw is None:                       # 还没跑过渲染帧：物暂留携带点，但别 aim
-            return cx, cy, False
-        # 物永远 = 那只手的实际位置，**不再自己另加一个偏移**。
-        # 上一版在这里把物从手上挪开（竖杆横向 ±7px / 横杆向上 7px），
-        # 结果是「矛没在手上、浮在杆旁边」（用户实测截图）。
-        # 现在由渲染层把**手**从杆上伸出去 POLE_CARRY_DX，手到哪里物到哪里。
-        return hw[0], hw[1], False
+        if hw is None:               # 还没跑过渲染帧：物暂留携带点
+            return cx, cy, not anim
+        # **物永远 = 那只手的实际位置**（原版 Player.cs:5988 用 hands[i].pos）。
+        # 旧版站着时把物放在「携带点」（身侧偏移）而不是手上，手还在半路上
+        # 追过去 —— 走路时就是「矛浮在手前面 / 没在手上」（用户实测）。
+        # 现在两者同一个坐标系：手被 aim 到携带点，物直接读手。
+        return hw[0], hw[1], not anim
+
+    def _aim_carry(self, side, aimed):
+        """持物手每 tick 的落点：aimed=True 把这只手牵到**身侧携带点**。
+
+        注意瞄准目标是 ``_carry_pos``（手该去哪），不是物当前的坐标（手已经在
+        哪）—— 后者把手钉死在原地，手永远走不到携带点、物也跟着停在半路
+        （用户实测「矛浮在手前面 / 没在手上」）。
+        """
+        if aimed:
+            tx, ty = self._carry_pos(side)
+            self._aim_hand(side, tx, ty)
+        else:                        # 攀爬 / 手势接管：清掉瞄准，别抢这只手
+            self._aim_hand(side)
+
 
     def reach_for(self, fruit, side):
         """Aim hand at fruit; clear opposite side (only one hand reaches)."""
@@ -2026,7 +2043,7 @@ class SlugcatBody:
         f.last_x, f.last_y = f.x, f.y
         f.x, f.y = cx, cy
         f.set_rotation_to_grabber(self.chunk0.x, self.chunk0.y)
-        self._aim_hand(side, cx if aimed else None, cy if aimed else None)
+        self._aim_carry(side, aimed)
         if f.stalk is not None:
             if f.stalk.step(f):
                 f.stalk = None
@@ -2109,9 +2126,9 @@ class SlugcatBody:
         s.rotation_deg = s.last_rotation
         s.spin = 0.0
         s.x, s.y = cx, cy
-        # 统一走 _aim_hand：爬杆时 aimed=False 会把 arm_aim 清掉（不能留上一帧的
+        # 统一走 _aim_carry：爬杆时 aimed=False 会把 arm_aim 清掉（不能留上一帧的
         # 瞄准值，否则攀爬手会被拽回持物点）。
-        self._aim_hand(side, cx if aimed else None, cy if aimed else None)
+        self._aim_carry(side, aimed)
 
     # ── 矛（原版 Spear：玩家持矛时杆斜指前上方，掷出后走弹道）──
     def grab_spear(self, spear, side=None, arm=True):
@@ -2191,6 +2208,9 @@ class SlugcatBody:
           即杆围着肩转；桌宠按参考图收敛成「尖端过顶、杆贴身前上方」这一档）。
           旧版写成 _ang_from_up(±1, -0.35)＝离竖直 70.7°，看着像把矛横在身前 / 拖在身后，
           用户报的「拿矛角度不对」就是它。
+        - 双持：两支矛**同角度、同方向（平行）**，只有 ±4° 步态摆动按手错开
+          半周期（原版 leftFoot?9:3）—— 用户口径：截图里的角度差是摆动相位，
+          不是基准姿态。旧版 ±40° 外八字已废弃（DUAL_SPEAR_SPLAY 恒 0）。
         - 爬杆时：杆顺着体轴朝上（原版 ClimbOnBeam 分支先 y=|y| 再向体轴 slerp 0.75），
           否则横着的矛会插进竖杆里。
         - 朝向一律取 self.facing —— 只有走动时才更新、静止保持。**不能用
@@ -2199,13 +2219,6 @@ class SlugcatBody:
         角度口径与 rendering.primitives.draw_spear 一致：0 = 竖直向上、顺时针为正（y↓）。
         """
         fdir = 1.0 if self.facing >= 0 else -1.0
-        splay = 0.0
-        dual_k = 1.0
-        if dual and side in ("l", "r"):
-            dual_k = DUAL_SPEAR_BASE_K
-            # 参考图：双持时两支矛向外撇（左手向屏幕左、右手向屏幕右），
-            # 屏幕空间固定 —— 不乘 fdir，这样朝向反过来时整体镜像。
-            splay = DUAL_SPEAR_SPLAY * (-1.0 if side == "l" else 1.0)
         if self.on_pole and not self.on_horizontal_beam():
             # 竖杆：杆顺着体轴朝上（否则横着的矛会插进竖杆里）。
             # 不要用两个 chunk 的瞬时 dx 算角度；它会在抓杆/摆动时左右翻转。
@@ -2214,11 +2227,15 @@ class SlugcatBody:
             # 旧代码给它 90°/270°（沿杆横放），矛正好躺在横杆里。
             # 参考图（玩家实机）里是**正常持矛角**（25° 前上）。
             return 0.0
-        base = (SPEAR_HOLD_TILT if tilt is None else float(tilt)) * dual_k
+        base = SPEAR_HOLD_TILT if tilt is None else float(tilt)
+        # 步态摆动：基准角 + 原版 ±4°，**两只手差半个周期**（leftFoot?9:3）。
+        # 双持时这就是「蛞蝓猫在摆动」——两边基准角与方向仍然完全一致。
         wob = 0.0
         if self.is_moving():
-            wob = math.cos(self.stride_phase * 2.0 * math.pi * self.walk_bob_freq) * 4.0
-        return fdir * (base + wob) + splay
+            off = 0.75 if side == "l" else (0.25 if side == "r" else 0.5)
+            ph = (self.stride_phase + off) % 1.0
+            wob = math.cos(ph * 2.0 * math.pi) * 4.0
+        return fdir * (base + wob)
 
     def throw_spear(self, dir_x, frc=1.0, up=1.5, recoil=1.0, vel=None, toss=False,
                     dir_y=0.0, input_x=1, input_y=0, flip=False):
@@ -2336,7 +2353,7 @@ class SlugcatBody:
             sp.angle_deg = hold_angle
             # 同石头：爬杆时也要把 arm_aim 清掉（原来这里整条跳过，留下上帧的
             # 瞄准值把攀爬手拽回身侧）。
-            self._aim_hand(side, cx if aimed else None, cy if aimed else None)
+            self._aim_carry(side, aimed)
         bs = self.back_spear
         if bs is not None:
             bx, by, bang = self._back_spear_pose()

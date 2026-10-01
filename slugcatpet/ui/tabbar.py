@@ -743,6 +743,8 @@ class TabBar(QWidget):
             return b
 
         btn(t("btn_open_settings"), True, self._open_settings)
+        btn(t("btn_reset_window"), True, self._reset_window,
+            t("tip_reset_window"))
         btn(t("btn_quit_app"), True, self._quit)
         self._panel.setStyleSheet(
             "QWidget{background:rgba(30,34,40,235);border-radius:8px;}"
@@ -950,8 +952,19 @@ class TabBar(QWidget):
                 or self.pet.lamp is not None
                 or self.pet.pup_count() > 0):          # 幼崽也算「可交互实体」
             self.pet.clear_all_items(clear_pups=True)
+            # 清完重新枚举窗口地形：用户实测「清了重画就好」的那份过期
+            # 平台 / 背景就在这里一起重置掉。
+            self.pet.reset_window_geometry()
         else:
             self._toast(t("toast_no_object"))
+
+    def _reset_window(self):
+        """窗口重置：重新枚举桌面窗口（顶边 + 背景）并丢掉导航缓存。"""
+        try:
+            self.pet.reset_window_geometry()
+        except Exception:
+            pass
+        self._toast(t("toast_window_reset"))
 
     def _open_settings(self):
         # 转发给 window 打开设置窗

@@ -231,18 +231,26 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self.cursor_hijack = None
         self._plat_tick = 0
         self._platforms_on = bool(self._params.get("window_platforms", True))
+        # 窗口地形/导航缓存：必须在第一次 _refresh_platforms() 之前就有初值，
+        # 否则「窗口重置」与各种探针会读到不存在的属性。_win_* 记录「我们自己
+        # 放上去的那一份」，用来区分别人（夹具 / 鼠标虚杆）注入的平台与墙段。
+        self._nav_version = 0
+        self._nav_sig = None
+        self._navgeom_cache = None
+        self._terrain_graphs = {}
+        self._win_tops = None
+        self._win_wall_rects = None
+        self.walls = []                        # 非全屏窗口的矩形（原始几何）
+        self.wall_surfaces = []                # 露出来的可见墙段（world.walls.WallSurface）
+        self.wall_version = 0                  # 墙几何变化计数（蜥蜴导航用）
+        self.world_version = 0                 # 放/清道具、环境变化时 +1
+        self.geometry_version = 0              # 路径前提变更（杆/灯/工作区）时 +1
         self._refresh_platforms()
         self._hud = None
         self._pets_changed_cb = None
         self._open_settings_cb = None
         self._hotkey_filter = None
         self._control_hud = None         # 非 None 即有受控会话
-
-        self.walls = []                        # 非全屏窗口的矩形（原始几何）
-        self.wall_surfaces = []                # 露出来的可见墙段（world.walls.WallSurface）
-        self.wall_version = 0                  # 墙几何变化计数（蜥蜴导航用）
-        self.world_version = 0                 # 放/清道具、环境变化时 +1
-        self.geometry_version = 0              # 路径前提变更（杆/灯/工作区）时 +1
 
         # 放果子
         self.fruits = []
@@ -901,10 +909,14 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._refresh_shelter_solids()
 
     def _refresh_platforms(self):
-        """其它可见窗口的顶边＝一块平地（窗口本体不挡路）。"""
-        from .platform.winplat import enumerate_tops, enabled
-        if not self._platforms_on or not enabled():
-            return
+        """其它可见窗口的顶边＝一块平地（窗口本体不挡路）。
+
+        定时自动同步；真正的「窗口重置」入口是 reset_window_geometry()。
+        """
+        return self._sync_window_terrain()
+
+    @staticmethod
+    def _own_hwnds():
         own = set()
         try:
             app = QApplication.instance()
@@ -915,27 +927,114 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                     pass
         except Exception:
             pass
-        new_tops = enumerate_tops(own, self._area.x(), self._area.y(),
-                                  self._scale)
-        if list(new_tops) != list(chunkphys.platforms()):
-            chunkphys.set_platforms(new_tops)
+        return own
+
+    def _drop_nav_caches(self):
+        """窗口地形变了：导航快照 / 寻路图缓存全部作废。
+
+        旧实现只改版本号，但 _navgeom_cache / _terrain_graphs 不看版本号就会把
+        旧地形编译出来的图继续用下去（用户报的「清了重画才好」就是这个）。
+        """
+        try:
+            self._navgeom_cache = None
+            self._terrain_graphs = {}
+            self._nav_sig = None
+        except Exception:
+            pass
+        self._nav_version = int(getattr(self, "_nav_version", 0) or 0) + 1
+
+    def _sync_window_terrain(self, force=False):
+        """把「桌面窗口」这一层地形重新枚举一遍。
+
+        这是窗口几何的**唯一**生成点：
+
+          * 顶边 → chunkphys.set_platforms（单向平台 TopSurface）
+          * 竖边 → self.walls / self.wall_surfaces（BackgroundRegion 的原始矩形）
+
+        只清「我们自己上一次放上去的那一份」：别人（测试夹具 / 鼠标虚杆）注进去的
+        平台与墙段不归这里管，开关关掉时也不会被顺手抹掉。旧实现在开关关掉后
+        直接 return，于是「关掉窗口平台」之后场上一直挂着一份过期的窗口地形。
+        """
+        from .platform.winplat import enumerate_tops, enumerate_walls, enabled
+        own = self._own_hwnds()
+        on = bool(getattr(self, "_platforms_on", False)) and bool(enabled())
+        new_tops = ()
+        walls = []
+        if on:
+            try:
+                new_tops = enumerate_tops(own, self._area.x(), self._area.y(),
+                                          self._scale)
+            except Exception:
+                new_tops = ()
+            try:
+                walls = enumerate_walls(own, self._area.x(), self._area.y(),
+                                        self._scale, getattr(self, "_WL", 0.0))
+            except Exception:
+                walls = []
+        changed = False
+
+        cur_tops = list(chunkphys.platforms() or ())
+        mine_tops = getattr(self, "_win_tops", None)
+        mine_tops = mine_tops is not None and cur_tops == list(mine_tops)
+        if on:
+            set_tops = new_tops
+        elif mine_tops or force:
+            # 开关关掉：只清我们自己放的那一份。force（「窗口重置」）是用户
+            # 显式要求重来一遍，此时连注进来的旧地形一起清，避免留过期窗口地形。
+            set_tops = ()
+        else:
+            set_tops = None            # 不归我们管：不动
+        if set_tops is not None and (force or list(set_tops) != cur_tops):
+            chunkphys.set_platforms(set_tops)
+            self._win_tops = tuple(set_tops)
             # 平台集合真变了：寻路缓存 / 急停判据失效（首次调用早于 __init__ 的赋值）
             self.geometry_version = getattr(self, "geometry_version", 0) + 1
-        # 背景墙（非全屏窗口的竖边）：会爬墙的蜥蜴靠它上下移动
-        from .platform.winplat import enumerate_walls
-        try:
-            walls = enumerate_walls(own, self._area.x(), self._area.y(),
-                                    self._scale, getattr(self, "_WL", 0.0))
-        except Exception:
-            walls = []
-        if walls != getattr(self, "walls", None):
-            self.walls = walls
-            # 原始矩形 -> 「露出来的」可见墙段：被前面窗口挡住的段不算地形。
+            changed = True
+
+        # 背景区域（非全屏窗口的竖边）：只有 Background Climb 的品种能附上去
+        cur_walls = getattr(self, "walls", None)
+        mine_walls = getattr(self, "_win_wall_rects", None)
+        mine_walls = mine_walls is not None and cur_walls == mine_walls
+        if on:
+            set_walls = walls
+        elif mine_walls or force:
+            set_walls = []
+        else:
+            set_walls = None
+        if set_walls is not None and (force or set_walls != cur_walls):
+            self.walls = set_walls
+            self._win_wall_rects = list(set_walls)
+            # 原始矩形 -> 「露出来的」可见段：被前面窗口挡住的段不算地形。
             from .world.walls import build_wall_surfaces
-            self.wall_surfaces = build_wall_surfaces(walls)
+            self.wall_surfaces = build_wall_surfaces(set_walls)
             # 墙面几何变了：单独记一个版本号 —— geometry_version 的既有语义是
             # 「猫的寻路前提」（平台/杆/工作区），不要被蜥蜴的墙几何冲掉缓存。
             self.wall_version = getattr(self, "wall_version", 0) + 1
+            changed = True
+        # force：即使内容一样也要把版本推一格（手动重置的意义就在于「重来一遍」）
+        if force and set_tops is None and set_walls is None:
+            changed = True
+        if changed:
+            self._drop_nav_caches()
+        return changed
+
+
+    def reset_window_geometry(self):
+        """**窗口重置**：重新枚举窗口地形（平台顶边 + 背景区域）并丢掉所有导航缓存。
+
+        为什么需要：窗口位置 / Z 序 / 屏幕变化后，旧的平台 + 墙段可能与桌面不一致，
+        而导航快照又只认当时算出的那一份；不重置就会出现「杆 / 墙在错位置上」之类
+        的怪现象（用户实测：清掉重画一下就好）。现在它是一个显式动作（工具栏
+        「重置窗口地形」），「清除可交互实体」之后也会跑一次。
+        """
+        changed = self._sync_window_terrain(force=True)
+        try:
+            self._prev_dirty = None
+            self.update()
+        except Exception:
+            pass
+        return changed
+
 
     def _cursor_half_len(self) -> float:
         """光标虚杆半长（逻辑单位）＝系统光标高度折算成世界坐标的一半。

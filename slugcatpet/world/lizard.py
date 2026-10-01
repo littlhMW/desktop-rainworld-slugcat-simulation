@@ -124,9 +124,11 @@ CLIMB_APPROACH_PENALTY = 90.0 # 要「走过去」的墙，打分加上这个（
 CLIMB_GRIP_SPRING = 0.30      # 贴上后把身体吸向墙面的弹性（不是每帧硬钉 x）
 CLIMB_GRIP_DAMP = 0.60        # 贴墙时的横向阻尼
 CLIMB_JUMP_PUSH = 4.6         # wall_jump 品种从墙上蹬出去的水平初速
-# Planner 给的攀爬段 mode → 动作层的竖线种类（climb_edge = 窗口左右竖边，它同时
-# 是碰撞体、可攀爬竖线、顶端可站面，和普通竖杆 / 背景墙是三种东西）。
-_CLIMB_MODES = {"climb_wall": "wall", "climb_pole": "pole", "climb_edge": "edge"}
+# Planner 给的攀爬段 mode → 动作层的竖线种类（文档三分法）：
+#   climb_wall = 实体墙（庇护所墙体）   climb_pole = 竖杆
+#   climb_background = 背景区域（别人窗口露出来的竖边）—— 非实体，只挂不撞。
+_CLIMB_MODES = {"climb_wall": "wall", "climb_pole": "pole",
+                "climb_background": "background"}
 # 地形路线（MovementConnection 序列）的保鲜：走完一段、或者过期了就重新问图。
 ROUTE_TTL = 20
 # 青蜥蓄力弹射（wiki：爬墙 + 蓄力弹射）：扑击整段的顶速与加速都上调一档
@@ -1208,6 +1210,8 @@ class Lizard:
             walk=True, jump=True,
             wall_climb=bool(b.climb_wall and b.wall_attach),
             pole_climb=bool(b.climb_pole),
+            # 背景区域（原版 WallClimber 的「背景墙攀爬」）：蓝 / 白 / 鳗才开。
+            climb_background=bool(b.climb_wall and b.wall_attach),
             # 横杆杆面也是「杆」：不会用杆的品种（绿蜥等）连站在杆面上都不行
             # （用户口径：无杆能力的品种无论如何都无法与杆子互动）。
             hpole_walk=bool(b.climb_pole),
@@ -1680,7 +1684,7 @@ class Lizard:
             self._climb_release()
             self._stuck.reset(self.x, self.y, self._tick)
             return False
-        if leg.mode in ("climb_wall", "climb_pole", "climb_edge",
+        if leg.mode in ("climb_wall", "climb_pole", "climb_background",
                         "jump", "hop"):
             return False                   # 爬 / 跳各有自己的执行器
         if o is not None and o.visible:
@@ -1792,12 +1796,15 @@ class Lizard:
             s.x, s.y = sx, sy
 
     def _collide_static_lines(self, WL: float) -> None:
-        """竖杆与可见背景墙都是实体线；只有能力决定能否主动附着攀爬。"""
+        """**真竖杆**是实体线；只有能力决定能否主动附着攀爬。
+
+        背景区域（别人窗口的竖边）按文档三分法是**非实体**的：不挡路 —— 否则
+        「背景被当墙」会以碰撞的形式再长回来。庇护所墙体走 `_collide_solids`。
+        """
         tq = self.terrain
         if tq is None or self.climb_attached or self.dead:
-            return          # 尸体不再和杆 / 墙碰撞（用户口径）
+            return          # 尸体不再和杆碰撞（用户口径）
         lines = [(x, top, bot) for x, top, bot in tq.vpoles()]
-        lines += [(x, top, bot) for x, top, bot in tq.walls()]
         for x, top, bot in lines:
             rr = self.head_rad + LINE_COLLIDE_PAD
             if self.y < top - rr or self.y > bot + rr:
@@ -1815,7 +1822,6 @@ class Lizard:
         if tq is None or self.climb_attached or self.dead:
             return
         lines = [(x, top, bot) for x, top, bot in tq.vpoles()]
-        lines += [(x, top, bot) for x, top, bot in tq.walls()]
         for s in self.seg:
             rr = s.rad + LINE_COLLIDE_PAD
             for x, top, bot in lines:
@@ -2368,9 +2374,9 @@ class Lizard:
         for surf in self.climb_surfaces:
             sx, top, bot = float(surf[0]), float(surf[1]), float(surf[2])
             kind = surf[3] if len(surf) > 3 else "pole"
-            if kind == "wall":
+            if kind == "wall" or kind == "background":
                 if not (self.breed.climb_wall and self.breed.wall_attach):
-                    continue                    # 不会爬墙的品种：背景墙不是它的地形
+                    continue            # 不会 Background Climb 的品种：背景不是它的地形
             elif not self.breed.climb_pole:
                 continue
             if up and top > o.y + 10.0:
@@ -3814,10 +3820,10 @@ class Lizard:
             self.head_x, self.head_y = _push_out(
                 self.head_x, self.head_y, r, rects,
                 getattr(chunkphys, "STEP_UP", 8.0))
-        # 竖杆 / 背景墙也是实体；只有攀爬状态才贴上去
+        # 真竖杆是实体；只有攀爬状态才贴上去（背景区域非实体，见 _collide_static_lines）
         tq = self.terrain
         if tq is not None and not self.climb_attached and not self.dead:
-            for x, top, bot in list(tq.vpoles()) + list(tq.walls()):
+            for x, top, bot in list(tq.vpoles()):
                 rr = r + LINE_COLLIDE_PAD
                 if top - rr <= self.head_y <= bot + rr and abs(self.head_x - x) < rr:
                     self.head_x = x + (rr if self.head_x >= x else -rr)

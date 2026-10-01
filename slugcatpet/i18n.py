@@ -52,6 +52,8 @@ _STR = {
     "tip_karmaflower": {"zh": "放业力花", "en": "Place karma flower"},
     "tip_slugpup": {"zh": "放猫崽", "en": "Place slugpup"},
     "tip_clear":   {"zh": "清除可交互实体", "en": "Clear placed items"},
+    "tip_reset_window": {"zh": "窗口重置（重新枚举桌面窗口的顶边／背景）",
+                         "en": "Reset window terrain"},
     "tip_shelter": {"zh": "放庇护所", "en": "Place shelter"},
 
     # —— settings：自然生成生物列表 ——
@@ -74,9 +76,11 @@ _STR = {
     "toast_max_vpole":  {"zh": "场上最多 2 根竖杆", "en": "At most 2 vertical poles on the field"},
     "toast_max_hpole":  {"zh": "场上最多 2 根横杆", "en": "At most 2 horizontal poles on the field"},
     "toast_no_object":  {"zh": "场上没有物体", "en": "No objects on the field"},
+    "toast_window_reset": {"zh": "窗口地形已重置", "en": "Window terrain reset"},
 
     # —— tabbar：动作按钮 ——
     "btn_quit_app":  {"zh": "退出程序", "en": "Quit program"},
+    "btn_reset_window": {"zh": "重置窗口地形", "en": "Reset window"},
 
     # —— 杀死确认弹窗（猫菜单「杀死该猫」复用）——
     "dlg_confirm_title":  {"zh": "确认", "en": "Confirm"},

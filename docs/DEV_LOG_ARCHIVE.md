@@ -4,6 +4,70 @@
 
 ## 2026-10-01
 
+### R144 · Wall / Pole / Background 三方拆分 + 窗口重置 + 持物手收敛
+
+R143 文档末尾那段「追加审计：三分法」当时被判定与 R135 已交付的 `WINDOW_EDGE` 语义正面冲突，
+留给了单独一轮。本轮就是那一轮：把它做完，并顺手收掉用户实测的三件事（窗口重置、手、双持基准）。
+
+**① Wall / Pole / Background 彻底分家**
+
+R135 起 `WINDOW_EDGE` 是「一个身份 = 碰撞体 + 可攀爬竖线 + 顶端可站」，结果就是**墙被当成杆**：
+`terrain.vpoles()` 把 `win.wall_surfaces` 整体并进「竖杆」，导航层再按 `kind="pole"` 发出去。
+只删一个 `wall_surfaces` 不解决问题（`TerrainGraph` 里 `can=False` 的竖线节点依然 `stand=True`）。
+
+现在竖线是**三类互不重叠**的地形，各有各的能力位：
+
+| 类型 | `kind` | 碰撞 | 可站 | 攀爬能力位 | 谁有 |
+| --- | --- | --- | --- | --- | --- |
+| 真竖杆 | `pole` | 有 | 端点可站 | `climb_pole` | 粉 / 蓝 / 黄 / 白 / 红 / 黑 / 蝾螈 / 青 / 等 |
+| 实体墙（庇护所墙条） | `wall` / `shelter_wall` | 有 | 顶面可站 | `climb_wall` | 蓝 / 白 / 电鳗 |
+| 背景区域（别的窗口露出来的竖边） | `background` | **无** | **不可站** | `climb_background` | 会爬墙的品种 |
+
+- `planning/navgeom.py`：`WINDOW_EDGE` 常量留名（兼容旧引用）但**不再产出任何地形**；
+  新增 `BACKGROUND` / `CLIMB_BACKGROUND`，`VERTICAL_KINDS` 换血；窗口左右竖边整段删除
+  —— 屏幕边框本来就由 `chunkphys.aabb_wall_collide` / `_integrate` 管，不是地形；
+  ⑦ 段落里那条「把背景当 obstacle」的旧逻辑一并删掉，背景从碰撞层消失。
+- `planning/navgraph.py`：`Capabilities` 加 `climb_background`（默认跟 `climb_wall` 走，因为原版
+  就是 WallClimber 干的活），`climb_edge` 恒 False 废弃；`allows_climb("background")` 认它。
+- `world/terrain.py`：新增 `backgrounds()`；`walls()` 只回实体墙；`window_edges()` 恒空；
+  `_build_graph()` 的 `stand=` 从 `bool(s.stand and can)` 改成 `bool(can)` —— 背景按三分法本身
+  不是可站面，但会 Background Climb 的品种依然要占它的两端，否则目标落在背景上算不到节点。
+- `world/lizard.py`：`_CLIMB_MODES` 换成 `climb_background`；`tq.walls()` 从三条碰撞循环里
+  **全部删除**（背景不是实体，留着「背景被当墙」会以碰撞形式长回来；庇护所墙体走
+  `_collide_solids`）；`_climb_step` 里 `wall` 与 `background` 都要求 `climb_wall and wall_attach`。
+
+**② 窗口重置**
+
+旧 `_refresh_platforms()` 有个死角：开关一关就直接 `return`，场上那份过期窗口地形（平台 +
+墙段）**永远留着**，导航快照又只认当时算出的那一份 —— 用户实测「清掉重画一下就好」就是这个。
+
+- `window.py`：`_sync_window_terrain()` 成为窗口几何的**唯一生成点**（顶边 → `chunkphys.set_platforms`；
+  竖边 → `walls` / `wall_surfaces`）。用 `_win_tops` / `_win_wall_rects` 记录「我们自己放上去的
+  那一份」，区分测试夹具 / 鼠标虚杆注入的平台与墙段 —— 关开关只清自己那份。
+- `reset_window_geometry()`：显式「窗口重置」入口，`force=True` 时连注进来的旧地形一起清。
+  工具栏新增「重置窗口地形」按钮，「清除可交互实体」之后也自动跑一次。
+- `_drop_nav_caches()`：不只推版本号，还把 `_navgeom_cache` / `_terrain_graphs` / `_nav_sig`
+  真正丢掉（旧实现只改 `_nav_version`，可这几个缓存根本不看版本号）。
+- 这些属性在 `__init__` 里就给了初值，且挪到第一次 `_refresh_platforms()` 之前，
+  免得初始化那一帧把 `walls` 又覆盖回空。
+
+**③ 持物手：物跟手，手 aim 到携带点**
+
+根因是**自我反馈**：`_apply_carry*` 调的是
+`self._aim_hand(side, cx if aimed else None, cy if aimed else None)`，
+而 `cx, cy` 来自 `_carry_anchor()` —— 那是**物自己当前的位置**。于是「手被瞄准到它现在所在的地方」，
+永远走不到身侧携带点，物每帧只挪 0.1px。用户实测的「矛浮在手前面 / 没在手上」就是它。
+
+- 新增 `_aim_carry(side, aimed)`：`aimed=True` 时瞄准 `_carry_pos(side)`（手**该去哪**），
+  三处持物（果 / 石 / 矛）统一走它；`_carry_anchor` 维持「物永远 = `hand_world(side)`」。
+- 双持基准：`DUAL_SPEAR_SPLAY` / `DUAL_SPEAR_BASE_K` 归零（常量留名供旧测试 import，注释写明废弃），
+  `spear_hold_angle()` 的两支矛**同角度同方向**（平行），摆动只是在基准上叠一层相位差小幅摆动
+  —— 对齐用户给的四格参考图（双持基准不是外八字，摆动是叠加量）。
+
+**回归**：`e2e_r144.py` 新增（三分法 23 项 + 窗口重置 11 项 + 手/双持 8 项，全绿）；
+`run_all19.ps1` 全量 19 联跑 `fails=0`。视觉核对出图见
+`work/scratch/r144_{A_stand1,B_stand2,C_vpole2,D_hpole1}.png`。
+
 ### R143 · 收口：行为→路线哲学、Jump 归位统一图、target-drift、导航黑名单、真伏击 / 包夹
 
 外部审计（用户贴的整理稿）结论是「R135–R137 的统一导航已经成立，别再大改寻路」，并给出

@@ -14,11 +14,26 @@ ConnectionResistance 决定。桌宠这里原本有两套几何：
 
 Surface 的两条轴
     axis = "h"  水平面：y + [lo, hi]（地板 / 窗台 / 横杆面 / 庇护所地面与屋顶）
-    axis = "v"  竖直线：x + [top, bot]（竖杆 / 背景墙 / 窗口竖边 / 庇护所墙）
+    axis = "v"  竖直线：x + [top, bot]（竖杆 / 背景区域 / 庇护所墙）
 
-同一个几何对象只有**一个**身份（原版也是 tile 一个 TerrainType）：
-    WINDOW_EDGE 既是碰撞体（solid=True）又是可攀爬竖线（climb=CLIMB_EDGE），
-    但它**不是** VPOLE —— 不会因为「看起来像一条竖线」就被当成杆子。
+三分法（文档：Wall / Pole / Background 彻底分家）：
+
+    Surface  = 「最终可导航的**实体**表面」  —— 墙 WALL / 杆 POLE / 平台 TOP
+    Background = 「非实体的**空间区域**」      —— 别人窗口露出来的竖边
+    Window   = BackgroundRegion + TopSurface 的组合，**不是**一种墙
+
+具体口径：
+
+    | 类型       | 实体碰撞 | 可站 | 普通攀爬    | 特殊攀爬          |
+    | WALL       | 是       | 否   | Wall Climb  | —                 |
+    | POLE       | 否       | 否   | Pole Climb  | —                 |
+    | BACKGROUND | **否**   | 否   | 否          | **Background Climb** |
+    | PLATFORM   | 是/平台  | 是   | —           | —                 |
+
+窗口左右竖边**不再**生成任何可攀爬竖线（旧的 WINDOW_EDGE 已删除）：
+它既不是杆子也不是实体墙；窗口 = 背景区域 + 顶面，窗口内的水平活动由
+``chunkphys.aabb_wall_collide``（屏幕边框）与 ``_integrate`` 的左右边界负责。
+任何 AI 都**不能**靠「看起来像一条竖线」把墙/背景升级成杆子。
 """
 from __future__ import annotations
 
@@ -31,17 +46,20 @@ SHELTER_FLOOR = "shelter_floor"    # 庇护所屋里地面
 SHELTER_ROOF = "shelter_roof"      # 庇护所屋顶
 HPOLE = "hpole"                    # 横杆的杆面
 VPOLE = "vpole"                    # 真正的竖杆
-WALL = "wall"                      # 背景墙（别人窗口露出来的竖边）
-WINDOW_EDGE = "window_edge"        # 本窗口左右竖边
+WALL = "wall"                      # 真正的实体墙面（庇护所墙体 / 实心地形边）
+BACKGROUND = "background"          # 背景区域（别人窗口露出来的竖边）：非实体
 SHELTER_WALL = "shelter_wall"      # 庇护所墙体
+# 已废弃：窗口左右竖边不再是一种 Surface（见模块 docstring）。常量留名不产出。
+WINDOW_EDGE = "window_edge"
 
 # 竖直面的攀爬能力类：Surface.climb → Caps 里对应的一位
-CLIMB_POLE = "pole"
-CLIMB_WALL = "wall"
-CLIMB_EDGE = "edge"
+CLIMB_POLE = "pole"                # 竖杆
+CLIMB_WALL = "wall"                # 实体墙（WallClimber）
+CLIMB_BACKGROUND = "background"    # 背景区域（原版 WallClimber 的背景墙攀爬）
+CLIMB_EDGE = "edge"                # 已废弃（旧窗口竖边）
 
 HORIZONTAL_KINDS = frozenset((FLOOR, PLATFORM, SHELTER_FLOOR, SHELTER_ROOF, HPOLE))
-VERTICAL_KINDS = frozenset((VPOLE, WALL, WINDOW_EDGE, SHELTER_WALL))
+VERTICAL_KINDS = frozenset((VPOLE, WALL, BACKGROUND, SHELTER_WALL))
 STACK_KINDS = frozenset((FLOOR, PLATFORM, SHELTER_FLOOR, SHELTER_ROOF, HPOLE))
 
 GRID_CELL = 96.0        # 空间桶边长（LOS / 边候选粗筛）
@@ -313,13 +331,11 @@ class NavGeometry:
                 g._add(Surface("hpole:%d" % k, HPOLE, y=pl.ay, lo=lo, hi=hi,
                                stand=True, solid=True, pole=pl))
 
-        # ④ 本窗口左右竖边：一个身份 = 碰撞体 + 可攀爬竖线 + 顶端可站。
-        #    它不是 VPOLE（不伪装成普通杆），攀爬由 climb=CLIMB_EDGE 单独管。
-        if WL > 1.0 and HL > 1.0:
-            for sid, x in (("wedge:l", 0.0), ("wedge:r", WL)):
-                g._add(Surface(sid, WINDOW_EDGE, x=x, top=0.0, bot=HL,
-                               stand=True, climb=CLIMB_EDGE, walk_top=True,
-                               solid=True))
+        # ④ 本窗口左右竖边：**不再是地形**（文档三分法）。
+        #    旧版把它们做成 WINDOW_EDGE（碰撞 + 可爬 + 顶端可站），
+        #    于是「窗口边 = 杆子」这条旧语义一直在给 AI 发假杆。
+        #    现在窗口 = 背景区域 + 顶面：这里既不产 surface，也不产 obstacle；
+        #    屏幕边框由 chunkphys.aabb_wall_collide / _integrate 的左右边界管。
 
         # ⑤ 庇护所真墙体的竖条（扁平条不算竖墙）
         for n, (x0, y0, x1, y1) in enumerate(chunkphys.solids() or ()):
@@ -330,12 +346,16 @@ class NavGeometry:
             g._add(Surface("swall:%d:1" % n, SHELTER_WALL, x=x1, top=y0, bot=y1,
                            stand=True, climb=CLIMB_WALL, solid=True))
 
-        # ⑤b 背景墙（别人窗口露出来的竖边）
+        # ⑤b 背景区域 BackgroundRegion（别人窗口露出来的竖边）。
+        #     三分法：背景**不是**墙 —— 不是实体（不挡路 / 不挡视线 / 不参与
+        #     脚支撑）、不能站；只有 Background Climb 的品种能附上去。
+        #     旧版这里 kind=WALL / solid=True，于是「墙被当杆爬 + 挡住视线」
+        #     两个 bug 都由这一处发源。
         for ws in getattr(win, "wall_surfaces", ()) or ():
             for j, (tp, bt) in enumerate(ws.segments):
-                g._add(Surface("wall:%d:%d" % (ws.index, j), WALL, x=ws.x,
-                               top=tp, bot=bt, stand=True, climb=CLIMB_WALL,
-                               solid=True))
+                g._add(Surface("bg:%d:%d" % (ws.index, j), BACKGROUND, x=ws.x,
+                               top=tp, bot=bt, stand=False,
+                               climb=CLIMB_BACKGROUND, solid=False, ref=ws))
 
         # ⑥ 庇护所：屋里地面 / 屋顶 / 门洞（统一 Shelter Navigation）。
         for k, sh in enumerate(getattr(win, "shelters", ()) or ()):
@@ -372,11 +392,6 @@ class NavGeometry:
             ob = Obstacle(pl.ax, pl.ay, pl.bx, pl.by, POLE_RAD, "pole")
             g.obstacles.append(ob)
             g.grid.add(pl.ax, pl.ay, pl.bx, pl.by, ob)
-        for ws in getattr(win, "wall_surfaces", ()) or ():
-            for (tp, bt) in ws.segments:
-                ob = Obstacle(ws.x, tp, ws.x, bt, CAPSULE_PAD, WALL)
-                g.obstacles.append(ob)
-                g.grid.add(ws.x, tp, ws.x, bt, ob)
 
         # ── 版本：内容签名驱动，只有导航几何真的变了才 +1 ──
         g.sig = tuple(s.key() for s in g.surfaces)
@@ -429,7 +444,7 @@ class NavGeometry:
         return tuple(out)
 
     def climb_surfaces(self, caps=None):
-        """兼容旧口径的元组视图：(x, top, bot, kind)，kind 属于 pole/wall/edge。"""
+        """元组视图：(x, top, bot, kind)，kind ∈ {pole, wall, background}。"""
         return tuple((s.x, s.top, s.bot, s.climb) for s in self.verticals(caps))
 
     # ── 旧元组视图（terrain.py 的历史调用方还在用）──
@@ -443,8 +458,17 @@ class NavGeometry:
         return tuple((s.lo, s.y, s.hi) for s in self.surfaces if s.kind == HPOLE)
 
     def walls(self):
+        """**真正的实体墙**：(x, top, bot)。背景区域不在这里（见 backgrounds()）。"""
         return tuple((s.x, s.top, s.bot) for s in self.surfaces
                      if s.kind in (WALL, SHELTER_WALL))
+
+    def backgrounds(self):
+        """背景区域（别人窗口露出来的竖边）：(x, top, bot)。
+
+        非实体、不可站；只有 ``caps.climb_background`` 的品种能附上去。
+        """
+        return tuple((s.x, s.top, s.bot) for s in self.surfaces
+                     if s.kind == BACKGROUND)
 
     # ── 支撑接触（导航 / 物理 / 脚 / 动画共用）──
     def support_contact(self, x, y, caps=None, default=None):

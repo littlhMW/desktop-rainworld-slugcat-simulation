@@ -21,9 +21,10 @@ WALK = "walk"                # 同一块面上走过去 / 跨小缝
 STEP = "step"                # 台阶（小高差）
 JUMP = "jump"                # 起跳够到更高 / 更远的锚点
 DROP = "drop"                # 落下去
-CLIMB_WALL = "climb_wall"    # 沿背景墙爬
-CLIMB_POLE = "climb_pole"    # 沿竖杆爬
-CLIMB_EDGE = "climb_edge"    # 沿窗口竖边爬
+CLIMB_WALL = "climb_wall"                    # 沿**实体墙**爬（WallClimber）
+CLIMB_POLE = "climb_pole"                    # 沿竖杆爬
+CLIMB_BACKGROUND = "climb_background"        # 沿**背景区域**爬（原版背景墙攀爬）
+CLIMB_EDGE = "climb_edge"                    # 已废弃（旧窗口竖边）
 POLE_HOP = "pole_hop"        # 杆间跳跃
 WALL_HOP = "wall_hop"        # 墙面之间挪
 DOOR = "door"                # 穿过庇护所门洞
@@ -31,7 +32,7 @@ ATTACK = "attack_reach"      # 到位后直接攻击
 FINISH = "finish"            # 收尾（伸手 / 起跳弧够到目标点）
 
 LANDS = frozenset((JUMP, DROP, POLE_HOP, WALL_HOP))
-CLIMBS = frozenset((CLIMB_WALL, CLIMB_POLE, CLIMB_EDGE))
+CLIMBS = frozenset((CLIMB_WALL, CLIMB_POLE, CLIMB_BACKGROUND, CLIMB_EDGE))
 
 
 class NavigationEdge:
@@ -67,13 +68,15 @@ class Capabilities:
     """能力表（文档 §13）：一位 = 会不会用某种连接。默认**全关**。"""
 
     __slots__ = ("walk", "step", "jump", "drop", "climb_pole", "climb_wall",
-                 "climb_edge", "wall_jump", "pole_hop", "wall_hop", "door",
+                 "climb_background", "climb_edge", "wall_jump", "pole_hop",
+                 "wall_hop", "door",
                  "swim", "hpole_walk", "can_enter_shelter",
                  "walk_speed", "climb_speed", "jump_up", "jump_dx", "drop_max",
                  "drop_dx", "hop_dx", "climb_reach")
 
     def __init__(self, walk=True, step=True, jump=False, drop=True,
-                 climb_pole=False, climb_wall=False, climb_edge=None,
+                 climb_pole=False, climb_wall=False, climb_background=None,
+                 climb_edge=None,
                  wall_jump=False, pole_hop=False, wall_hop=False, door=True,
                  swim=False, hpole_walk=True, can_enter_shelter=True,
                  walk_speed=4.1, climb_speed=2.6, jump_up=0.0, jump_dx=0.0,
@@ -85,8 +88,12 @@ class Capabilities:
         self.drop = bool(drop)
         self.climb_pole = bool(climb_pole)
         self.climb_wall = bool(climb_wall)
-        # 窗口竖边：显式能力位；不写就跟着爬杆能力走（保持既有品种表语义）
-        self.climb_edge = bool(climb_pole if climb_edge is None else climb_edge)
+        # 背景区域（Background Climb）：原版就是 WallClimber 干的活，所以不写
+        # 就跟爬墙能力走；显式给值以品种表为准。
+        self.climb_background = bool(
+            self.climb_wall if climb_background is None else climb_background)
+        # 窗口竖边已废弃：只留名字，不再有地形产出，恒 False。
+        self.climb_edge = bool(False if climb_edge is None else climb_edge)
         self.wall_jump = bool(wall_jump)
         self.pole_hop = bool(pole_hop)
         self.wall_hop = bool(wall_hop)
@@ -111,6 +118,8 @@ class Capabilities:
             return self.climb_pole
         if kind == "wall":
             return self.climb_wall
+        if kind == "background":
+            return self.climb_background
         if kind == "edge":
             return self.climb_edge
         return False
@@ -129,6 +138,8 @@ class Capabilities:
             return self.climb_pole
         if type_ == CLIMB_WALL:
             return self.climb_wall
+        if type_ == CLIMB_BACKGROUND:
+            return self.climb_background
         if type_ == CLIMB_EDGE:
             return self.climb_edge
         if type_ == POLE_HOP:
@@ -141,7 +152,8 @@ class Capabilities:
 
     def key(self):
         return (self.walk, self.step, self.jump, self.drop, self.climb_pole,
-                self.climb_wall, self.climb_edge, self.wall_jump, self.pole_hop,
+                self.climb_wall, self.climb_background, self.climb_edge,
+                self.wall_jump, self.pole_hop,
                 self.wall_hop, self.door, self.swim, self.hpole_walk,
                 self.can_enter_shelter, round(self.climb_reach, 1),
                 round(self.walk_speed, 2), round(self.climb_speed, 2),
@@ -150,9 +162,9 @@ class Capabilities:
                 round(self.hop_dx, 1))
 
     def __repr__(self):
-        return "Capabilities(walk=%s jump=%s pole=%s wall=%s edge=%s)" % (
+        return "Capabilities(walk=%s jump=%s pole=%s wall=%s bg=%s)" % (
             self.walk, self.jump, self.climb_pole, self.climb_wall,
-            self.climb_edge)
+            self.climb_background)
 
 
 class Preferences:

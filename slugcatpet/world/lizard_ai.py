@@ -792,7 +792,7 @@ def _plan_from_legs(legs, my_x, tick, ttl, reason, anchor=None, force=False):
         return ApproachPlan("direct", (legs[-1].x, legs[-1].y), None, tick + ttl,
                             reason, 0.0, legs=legs, anchor=anchor)
     leg = legs[0]
-    if leg.mode in ("climb_wall", "climb_pole", "climb_edge"):
+    if leg.mode in ("climb_wall", "climb_pole", "climb_background"):
         return ApproachPlan(leg.mode, (leg.x, leg.y), None, tick + ttl, reason,
                             0.0, climb=(leg.x, leg.top, leg.bot, leg.up), legs=legs,
                             anchor=anchor)

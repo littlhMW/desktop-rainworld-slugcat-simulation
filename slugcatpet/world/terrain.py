@@ -20,11 +20,13 @@ import bisect
 import math
 
 from ..planning import navgeom
-from ..planning.navgeom import (CLIMB_EDGE, CLIMB_POLE, CLIMB_WALL, FLOOR,
-                                HPOLE, PLATFORM, SHELTER_FLOOR, SHELTER_ROOF,
-                                SHELTER_WALL, VPOLE, WALL, WINDOW_EDGE,
-                                NavGeometry)
-from ..planning.navgraph import (ATTACK, CLIMB_EDGE as E_CLIMB_EDGE,
+from ..planning.navgeom import (BACKGROUND, CLIMB_BACKGROUND, CLIMB_EDGE,
+                                CLIMB_POLE, CLIMB_WALL, FLOOR, HPOLE, PLATFORM,
+                                SHELTER_FLOOR, SHELTER_ROOF, SHELTER_WALL,
+                                VPOLE, WALL, NavGeometry)
+from ..planning.navgraph import (ATTACK,
+                                 CLIMB_BACKGROUND as E_CLIMB_BACKGROUND,
+                                 CLIMB_EDGE as E_CLIMB_EDGE,
                                  CLIMB_POLE as E_CLIMB_POLE,
                                  CLIMB_WALL as E_CLIMB_WALL, DROP, FINISH,
                                  JUMP, POLE_HOP, STEP, WALK as E_WALK,
@@ -82,11 +84,12 @@ class Caps(Capabilities):
                  wall_jump=False, climb_reach=CLIMB_REACH_DEFAULT,
                  hpole_walk=True, walk_speed=4.1, climb_speed=2.6,
                  jump_up=60.0, jump_dx=95.0, drop_max=420.0, drop_dx=DROP_DX,
-                 hop_dx=HOP_DX, climb_edge=None, can_enter_shelter=False,
+                 hop_dx=HOP_DX, climb_background=None, can_enter_shelter=False,
                  pole_hop=None, wall_hop=None):
         super().__init__(
             walk=walk, step=True, jump=jump, drop=True,
-            climb_pole=pole_climb, climb_wall=wall_climb, climb_edge=climb_edge,
+            climb_pole=pole_climb, climb_wall=wall_climb,
+            climb_background=climb_background,
             wall_jump=wall_jump, pole_hop=pole_climb if pole_hop is None else pole_hop,
             wall_hop=wall_climb if wall_hop is None else wall_hop,
             door=True, swim=False, hpole_walk=hpole_walk,
@@ -104,9 +107,14 @@ class Caps(Capabilities):
     def pole_climb(self):
         return self.climb_pole
 
+    @property
+    def background_climb(self):
+        return self.climb_background
+
     def __repr__(self):
-        return "Caps(walk=%s jump=%s wall=%s pole=%s)" % (
-            self.walk, self.jump, self.climb_wall, self.climb_pole)
+        return "Caps(walk=%s jump=%s wall=%s pole=%s bg=%s)" % (
+            self.walk, self.jump, self.climb_wall, self.climb_pole,
+            self.climb_background)
 
 
 class Leg:
@@ -116,7 +124,7 @@ class Leg:
 
     def __init__(self, mode, x, y, tx=None, ty=None, top=None, bot=None, up=0,
                  risk=0.0):
-        self.mode = mode          # walk / climb_wall / climb_pole / climb_edge / jump / drop / hop
+        self.mode = mode          # walk / climb_wall / climb_pole / climb_background / jump / drop / hop
         self.x, self.y = float(x), float(y)   # 这一段先去哪（上墙点 / 起跳点 / 落点）
         self.tx, self.ty = tx, ty             # 段末落点（jump / drop / hop 用）
         self.top, self.bot = top, bot         # 竖线上下端（climb 用）
@@ -137,7 +145,7 @@ class NavNode:
         self.nid = nid
         self.x, self.y = float(x), float(y)
         self.stand = bool(stand)   # 能不能站在这（地板 / 横杆面 / 竖线两端）
-        self.line = line           # None / "pole" / "wall" / "edge"：这条竖线属于哪一族
+        self.line = line           # None / "pole" / "wall" / "background"：哪一族
         self.top, self.bot = top, bot
         self.sid = sid
 
@@ -188,9 +196,9 @@ def _anchors(lo, hi):
 
 
 _CLIMB_EDGE_TYPE = {"pole": E_CLIMB_POLE, "wall": E_CLIMB_WALL,
-                    "edge": E_CLIMB_EDGE}
+                    "background": E_CLIMB_BACKGROUND}
 _CLIMB_FROM_TYPE = {E_CLIMB_POLE: "climb_pole", E_CLIMB_WALL: "climb_wall",
-                    E_CLIMB_EDGE: "climb_edge"}
+                    E_CLIMB_BACKGROUND: "climb_background"}
 
 
 class TerrainGraph(NavGraph):
@@ -308,26 +316,40 @@ class TerrainQuery:
     def vpoles(self):
         """**真正的竖杆**：(x, top, bot)。
 
-        窗口左右边缘**不再**混进这里（文档 §34/§35：它同时是碰撞体、可攀爬竖线、
-        顶端可站面，语义和普通竖杆不同）。要窗口竖边请查 window_edges()。
+        只有**真正的竖杆**。窗口左右边缘按文档三分法不再是地形（既不是杆也不是
+        实体墙），背景区域另查 backgrounds()。
         """
         return self.geom.vpoles()
 
     def window_edges(self):
-        """本窗口左右竖边：(x, top, bot)。"""
-        return tuple((s.x, s.top, s.bot) for s in self.geom.surfaces
-                     if s.kind == WINDOW_EDGE)
+        """已废弃：窗口左右竖边**不再是地形**（文档三分法）。
+
+        窗口 = 背景区域 + 顶面；旧 WINDOW_EDGE（碰撞 + 可爬 + 顶端可站）已删除，
+        所以这里恒为空。要背景区域请查 backgrounds()。
+        """
+        return ()
 
     def hpoles(self):
         """横杆：(x0, y, x1) —— 杆面可以踩。"""
         return self.geom.hpoles()
 
     def walls(self):
-        """竖直墙面：(x, top, bot)。庇护所墙条 + 背景墙。只有 WallClimber 能当楼梯。"""
+        """**真正的实体墙**：(x, top, bot)。庇护所墙条等实心竖面。
+
+        背景区域**不在**这里（旧版把「别人窗口的竖边」塞进 walls()，于是
+        「墙被当杆爬」和「背景挡住视线」都从那一处发源）。查背景用 backgrounds()。
+        """
         return self.geom.walls()
 
+    def backgrounds(self):
+        """背景区域：(x, top, bot)。非实体、不可站。
+
+        只有 ``caps.climb_background`` 的品种（原版 WallClimber：蓝/白/鳗）能爬。
+        """
+        return self.geom.backgrounds()
+
     def climb_surfaces(self, caps=None):
-        """可攀爬的竖线：(x, top, bot, kind)，kind ∈ {"pole","wall","edge"}。
+        """可攀爬的竖线：(x, top, bot, kind)，kind ∈ {"pole","wall","background"}。
 
         横杆不在这里 —— 它不是竖线，是脚下的地形（见 walk_floors）。
         """
@@ -367,7 +389,7 @@ class TerrainQuery:
         """够不着目标时先问地形：有没有一条「走 → 上墙 / 上杆 / 上窗边」的路线。
 
         返回 (mode, sx, top, bot, dir, reason)；没有可用地形就 None。mode ∈
-        {"climb_wall", "climb_pole", "climb_edge"}，sx 是上墙点（线所在的 x），
+        {"climb_wall", "climb_pole", "climb_background"}，sx 是上墙点（线所在的 x），
         (top, bot) 是这条线的上下端，dir = +1 向上 / -1 向下。
         """
         if caps is None or ty >= y - FLOOR_TOL:
@@ -521,11 +543,13 @@ class TerrainQuery:
                 continue
             kind = s.climb
             can = caps.allows_climb(kind)
-            # 竖线不是地板：只有「能抓住这条竖线」的品种才把它当可站面
-            # （原版竖杆 / 墙 tile 是 Climb / Wall accessibility，不是 Floor）。
-            nf = add_node(s.x, s.bot, stand=bool(s.stand and can), line=kind,
+            # 竖线不是地板：只有「能抓住这条竖线」（can）的品种才能占这个节点
+            # （原版竖杆 / 墙 / 背景 tile 是 Climb / Wall accessibility，不是 Floor）。
+            # 用 can 而不是 s.stand：背景区域按三分法本身不是可站面，但能
+            # Background Climb 的品种依然可以占它的两端（否则目标落在背景上就算不到节点）。
+            nf = add_node(s.x, s.bot, stand=bool(can), line=kind,
                           top=s.top, bot=s.bot, sid=s.sid)
-            nh = add_node(s.x, s.top, stand=bool(s.stand and can), line=kind,
+            nh = add_node(s.x, s.top, stand=bool(can), line=kind,
                           top=s.top, bot=s.bot, sid=s.sid)
             vnodes.append((nf, s.x, s.bot, can))
             vnodes.append((nh, s.x, s.top, can))
@@ -553,7 +577,7 @@ class TerrainQuery:
                     continue
                 placed.add(key)
                 kind = s.climb
-                nm = add_node(s.x, ay, stand=bool(s.stand and can), line=kind,
+                nm = add_node(s.x, ay, stand=bool(can), line=kind,
                               top=s.top, bot=s.bot, sid=s.sid)
                 vnodes.append((nm, s.x, ay, can))
                 vline_of[nm] = (kind, round(s.x, 1))
@@ -773,6 +797,6 @@ class TerrainQuery:
         return False
 
     def __repr__(self):
-        return "<Terrain floors=%d vpoles=%d wedges=%d hpoles=%d walls=%d>" % (
+        return "<Terrain floors=%d vpoles=%d bg=%d hpoles=%d walls=%d>" % (
             len(self.walk_floors()), len(self.vpoles()),
-            len(self.window_edges()), len(self.hpoles()), len(self.walls()))
+            len(self.backgrounds()), len(self.hpoles()), len(self.walls()))
