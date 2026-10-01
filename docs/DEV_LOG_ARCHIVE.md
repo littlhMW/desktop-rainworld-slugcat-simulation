@@ -4,6 +4,88 @@
 
 ## 2026-10-01
 
+### R149 · 一套弹道 / 一套命中几何 / CombatPosition / 匍匐门禁（两套杆逻辑的收口）
+
+文档：本轮审计（5 bug + 4 需求）。核心不是再修 5 个独立 bug，而是把「同一件事有多套判断」
+收成一套：AI 弹道 vs 真实飞行、命中判定 vs AI 预演、地面投掷 vs 杆上投掷、身体朝向 vs 移动方向。
+
+**① 一套弹道（`world/trajectory.py`，新）**
+
+* `gravity_delta / advance / preview / flight_far`，纯函数、不引用游戏对象。
+* `Spear.step()` 的重力块改调 `traj.gravity_delta`（删掉内联的 g / `_flight_far` 两分支）；
+  `fsm._shot_arc()` 与 `_cob_would_hit()` 改调 `traj.preview`。调一个参数不再要改两处，
+  AI 预演说能中就是真能中。
+
+**② 一套命中几何（`world/hitgeom.py`，新）**
+
+* `sweep_circle / seg_dist / target_chunks / sweep_hit / sweep_hit_predicted / tip_align`。
+* `target_chunks` 是全局唯一的「可命中点」口径：自报 `hit_chunks()` → `chunk0/chunk1`
+  → 头 + 各链节 → 单圆；本轮补上 `p0/p1` 双 chunk 分支（爆米花荚 —— 旧 `items._cob_hit`
+  就是逐 p0/p1 判的，少了这一支会丢掉第二个 chunk）。
+* `items._sweep_circle / _ball_hit / _cob_hit / _small_hit / _seg_dist` 全部退化成薄封装。
+  蛞蝓猫分支原来只做 `_seg_dist`（只知道「碰到了」，拿不到接触点）→ 同走扫掠；
+  拾荒者分支原来直接比中心点（40px/帧 一帧跨过去）→ 同走扫掠。
+* `Spear.pin_tip(hx, hy)`：命中同一 tick 把矛**尖**摆到真实接触点。旧实现只把速度
+  清零、位置留在这一帧飞到的终点，视觉上就是「矛插在空气里」。蜥蜴 / 拾荒者 /
+  蛞蝓猫三个分支共用。
+
+**③ CombatPosition（`core/creature.py`）**
+
+* `SlugcatBody.combat_position()` 只回答一个：`ground / vertical / horizontal / airborne`。
+  站在横杆上时 chunk 的 `on_floor` 会假真、爬竖杆时 chunk0 被钉在抓杆手上，
+  只有身体状态是唯一口径。
+* `muzzle(dir_x)`：出手点与 `weaponphys.throw_velocity` 的起点一致。高度对齐不再拿
+  chunk0 —— 爬杆时它在抓杆手上、比胸口低十几像素，「到同一高度就投」永远不成立。
+* `fsm._face_threat_tick()` 新增杆上迎战分支：手里有家伙就在杆上原地掷（横杆 / 竖杆
+  同一套 `_pole_throw`）。这是「横杆、竖杆上几乎不尝试投矛」的来源。
+
+**④ 先预演直接命中，再考虑起跳（fsm）**
+
+* 新增 `_shot_would_hit(tgt, dir_x)`：真实弹道 + `sweep_hit_predicted`。
+* `_throw_weapon_at()`：能命中就直接投；不能中、且在地面、且高度差 > `THROW_JUMP_DY`
+  才起跳。旧实现只看高度差 →「明明平投就能中却先跳起来打空」。
+* `_fight_climb_tick()` 的高度判据同样换成 `_shot_would_hit`。
+
+**⑤ 匍匐（CrawlAway）门禁与朝向**
+
+* 进匍匐要求 `on_floor() and not on_pole and _crawl_cd <= 0`，触发骰子一轮只掷一次
+  （旧实现每帧重掷 → 几十帧内必然趴下 =「一靠近就后退」）。
+* `_crawl_enter()` 兜底：杆上 / 空中立刻收尾（`_crawl_left = 0`、`_crawl_from = None`、
+  `face_lock = 0`），状态不再停在 CrawlAway 和杆控制器抢身体（「爬杆触发匍匐卡死」）。
+* `_st_crawlaway()`：`face_lock` 把身体朝向钉在威胁那一侧，移动仍旧 `walk_to` 反向。
+  匍匐的正确定义是「身体朝威胁、头也看威胁、身体反向挪」；旧实现让 `walk_to` 每 tick
+  把 `facing` 改成移动方向，三个朝向互相抢，才出现「身体朝威胁 / 头朝后 / 平移后退」。
+* `core/creature.py` 新增 `face_lock`，在 `_movement_update()` 末尾覆盖 `facing`。
+
+**⑥ 两套杆逻辑：结论（需求 1/3/4）**
+
+* `world/pole.py`（几何）本来就是共享的，`Pole.kind` 只决定能力差异。
+* `behavior/pole_climb.py`（竖杆控制器）与 `world/hpole.py`（横杆控制器）**物理分工不同，
+  不该合并**，正是文档说的「统一接口，分开物理」。
+* `planning/pole_reach.py::_PoleClimb` 不是第三套实现：它已经在驱动同一个 `PoleClimber`
+  （`_ensure_climber`），只是加了「爬到指定高度」。
+* `handoff` 也不是两套：竖 / 横控制器都只**产出**同一元组，FSM 只有一个 `_pole_handoff` 消费者。
+* 所以「杆」这条线上真正的冗余是 **AI 的提问方式**：旧代码到处 `if pole.kind ==
+  "vertical"` / `if b.on_pole`。本轮收成 `combat_position()` 一个提问。
+* `_pick_climbable_pole(kinds=("vertical", "horizontal"))` 成为横竖统一的查询入口；
+  两个真正只要竖杆的调用点（FLEE 上杆、`PoleClimber` 兜底）显式传 `("vertical",)`，
+  免得横杆被塞进竖杆控制器。
+* 结论：**bug 1/2/3 的来源不是杆的物理实现**，而是投掷 / 命中几何多头（本轮统一）；
+  **bug 5 的来源是「没有唯一的身体控制权仲裁」**（本轮用 `face_lock` + 入口门禁压住）。
+
+**⑦ 矛大师骨针（bug 4）**
+
+* `needle_tick()` 去掉 `or self.stuck_to is not None`：扎在生物身上不再冻结整个 fade
+  生命周期（旧实现白针永远不黑、黑针非得鼠标拔下来才消失）。只有真的被持有
+  （手里 / 鼠标拖着 / `held_by`）才暂停。
+
+**验证**：`work/scratch/e2e_r149.py`（弹道逐帧对拍、命中几何、薄封装、`pin_tip`、骨针
+生命周期、CombatPosition、直接命中不再起跳、杆上投矛、匍匐门禁与 `face_lock`、杆查询）
++ `run_all19.ps1` 全量回归（fails=0）；离线渲染 `r149_spear_tip.png` 目视核对
+「矛尖插在蜥蜴身上而不是空气里」。同步更新了两条与新口径冲突的旧断言：
+`e2e_r87.py`（匍匐从「不许倒退」改成「身体朝向与视线同侧」）、`e2e_r127.py`
+（扎在生物身上的针现在照样褪到 GONE）。
+
 ### R148 · LizardTongue 舌击 + 后空翻 + bodyWiggleCounter 事件
 
 回收 R146/R147 遗留的两个「字段存在但没接线」：

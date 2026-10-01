@@ -2549,6 +2549,12 @@ class BehaviorFSM:
         # 「贴脸」不再只看欧氏距离：同一根竖杆上的威胁离得再远也是堵着我
         # （文档 §ThreatField：hypot 说明不了「它就在我这根杆上」）。
         close = self._threat_too_close(th, d)
+        if b.on_pole:
+            # 杆上迎战：手里有家伙就在杆上原地掷（横杆 / 竖杆同一套 _pole_throw）。
+            # 中距离就出手；贴脸仍旧优先脱离接触（下面那一档）。
+            if (not close and self._armed_in_hand() and b.item_ready()
+                    and self._pole_throw()):
+                return True
         if not b.on_floor():
             # 空中 / 杆上**不再直接退出决策**（旧版这里一句
             # `if not b.on_floor(): return False` 就是「杆上不躲」的来源）。
@@ -2727,7 +2733,8 @@ class BehaviorFSM:
         # 墙爬不了（Controls：蛞蝓猫只能扶墙下滑/蹬墙跳，没有「爬上去」），
         # 只有杆是上升通道。
         if self.rng.random() < tuning.FLEE_CLIMB_P:
-            pole = self._pick_climbable_pole()
+            # 逃跑要的是「上升通道」：只有竖杆爬得上去，横杆挂上去不算离地。
+            pole = self._pick_climbable_pole(("vertical",))
             if (pole is not None
                     and abs(pole.x - b.chunk1.x) <= tuning.FLEE_POLE_R):
                 self._poleclimb_pole = pole
@@ -2742,8 +2749,14 @@ class BehaviorFSM:
         # 潜行姿态，不是「离得远就趴下」。旧版把「距离 > CRAWL_FEAR_R*0.6」也当成
         # 趴下的条件，于是场上一有蜥蜴猫就动不动突然趴下 —— 这就是那个「喜欢突然
         # 匍匐」的来源。性格 crawl_like 只决定肯不肯趴。
+        # 匍匐是纯地面战术：杆上 / 空中一律不进（旧版只判「在它背后」，杆上一被
+        # 威胁就切进 CrawlAway，再由 _st_crawlaway 的 walk_to 和杆控制器抢身体
+        # —— 用户报的「爬杆时触发匍匐导致卡死」）。触发骰子也不再每帧重掷：
+        # 一轮逃跑只掷一次，用完按 _crawl_cd 记账，否则几十帧内必然趴下
+        # （「一靠近就后退」）。
         behind = self._behind_creature(lz)
-        can_crawl = (self.rng.random()
+        can_crawl = (b.on_floor() and not b.on_pole and self._crawl_cd <= 0
+                     and self.rng.random()
                      < 0.25 + 0.75 * getattr(self.pers, "crawl_like", 0.5))
         if behind and can_crawl:
             self._crawl_from = lz
@@ -3884,10 +3897,15 @@ class BehaviorFSM:
         """
         return self.planner.transport_in_reach(p)
 
-    def _pick_climbable_pole(self):
+    def _pick_climbable_pole(self, kinds=("vertical", "horizontal")):
+        """挑一根最近的**可攀爬杆**（横杆、竖杆共用同一份查询：planner.transports）。
+
+        旧实现把 kinds 写死成 ("vertical",)，横杆虽同属杆系统却永远不在候选里；
+        调用方要「只要有高度的上升通道」就传 ("vertical",)，要「任何一根杆」用默认值。
+        """
         best = None
         hx = self.body.chunk1.x
-        for p in self.planner.reachable_transports(("vertical",)):
+        for p in self.planner.reachable_transports(kinds):
             if best is None or abs(p.bx - hx) < abs(best.bx - hx):
                 best = p
         return best
@@ -3974,7 +3992,8 @@ class BehaviorFSM:
         self._poleclimb_pole = None
         self._poleclimb_start = None
         if pole is None:
-            pole = self._pick_climbable_pole()
+            # PoleClimber 是竖杆控制器：这里只要竖杆（横杆走 _hpole_enter）。
+            pole = self._pick_climbable_pole(("vertical",))
         self.poleclimb = (PoleClimber(self.win, pole, self.rng, start=start)
                           if pole is not None else None)
 
@@ -6294,6 +6313,8 @@ class BehaviorFSM:
             b.release_ceiling()
         elif st == "CrawlAway":
             b.set_crawl(False)
+            b.face_lock = 0
+
         elif st == "ScoldBlocker":
             self._scold_cleanup()
         elif st == "Socialize":
@@ -7318,7 +7339,7 @@ class BehaviorFSM:
     # ── 打未开荚的爆米花：原版只能横着发射，所以要先让自己和豆荚同高 ──
     def _throw_line(self) -> float:
         """水平掷矛经过的高度（原版 firstChunk.pos + dir*10 + (0,4) 的 y）。"""
-        return self.body.chunk0.y - THROW_ORIGIN_DY
+        return self.body.muzzle()[1]
 
     def _cob_band(self, cb):
         """豆荚两个 chunk 组成的可命中竖直区间（含命中半径）。"""
@@ -7355,29 +7376,26 @@ class BehaviorFSM:
         ox = c0.x if stand_x is None else float(stand_x)
         x = ox + float(dir_x) * THROW_ORIGIN_DX
         y = c0.y - THROW_ORIGIN_DY
-        tx0, ty0 = x, y                              # 出手点：平飞段按到这里的距离算
-        lx = ox - float(dir_x) * THROW_ORIGIN_DX      # 原版 firstFrameTraceFromPos
-        ly = c0.y
-        grav = GRAVITY * self.win.room_gravity
+        # 弹道走统一积分（world/trajectory），命中走统一扫掠（world/hitgeom._cob_hit）：
+        # 这一条和真实飞行、AI 预演用的是同一套几何（文档 §8/§11）。
+        from ..world import trajectory as traj
+        pts = traj.preview(x, y, vx, vy, 64, gravity=GRAVITY,
+                           room_gravity=self.win.room_gravity, thrown=not toss)
         probe = _ShotProbe(SPEAR_RAD)
-        for _ in range(64):
-            if toss:
-                vy += grav           # 轻抛没进 Mode.Thrown → Spear.step 里吃满重力
-            elif math.hypot(x - tx0, y - ty0) >= weaponphys.SPEAR_FLIGHT_FLAT_PX:
-                vy += grav - weaponphys.SPEAR_FLIGHT_LIFT       # 平飞段之后：原版半重力
-            # 平飞段内不加重力（上抬抵掉）
-            vx *= AIR_FRICTION
-            vy *= AIR_FRICTION
-            x += vx
-            y += vy
+        # 第一帧的扫掠起点＝出手前的位置（原版 firstFrameTraceFromPos，与
+        # Spear.step 的 _f1 分支同源）。旧实现把它塞在循环尾部，改成先建弹道后
+        # 就成了未定义局部变量，这里补回初始化。
+        lx = ox - float(dir_x) * THROW_ORIGIN_DX
+        ly = c0.y
+        for px, py in pts:
             probe.last_x, probe.last_y = lx, ly      # 逐帧和 Spear.step 一模一样
-            probe.x, probe.y = x, y
-            probe._seg_x, probe._seg_y = x, y
+            probe.x, probe.y = px, py
+            probe._seg_x, probe._seg_y = px, py
             if _cob_hit(cb, probe, SPEAR_COB_PAD) is not None:
                 return True
-            if not (0.0 < x < self.win._WL and y < self.win._HL):
+            if not (0.0 < px < self.win._WL and py < self.win._HL):
                 return False                 # 先撞地/飞出窗口：这一掷打不到
-            lx, ly = x, y
+            lx, ly = px, py
         return False
 
     def _cob_high(self, cb) -> bool:
@@ -7576,10 +7594,12 @@ class BehaviorFSM:
         b = self.body
         cl = self._fight_climber
         self._aim_target(tgt)                # 爬杆途中手也一直指着猎物
+        # 高度判据换成「真实弹道能不能命中」：爬杆时 chunk0 被钉在抓杆手上、
+        # 不是胸口，绝对高度差永远对不上 → 杆上几乎不出手。
+        dir_x = 1 if tgt.x >= b.chunk0.x else -1
         if (not self._fight_climb_thrown
                 and (b.carried_spear is not None or b.carried_stone is not None)
-                and abs(b.chunk0.y - tgt.y) <= THROW_JUMP_DY):
-            dir_x = 1 if tgt.x >= b.chunk0.x else -1
+                and self._shot_would_hit(tgt, dir_x)):
             b.facing = dir_x
             b.stop_walk()
             if self._launch_weapon(dir_x):
@@ -7704,33 +7724,31 @@ class BehaviorFSM:
         else:
             vx, vy = weaponphys.throw_velocity(c0, dir_x, True,
                                                weaponphys.frc(weak=weak))
-        return (c0.x + float(dir_x) * THROW_ORIGIN_DX, c0.y - THROW_ORIGIN_DY, vx, vy)
+        ox, oy = self.body.muzzle(dir_x)
+        return (ox, oy, vx, vy)
 
     def _shot_arc(self, ox, oy, vx, vy, ticks=SHOT_PROBE_TICKS):
         """掷出后逐 tick 的弹道点（平飞段不落，之后回落到原版半重力）。"""
-        from ..world.spear import AIR_FRICTION, GRAVITY
-        grav = GRAVITY * float(getattr(self.win, "room_gravity", 1.0))
-        pts = []
-        x, y = float(ox), float(oy)
-        for _ in range(int(ticks)):
-            if math.hypot(x - ox, y - oy) >= weaponphys.SPEAR_FLIGHT_FLAT_PX:
-                vy += grav - weaponphys.SPEAR_FLIGHT_LIFT
-            vx *= AIR_FRICTION
-            vy *= AIR_FRICTION
-            x += vx
-            y += vy
-            pts.append((x, y))
-        return pts
+        # 弹道走 world/trajectory：真实 Spear.step 的重力块调的是同一个函数，
+        # AI 预演与真实飞行不再各写一套（文档 §8「ProjectileTrajectory」）。
+        from ..world import trajectory as traj
+        from ..world.spear import GRAVITY
+        return traj.preview(
+            ox, oy, vx, vy, ticks, gravity=GRAVITY,
+            room_gravity=float(getattr(self.win, "room_gravity", 1.0)))
 
     def _shot_hits_body(self, pts, ob, pad) -> bool:
         """预演弹道会不会打到这具身体（同伴也在动：按它的速度预测同一 tick 的位置）。"""
-        for c in (ob.chunk0, ob.chunk1):
-            rad = float(getattr(c, "rad", 0.0))
-            for k, (px, py) in enumerate(pts):
-                cx = c.x + float(getattr(c, "vx", 0.0)) * k
-                cy = c.y + float(getattr(c, "vy", 0.0)) * k
-                if math.hypot(px - cx, py - cy) < pad + rad:
-                    return True
+        # 逐段走统一扫掠（world/hitgeom）：旧实现是「点到这一帧位置」的点判定，
+        # 40px/帧 的矛一帧就能跨过整具身体。
+        from ..world import hitgeom as HG
+        if not pts:
+            return False
+        ax, ay = pts[0]
+        for k, (nx, ny) in enumerate(pts):
+            if HG.sweep_hit_predicted(ob, ax, ay, nx, ny, 0.0, pad, float(k + 1)):
+                return True
+            ax, ay = nx, ny
         return False
 
     def _shot_hits_pet(self, pts, pad=THROW_BLOCK_R, skip=None):
@@ -7875,6 +7893,30 @@ class BehaviorFSM:
         self.gfx.blink = 15
         return True
 
+    def _shot_would_hit(self, tgt, dir_x) -> bool:
+        """这一掷的**真实弹道**能不能扫到目标（统一几何 + 统一积分）。
+
+        用户口径：先问「现在直接投能不能中」，能中就直接投，不能中才调整姿态
+        （跳起来 / 爬杆）。判定走的是 world/hitgeom 的扫掠，和真实命中同一个函数。
+        """
+        from ..world import hitgeom as HG
+        from ..world.items import SPEAR_HIT_PAD
+        from ..world.spear import RAD as SPEAR_RAD
+        ob = getattr(tgt, "body", tgt)
+        if ob is None:
+            return False
+        ox, oy, vx, vy = self._shot_velocity(dir_x)
+        pts = self._shot_arc(ox, oy, vx, vy)
+        if not pts:
+            return False
+        ax, ay = ox, oy
+        for k, (nx, ny) in enumerate(pts):
+            if HG.sweep_hit_predicted(ob, ax, ay, nx, ny, SPEAR_RAD,
+                                      SPEAR_HIT_PAD, float(k + 1)):
+                return True
+            ax, ay = nx, ny
+        return False
+
     def _throw_weapon_at(self, tgt) -> bool:
         """原版水平投掷：throwDir = IntVector2(sign(x), 0)，初速走 Weapon.Thrown（40*frc）。
 
@@ -7894,7 +7936,12 @@ class BehaviorFSM:
         if not self._shot_path_clear(dir_x, tgt):
             return False                        # 弹道上有同伴：先不出手（等它让开）
         self._note_attack_intent(dir_x, tgt)    # 起手就记：同伴这几帧里让开
-        if abs(dy) > THROW_JUMP_DY and b.on_floor():
+        # 先预演「当前姿态的真实弹道」：能命中就直接投，不能中才起跳对齐高度。
+        # （旧实现只看高度差，能中的也先跳一下 —— 用户报的「可直接投矛命中时
+        #  AI 仍选择跳跃投掷，导致打空」。）
+        if self._shot_would_hit(tgt, dir_x):
+            return self._launch_weapon(dir_x, tgt)
+        if b.combat_position() == "ground" and abs(dy) > THROW_JUMP_DY:
             b.request_jump("stand")             # 站在地上：跳到那一层再水平掷出
             self._throw_jumped = True           # 告诉调用方「这是起跳，不是出手」
             return False                        # 已经在空中就直接掷（原版空中投矛）
@@ -7927,9 +7974,15 @@ class BehaviorFSM:
         self._crawl_wall = False
         if self._crawl_left <= 0:
             self._crawl_left = tuning.CRAWL_AWAY_TICKS
-        if b.on_pole:                    # 杆上没有匍匐：站着走完这一段
+        if b.on_pole or not b.on_floor():
+            # 匍匐是纯地面战术。入口已经拦了杆/空中，这里是兜底：旧实现只
+            # set_crawl(False) 就 return，状态仍是 CrawlAway → _st_crawlaway
+            # 继续 walk_to，和杆控制器抢身体（用户报的「爬杆触发匍匐卡死」）。
             b.set_crawl(False)
             b.set_posture(True)
+            b.face_lock = 0
+            self._crawl_from = None
+            self._crawl_left = 0          # 下一 tick 立刻收尾回 IdleStand
             return
         b.set_posture(False)
         b.set_crawl(True)
@@ -7970,28 +8023,26 @@ class BehaviorFSM:
         # 用 walk_to 驱动而不是裸 move_dir：夹进可行走范围后到墙就自然「到站」，
         # 不再出现「顶着屏幕两侧的墙一直跑」（旧版 move_dir 一旦设上就没人清，
         # 离场后还会带着它一路撞墙）。
+        # 用户口径（文档 §7）：匍匐是「身体朝威胁、头看威胁、身体反向挪」。
+        # 旧版让 walk_to 每 tick 把 facing 改成移动方向，于是三个方向互相抢，
+        # 出现「身体朝威胁 / 头朝后 / 平移后退」的错乱组合。现在拆开：
+        # facing 交给 face_lock 钉在威胁那一侧，移动仍旧靠 walk_to。
         away = 1.0 if lz.x < b.chunk1.x else -1.0
         goal = b.chunk1.x + away * CRAWL_AWAY_STEP
         if b.walk_min is not None:
             goal = min(max(goal, b.walk_min), b.walk_max)
         corner = (goal - b.chunk1.x) * away <= CRAWL_CORNER_EPS
         if self._crawl_wall:
-            # 本次匍匐已经缩到墙角了：这一整段就保持「蹲下、面朝威胁」。否则
-            # 残留速度让 x 在 walk_min 上下漂十几像素，corner 会一帧真一帧假，
-            # 脸跟着一帧朝墙一帧朝威胁 —— 看起来就是原地翻面。
+            # 本次匍匐已经缩到墙角了：这一整段就保持「蹲下、面朝威胁」，否则
+            # 残留速度让 x 在 walk_min 上下漂十几像素，corner 会一帧真一帧假。
             corner = True
         self._crawl_wall = corner
+        b.face_lock = 1 if lz.x >= b.chunk1.x else -1
         if corner:
-            # 已经贴到那一侧的边：夹完的落点还在原地/反方向。再 walk_to 就会被
-            # 夹到身体另一侧，朝一边、身体往另一边挪（用户报的「面向正面却后退」）。
-            # 贴边就别推了，就地蹲下、转过去面朝威胁，并且一直保持到离开墙角。
-            b.stop_walk()
-            b.facing = 1 if away < 0 else -1
+            b.stop_walk()                 # 贴到那一侧的边：就地蹲着盯着它
         else:
             b.walk_to(goal)
-            b.facing = 1 if away > 0 else -1
         self.gfx.look_at = (lz.x, lz.y)
-
 
     def _tongue_holding_creature(self):
         """舌头正黏着的**生物**（果子/珍珠/地形不算）；没黏着返回 None。

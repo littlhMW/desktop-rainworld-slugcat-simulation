@@ -13,6 +13,7 @@ import random as _random
 
 from ..core import chunkphys                     # 庇护所墙体扫掠要用 chunkphys.solids()
 from ..core.chunkphys import aabb_wall_collide, apply_water
+from . import trajectory as traj
 from . import weaponphys as wp
 from .enums import ItemState
 
@@ -199,6 +200,17 @@ class Spear:
         a = math.radians(self.stuck_angle if self.stuck else self.angle_deg)
         return (self.x - math.sin(a) * LEN * 0.5, self.y + math.cos(a) * LEN * 0.5)
 
+    def pin_tip(self, hx: float, hy: float) -> None:
+        """把矛**尖**摆到真实接触点（撞到东西的同一 tick 用）。
+
+        旧实现只把速度清零、位置留在「这一帧飞到的终点」：40px/帧 的位移让
+        矛看起来插在目标身后的空气里（用户报的「矛插在空气上」）。
+        """
+        from .hitgeom import tip_align
+        tip_align(self, hx, hy, LEN)
+        self.last_x, self.last_y = self.x, self.y
+        self._seg_x, self._seg_y = self.x, self.y
+
     def needle_disconnect(self, cut: bool = False) -> None:
         """Spear_NeedleDisconnect：活性没了（针从白褪成黑色，不能再吸食）。
 
@@ -224,9 +236,12 @@ class Spear:
         if not self.needle or self.needle_live:
             return
         if (self.state in (ItemState.CARRIED, ItemState.MOUSE)
-                or self.held_by is not None or self.stuck_to is not None):
-            # 已经拿在手里的针不再褪：否则褪尽这一 tick 会把手上这根直接标成
-            # GONE —— 用户报的「点一下（捡起来）就立刻消失」。
+                or self.held_by is not None):
+            # 只在**真的被持有**时暂停：手里 / 鼠标拖着 / 被谁拿着。
+            # 旧实现连「扎在生物身上」（stuck_to）也一并挡住，于是那根针的整个
+            # 生命周期被冻住：白针永远不变黑（用户报的「部分白矛不褪色」），
+            # 已经变黑的针要等鼠标把它拔下来（stuck_to 清空）才能继续褪到消失
+            # （「部分黑矛本应自动消失，却需鼠标点击」）。
             return
         if self.needle_fade > 0:                  # ① 白 → 黑
             self.needle_fade -= 1
@@ -422,11 +437,11 @@ class Spear:
             self.no_self_t -= 1
         # 掷出：出手后先平飞一段（上抬抵掉重力），过了 SPEAR_FLIGHT_FLAT_PX 回落到
         # 原版 Spear.Update 的 vel.y += 0.45f（半重力自然下落）。没掷出的照常吃满重力。
-        g = self.gravity * self.room_gravity
-        if not self._thrown:
-            self.vy += g
-        elif self._flight_far():
-            self.vy += g - wp.SPEAR_FLIGHT_LIFT
+        # 重力（掷出的矛过了平飞段只吃半重力）走 world/trajectory：AI 预演
+        # 调的是同一个函数，不再有第二套弹道。
+        self.vy += traj.gravity_delta(self.x, self.y, self._throw_x, self._throw_y,
+                                      self._thrown, self.gravity,
+                                      self.room_gravity)
         self.angle_deg = (self.angle_deg + self.spin) % 360.0
         # 掷出的矛过了平飞段开始自然下落：矛身朝向改为跟随速度方向（矛头在前），
         # 而不是出手后把角度永久锁死 —— 否则下坠的矛看起来还是一条水平线。

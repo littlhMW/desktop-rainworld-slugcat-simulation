@@ -180,7 +180,8 @@ class SlugcatBody:
         self.pole_x = 0.0
         self.pole_y = 0.0
 
-        self.facing = 1                 # +1 右 / -1 左
+        self.facing = 1                 # +1 右 / -1 左（身体朝向）
+        self.face_lock = 0              # 非 0 = 本 tick 强制身体朝向（匍匐后退盯着威胁；见 fsm._st_crawlaway）
         self.stance = 0.42 * self._conn_stand
         self.foot_lift = 4.0
         self.step_threshold = 0.5 * self._conn_stand
@@ -1359,6 +1360,10 @@ class SlugcatBody:
                 self.facing = 1
             elif move_x < 0:
                 self.facing = -1
+        # 「面朝 A、往 -A 挪」的战术（匍匐后退盯着威胁）：移动方向不能每 tick
+        # 把身体朝向也拉过去，否则出现「身体朝威胁 / 头朝后 / 平移后退」的错乱组合。
+        if self.face_lock:
+            self.facing = 1 if self.face_lock > 0 else -1
 
         # ── 原版 PlayerGraphics.Update:1987-1998：持矛朝向 spearDir ──
         # 只在「站立 + 有方向输入」时累积，否则每 tick 朝 0 退 0.05。
@@ -1899,6 +1904,28 @@ class SlugcatBody:
         """此刻双手是否由攀爬/吊挂动画驱动（而不是被持物锚点牵着走）。"""
         return (self.bodyMode == "ClimbingOnBeam"
                 and self.animation in BEAM_LIMB_ANIMS)
+
+    def combat_position(self) -> str:
+        """当前战斗站位：``ground`` / ``vertical`` / ``horizontal`` / ``airborne``。
+
+        投掷与瞄准只问这一个，不再各自 ``if on_floor`` / ``if on_pole``：
+        站在横杆上时 chunk 的 on_floor 会假真、爬竖杆时 chunk0 被钉在抓杆
+        手上，只有身体状态才是唯一口径。
+        """
+        if self.on_pole:
+            if self.animation in ("StandOnBeam", "HangFromBeam", "GetUpOnBeam"):
+                return "horizontal"
+            return "vertical"
+        return "ground" if self.on_floor() else "airborne"
+
+    def muzzle(self, dir_x=1):
+        """出手点（矛从这只手掷出）：和 weaponphys.throw_velocity 的起点一致。
+
+        高度对齐一律用它，不再拿 chunk0 —— 爬杆时 chunk0 被钉在抓杆手上，
+        比胸口低十几像素，「到同一高度就投」的判据于是永远不成立。
+        """
+        c0 = self.chunk0
+        return (c0.x + float(dir_x) * THROW_ORIGIN_DX, c0.y - THROW_ORIGIN_DY)
 
     def on_vertical_pole(self) -> bool:
         """此刻是不是「抱着竖杆」（ClimbOnBeam / BeamTip）。

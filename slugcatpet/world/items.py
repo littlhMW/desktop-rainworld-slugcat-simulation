@@ -38,6 +38,7 @@ from .needleworm_gfx import draw_needleworm, draw_needle_egg
 from .pearl import Pearl
 from . import weaponphys
 from .scavenger import PEARL_SEEK_R, PEARL_TAKE_PAD
+from . import hitgeom as HG
 from .spear import (Spear, LEN as SPEAR_DRAW_LEN, HALF_W as SPEAR_HALF_W,
                     NEEDLE_FADE_MAX)
 from .seedcob import Seed, SeedCob, draw_seed, draw_seedcob
@@ -286,63 +287,17 @@ def _seg_end(ball):
 
 
 def _sweep_circle(ax, ay, bx, by, cx, cy, r):
-    """线段 AB 首次穿进圆 (c, r) 的接触点；返回 (t, x, y)，没穿进返回 None。
-
-    t 是这一帧位移上的参数（0=起点、1=终点），取最早的一个才是「真实接触点」。
-    """
-    dx, dy = bx - ax, by - ay
-    fx, fy = ax - cx, ay - cy
-    a = dx * dx + dy * dy
-    if a <= 1e-9:
-        return (0.0, ax, ay) if fx * fx + fy * fy <= r * r else None
-    b = 2.0 * (fx * dx + fy * dy)
-    c = fx * fx + fy * fy - r * r
-    disc = b * b - 4.0 * a * c
-    if disc < 0.0:
-        return None
-    sq = math.sqrt(disc)
-    t = (-b - sq) / (2.0 * a)
-    if t < 0.0:
-        if c > 0.0:
-            return None                      # 圆整段都在前方：这一帧没碰到
-        t = 0.0                              # 起点已经在圆里
-    elif t > 1.0:
-        return None
-    return (t, ax + dx * t, ay + dy * t)
+    """线段 AB 首次穿进圆 (c, r) 的接触点；返回 (t, x, y)，没穿进返回 None。"""
+    return HG.sweep_circle(ax, ay, bx, by, cx, cy, r)
 
 
 def _ball_hit(creature, ball, pad: float = 0.0):
     """扫掠命中生物：返回 (命中的链节, 真实接触点 (x, y), t)；未命中 None。
 
-    旧实现返回的是**这一帧的终点**（bx, by），然后把矛中心塞到那个点上 ——
-    判定说命中，视觉却像插在空气里。现在逐 chunk（头 + 各链节）求
-    「矛轴线第一次穿进该圆」的真实交点，取最早的一个；攻击方把矛**尖**
-    对齐到这个点，碰撞/附着/绘制才共用同一套几何。
+    全局唯一一套几何（world/hitgeom.py）；AI 预演跑的也是这一个，不再出现
+    「AI 说能中、实际插在空气里」。
     """
-    ax, ay = getattr(ball, "last_x", ball.x), getattr(ball, "last_y", ball.y)
-    bx, by = _seg_end(ball)
-    hc = getattr(creature, "hit_chunks", None)
-    chunks = None
-    if callable(hc):
-        try:
-            chunks = [(creature, cx, cy, cr) for (cx, cy, cr) in hc()]
-        except Exception:
-            chunks = None
-    if not chunks:
-        chunks = [(creature, creature.x, creature.y,
-                   getattr(creature, "head_rad", getattr(creature, "rad", 0.0)))]
-        for seg in (getattr(creature, "seg", None) or ()):
-            chunks.append((seg, seg.x, seg.y, seg.rad))
-    best = None
-    for chunk, cx, cy, cr in chunks:
-        got = _sweep_circle(ax, ay, bx, by, cx, cy, ball.rad + cr + pad)
-        if got is None:
-            continue
-        if best is None or got[0] < best[0]:
-            best = (got[0], chunk, got[1], got[2])
-    if best is None:
-        return None
-    return (best[1], (best[2], best[3]), best[0])
+    return HG.sweep_hit(creature, ball, pad)
 
 
 def _local_frame(host, px, py, ang_deg):
@@ -393,46 +348,25 @@ def _hit_is_head(creature, x, y, pad: float = 0.0) -> bool:
 def _cob_hit(cb, sp, pad: float = 0.0):
     """飞矛扫掠线段 vs 爆米花两个 chunk 圆（原版 Weapon.cs:413-416 逐 chunk 判定）。
 
-    旧实现只拿矛的当前点去比，40px/帧的矛一帧跨过整个豆荚 ⇒ 命中率奇低。
+    返回**真实接触点** (x, y)，未命中 None。走的是全局统一几何；
+    AI 预演（fsm._cob_would_hit）调的就是这一个。
     """
-    r = sp.rad + cb.rad + pad
-    ax, ay = getattr(sp, "last_x", sp.x), getattr(sp, "last_y", sp.y)
-    ex, ey = _seg_end(sp)
-    best = None
-    for px, py in (cb.p0, cb.p1):
-        got = _sweep_circle(ax, ay, ex, ey, px, py, r)
-        if got is None:
-            continue
-        if best is None or got[0] < best[0]:
-            best = got
-    if best is None:
-        return None
-    return (best[1], best[2])
+    got = HG.sweep_hit(cb, sp, pad)
+    return None if got is None else got[1]
 
 
 def _small_hit(small, sp, pad: float = 0.0):
-    """小生物（蝠蝇/蝉乌贼/面条蝇）扫掠命中：带链节的逐节判，圆形的按半径判。
+    """小生物（蝠蝇/蝉乌贼/面条蝇）扫掠命中：返回 (命中点, 真实接触点, t)。
 
-    旧实现拿矛的当前点去比小生物中心，40px/帧 的矛一帧跨过整只虫 ⇒ 永远打不中。
-    原版 Weapon.cs:413-416 是逐 chunk 扫掠判定，这里对齐。
+    旧实现没链节的那一支直接返回**这一帧的终点**当命中点，
+    鉴于飞行距离每帧四十像素，那个点常常已经在虫子身后了。现在统一走扫掠交点。
     """
-    if getattr(small, "seg", None):
-        return _ball_hit(small, sp, pad)
-    ax, ay = getattr(sp, "last_x", sp.x), getattr(sp, "last_y", sp.y)
-    ex, ey = _seg_end(sp)
-    if _seg_dist(ax, ay, ex, ey, small.x, small.y) < sp.rad + small.rad + pad:
-        return (ex, ey)
-    return None
+    return HG.sweep_hit(small, sp, pad)
 
 
 def _seg_dist(ax, ay, bx, by, x, y) -> float:
     """点 (x,y) 到线段 AB 的最短距离。投掷物 40px/帧，逐帧位置判定会穿过链节。"""
-    dx, dy = bx - ax, by - ay
-    L2 = dx * dx + dy * dy
-    if L2 <= 1e-9:
-        return math.hypot(x - ax, y - ay)
-    t = clampf(((x - ax) * dx + (y - ay) * dy) / L2, 0.0, 1.0)
-    return math.hypot(x - (ax + dx * t), y - (ay + dy * t))
+    return HG.seg_dist(ax, ay, bx, by, x, y)
 
 
 def _dist_to_path(pts, x, y):
@@ -3125,34 +3059,35 @@ class ItemInteractionMixin:
                     continue
                 if not (sp._thrown or sp._seg_new):           # 原版只有 Mode.Thrown 才判定命中
                     continue
-                for c in (b.chunk0, b.chunk1):
-                    if _seg_dist(sp.last_x, sp.last_y, sp.x, sp.y,
-                                 c.x, c.y) < sp.rad + c.rad + SPEAR_HIT_PAD:
-                        # 原版 Spear.HitSomething：Violence(Stab, spearDamageBonus=1, 20)
-                        # 蛞蝓猫 num = 1.0 ≥ 即死阈值 1 ⇒ 被矛扎中即死。
-                        dmg = float(getattr(sp, "damage", SPEAR_DMG))
-                        died, stun = _pet_stun_death(dmg, SPEAR_STUN_BONUS)
-                        stun = int(stun * STUN_SCALE)
-                        if _friendly_throw_protected(self, getattr(sp, "thrower", None)):
-                            pass          # 友军伤害豁免：伤害与眩晕都不给
-                        elif _spear_should_protect_pet(sp, pet):
-                            # 玩耍/同伴命中仍有撞击与眩晕反馈，但禁止即死。
-                            self._friendly_fire(getattr(sp, "thrower", None), pet)
-                            self._spear_needle_feed(sp, pet, False)
-                            pet.behavior.apply_stun(max(12, min(stun, 70)))
-                            sp.vx *= -0.25
-                            sp.vy *= 0.25
+                # 蛞蝓猫走全局统一扫掠（world/hitgeom.py）
+                hit = HG.sweep_hit(b, sp, SPEAR_HIT_PAD)
+                if hit is not None:
+                    # 原版 Spear.HitSomething：Violence(Stab, spearDamageBonus=1, 20)
+                    # 蛞蝓猫 num = 1.0 ≥ 即死阈值 1 ⇒ 被矛扎中即死。
+                    dmg = float(getattr(sp, "damage", SPEAR_DMG))
+                    died, stun = _pet_stun_death(dmg, SPEAR_STUN_BONUS)
+                    stun = int(stun * STUN_SCALE)
+                    if _friendly_throw_protected(self, getattr(sp, "thrower", None)):
+                        pass          # 友军伤害豁免：伤害与眩晕都不给
+                    elif _spear_should_protect_pet(sp, pet):
+                        # 玩耍/同伴命中仍有撞击与眩晕反馈，但禁止即死。
+                        self._friendly_fire(getattr(sp, "thrower", None), pet)
+                        self._spear_needle_feed(sp, pet, False)
+                        pet.behavior.apply_stun(max(12, min(stun, 70)))
+                        sp.vx *= -0.25
+                        sp.vy *= 0.25
+                    else:
+                        self._friendly_fire(getattr(sp, "thrower", None), pet)
+                        self._spear_needle_feed(sp, pet, bool(b.dead))
+                        if died:
+                            pet.behavior.kill()
                         else:
-                            self._friendly_fire(getattr(sp, "thrower", None), pet)
-                            self._spear_needle_feed(sp, pet, bool(b.dead))
-                            if died:
-                                pet.behavior.kill()
-                            else:
-                                pet.behavior.apply_stun(stun)
-                        self._shake[0] += 1.6 * (1.0 if sp.vx >= 0.0 else -1.0)
-                        self._shake[1] += 1.1
-                        sp.vx = sp.vy = 0.0
-                        break
+                            pet.behavior.apply_stun(stun)
+                    self._shake[0] += 1.6 * (1.0 if sp.vx >= 0.0 else -1.0)
+                    self._shake[1] += 1.1
+                    sp.pin_tip(hit[1][0], hit[1][1])
+                    sp.vx = sp.vy = 0.0
+                    break
         for sp in self.spears:
             if sp.stuck_to is not None or sp.state != ItemState.FREE:
                 continue
@@ -3188,9 +3123,7 @@ class ItemInteractionMixin:
                 sp.vx = sp.vy = 0.0
                 sp.stuck = True
                 # 矛尖对齐到真实接触点：矛中心沿杆回退 LEN/2（tip() 的同一套几何）
-                ang = math.radians(sp.angle_deg)
-                sp.x = hit_x - math.sin(ang) * SPEAR_DRAW_LEN * 0.5
-                sp.y = hit_y + math.cos(ang) * SPEAR_DRAW_LEN * 0.5
+                sp.pin_tip(hit_x, hit_y)
                 sp.stuck_angle = sp.angle_deg
                 sp.stuck_to = (lz, sp.x - lz.x, sp.y - lz.y)
                 sp.stuck_local = _local_frame(lz, sp.x, sp.y, sp.angle_deg)
@@ -3206,7 +3139,8 @@ class ItemInteractionMixin:
             for sc in (self.scavengers if thrown else ()):
                 if sc.dead or sc.state != ItemState.FREE:
                     continue
-                if math.hypot(sc.x - sp.x, sc.y - sp.y) > sp.rad + sc.rad + SPEAR_HIT_PAD:
+                sc_hit = HG.sweep_hit(sc, sp, SPEAR_HIT_PAD)
+                if sc_hit is None:
                     continue
                 spd = math.hypot(sp.vx, sp.vy) or 1.0
                 dvec = (sp.vx / spd, sp.vy / spd)
@@ -3222,6 +3156,7 @@ class ItemInteractionMixin:
                 sp.vx = sp.vy = 0.0
                 sp.stuck = True
                 sp.stuck_angle = sp.angle_deg
+                sp.pin_tip(sc_hit[1][0], sc_hit[1][1])
                 sp.stuck_to = (sc, sp.x - sc.x, sp.y - sc.y)
                 self._shake[0] += 1.0 * (1.0 if dvec[0] >= 0.0 else -1.0)
                 self._shake[1] += 0.6
