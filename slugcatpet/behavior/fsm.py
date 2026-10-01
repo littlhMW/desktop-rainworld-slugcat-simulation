@@ -458,6 +458,7 @@ class BehaviorFSM:
         self._social_cd = 0
         self._help_cd = 0
         self._fight_cd = 0
+        self._face_cd = 0                # 逃/匍匐收尾后「重新迎战」的冷却（防冲上去又退）
         self._arm_cd = 0                 # 「为了威胁去捡家伙」的冷却
         self._cover_ally = None          # 躲到谁背后（有威胁、自己空手）
         self._cover_cd = 0
@@ -465,6 +466,9 @@ class BehaviorFSM:
         self._pincur_urge = 0.0         # 猎手对光标的兴趣累积（满 1 才出手）
         self._air_throw_cd = 0
         self._crawl_cd = 0
+        self._crawl_dir_lock = 0.0       # 匍匐躲避锁定的方向（±1）
+        self._crawl_dir_t = 0            # 方向锁剩余帧
+        self._crawl_locked_from = None   # 锁定的是哪只威胁（换目标即解锁）
         self._protest_cd = 0
         self._revive_cd = 0
         # 威胁中「先救人」的倾向骰子：对同一个威胁只抽一次（kind 决定倾向，
@@ -2536,8 +2540,10 @@ class BehaviorFSM:
             ob = p.body
             if getattr(p, "is_pup", False):
                 continue                    # 幼崽不算救援目标
-            if not self._peer_needs_help(ob) or self._revive_claimed_by(p) is not None:
-                continue
+            if (not self._peer_needs_help(ob)
+                    or self._revive_claimed_by(p) is not None
+                    or self._carried_by_lizard(ob)):
+                continue                    # 被蜥蜴叼在嘴里的：不可救（见 _carried_by_lizard）
             d = math.hypot(ob.chunk1.x - c1.x, ob.chunk1.y - c1.y)
             if d >= bd:
                 continue
@@ -2614,15 +2620,16 @@ class BehaviorFSM:
         # ② 中距离：只在「没正事」的态里抢班
         if self.state not in _WANTS_FROM or not b.on_floor():
             return False
-        if self._armed_in_hand():
+        if self._armed_in_hand() and self._face_cd <= 0:
             self._fight_target = th
             self._fight_left = tuning.FIGHT_TICKS
             self._break_active_controllers()
             self._transition("FightThreat")
             return True
         gw = self._nearest_ground_weapon() if b.carried_fruit is None else None
-        if (gw is not None and self._arm_cd <= 0
-                and math.hypot(gw.x - c1.x, gw.y - c1.y) <= tuning.ARM_SEEK_R):
+        if (gw is not None and self._arm_cd <= 0 and self._face_cd <= 0
+                and math.hypot(gw.x - c1.x, gw.y - c1.y) <= tuning.ARM_SEEK_R
+                and self._weapon_path_safe(gw, th)):
             self._fight_target = th
             self._fight_left = tuning.FIGHT_TICKS
             self._arm_cd = tuning.ARM_COOLDOWN
@@ -2630,7 +2637,8 @@ class BehaviorFSM:
             self._transition("FightThreat")
             return True
         brave = getattr(self.pers, "bravery", 0.5)
-        if brave >= tuning.RIP_SPEAR_BRAVE and self._nearest_rip_spear(th) is not None:
+        if (brave >= tuning.RIP_SPEAR_BRAVE and self._face_cd <= 0
+                and self._nearest_rip_spear(th) is not None):
             self._fight_target = th
             self._fight_left = tuning.FIGHT_TICKS
             self._break_active_controllers()
@@ -2939,6 +2947,9 @@ class BehaviorFSM:
         lz = self._flee_from
         alive = lz is not None and getattr(lz, "state", None) == ItemState.FREE
         if (not alive) or self.timer >= FLEE_MAX_TICKS or self._safe_from(lz):
+            # 逃完 / 够安全了：给一个「重新迎战」冷却，别一回到 IdleStand 又冲上去
+            # （用户报的「一会儿冲上前、一会儿匍匐退」拉锯）。
+            self._face_cd = max(self._face_cd, tuning.FACE_REENGAGE_TICKS)
             self._transition("IdleStand")
             return
         # 有逃生路线：这一段全权交给 RouteExecutor（爬杆 / 跳 / 落都是路线的一环）。
@@ -3887,6 +3898,20 @@ class BehaviorFSM:
     def _clear_hands(self):
         self.gfx.hand_aim["l"] = None
         self.gfx.hand_aim["r"] = None
+
+    def _clear_motion_and_hands(self):
+        """统一收势：手（hand_aim / 指指点点）+ 行走目标 + 打斗攀爬器一次放干净。
+
+        状态切换时由**上一个状态**显式调用（见 _fight_end / _flee_break /
+        _wants_break / _crawl_enter），不让下一个状态去猜有没有残留。旧实现只
+        清了两只手（而且只在 _act_end 里），于是「投完矛」留下的举手瞄准会一直
+        挂到匍匐后退阶段（用户报的「投完矛趴着跑还一直举着手」），残留的
+        walk_target_x 还会继续把身体往前拖。
+        """
+        self._clear_hands()
+        self._point_end()
+        self.body.stop_walk()
+        self._fight_climber_release()
 
     def _climbable_pole_available(self) -> bool:
         """此刻真有一根「我用得上的竖杆」——不是「世界上存在竖杆」。
@@ -5534,6 +5559,7 @@ class BehaviorFSM:
 
     def _flee_break(self):
         """收掉逃命路线的执行器（切态 / 被别的 band 抢班都走这里；幂等）。"""
+        self._clear_motion_and_hands()      # 逃跑收势：手 / 步点一起放掉
         ex = self._flee_exec
         self._flee_exec = None
         self._flee_plan = None
@@ -5626,6 +5652,43 @@ class BehaviorFSM:
         """倒地要同伴搭手：真死，或者被击晕还没醒（原版被击晕也是倒地）。"""
         return bool(ob.dead) or getattr(ob, "stun", 0) > 0
 
+    def _carried_by_lizard(self, ob) -> bool:
+        """这只猫是不是正被蜥蜴叼在嘴里（原版 grasps[0] + pacifying stun）。
+
+        被叼着的同伴 stun 一直等于 CARRY_STUN_KEEP，光看 ``stun > 0`` 会把它
+        当成普通「倒地可救」，于是猫会走过去硬拽 —— 用户报的「强行救还在嘴里
+        的同伴」。被叼住是**不可救援目标**：蜥蜴松口之前谁也没法把它拽出来。
+        """
+        for lz in getattr(self.win, "lizards", ()):
+            if getattr(lz, "carry_body", None) is ob:
+                return True
+        return False
+
+    def _weapon_path_safe(self, gw, th) -> bool:
+        """从当前位置到这件家伙的**直线路径**会不会穿过恐惧安全线？
+
+        沿路径采样，任一点进 ``FEAR_TOO_CLOSE_R × WEAPON_PATH_SAFE_PAD`` 就
+        判不安全（换一件武器或者干脆不去）。旧实现只看「家伙在 ARM_SEEK_R
+        以内」，家伙又常常掉在蜥蜴脚边 —— 于是「冲过去拿 → 进危险区 → 又逃」。
+        """
+        b = self.body
+        x0, y0 = b.chunk1.x, b.chunk1.y
+        x1 = float(getattr(gw, "x", x0))
+        y1 = float(getattr(gw, "y", y0))
+        d = math.hypot(x1 - x0, y1 - y0)
+        if d < 1e-3:
+            return True
+        n = max(2, int(d / 24.0) + 1)
+        r = tuning.FEAR_TOO_CLOSE_R * tuning.WEAPON_PATH_SAFE_PAD
+        tx = float(getattr(th, "x", x0))
+        ty = float(getattr(th, "y", y0))
+        for i in range(1, n + 1):
+            t = i / float(n)
+            if math.hypot(x0 + (x1 - x0) * t - tx,
+                          y0 + (y1 - y0) * t - ty) < r:
+                return False
+        return True
+
     def _wants_rescue(self, kind: float) -> bool:
         """肯不肯去救倒地的同伴。
 
@@ -5651,8 +5714,11 @@ class BehaviorFSM:
         决定去救、画面却只在原地朝那个 x 走 —— 这就是「AI 明明该救却看着不积极」。
         规划放弃（真的够不到）才退回直奔。
         """
-        if not self._peer_needs_help(ob):
+        if not self._peer_needs_help(ob) or self._carried_by_lizard(ob):
+            # 被叼走 / 已经站起来了：当场放弃（旧实现会继续 walk_to 被叼着的同伴，
+            # 甚至跟着蜥蜴一路跑 —— 用户报的「强行救还在嘴里的同伴」）。
             self._rescue_exec = None
+            self._social_target = None
             self.body.stop_walk()
             return
         b = self.body
@@ -5680,8 +5746,10 @@ class BehaviorFSM:
             ob = p.body
             if getattr(p, "is_pup", False):
                 continue                    # 幼崽不算救援目标
-            if not self._peer_needs_help(ob) or self._revive_claimed_by(p) is not None:
-                continue
+            if (not self._peer_needs_help(ob)
+                    or self._revive_claimed_by(p) is not None
+                    or self._carried_by_lizard(ob)):
+                continue                    # 被叼在嘴里的：不算救援目标
             d = math.hypot(ob.chunk1.x - c1.x, ob.chunk1.y - c1.y)
             if d < bd:
                 best, bd = p, d
@@ -5811,7 +5879,7 @@ class BehaviorFSM:
     # ── 每 tick 的强制欲望仲裁 ──
     def _wants_tick(self, cursor):
         """社交/帮助/反击/匍匐躲避在「没正事」的态里按优先级抢班。"""
-        for k in ("_social_cd", "_help_cd", "_fight_cd", "_crawl_cd",
+        for k in ("_social_cd", "_help_cd", "_fight_cd", "_face_cd", "_crawl_cd",
                   "_protest_cd", "_revive_cd", "_scold_cd",
                   "_pole_nudge_cd", "_act_cd", "_apology_t", "_thank_t",
                   "_arm_cd", "_cover_cd", "_pincur_cd"):
@@ -6324,7 +6392,7 @@ class BehaviorFSM:
             b.release_ceiling()
         elif st == "CrawlAway":
             b.set_crawl(False)
-            b.face_lock = 0
+            self._clear_motion_and_hands()
 
         elif st == "ScoldBlocker":
             self._scold_cleanup()
@@ -6336,8 +6404,9 @@ class BehaviorFSM:
             self.gfx.face(False, PRIO_URGENT)
         elif st == "FightThreat":
             self._fight_cd = T_FIGHT_RETRY
+            self._face_cd = max(self._face_cd, tuning.FACE_REENGAGE_TICKS)
             self._fight_target = None
-            self._fight_climber_release()
+            self._clear_motion_and_hands()
         elif st == "ChaseCursor":
             self._cursor_plan_end()
             self._act_end()
@@ -7706,10 +7775,19 @@ class BehaviorFSM:
                 and self._pole_throw_cd <= 0 and self._start_throw_climb(tgt)):
             return
         self._fight_throw_t += 1
-        if d < tuning.FIGHT_ARM_KEEP:                # 太近会被咬：边打边拉开
+        # 站位滞回带（用户报的「拿着矛靠近突然不动」）：旧版一过 KEEP 就 stop_walk，
+        # 于是从远处走到 72px 就杵着等 26 tick 才投。现在三段 —— 太近退、太远走
+        # 近到出手距离、中间才站定；且 KEEP-HYS 必须落在恐惧线（FEAR_TOO_CLOSE_R）
+        # 外面，否则战斗站位天然压在恐惧线里，一收手就被恐惧抢走。
+        keep = tuning.FIGHT_ARM_KEEP
+        hys = tuning.FIGHT_ARM_HYS
+        if d < keep - hys:                            # 太近会被咬：边打边拉开
             b.walk_to(b.chunk1.x - (tgt.x - b.chunk1.x))
+        elif d > keep + hys:                          # 太远：走近到出手距离
+            b.walk_to(tgt.x)
         else:
             b.stop_walk()
+
         self._act_end()
         self._aim_target(tgt)
         if self._fight_throw_t >= tuning.FIGHT_THROW_CD:
@@ -8050,6 +8128,11 @@ class BehaviorFSM:
 
     def _crawl_enter(self):
         b = self.body
+        # 从上一个状态进来时先把手 / 步点收干净：匍匐是「趴着挪」，不该带着
+        # 上一状态的举手瞄准或旧步点（用户报的「投完矛趴着跑还抬着手」）。
+        self._clear_motion_and_hands()
+        self._crawl_dir_t = 0
+        self._crawl_locked_from = None
         self._crawl_wall = False
         if self._crawl_left <= 0:
             self._crawl_left = tuning.CRAWL_AWAY_TICKS
@@ -8059,7 +8142,6 @@ class BehaviorFSM:
             # 继续 walk_to，和杆控制器抢身体（用户报的「爬杆触发匍匐卡死」）。
             b.set_crawl(False)
             b.set_posture(True)
-            b.face_lock = 0
             self._crawl_from = None
             self._crawl_left = 0          # 下一 tick 立刻收尾回 IdleStand
             return
@@ -8089,6 +8171,7 @@ class BehaviorFSM:
             b.set_crawl(False)
             self._crawl_from = None
             self._crawl_cd = T_CRAWL_RETRY
+            self._face_cd = max(self._face_cd, tuning.FACE_REENGAGE_TICKS)
             self._transition("IdleStand")
             return
         d = math.hypot(lz.x - b.chunk1.x, lz.y - b.chunk1.y)
@@ -8097,29 +8180,48 @@ class BehaviorFSM:
             self._flee_from = lz
             self._crawl_from = None
             self._crawl_cd = T_CRAWL_RETRY
+            self._face_cd = max(self._face_cd, tuning.FACE_REENGAGE_TICKS)
             self._transition("FleeLizard")
             return
         # 用 walk_to 驱动而不是裸 move_dir：夹进可行走范围后到墙就自然「到站」，
         # 不再出现「顶着屏幕两侧的墙一直跑」（旧版 move_dir 一旦设上就没人清，
         # 离场后还会带着它一路撞墙）。
-        # 用户口径（文档 §7）：匍匐是「身体朝威胁、头看威胁、身体反向挪」。
-        # 旧版让 walk_to 每 tick 把 facing 改成移动方向，于是三个方向互相抢，
-        # 出现「身体朝威胁 / 头朝后 / 平移后退」的错乱组合。现在拆开：
-        # facing 交给 face_lock 钉在威胁那一侧，移动仍旧靠 walk_to。
         # 往哪边挪交给 EscapeSolver（ThreatField 的真实危险度），Crawl 只负责
-        # 「以趴姿执行 movement_dir」（文档 §4）。
+        # 「以趴姿执行 movement_dir」（文档 §4）。身体朝向不在这里钉 —— 匍匐朝
+        # 反方向走是**真的翻身**（原版 bodyMode=CrawlTurn，见 creature._crawl_turn）。
+        # 旧版的 face_lock 把 facing 钉在威胁那侧，只会得到「身体面对着威胁、
+        # 人却在平移倒退」（用户报的「还是没有正确转身」）。
         plan = solve_escape(b, lz, self._threat_field(), CRAWL_AWAY_STEP)
         away = plan.movement_dir
+        # 方向锁：EscapeSolver 每 tick 重算左右危险度，多威胁 / 贴墙时危险度
+        # 会一帧左一帧右，away 跟着翻号 —— 匍匐自己左右摆（用户报的原地抽搐）。
+        # 同一只威胁 + 同一个方向至少保持 CRAWL_DIR_LOCK_TICKS 帧；换威胁或
+        # 真的顶到边（下面 corner 分支）才重算。
+        if self._crawl_locked_from is not lz or self._crawl_dir_t <= 0:
+            self._crawl_locked_from = lz
+            self._crawl_dir_lock = away
+            self._crawl_dir_t = tuning.CRAWL_DIR_LOCK_TICKS
+        away = self._crawl_dir_lock
+        self._crawl_dir_t -= 1
         goal = b.chunk1.x + away * CRAWL_AWAY_STEP
         if b.walk_min is not None:
             goal = min(max(goal, b.walk_min), b.walk_max)
         corner = (goal - b.chunk1.x) * away <= CRAWL_CORNER_EPS
+        if corner and not self._crawl_wall and self._crawl_dir_t > 0:
+            # 锁定方向顶到边了（贴墙 / 被夹住）：解锁重算一次，试反方向。
+            away = plan.movement_dir
+            self._crawl_dir_lock = away
+            self._crawl_locked_from = lz
+            self._crawl_dir_t = tuning.CRAWL_DIR_LOCK_TICKS
+            goal = b.chunk1.x + away * CRAWL_AWAY_STEP
+            if b.walk_min is not None:
+                goal = min(max(goal, b.walk_min), b.walk_max)
+            corner = (goal - b.chunk1.x) * away <= CRAWL_CORNER_EPS
         if self._crawl_wall:
             # 本次匍匐已经缩到墙角了：这一整段就保持「蹲下、面朝威胁」，否则
             # 残留速度让 x 在 walk_min 上下漂十几像素，corner 会一帧真一帧假。
             corner = True
         self._crawl_wall = corner
-        b.face_lock = plan.face
         if corner:
             b.stop_walk()                 # 贴到那一侧的边：就地蹲着盯着它
         else:

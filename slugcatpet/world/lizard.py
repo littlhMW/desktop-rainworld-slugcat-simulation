@@ -211,10 +211,18 @@ BODY_JUMP_REAR = 0.40         # PrepareToJump：后节拿到反向速度（身�
 
 # ── 原版 bodyWiggleCounter（文档 §10.5）：身体自己的低频扰动 ──
 WIGGLE_DECAY = 0.90           # 每 tick 衰减
-WIGGLE_AMP = 0.60             # 幅度（乘在 wiggle 上）
-WIGGLE_SEG_PHASE = 0.90       # 相邻节的相位差
 WIGGLE_IDLE_P = 0.02          # 空闲时每 tick 随机抬高的概率（原版「其余时间随机抬高」）
 WIGGLE_BUMP = 0.55            # 事件（发现猎物 / 起跳 / 出声）抬高量
+WIGGLE_SPEED = 0.30           # 原版 lizardParams.wiggleSpeed：相位推进率与冲量增益
+WIGGLE_RATE_LO = 0.05         # 原版 Lerp(0.05, 0.15, BodyWiggleFac)
+WIGGLE_RATE_HI = 0.15
+WIGGLE_SPD_LO = 0.5           # 原版 Lerp(0.5, 0.8, wiggleSpeed)
+WIGGLE_SPD_HI = 0.8
+# 原版 Lizard.cs:1926 / 424-426：desperationSmoother → BodyForce / BodyDesperation。
+# LerpAndTick(x, target, 0.05, 0.5)：先按 0.05 插值，再限制单次变化不超过 0.5。
+DESP_LERP = 0.05
+DESP_TICK = 0.5
+MAX_MUSCLE_POWER = 2.0        # 原版 lizardParams.maxMusclePower 的量级（BodyForce 上限）
 HEAD_LEAD_K = 0.30            # 物理扭头：前 1~2 节被颈子带偏的比例（文档 §9.2/§10.4）
 
 # ── 原版 LizardTongue / LizardSpitTracker（文档 §六）：舌头是一段独立物理 ──
@@ -1048,6 +1056,7 @@ class Lizard(CombatTarget):
                  "_turn_imp", "_last_body_dir", "_vx_intent", "_want_vx",
                  "_body_imp_x", "_body_imp_y",
                  "_atk_phase", "_atk_t", "_atk_dir", "wiggle",
+                 "_wiggle_ph", "_desp", "_anim_rng",
                  "held_by_hand", "water_y", "room_gravity", "_contact_floor",
                  "dead", "spacing", "spikes", "cosmetics", "cosmetic_pts", "like", "tamed", "friend_id",
                  "climb_x", "climb_dir", "climb_surfaces", "hauler",
@@ -1081,6 +1090,9 @@ class Lizard(CombatTarget):
     def __init__(self, x: float, y: float, breed: LizardBreed | None = None,
                  seed: int = 0, id: int = 0):
         self.rng = _random.Random(seed * 7919 + 13)
+        # 动画物理自己的随机流：原版这两段用的是 UnityEngine.Random（全局流）。
+        # 混进 self.rng 会把「加一次身体扰动」变成把之后所有行为随机序列整体错位。
+        self._anim_rng = _random.Random(seed * 331 + 17)
         self.breed = breed or BREEDS[0]
         self.seed = int(seed)
         self.id = int(id)
@@ -1279,6 +1291,10 @@ class Lizard(CombatTarget):
         self._atk_dir = (1.0, 0.0)
         # 原版 bodyWiggleCounter：停着也不像一块死物（文档 §10.5）
         self.wiggle = 0.0
+        # 原版 bodyWiggle（相位累加器）与 desperationSmoother。两者都是**物理量**：
+        # 会给三节 bodyChunk 直接灌速度（Lizard.cs:2116-2158），不是贴图抖动。
+        self._wiggle_ph = 0.0
+        self._desp = 0.0
         # 舌头（文档 §六）：None / "out" / "hold" / "back"
         self.tongue_state = None
         self.tongue_len = 0.0
@@ -4396,6 +4412,42 @@ class Lizard(CombatTarget):
             shares[k] = (1.0 - BODY_IMP_FALLOFF) ** k
             self.seg[k].vx += imp_x * shares[k]
             self.seg[k].vy += imp_y * shares[k]
+        # ⑥ bodyWiggleCounter（原版 Lizard.cs:2149-2158，逐行）：
+        #    身体自己的低频扰动不是「按节画正弦」，而是**三节 bodyChunk 的反相速度
+        #    冲量** —— bodyWiggle 相位累加 → 垂直于体轴的分量 → c0/c2 同号、c1 双倍
+        #    反号。旧实现直接改 s.y（贴图在抖），动量传不到连接和尾巴上；改成冲量后
+        #    被拖 / 转身 / 停着都是同一套物理在跑。
+        self._desp_tick()
+        fac = self.wiggle_fac()
+        if not self.dead and fac > 0.0:
+            self._wiggle_ph += (WIGGLE_RATE_LO
+                                + (WIGGLE_RATE_HI - WIGGLE_RATE_LO) * fac) \
+                * (WIGGLE_SPD_LO + (WIGGLE_SPD_HI - WIGGLE_SPD_LO) * WIGGLE_SPEED)
+            k = (fac + 2.0) / ((1.0 - WIGGLE_SPEED) ** 2 + 2.0)
+            ax_, ay_ = self._wiggle_axis()
+            osc = math.sin(self._wiggle_ph * math.tau) * k
+            wx_, wy_ = ax_ * osc, ay_ * osc
+            self.seg[0].vx += wx_
+            self.seg[0].vy += wy_
+            self.seg[1].vx -= wx_ * 2.0
+            self.seg[1].vy -= wy_ * 2.0
+            self.seg[2].vx += wx_
+            self.seg[2].vy += wy_
+        self.wiggle *= WIGGLE_DECAY
+        # ⑦ BodyDesperation 乱蹬（原版 Lizard.cs:2116-2122）：卡住 / 被拎起来时三节
+        #    接到随机方向的 ±(0.5 / 1 / 0.5) 冲量 —— 原版「挣扎」就是这个，不是动画。
+        if not self.dead and not self.hauled:
+            desp = self.body_desperation()
+            if desp > 0.0:
+                ang = self._anim_rng.random() * math.tau
+                mag = desp * MAX_MUSCLE_POWER * 2.0 * self._anim_rng.random()
+                bx_, by_ = math.cos(ang) * mag, math.sin(ang) * mag
+                self.seg[0].vx += bx_ * 0.5
+                self.seg[0].vy += by_ * 0.5
+                self.seg[1].vx -= bx_
+                self.seg[1].vy -= by_
+                self.seg[2].vx += bx_ * 0.5
+                self.seg[2].vy += by_ * 0.5
         for s in self.seg:
             s.vy += grav * (TAIL_GRAV_FAC if s.tail else 1.0)
             s.vx *= SEG_AIR_FRIC
@@ -4557,24 +4609,73 @@ class Lizard(CombatTarget):
                     s.y = lim
                     if s.vy > 0.0:
                         s.vy = 0.0
-        # ⑥ bodyWiggleCounter（原版 LizardGraphics 的 bodyWiggleCounter，文档
-        #    §10.5）：身体自己的低频扰动，逐节相位差、越往尾越大。原版由 HearSound /
-        #    PreySpotted / ShootTongue / PrepareToLounge / Lounge 抬高，其余时间随机
-        #    抬高 —— 这是「停着也不像一块死物」的来源。
-        if not self.dead and self.wiggle > 0.002:
-            n_seg = len(self.seg)
-            amp = WIGGLE_AMP * self.wiggle
-            for i in range(1, n_seg):
-                s = self.seg[i]
-                t = i / max(1, n_seg - 1)
-                s.y -= (math.sin(self._tick * 0.09 + i * WIGGLE_SEG_PHASE)
-                        * amp * (0.35 + 0.65 * t))
-        self.wiggle *= WIGGLE_DECAY
         # 链根最后再钉一次：上面所有修正（弯曲 / 步态 / 落地）都不许把第 0 节
         # 从驱动点上拽走
         self.seg[0].x, self.seg[0].y = self.x, self.y
 
     # ── 腿 ──
+    def wiggle_fac(self) -> float:
+        """原版 Lizard.cs:474 BodyWiggleFac。
+
+        ``Clamp((bodyWiggleCounter - wiggleDelay) / (50 + wiggleDelay), 0, 1)``。
+        本作的 self.wiggle 就是 0..1 的等价计数器（事件抬高 / 每 tick 衰减），
+        wiggleDelay 取 0 → Fac = Clamp(wiggle * 2)。
+        """
+        return clampf(self.wiggle * 2.0, 0.0, 1.0)
+
+    def body_force(self) -> float:
+        """原版 Lizard.cs:424：``Clamp(desperationSmoother * 0.025, 1, maxMusclePower)``。"""
+        return clampf(self._desp * 0.025, 1.0, MAX_MUSCLE_POWER)
+
+    def body_desperation(self) -> float:
+        """原版 Lizard.cs:426：``InverseLerp(120, 400, desperationSmoother)``。"""
+        return inv_lerp(120.0, 400.0, self._desp)
+
+    def _desp_tick(self) -> None:
+        """原版 Lizard.cs:1926：``desperationSmoother = LerpAndTick(…, 0.05, 0.5)``。
+
+        目标值 = ``max(这次移动已经试了多久 + Lerp(-300,0,…), stuckTracker.Utility()*100)``。
+        本作对应的两个量：被拎在半空（``state == MOUSE``）= 整只乱蹬（直接顶到 400，
+        BodyDesperation = 1）；被地形卡住 = 按 StuckDetector 的等级给
+        ``100 * level``（第 1 级就把 smoother 推过 120 的门槛）。
+        """
+        if self.state == ItemState.MOUSE:
+            target = 400.0
+        elif self.hauled or self.dead:
+            target = 0.0
+        else:
+            target = 100.0 * max(0, self._stuck.level)
+        # 原版 Custom.LerpAndTick：先按 lerp 插值，再把「单次变化量」**垫到至少
+        # tick**（是下限不是上限 —— 抄成上限的话 smoother 每 tick 只动 0.5，
+        # 400 要走 800 tick，等于永远不挣扎）。
+        cur = self._desp + (target - self._desp) * DESP_LERP
+        if self._desp < target:
+            cur = min(target, max(self._desp + DESP_TICK, cur))
+        elif self._desp > target:
+            cur = max(target, min(self._desp - DESP_TICK, cur))
+        self._desp = cur
+
+    def _wiggle_axis(self):
+        """原版 Lizard.cs:2153 的冲量方向：``Perpendicular(Slerp(Dir(c1→c0), Dir(c2→c1), 0.5))``。
+
+        2D 里两个单位向量在 t=0.5 的 Slerp 就是「相加再归一化」（夹角 < 180° 时）；
+        完全反向（加出来是零向量）就退回前一段的方向，避免除零。
+        """
+        c0, c1, c2 = self.seg[0], self.seg[1], self.seg[2]
+        ax_, ay_ = c0.x - c1.x, c0.y - c1.y
+        la = math.hypot(ax_, ay_) or 1.0
+        ax_, ay_ = ax_ / la, ay_ / la
+        bx_, by_ = c1.x - c2.x, c1.y - c2.y
+        lb = math.hypot(bx_, by_) or 1.0
+        bx_, by_ = bx_ / lb, by_ / lb
+        mx, my = ax_ + bx_, ay_ + by_
+        d = math.hypot(mx, my)
+        if d < 1e-6:
+            mx, my = ax_, ay_
+        else:
+            mx, my = mx / d, my / d
+        return (-my, mx)
+
     def _step_legs(self, room_hl) -> None:
         """四足：逐行移植 LizardLimb.Update + Limb.Update（屏幕系 y↓，60 tick/秒）。
 

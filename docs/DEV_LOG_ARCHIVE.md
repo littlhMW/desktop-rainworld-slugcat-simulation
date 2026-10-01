@@ -4,6 +4,76 @@
 
 ## 2026-10-01
 
+### R155 · 匍匐真翻身 / 意图级仲裁（战斗锁·拿武器路径·救援资格·统一收势）/ 蜥蜴 bodyWiggle·Desperation 冲量
+
+现象两件：① 匍匐逃跑时「身体面对着目标后退平移，没有转身」，而且「冲上前一会儿又匍匐退」
+一直拉锯；② 蜥蜴的转身 / 爬墙 / 舌头 / 咬合动画没有按反编译接上物理。
+
+**① 匍匐没有转身：R154 补的 CrawlTurn 被两道锁挡死，永远跑不到**
+
+* 触发条件里带 `and not self.face_lock`，而 `_st_crawlaway()` **每 tick** 都设
+  `b.face_lock = plan.face`（把身体朝向钉在威胁那侧）→ `CrawlTurn` 从启动不了，
+  只剩「先减速、再倒着滑」，看起来就是平移倒退。`face_lock` 本身是 R149 自造的量，
+  原版没有：原版 `flipDirection`（`Player.cs:12113-12116`）就是**输入方向**＝本作的
+  `self.facing`（`walk_to` 刚写进去的那个）。
+* 移动循环里的 `CRAWL_BACK_DAMP` 也按 `self.facing` 反着扣速度，`face_lock` 把 `facing`
+  钉死 → 反剪那一半速度被吃掉，翻身根本没有力。
+* 修法：删掉 `SlugcatBody.face_lock` 字段与 `_movement_update()` 里的覆盖块；
+  `_crawl_turn()` 里按原版 `Player.cs:7520` 把 `bodyMode` 切成 `Default`（翻身的几帧不再
+  吃 `CRAWL_BACK_DAMP`）；触发条件去掉 `face_lock`；再加 `CRAWL_TURN_MAX = 40` 帧兜底，
+  几何判据一直不满足（贴墙 / 被拽）也不会卡在 `CrawlTurn` 里。
+* 符号逐个对拍（Unity y↑ → 本作 y↓）：`c0.vel.x += flipDirection` / `c1.vel.x -= 2*flip`；
+  「还没翻过来」`c0.vy += 3`（压胸）、完成时补 `c0.vy += 1`；「已翻过来」`c0.vy -= 2`（抬上身）。
+
+**② 意图级仲裁：战斗 / 拿武器 / 救援 / 逃跑不再互相抢**
+
+* **`FIGHT_ARM_KEEP` 72 → 100 + `FIGHT_ARM_HYS = 16`**：旧值比恐惧线
+  `FEAR_TOO_CLOSE_R = 76` 还小，战斗最佳站位天然压在恐惧圈里。现在站位是三段滞回带
+  （太近退 / 太远走进到出手距离 / 中间站定），并保证 `KEEP - HYS = 84 > 76`。
+  同时治好了「拿着矛靠近突然不动」：旧版一过 72px 就 `stop_walk()` 站着等 26 tick 才投。
+* **`_face_cd`（`FACE_REENGAGE_TICKS = 45`）**：逃 / 匍匐收尾后一段时间内不重新迎战。
+  旧版一回到 `IdleStand` 就重新评估 → 「冲上去 → 进危险区 → 又逃」的拉锯。
+* **拿武器变成带路径检查的意图**：`_weapon_path_safe()` 沿「我 → 家伙」的直线每 24px 采样，
+  任一点进 `FEAR_TOO_CLOSE_R × WEAPON_PATH_SAFE_PAD(1.15)` 就拒收这件武器 —— 不能一边逃命
+  一边强行去蜥蜴脚边捡矛。
+* **救援资格**：`_carried_by_lizard()` 扫 `win.lizards` 的 `carry_body`，被叼在嘴里的同伴
+  （`stun` 一直等于 `CARRY_STUN_KEEP`，光看 `stun > 0` 会被当成普通倒地）直接判为**不可救**；
+  `_revive_target_safe` / `_dead_peer_near` / `_rescue_step` 三处都排除，治「强行救还在嘴里的同伴」。
+* **统一收势 `_clear_motion_and_hands()`**：`hand_aim` + 指指点点 + `walk_target_x` +
+  打斗攀爬器一次放干净，由**上一个状态**在 `_fight_end` / `_flee_break` / `_wants_break` /
+  `_crawl_enter` 里显式调用。旧实现只清两只手（还只在 `_act_end` 里），于是「投完矛」
+  留下的举手瞄准会一直挂到匍匐后退阶段。
+* **匍匐躲避方向锁（`CRAWL_DIR_LOCK_TICKS = 14`）**：`EscapeSolver` 每 tick 重算左右危险度，
+  多威胁 / 贴墙时会一帧左一帧右；现在锁定同一只威胁 + 同一个方向至少 14 帧，换威胁或真的
+  顶到边才重算。
+
+**③ 蜥蜴：bodyWiggleCounter / BodyDesperation 接成真物理（`Lizard.cs` 反编译）**
+
+* `bodyWiggleCounter`（`Lizard.cs:2149-2158`）旧实现是 `s.y -= sin(...)` —— 逐节挪位置，看着像
+  贴图在抖，动量传不到连接和尾巴上。改成原版的**三节反相速度冲量**：
+  `bodyWiggle += Lerp(0.05,0.15,Fac) * Lerp(0.5,0.8,wiggleSpeed)`；
+  `axis = Perpendicular(Slerp(Dir(c1→c0), Dir(c2→c1), 0.5))`；
+  `k = (Fac+2)/((1-wiggleSpeed)^2+2)`；`c0.vel += axis*k*sin`、`c1.vel -= 2×`、`c2.vel += 1×`。
+  `BodyWiggleFac`（`Lizard.cs:474`）＝`Clamp((counter - wiggleDelay)/(50 + wiggleDelay))`。
+* `BodyDesperation`（`Lizard.cs:2116-2122`）新接上：`desperationSmoother`
+  （`Lizard.cs:1926` 的 `LerpAndTick(…, 0.05, 0.5)`，注意 `tick` 是**单次变化下限**而不是上限）
+  由「被拎在半空 / 被地形卡住的等级」驱动；`BodyForce = Clamp(smoother*0.025, 1, maxMusclePower)`、
+  `BodyDesperation = InverseLerp(120, 400, smoother)`；冲量 `c0/c2 += vec*0.5`、`c1 -= vec`。
+  这就是原版「挣扎」的物理，不是另写一段动画。
+* 这两段用的是 `UnityEngine.Random`（全局流），本作给它们单开一条 `_anim_rng`
+  （种子 = `seed*331+17`）—— 混进 `self.rng` 会把加一次身体扰动变成之后所有行为随机序列整体错位。
+
+验证：新增 `work/scratch/e2e_r155.py`（33 项断言：CrawlTurn 真的进入 + 翻身时 `bodyMode=Default`
++ 翻完胸口落在行进方向那侧 / 匍匐方向锁 / `_clear_motion_and_hands` 三件都收干净 /
+`_carried_by_lizard` / `_weapon_path_safe` 两侧 / `_face_cd` 门槛 / 滞回带与恐惧线关系 /
+蜥蜴 `wiggle_fac`·`body_force`·`body_desperation`·`_wiggle_axis` 与「被拎起来就乱蹬」）。
+原 `e2e_r149` / `e2e_r150` 里断言 `face_lock` 旧口径的三处改成新口径；`e2e_r68` 的
+「捡脚边的矛」把矛挪到远离蜥蜴的一侧（旧场景现在会被路径检查正确地拒收）；`e2e_r87`
+的匍匐朝向断言从「身体朝威胁」改成「身体朝行进方向、头回看威胁」。
+全量 `run_all19.ps1`（含新脚本）：
+
+`=== round done; fails=0 []`。
+
 ### R154 · 匍匐按反编译修正（趴姿投影 / 抬髋 / CrawlTurn）/ 骨针不再卡住不褪
 
 现象两件：① 匍匐与匍匐行走的动作都不对；② 矛大师的骨针褪色卡死，要等鼠标点一下才直接消失。

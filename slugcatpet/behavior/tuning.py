@@ -355,7 +355,10 @@ FIGHT_THROW_CD = 26
 FIGHT_RETRY_CD = 6            # 一次没掷成（起跳 / 线被挡 / 上手冷却）后的短重试间隔
 FIGHT_ARM_R = 170.0           # 手里/脚边有家伙时主动迎战的距离
 FIGHT_MELEE_R = 40.0          # 够近就用身子撞/抓咬
-FIGHT_ARM_KEEP = 72.0         # 持械时与威胁保持的距离（拉开了才好扔）
+FIGHT_ARM_KEEP = 100.0        # 持械时与威胁保持的距离（拉开了才好扔）
+FIGHT_ARM_HYS = 16.0          # 站位滞回带：<KEEP-HYS 退、>KEEP+HYS 进、中间停。
+                              #   KEEP-HYS 必须落在 FEAR_TOO_CLOSE_R 外面，
+                              #   否则战斗站位天然压在恐惧线里（旧值 72 对 76）
 FIGHT_RECOVER_TICKS = 40      # 反击的迟疑
 
 # 复活同伴：特殊表情（吐舌/舔）扒拉一会儿
@@ -384,6 +387,10 @@ FLEE_CLIMB_P = 0.7            # 逃之前先试着爬高的概率（没有可爬
 FLEE_POLE_R = 170.0           # 威胁时愿意跑过去爬的竖杆水平距离
 # 害怕时逃跑优先级最高；只有勇敢的敢还手、善良的敢救人，且敌贴太近一律逃
 FEAR_TOO_CLOSE_R = 76.0       # 蜥蜴贴到这个距离：不管性格，一律逃／跳过它
+WEAPON_PATH_SAFE_PAD = 1.15   # 去捡家伙的直线路径离威胁不得近于
+                              #   FEAR_TOO_CLOSE_R × 此值（不然「冲去拿矛→进危险区→又逃」）
+FACE_REENGAGE_TICKS = 45      # 逃 / 匍匐收尾后多久才允许重新迎战（防来回拉锯）
+CRAWL_DIR_LOCK_TICKS = 14     # 匍匐躲避方向锁：选定后至少保持这么多帧才允许重算
 FEAR_BRAVE_FIGHT = 0.60       # 勇敢度超过它才敢在恐惧状态下还手
 FEAR_KIND_RESCUE = 0.60       # 善良度到这个值：有威胁时稳定先救人（高倾向）
 FEAR_KIND_LOW = 0.25          # 善良度下限：低于它完全不在威胁中考虑救人；

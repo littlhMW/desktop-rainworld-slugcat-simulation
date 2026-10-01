@@ -20,6 +20,7 @@ CRAWL_SLOW = 1.0 * K_VEL
 H_ACCEL = (2.4 * 0.5) * K_IMP
 SKID_DAMP = 0.354      # 接地滑停回收率
 CRAWL_BACK_DAMP = 0.45  # 匍匐时反向残余动量的额外回收率（别边爬边倒退）
+CRAWL_TURN_MAX = 40     # 一次 CrawlTurn 最多多少帧（原版靠几何判据收尾，这里兜底）
 
 STAND_HEAD = -(1.5 * K_IMP)
 STAND_FEET = +(4.5 * K_IMP)
@@ -169,6 +170,7 @@ class SlugcatBody(CombatTarget):
         self.crawl_anchor = None
         self.crawl_pose = 0.0           # 0→1 趴姿混合
         self._crawl_turn_delay = 0      # 原版 crawlTurnDelay：反着爬连续几帧才翻身
+        self._crawl_turn_left = 0       # CrawlTurn 剩余帧（timeToRemainInAnimation 的等价上限）
 
         self.crawl_sink = 0.0
         self.hip_sink = 0.0
@@ -183,7 +185,9 @@ class SlugcatBody(CombatTarget):
         self.pole_y = 0.0
 
         self.facing = 1                 # +1 右 / -1 左（身体朝向）
-        self.face_lock = 0              # 非 0 = 本 tick 强制身体朝向（匍匐后退盯着威胁；见 fsm._st_crawlaway）
+        # 旧字段 face_lock（「钉住身体朝向 + 反向平移」模拟匍匐后退）已删除：
+        # 原版没有这条，匍匐朝反方向走是**真的翻身**（CrawlTurn），靠钉朝向
+        # 只会得到「身体面对着威胁、人却在倒退」（见 _crawl_turn / Player.cs:7518）。
         self.stance = 0.42 * self._conn_stand
         self.foot_lift = 4.0
         self.step_threshold = 0.5 * self._conn_stand
@@ -1364,11 +1368,6 @@ class SlugcatBody(CombatTarget):
                 self.facing = 1
             elif move_x < 0:
                 self.facing = -1
-        # 「面朝 A、往 -A 挪」的战术（匍匐后退盯着威胁）：移动方向不能每 tick
-        # 把身体朝向也拉过去，否则出现「身体朝威胁 / 头朝后 / 平移后退」的错乱组合。
-        if self.face_lock:
-            self.facing = 1 if self.face_lock > 0 else -1
-
         # ── 原版 PlayerGraphics.Update:1987-1998：持矛朝向 spearDir ──
         # 只在「站立 + 有方向输入」时累积，否则每 tick 朝 0 退 0.05。
         if self.standing and move_x != 0:
@@ -1461,9 +1460,9 @@ class SlugcatBody(CombatTarget):
                 # 而不是一路倒着滑（旧实现只有减速、没有翻身）。
                 dyn0 *= 0.75
                 dyn1 *= 0.75
-                if (self._crawl_turn_delay > 5 and move_x != 0
-                        and not self.face_lock):
+                if self._crawl_turn_delay > 5 and move_x != 0:
                     self._crawl_turn_delay = 0
+                    self._crawl_turn_left = CRAWL_TURN_MAX
                     self.animation = "CrawlTurn"
             # 原版 Player.cs:9126：胸**不贴地**、髋又比胸低 3px 以上 → 逐帧抬髋，
             # 让整条身体贴着地面走（旧实现把 ContactPoint.y > -1 抄成了 c0.on_floor，
@@ -1668,21 +1667,44 @@ class SlugcatBody(CombatTarget):
     def _crawl_turn(self, move_x: int):
         """原版 Player.cs:7518-7535 的 CrawlTurn 每帧力（本作 y↓，符号已翻）。
 
-        匍匐时朝身体反方向移动不是「倒着滑」：胸往下压、髋往后剪，整条身体原地
-        翻过来；翻过来（胸落到髋下方）后上身抬起，动画结束。
+        匍匐时朝身体反方向走**不是「倒着滑」**：胸朝要去的方向甩过去、髋反向剪，
+        整条身体原地翻过来（原版 bodyMode 同时切成 Default）。判据/符号逐个对拍：
+
+            c0.vel.x += flipDirection;  c1.vel.x -= 2*flipDirection
+            还没翻过来（输入方向 ≠ 胸口在髋哪侧）→ c0.vel.y -= 3（压胸）
+                压到 c0 与髋同高 → 结束，再补一下 c0.vel.y -= 1
+            已翻过来 → c0.vel.y += 2（抬上身）
+
+        Unity y↑ → 本作 y↓：速度与不等号一起翻号，「还没翻过来」是
+        ``(move_x > 0) != (c0.x < c1.x)``（x 轴同向，直接照抄）。
+        ``flipDirection`` 是**输入方向**（Player.cs:12113-12116）＝本作的
+        ``self.facing``（walk_to/move_dir 刚写进去的那个）。
+
+        旧实现挂了两道锁，导致这段永远跑不到 / 跑一半被拽回去：
+          ① 触发条件带 `not self.face_lock`，而 CrawlAway 每 tick 都设 face_lock
+             → CrawlTurn 从来没起来过，只剩「减速后倒着滑」；
+          ② 移动循环里的 CRAWL_BACK_DAMP 按 `self.facing` 反着扣速度，face_lock
+             把 facing 钉在威胁那侧 → 后退那一半速度被吃掉，看起来就是平移。
+        现在两道锁都拆了（见 _movement_update 的 Crawl 分支），并加一个帧数上限：
+        就算几何判据一直不满足（贴墙 / 被拽），也不会永远卡在 CrawlTurn 里。
         """
         c0, c1 = self.chunk0, self.chunk1
-        flip = 1.0 if self.facing >= 0 else -1.0
+        # 原版 Player.cs:7520：翻身的这几帧 bodyMode 切成 Default —— 这样下面那段
+        # 「匍匐朝反方向就把速度乘以 CRAWL_BACK_DAMP」不会把髋部的反剪速度吃掉
+        # （那一下正是整条身体翻过来的力；被吃掉就只剩「减速后倒着滑」）。
+        self.bodyMode = "Default"
+        flip = 1.0 if self.facing >= 0 else -1.0     # 原版 flipDirection＝输入方向
         c0.vx += flip
         c1.vx -= 2.0 * flip
-        if (move_x > 0) != (c0.x < c1.x):        # 还没翻过来：继续压胸
+        if (move_x > 0) != (c0.x < c1.x):            # 还没翻过来：继续压胸
             c0.vy += 3.0
-            if c0.y > c1.y - 2.0:
+            if c0.y > c1.y - 2.0:                    # 原版 c0.pos.y < c1.pos.y + 2
                 self.animation = None
                 c0.vy += 1.0
-        else:                                    # 已翻过来：上身抬起
+        else:                                        # 已翻过来：上身抬起
             c0.vy -= 2.0
-        if move_x == 0:
+        self._crawl_turn_left -= 1
+        if move_x == 0 or self._crawl_turn_left <= 0:
             self.animation = None
 
     def _breath_update(self):
