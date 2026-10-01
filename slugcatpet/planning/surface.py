@@ -976,7 +976,18 @@ class SurfaceRoute:
 
         # 缓存必须含**起点 x**：同一几何下从不同位置问同一目标，路线并不一样。
         nav_v = _nav_version(pet)
-        ck = (nav_v, round(hy, 1), round(body.chunk1.x, 1), round(gx, 1), round(gy, 1))
+        # Threat/traffic costs are deliberately dynamic and are evaluated by
+        # NavGraph.route_to().  Do not reuse a route computed before either
+        # field was updated: otherwise a slugcat can keep following a route
+        # that has become dangerous or occupied even though the geometry is
+        # unchanged.
+        win = getattr(pet, "window", None)
+        threat = getattr(win, "threat_field", None)
+        traffic = getattr(win, "traffic_field", None)
+        dynamic_v = (getattr(threat, "tick", None),
+                     getattr(traffic, "tick", None))
+        ck = (nav_v, dynamic_v, round(hy, 1), round(body.chunk1.x, 1),
+              round(gx, 1), round(gy, 1))
         if ck != self._cache_key:
             self._cache = {}
             self._cache_key = ck
