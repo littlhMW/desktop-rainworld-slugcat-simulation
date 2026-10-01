@@ -203,6 +203,8 @@ class HudPanel(QWidget):
             item = self._vbox.takeAt(0)
             w = item.widget()
             if w is not None:
+                # 可见子控件直接解除 parent 会短暂变成独立顶层窗口。
+                w.hide()
                 w.setParent(None)
                 w.deleteLater()
         self._rows = []

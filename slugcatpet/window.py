@@ -7,7 +7,7 @@ import inspect
 import random
 from PySide6.QtWidgets import QApplication, QWidget
 from PySide6.QtCore import Qt, QTimer, QElapsedTimer, QRect, QPoint, QPointF, QRectF
-from PySide6.QtGui import QImage, QPainter, QColor, QGuiApplication, QCursor, QRegion
+from PySide6.QtGui import QImage, QPainter, QColor, QGuiApplication, QCursor, QRegion, QLinearGradient
 
 from ._paths import log_error
 from .behavior import tuning
@@ -48,7 +48,6 @@ SPAWN_GROUND_KINDS = frozenset(("seedcob", "karmaflower"))   # 只长在地面�
 HIDDEN_PLACE_KINDS = frozenset(("scavenger",))
 # 幼崽：不是常规蛞蛓猫（不占蛞蛓猫名额、不进选皮菜单），但仍然是一只会自己行动的实体
 PUP_VARIANT = "slugpup"
-PUP_MAX = 4                   # 场上幼崽上限（都是完整跟踪仿真，别无限长）
 # 自然生成时的落点高度带（占窗口高的比例，y 从上往下算）：
 # 会飞的在中层空域，走地的贴着地面，果实 / 灯 / 黏菌可以挂在半空。
 SPAWN_Y_BAND = {
@@ -367,8 +366,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._mouse_pole_vel = None        # 本 tick 光标位移（PoleClimber 读它判甩落）
         self._mouse_pole_suppress = 0      # 松开鼠标后的静默 tick（期间不当杆）
         self._cursor_half = None           # 光标虚杆半长缓存（逻辑单位）
-        # 光标劫持总开关（托盘右键可关）。关掉只是不许溪流/工匠去抢系统光标，
-        # 指着光标之类的正常工作不受影响。
+        # 鼠标与蛞蝓猫互动总开关（托盘右键可关）。
         self.cursor_hijack_allowed = bool(self._params.get("cursor_hijack", True))
 
         # 自然生成（设置面板「生物列表」勾选的类型）
@@ -513,7 +511,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if not isinstance(saved, list) or not saved:
             return
         from .petunit import PetUnit as _PU
-        for i, state in enumerate(saved[:PUP_MAX]):
+        for i, state in enumerate(saved):
             idx = -1 - i
             init_state = {"energy": state.get("energy", 1.0),
                           "temper": state.get("temper", 0.0),
@@ -586,6 +584,17 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         g = self.mapFromGlobal(QCursor.pos())
         return self.to_logical(g.x(), g.y())
 
+    def set_cursor_hijack_allowed(self, allowed):
+        """托盘开关即时生效，包括抓猫、点击猫和鼠标虚杆。"""
+        self.cursor_hijack_allowed = bool(allowed)
+        if not allowed:
+            self.stop_cursor_hijack()
+            for pet in self.pets:
+                if pet.behavior is not None and pet.behavior.grab.active:
+                    pet.behavior.on_release()
+            self._mouse_pole_tick(None)
+        self._update_passthrough()
+
     # ── 动态穿透 ──
     def _passthrough_want(self, cur) -> bool:
         """这一刻窗口该不该鼠标穿透（纯判定；测试直接调它，不碰 Win32）。
@@ -602,11 +611,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             return True                  # 下延带＝任务栏：任何情况下都不接管
         from .control.mouse import is_over
         active = any(pet.behavior is not None and pet.behavior.grab.active for pet in self.pets)
-        over_body = any(
+        over_body = self.cursor_hijack_allowed and any(
             ((pet.behavior is None) or not pet.behavior.blocks_interaction())
             and is_over(pet.body, pet.gfx, cur, pad=6.0)
             for pet in self.pets)
-        storm_capture = (bool(getattr(self.storm, "active", False))
+        storm_capture = (self.cursor_hijack_allowed
+                         and bool(getattr(self.storm, "active", False))
                          and bool(self.storm_block_clicks))
         dragging_fruit = self._dragged_fruit is not None
         over_fruit = self._fruit_at(cur) is not None
@@ -1141,7 +1151,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # 空闲下来、光标还在窗口内就照旧出现。
         busy = (self._mouse_pole_suppress > 0 or self._place_mode
                 or self._mouse_pole_busy())
-        on = (self._mouse_pole_on and not busy and self._cursor_play_active()
+        on = (self.cursor_hijack_allowed and self._mouse_pole_on
+              and not busy and self._cursor_play_active()
               and cx is not None
               and 0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL)
         if not on:
@@ -1725,11 +1736,13 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         """
         n = 0
         for pet in list(self.pets):
-            if getattr(pet, "is_pup", False) and self.remove_pup(pet):
+            if getattr(pet, "is_pup", False) and self._remove_pet(pet, notify=False):
                 n += 1
+        if n:
+            self._after_pets_changed()
         return n
 
-    def _remove_pet(self, pet):
+    def _remove_pet(self, pet, notify=True):
         """真正的卸载流程（守卫由 remove_pet / remove_pup 各自决定）。"""
         if getattr(pet, "controlled", False):
             self.stop_control()               # 先退出控制再移除
@@ -1742,7 +1755,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                 pass
         self.pets.remove(pet)
         self._prev_dirty = None
-        self._after_pets_changed()
+        if notify:
+            self._after_pets_changed()
         return True
 
     def _drop_carried(self, pet):
@@ -1963,18 +1977,30 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         bleed = 24.0
         poly.append(QPointF(WL + bleed, bottom + bleed))
         poly.append(QPointF(-bleed, bottom + bleed))
+        # Water.cs:875-890 用 WaterSurface + DeepWater 两层 mesh。桌面透明窗里以
+        # 同一波面多段渐变模拟浅表层到深水的层次，不复制原版 shader / 贴图。
+        storm_flood = float(getattr(self.rain, "flood", 0.0)) if not self.water_on else 0.0
+        depth = QLinearGradient(0.0, base - 2.0, 0.0, max(base + 1.0, bottom))
+        depth.setColorAt(0.0, QColor(93, 151, 170, 85 + int(25 * storm_flood)))
+        depth.setColorAt(0.28, QColor(46, 105, 128, 102 + int(24 * storm_flood)))
+        depth.setColorAt(1.0, QColor(12, 31, 46, 145 + int(35 * storm_flood)))
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(*tuning.WATER_BODY_RGBA))
+        p.setBrush(depth)
         p.drawPolygon(poly)
         if self.bubbles:
             self._draw_bubbles(p)
-        # 一次性画折线，防重叠叠 alpha
-        pen = QPen(QColor(*tuning.WATER_SURFACE_RGBA))
-        pen.setWidthF(2.0)
-        p.setPen(pen)
+        # WaterSurface 的水面在原版是亮边加一条半透过渡带；两条线共用波形，
+        # 避免每个线段各自叠 alpha 造成接缝。
         line = QPolygonF()
         for x, y in pts:
             line.append(QPointF(x, y))
+        pen = QPen(QColor(65, 113, 134, 110 + int(30 * storm_flood)))
+        pen.setWidthF(5.0)
+        p.setPen(pen)
+        p.drawPolyline(line)
+        pen = QPen(QColor(177, 219, 224, 160 + int(48 * storm_flood)))
+        pen.setWidthF(1.45)
+        p.setPen(pen)
         p.drawPolyline(line)
         p.restore()
 
@@ -2245,11 +2271,13 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             return
         if not self.pets:
             return
+        # 关闭鼠标互动时，不再右键点猫、左键抓猫，也不对猫执行暴雨点杀。
+        cats_interactive = self.cursor_hijack_allowed
         if e.button() == Qt.MouseButton.RightButton:
             # 右键命中区同左键抓取
             pos = self.to_logical(e.position().x(), e.position().y())
             from .control.mouse import hit_test, GRAB_PAD
-            for pet in self.pets:
+            for pet in self.pets if cats_interactive else ():
                 if pet.behavior is not None and pet.behavior.blocks_interaction():
                     continue
                 name, _ = hit_test(pet.body, pet.gfx, pos, pad=GRAB_PAD)
@@ -2259,10 +2287,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             return
         if e.button() == Qt.MouseButton.LeftButton:
             pos = self.to_logical(e.position().x(), e.position().y())
-            if self._storm_kill_click(pos):
+            if cats_interactive and self._storm_kill_click(pos):
                 return
             grabbed = False
-            for pet in self.pets:
+            for pet in self.pets if cats_interactive else ():
                 if getattr(pet, "controlled", False):
                     continue        # 受控猫禁左键抓取
                 if pet.behavior is not None and pet.behavior.on_press(pos):

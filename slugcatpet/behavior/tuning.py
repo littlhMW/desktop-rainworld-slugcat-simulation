@@ -664,7 +664,7 @@ PLAN_JUMP_TAKEOFF_EPS = 6.0
 PLAY_JUMP_DY_MAX = 118.0       # 目标高出起跳点超过这么多：不再生成玩耍跳，老老实实追
 PLAY_JUMP_STANDOFF = 26.0      # 起跳点从目标 x 往回退这么远（别站到目标正下方才起跳）
 PLAY_JUMP_BONUS = 26.0         # 排序加成（tick 当量）：玩耍跳别被别的方案永远压掉
-PLAY_JUMP_P = 0.35             # 进了玩耍窗口也不是每次都跳
+PLAY_JUMP_P = 0.10             # 娱乐性跳跃只偶尔触发
 JUMP_TRAVEL_LAND_PAD = 30.0    # TravelJump：落点离目标横距超过它 = 没跳到地方
 BACKFLIP_PLAY_P = 0.35         # 性格驱动后空翻：爱翻的猫「走得过去也翻」的概率上限
 

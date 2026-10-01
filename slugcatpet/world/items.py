@@ -2002,8 +2002,9 @@ class ItemInteractionMixin:
     def _pup_next_index(self) -> int:
         """下一个要放的幼崽编号（最低空位）：预览和真正生成共用同一个。"""
         used = {p.index for p in self.pets}
+        used_ids = {p.id for p in self.pets}
         k = 0
-        while k in used:
+        while k in used or f"pup-{k}" in used_ids:
             k += 1
         return k
 
@@ -2068,8 +2069,7 @@ class ItemInteractionMixin:
 
     # ── 幼崽（Slugpup）：不是常规蛞蝓猫，从「生物生成」里放 ──
     def can_place_slugpup(self) -> bool:
-        from ..window import PUP_MAX
-        return sum(1 for p in self.pets if getattr(p, "is_pup", False)) < PUP_MAX
+        return True
 
     def place_slugpup(self, lx, ly):
         """放一只幼崽：会自己行动，但不占蛞蝓猫名额、不参与救援、也不被救援。"""
@@ -2078,7 +2078,7 @@ class ItemInteractionMixin:
         if not self.can_place_slugpup():
             return None
         k = getattr(self, "_pup_pending", None)
-        if k is None or any(p.index == k for p in self.pets):
+        if k is None or any(p.index == k or p.id == f"pup-{k}" for p in self.pets):
             k = self._pup_next_index()           # 预留编号被占用了就重挑
         self._pup_pending = None
         self._pup_preview = None

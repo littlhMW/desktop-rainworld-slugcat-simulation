@@ -30,8 +30,10 @@ _POLE_EDGE = QColor(20, 22, 26)
 _POLE_SHEEN = QColor(104, 112, 126)
 _POLE_CORE = QColor(40, 42, 47)
 _POLE_TILE = QColor(255, 255, 255, 12)
-_POLE_ICON = QColor(58, 34, 76)       # 杆子图标：紫黑色细线
-_WALL_ICON = QColor(104, 108, 102)    # 墙壁图标：灰石粗条
+_TOOL_BG = QColor(35, 39, 43, 150)
+_TOOL_EDGE = QColor(188, 198, 184, 170)
+_POLE_ICON = QColor(212, 220, 207)    # 工具图标统一使用浅灰绿线稿
+_WALL_ICON = QColor(150, 161, 151)
 _ICON_SAINT = QColor(*_SAINT.body_color)
 _ICON_EYE = QColor(*_SAINT.eye_color)
 _ICON_AMBER = QColor(233, 203, 138)
@@ -258,28 +260,45 @@ def _paint_symbol_icon(p, kind, r, atlas=None) -> bool:
 
 
 def _paint_pole_cross_icon(p, r):
-    """杆子图标（用户口径）：紫黑色细横线 + 细竖线组成的十字。
+    """杆子图标：同一套圆角工具底板上的横竖杆线稿。
 
     杆子就是「可攀爬的细线」，所以横竖两根细线画在一起 —— 同一个入口
     横拉出横杆、竖拉出竖杆（见 items.enter_place_pole_mode）。
     """
     w = r.width()
     cx, cy = r.center().x(), r.center().y()
-    pen = QPen(_POLE_ICON, max(1.6, w * 0.085))
-    pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+    p.setPen(_pen(_TOOL_EDGE, max(1.0, w * 0.045)))
+    p.setBrush(_TOOL_BG)
+    p.drawRoundedRect(r, w * 0.16, w * 0.16)
+    pen = _pen(_POLE_ICON, max(1.8, w * 0.09))
     p.setPen(pen)
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    p.drawLine(QPointF(r.left(), cy), QPointF(r.right(), cy))     # 细横线
-    p.drawLine(QPointF(cx, r.top()), QPointF(cx, r.bottom()))     # 细竖线
+    p.drawLine(QPointF(r.left() + w * .17, cy), QPointF(r.right() - w * .17, cy))
+    p.drawLine(QPointF(cx, r.top() + w * .17), QPointF(cx, r.bottom() - w * .17))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(_POLE_ICON)
+    rr = max(1.4, w * .065)
+    for pt in ((r.left() + w * .17, cy), (r.right() - w * .17, cy),
+               (cx, r.top() + w * .17), (cx, r.bottom() - w * .17)):
+        p.drawEllipse(QPointF(*pt), rr, rr)
 
 
 def _paint_wall_icon(p, r):
-    """墙壁图标（用户口径）：一条粗横线。"""
-    th = max(3.0, r.height() * 0.30)
-    cy = r.center().y()
+    """墙壁图标：统一工具底板上的两层砖墙线稿。"""
+    w, h = r.width(), r.height()
+    p.setPen(_pen(_TOOL_EDGE, max(1.0, w * .045)))
+    p.setBrush(_TOOL_BG)
+    p.drawRoundedRect(r, w * .16, w * .16)
+    inset = w * .17
+    body = r.adjusted(inset, inset, -inset, -inset)
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(_WALL_ICON)
-    p.drawRect(QRectF(r.left(), cy - th * 0.5, r.width(), th))
+    p.drawRoundedRect(body, w * .06, w * .06)
+    # 原版房间地形是 tile 砖面；两条低对比切缝能在小尺寸下稳定识别为墙。
+    p.setPen(_pen(QColor(57, 65, 61, 170), max(1.0, w * .04)))
+    p.drawLine(QPointF(body.left(), body.center().y()), QPointF(body.right(), body.center().y()))
+    p.drawLine(QPointF(body.center().x(), body.top()), QPointF(body.center().x(), body.center().y()))
+    p.drawLine(QPointF(body.left() + body.width() * .24, body.center().y()),
+               QPointF(body.left() + body.width() * .24, body.bottom()))
 
 
 def _paint_place_icon(p, kind, r, atlas=None):
@@ -370,15 +389,20 @@ def _paint_place_icon(p, kind, r, atlas=None):
     elif kind == "karmaflower":
         _paint_karmaflower_icon(p, r)
     elif kind == "erase":
-        # 橡皮：右下角一个小物件轮廓 + 压在上面的红叉
-        d = min(w, h) * 0.52
-        obj = QRectF(0, 0, d, d)
-        obj.moveCenter(QPointF(cx - w * 0.10, cy + h * 0.10))
-        p.setPen(_pen(_ICON_GREY, max(1.4, w * 0.09)))
+        # 删除模式使用与杆/墙相同的底板，红色斜杠只作为语义强调。
+        p.setPen(_pen(_TOOL_EDGE, max(1.0, w * .045)))
+        p.setBrush(_TOOL_BG)
+        p.drawRoundedRect(r, w * .16, w * .16)
+        d = min(w, h) * 0.46
+        obj = QRectF(0, 0, d, d * .72)
+        obj.moveCenter(QPointF(cx - w * .08, cy + h * .08))
+        p.setPen(_pen(_ICON_GREY, max(1.4, w * 0.07)))
         p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawEllipse(obj)
-        p.setPen(_pen(_ICON_RED, max(2.2, w * 0.16)))
-        q = min(w, h) * 0.34
+        p.drawRoundedRect(obj, d * .15, d * .15)
+        p.drawLine(QPointF(obj.left() - d * .08, obj.top() - d * .10),
+                   QPointF(obj.right() + d * .08, obj.top() - d * .10))
+        p.setPen(_pen(_ICON_RED, max(2.2, w * 0.13)))
+        q = min(w, h) * 0.30
         p.drawLine(QPointF(cx - q, cy - q), QPointF(cx + q, cy + q))
         p.drawLine(QPointF(cx + q, cy - q), QPointF(cx - q, cy + q))
     elif kind == "shelter":

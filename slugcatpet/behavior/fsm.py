@@ -167,8 +167,9 @@ THROW_JUMP_DY = 12.0      # 目标高出这么多 → 先起跳再水平投（�
 JUMPCUR_DY = 52.0         # 追鼠标：高度差在这以内才值得跳着够（更高的看 Planner 的玩耍跳候选）
 PLAY_JUMP_P = tuning.PLAY_JUMP_P   # 娱乐性跳（够不到也跳一下）的概率（测试可改 fsm.PLAY_JUMP_P）
 JUMPCUR_R = 130.0         # 追鼠标：水平距离上限
-JUMPCUR_CD = 24
-JUMPCUR_P = 0.6
+JUMPCUR_CD = 80
+JUMPCUR_RETRY_CD = 20
+JUMPCUR_P = 0.24
 HPOLE_NEAR_Y = 20.0
 HPOLE_REACH_FRAC = 0.85
 HPOLE_GRAB_REACH = 0.60
@@ -6894,6 +6895,7 @@ class BehaviorFSM:
         p = clampf((PLAY_JUMP_P if play else JUMPCUR_P) * (0.75 + 0.7 * activity),
                    0.0, 0.95)
         if self.rng.random() >= p:
+            self._cursor_jump_cd = JUMPCUR_RETRY_CD
             return False
         b.move_dir = md
         b.request_jump("stand", hold_ticks=hold)

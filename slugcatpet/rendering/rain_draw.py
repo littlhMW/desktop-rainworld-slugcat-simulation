@@ -173,6 +173,15 @@ def draw_rain_over(p, rain, shelters, WL, HL, shake=(0.0, 0.0)):
                     QPointF(d.x, d.y),
                     QPointF(d.x + length * (0.08 + 0.045 * i), d.y + length),
                 )
+                # RoomRain.cs:343-351 的 bulletDrips 是暴雨阶段少量更重的近景雨柱。
+                # 用既有固定雨滴池选样，不在 paintEvent 里新建粒子。
+                if i > 0.62 and d.seed % 13 == 0:
+                    force = (i - 0.62) / 0.38
+                    p.setPen(QPen(QColor(205, 220, 228, int(34 + 58 * force)),
+                                  1.7 + 0.8 * force))
+                    p.drawLine(QPointF(d.x - 1.5, d.y - length * 0.55),
+                               QPointF(d.x + length * 0.12,
+                                       d.y + length * (0.90 + 0.55 * force)))
 
         # 第一滴重雨：聚焦的落点，不再用整屏闪白。
         if flash > 0 and getattr(rain, "impact_xy", None) is not None:

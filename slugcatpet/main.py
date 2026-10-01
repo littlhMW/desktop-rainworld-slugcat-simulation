@@ -18,7 +18,7 @@ from .ui.hud import HudPanel
 from .ui.settings import SettingsWindow
 from .control.hotkey import HotkeyFilter, MOD_CONTROL, MOD_ALT, HK_PLACE_ESC
 from .platform import cursorfx
-from ._paths import user_dir
+from ._paths import user_dir, resource_dir
 from .i18n import t
 
 VK_Q = 0x51
@@ -33,6 +33,11 @@ AUTOSAVE_MS = 60_000
 
 
 def _tray_icon() -> QIcon:
+    icon_file = resource_dir() / "icons" / "app_icon.png"
+    if icon_file.is_file():
+        icon = QIcon(str(icon_file))
+        if not icon.isNull():
+            return icon
     pm = QPixmap(32, 32)
     pm.fill(QColor(0, 0, 0, 0))
     p = QPainter(pm)
@@ -117,6 +122,7 @@ def _ensure_assets_interactive() -> bool:
 
 def main():
     app = QApplication(sys.argv)
+    app.setWindowIcon(_tray_icon())
     app.setQuitOnLastWindowClosed(False)
 
     from .platform.singleton import SingleInstance
@@ -196,11 +202,10 @@ def main():
     act_hijack.setChecked(bool(pet.cursor_hijack_allowed))
 
     def _toggle_hijack(checked):
-        pet.cursor_hijack_allowed = bool(checked)
+        pet.set_cursor_hijack_allowed(bool(checked))
         params["cursor_hijack"] = bool(checked)
         if not checked:
             cursorfx.abort_all()
-            pet.stop_cursor_hijack()
 
     act_hijack.toggled.connect(_toggle_hijack)
     menu.addAction(act_settings)

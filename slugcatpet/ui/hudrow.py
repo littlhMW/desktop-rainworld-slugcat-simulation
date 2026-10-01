@@ -112,6 +112,7 @@ class PetRow(QFrame):
 
         self.name = QLabel()
         self.name.setObjectName("hudRowName")
+        self.name.setWordWrap(True)
         grid.addWidget(self.name, 0, 0, 1, 3)
 
         self.karma_icon = QLabel()
@@ -159,13 +160,11 @@ class PetRow(QFrame):
         pets = list(getattr(self.pet.window, "pets", [self.pet]))
         beh = getattr(self.pet, "behavior", None)
         label = pet_label(self.pet, pets)
-        doing, target = status_pair(beh, pets) if beh is not None else ("", "")
-        text = label
-        if doing and doing != "—":                 # 正在干嘛
-            text = f"{label}  ·  {doing}"
-            if target:                             # 目标是什么
-                text = f"{text}  →  {target}"
-        self.name.setText(text)
+        doing, goal = status_pair(beh, pets) if beh is not None else ("", "")
+        lines = [f"{label}  ·  {doing}" if doing else label]
+        if goal:
+            lines.append(f"{t('hud_target')}：{goal}")
+        self.name.setText("\n".join(lines))
         body = self.pet.body
 
         k = int(body.karma)
