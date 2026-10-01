@@ -130,6 +130,8 @@ SHOT_INTENT_TICKS = 34          # 攻击意图存活 tick：起手到出手那�
 SHOT_DODGE_TICKS = 30           # 被瞄准者一次避让持续 tick
 SHOT_DODGE_DX = 54.0            # 避让侧移距离（先侧移，其次退开）
 SHOT_DODGE_R = 16.0             # 弹道离我这么近才值得躲
+SHOT_DODGE_MIN_DX = 27.0        # 扣掉窗口夹取后至少还走得动这么多，否则换另一侧
+SHOT_DODGE_DONE_R = 6.0         # 侧移误差进这个范围就算躲完（不必耗满 tick）
 _DODGE_FROM = frozenset(("IdleStand", "PostThrowWander", "PostThrowStand", "MakeWay"))
 
 # 零重力漂浮 idle
@@ -474,7 +476,9 @@ class BehaviorFSM:
         self._shot_clock = 0             # 单调 tick：意图过期 / 避让计时都拿它比
         self._dodge_left = 0             # 本次避让还剩几 tick
         self._dodge_cd = 0               # 避让后的短暂冷却（别原地抽搐）
-        self._dodge_from = None          # 正被谁的弹道指着（状态面板第二段用）
+        self._dodge_from = None          # 锁定的射手（进入 DodgeShot 时定下；状态面板第二段用）
+        self._dodge_dir = 0              # 锁定的避让方向（±1）：进入时算一次，中途不再重选
+        self._dodge_target_x = None      # 锁定的走位目标 x：进入时算一次，不再是「当前 x ± DX」
         # 动态关系表 + 事件游标：关系由事件驱动、每 tick 衰减（behavior/relationship.py）
         self._rel = relations_for(self.win)
         self._ev_seen = -1                # 事件总线游标（事件序号，不是 tick）
@@ -1191,28 +1195,42 @@ class BehaviorFSM:
         return self._threat_shot_at_me() is not None
 
     def _act_dodgeshot(self, ctx):
+        """进入避让：只在这里选一次边、算一次目标点，之后整段侧移都按这个走。"""
         o = self._threat_shot_at_me()
         if o is None:
             return False
+        it = self._live_intent(o)
+        if it is None:
+            return False
+        side, tx = self._dodge_plan(it)
+        if tx is None:
+            return False                 # 贴着窗口边、两边都被夹回原地：没有可躲的位移
         self._dodge_from = o
+        self._dodge_dir = side
+        self._dodge_target_x = tx
         self._transition("DodgeShot")
         return True
 
     def _st_dodgeshot(self, cursor, disturbed):
-        """躲弹道：优先横向让开（让射手那条线重新清出来），其次退开。"""
+        """躲弹道：走完进入时锁定的那一侧。
+
+        方向与目标点都在起手时定死（``_dodge_plan``）。旧实现每 tick 重算「离弹道更远的一侧」，
+        并把目标点放到「当前位置 ± DX」——移动本身又改变下一帧的左右判断，于是左右抽搐。
+        这里只剩「按锁定的目标走」：不重新找射手、不重新选边，``_dodge_left`` 是动作上限。
+        """
         b = self.body
         self._dodge_left -= 1
-        o = self._threat_shot_at_me()
-        it = self._live_intent(o) if o is not None else None
-        if self._dodge_left <= 0 or it is None:
+        tx = self._dodge_target_x
+        if self._dodge_left <= 0 or tx is None or abs(b.chunk1.x - tx) <= SHOT_DODGE_DONE_R:
             b.stop_walk()
             self._dodge_from = None
+            self._dodge_dir = 0
+            self._dodge_target_x = None
             self._dodge_cd = SHOT_DODGE_TICKS
             self._transition("IdleStand")
             return
         b.set_posture(True)
-        side = self._dodge_side(it)
-        b.walk_to(b.chunk1.x + side * SHOT_DODGE_DX)
+        b.walk_to(tx)
 
     def _act_dragged_pre(self, ctx):
         self.grab.tick()
@@ -7927,6 +7945,19 @@ class BehaviorFSM:
         if abs(g_r - g_l) < 1.0:
             return 1 if me.x >= float(it["ox"]) else -1
         return 1 if g_r > g_l else -1
+
+    def _dodge_plan(self, it):
+        """起手算一次：(方向, 目标 x)。被窗口夹回原地就换另一侧；两侧都走不动 → (side, None)。"""
+        me = self.body.chunk1
+        lo, hi = WALL_MARGIN, self.WL - WALL_MARGIN
+        first = self._dodge_side(it)
+        if hi > lo:
+            for side in (first, -first):
+                tx = clampf(me.x + side * SHOT_DODGE_DX, lo, hi)
+                # 夹取只许缩短这一段：身体本来就在带外时（窗口刚收缩），别把目标丢到身后
+                if (tx - me.x) * side > 0.0 and abs(tx - me.x) >= SHOT_DODGE_MIN_DX:
+                    return side, tx
+        return first, None
 
     def _launch_weapon(self, dir_x, tgt=None, sol=None) -> bool:
         """按原版水平掷出手里的矛/石头（不做高度判断，由调用方负责对准）。
