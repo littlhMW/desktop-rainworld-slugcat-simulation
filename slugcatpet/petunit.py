@@ -67,6 +67,7 @@ class PetUnit:
         self.is_pup = (variant == PUP_VARIANT)   # 幼崽：不是常规蛞蛓猫
         self.cat = get_cat_def(variant)     # 种族定义
         self._pup_visual = None
+        self._spawn_floor_hold = 0
         if self.is_pup:
             # 体色、瞳色、Size、Wideness 共用同一套稳定 ID 种子，按 Rain World
             # NPCStats 的生成顺序计算，而不是另起一套 Python 随机色板。
@@ -161,6 +162,8 @@ class PetUnit:
             for chunk in (self.body.chunk0, self.body.chunk1):
                 chunk.cx = chunk.cy = chunk.lcx = chunk.lcy = 0
                 chunk.support_y = None
+            if self.is_pup and float(spawn_y) >= self.body.H - self.body.chunk1.rad - 0.5:
+                self._spawn_floor_hold = 2
             self.gfx.translate_pose(dx, dy)
         # 尾巴/舌头（caps.tongue 关则不建）
         ax, ay = self.gfx.tail_root_world()
@@ -304,6 +307,16 @@ class PetUnit:
             self.tongue.room_gravity = rg
 
         b.step()
+        if self._spawn_floor_hold > 0 and not b.on_pole and not b.wall_side:
+            # 地板放置的幼崽首帧保持脚底接触，避免构造器的旧地板姿势在
+            # 新位置产生一次可见的反弹；高处生成仍完整自由落体。
+            floor = b._floor_h
+            b.chunk1.y = floor - b.chunk1.rad
+            b.chunk1.vy = 0.0
+            b.chunk1.support_y = floor
+            b.chunk1.cy = 1
+            b.chunk0.vy = 0.0
+            self._spawn_floor_hold -= 1
         self._cold_update(cycle_prog)
         g.update()
         b.sync_carried_to_hands()   # 手位刚写回：物同帧对齐（不许差一帧）
