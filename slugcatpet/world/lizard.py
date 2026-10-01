@@ -246,6 +246,7 @@ TONGUE_LASH_K = 0.25           # 上式里距离插值的幅度
 TONGUE_DOT_MIN = 0.3           # 目标与体前轴的点积门槛：≤ 它舌头根本不出（原版 LashOut 直接 return）
 TONGUE_RECOIL = 0.55           # 射舌反作用：后节 vel -= 方向 × 出手速度（原版 bodyChunks[1]）
 TONGUE_DRAG = 1.5              # 舌外伸期间每 tick：头被拽向舌尖、后节反向（原版 Update 里的 ±4）
+TONGUE_TERRAIN_PULL = 0.75     # 舌尖粘住地形时，把头往锚点拖（LizardTongue.TerrainDrag）
 BODY_JUMP_TAIL = 0.06          # PrepareToJump：尾节逐节冲量（越往后越强）
 BODY_JUMP_WOBBLE = 1.6         # PrepareToJump：尾巴垂直方向 ± 交替甩动
 WALL_LEAN = 0.35               # 爬墙时前节朝爬行方向、后节反向拉开（身体贴墙而不是被提着）
@@ -3982,6 +3983,11 @@ class Lizard(CombatTarget):
         if px is None:
             return False
         mx, my = self._mouth_point()
+        # 原版 LizardTongue.LashOut 会把目标抬高 5% 的射程，避免舌头
+        # 总是打到目标脚下（LizardTongue.cs:519）。
+        raw_dx, raw_dy = px - mx, py - my
+        raw_d = math.hypot(raw_dx, raw_dy)
+        py += raw_d * 0.05
         dx, dy = px - mx, py - my
         d = math.hypot(dx, dy)
         if d <= 1e-6:
@@ -4085,6 +4091,25 @@ class Lizard(CombatTarget):
         if st == "out":
             self.tongue_len += self.tongue_speed
             tip = (mx + dx * self.tongue_len, my + dy * self.tongue_len)
+            # 原版舌尖逐 tick 扫掠地形；撞到实体墙后停在最后一个空气点，
+            # 进入 StuckInTerrain，而不是穿墙继续追目标（LizardTongue.cs:370-440）。
+            prev = self.tongue_tip
+            hit = None
+            for i in range(1, 9):
+                q = (prev[0] + (tip[0] - prev[0]) * i / 8.0,
+                     prev[1] + (tip[1] - prev[1]) * i / 8.0)
+                if any(a0 <= q[0] <= a1 and b0 <= q[1] <= b1
+                       for a0, b0, a1, b1 in chunkphys.cat_solids()):
+                    hit = i
+                    break
+            if hit is not None:
+                frac = max(0.0, (hit - 1) / 8.0)
+                tip = (prev[0] + (tip[0] - prev[0]) * frac,
+                       prev[1] + (tip[1] - prev[1]) * frac)
+                self.tongue_tip = tip
+                self.tongue_state = "terrain"
+                self.tongue_len = math.hypot(tip[0] - mx, tip[1] - my)
+                return
             # 射程到头（原版 tongueRange）→ 收回
             if self.tongue_len >= self.breed.tongue_range:
                 self.tongue_len = self.breed.tongue_range
@@ -4097,6 +4122,20 @@ class Lizard(CombatTarget):
                 self.tongue_grab = o          # 舌尖碰到：原版 Grab
                 self.tongue_state = "hold"
             self.tongue_tip = tip
+            return
+        if st == "terrain":
+            # StuckInTerrain：舌尖固定，身体沿舌方向受地形拖拽；靠近锚点后收回。
+            tipx, tipy = self.tongue_tip
+            dx0, dy0 = tipx - mx, tipy - my
+            d0 = math.hypot(dx0, dy0)
+            if d0 <= TONGUE_MOUTH_R:
+                self.tongue_state = "back"
+                return
+            if d0 > 1e-6:
+                ux, uy = dx0 / d0, dy0 / d0
+                self.vx += ux * TONGUE_TERRAIN_PULL
+                self.vy += uy * TONGUE_TERRAIN_PULL
+                self.tongue_len = d0
             return
         if st == "hold":
             o = self.tongue_grab
