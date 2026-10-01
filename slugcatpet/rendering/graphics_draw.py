@@ -635,18 +635,17 @@ class GraphicsDrawMixin:
         self._draw_face_scar(p, atlas, element, fx, fy, rot)   # 疤在脸下、头上
         blit(p, atlas, element, fx, fy, rot, sx, 1.0, face_color, ax=0.5, ay=0.5)
         if getattr(self, "meow_t", 0) > 0 and not self.dead:
-            # 短暂的呼声弧线只随实际发声出现；抓住但没叫时不改脸。
+            # 两道呼声弧线共用圆心，保持同心且不随猫的眼睛配色变化。
             a = int(180 * min(1.0, self.meow_t / 7.0))
             side = 1.0 if sx >= 0 else -1.0
             p.save()
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.setPen(QPen(QColor(*self.EYE, a), pen_width(1.2)))
-            for i in (0, 1):
-                rr = 7.0 + 5.0 * i
-                cx = fx + side * (7.0 + 4.0 * i)
-                p.drawArc(QRectF(cx - rr * 0.5, fy - rr * 0.75,
-                                 rr, rr), 300 * 16 if side > 0 else 60 * 16,
-                          120 * 16)
+            p.setPen(QPen(QColor(58, 61, 63, a), pen_width(1.2)))
+            cx, cy = fx + side * 4.0, fy + 1.0
+            for radius in (7.5, 11.5):
+                p.drawArc(QRectF(cx - radius, cy - radius,
+                                 radius * 2.0, radius * 2.0),
+                          (320 if side > 0 else 140) * 16, 80 * 16)
             p.restore()
 
     def _draw_face_scar(self, p, atlas, element, fx, fy, rot):

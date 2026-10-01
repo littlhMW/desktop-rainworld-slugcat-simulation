@@ -5173,7 +5173,10 @@ class BehaviorFSM:
             self._hibernating = False
             self._transition("IdleStand")     # 被挪出安全区：先回去，Storm* 会接上
             return
-        if not self.win.storm_active or self.timer >= self._shelter_sleep_left:
+        # 环境面板手动暴雨没有倒计时：猫留在庇护所直到用户切换环境。
+        # 自动雨循环仍按原版雨眠时长醒来，随后由 StormSeekShelter 决定下一步。
+        manual_storm = bool(getattr(getattr(self.win, "storm", None), "manual", False))
+        if not self.win.storm_active or (not manual_storm and self.timer >= self._shelter_sleep_left):
             self._hibernating = False
             self._transition("WakeSequence")  # 复用现有起床动画
 

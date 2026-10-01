@@ -4,6 +4,7 @@ import os
 import sys
 _DEBUG_SEEDED = False
 import inspect
+import math
 import random
 from PySide6.QtWidgets import QApplication, QWidget
 from PySide6.QtCore import Qt, QTimer, QElapsedTimer, QRect, QPoint, QPointF, QRectF
@@ -668,6 +669,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
     _MAX_TICKS = 4             # 防时间螺旋
     _MAX_DT = 0.1
     _INT_FAST = 25           # ms
+    # 暴雨绘制层是固定屏幕空间的整窗重绘；限制它到约 30 FPS，避免高 DPI
+    # 下雨线/遮罩把 UI 线程占满。物理累加器仍独立按 40 Hz 推进，不改变 AI、
+    # 碰撞或存档时间尺度。
+    _INT_WEATHER = 34
     _INT_SLOW = 66
     _MOTION_STILL = 1.2
     MAX_FRUITS = 3
@@ -812,7 +817,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         grabbing = any(pet.behavior is not None and pet.behavior.grab.active for pet in self.pets)
         active = (self._fx_active or dragging or grabbing or self.isActiveWindow()
                   or self._scene_moving())
-        want_iv = self._INT_FAST if active else self._INT_SLOW
+        # Storm rain is the one persistent full-window effect. Keep interaction
+        # responsive at the normal 40 FPS when dragging/grabbing, otherwise
+        # cap only paint scheduling near 30 FPS; _advance() still catches up
+        # physics at _PHYS_DT=1/40 and _MAX_TICKS remains the spiral guard.
+        weather_only = bool(self.rain.active and not dragging and not grabbing)
+        want_iv = self._INT_WEATHER if weather_only else (self._INT_FAST if active else self._INT_SLOW)
         if self.anim.interval() != want_iv:
             # Precise 保平滑，Coarse 省功耗
             self.anim.stop()
@@ -1424,10 +1434,18 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             return
         surf.base_y = self.water_y
         if moving:                                   # 注满/排空搅面
-            if self.water_on:
+            if target < surf.base_y:                # 暴雨积水同样属于注水
                 surf.waterfall_hit(0.0, self._WL, tuning.WATER_FLOW)
             else:
                 surf.drain_affect(0.0, self._WL, tuning.WATER_FLOW)
+        # 原版 Water.Surface 在持续落雨时不断 upset 水面。稀疏、固定节拍的
+        # 冲击让洪水有可见的波纹，同时不在每帧为每滴雨分配新粒子。
+        if self.rain.intensity > 0.25 and self.rain._t % 5 == 0:
+            x = self._storm_rng.uniform(0.0, self._WL)
+            surf.splash(x, -1.2 - 2.0 * self.rain.intensity)
+            if self.rain._t % 15 == 0 and len(surf._rings) < 8:
+                surf.ripple_ring(x, rad=2.0, speed=3.0, width=20.0,
+                                 life_time=12.0, intensity=0.35)
         surf.step()
         for o in (*self.fruits, *self.seeds, *self.stones, *self.slimemolds,
                   *self.batflies, *self.lizards, *self.squidcadas, *self.pearls,
@@ -1948,7 +1966,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
     def _draw_water(self, p):
         """绘制水体与水面高光。庇护所安全区挖洞 —— 里面不进积水。"""
-        from PySide6.QtGui import QPolygonF, QPen
+        from PySide6.QtGui import QPolygonF, QPen, QPainterPath
         p.save()
         shs = self.shelters or ()
         if shs:
@@ -1981,9 +1999,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # 同一波面多段渐变模拟浅表层到深水的层次，不复制原版 shader / 贴图。
         storm_flood = float(getattr(self.rain, "flood", 0.0)) if not self.water_on else 0.0
         depth = QLinearGradient(0.0, base - 2.0, 0.0, max(base + 1.0, bottom))
-        depth.setColorAt(0.0, QColor(93, 151, 170, 85 + int(25 * storm_flood)))
-        depth.setColorAt(0.28, QColor(46, 105, 128, 102 + int(24 * storm_flood)))
-        depth.setColorAt(1.0, QColor(12, 31, 46, 145 + int(35 * storm_flood)))
+        # Water.cs uses a thin WaterSurface mesh in front of an almost black
+        # DeepWater mesh. The original flood GIF has grey-purple reflected
+        # room light, not a luminous blue pool.
+        depth.setColorAt(0.0, QColor(63, 61, 75, 105 + int(26 * storm_flood)))
+        depth.setColorAt(0.16, QColor(31, 30, 40, 155 + int(27 * storm_flood)))
+        depth.setColorAt(1.0, QColor(9, 9, 16, 209 + int(22 * storm_flood)))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(depth)
         p.drawPolygon(poly)
@@ -1994,14 +2015,53 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         line = QPolygonF()
         for x, y in pts:
             line.append(QPointF(x, y))
-        pen = QPen(QColor(65, 113, 134, 110 + int(30 * storm_flood)))
-        pen.setWidthF(5.0)
+        pen = QPen(QColor(61, 59, 70, 124 + int(22 * storm_flood)))
+        pen.setWidthF(2.6)
         p.setPen(pen)
         p.drawPolyline(line)
-        pen = QPen(QColor(177, 219, 224, 160 + int(48 * storm_flood)))
-        pen.setWidthF(1.45)
+        pen = QPen(QColor(160, 157, 171, 106 + int(34 * storm_flood)))
+        pen.setWidthF(0.85)
         p.setPen(pen)
         p.drawPolyline(line)
+
+        # Rain World's WaterSurface shader adds shallow refraction above the
+        # dark DeepWater mesh. In this transparent window only the submerged
+        # layer can be approximated; two faint, short-lived caustics are enough.
+        clip = QPainterPath()
+        clip.moveTo(QPointF(pts[0][0], pts[0][1]))
+        for x, y in pts[1:]:
+            clip.lineTo(QPointF(x, y))
+        clip.lineTo(QPointF(WL + bleed, bottom + bleed))
+        clip.lineTo(QPointF(-bleed, bottom + bleed))
+        clip.closeSubpath()
+        p.save()
+        p.setClipPath(clip, Qt.ClipOperation.IntersectClip)
+        t = float(self._t) * 0.055
+        # Broad dark/light caustic bands suggest screen refraction while
+        # preserving the palette of the underlying room.
+        for band in range(2):
+            y0 = base + 9.0 + band * 23.0
+            path = QPainterPath()
+            for i, (x, y) in enumerate(pts):
+                yy = y0 + 2.0 * math.sin(t + x * 0.024 + band * 1.7)
+                if i == 0:
+                    path.moveTo(QPointF(x, yy))
+                else:
+                    path.lineTo(QPointF(x, yy))
+            col = QColor(140, 136, 152, 9 if band % 2 else 14)
+            p.setPen(QPen(col, 0.8))
+            p.drawPath(path)
+        # Rain impacts and bodies create expanding rings, matching Water.cs's
+        # RippleWave without exposing the simulation state to the renderer.
+        for ring in getattr(surf, '_rings', ()):
+            if ring.life <= 0.0:
+                continue
+            ry = surf.level_at(ring.x)
+            fade = max(0.0, min(1.0, ring.life))
+            rx = max(3.0, min(90.0, ring.rad))
+            p.setPen(QPen(QColor(150, 147, 161, int(46 * fade)), 0.7))
+            p.drawEllipse(QPointF(ring.x, ry), rx, max(1.2, rx * 0.075))
+        p.restore()
         p.restore()
 
     def _draw_bubbles(self, p):
@@ -2425,6 +2485,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             self._shake[1] = clampf(self._shake[1] + SHAKE_MAX * 0.55,
                                     -SHAKE_MAX, SHAKE_MAX)
             self.add_shockwave(ix, iy, 96.0, flash=True)
+            # 第一滴雨也应落在水面上（Water.cs RippleWave）。将冲击投影到
+            # 当前波面，避免只看到屏幕闪光而水面没有响应。
+            if self.water_surface is not None:
+                self.water_surface.ripple_ring(ix, rad=2.0, speed=5.0,
+                                               width=58.0, life_time=20.0,
+                                               intensity=1.6)
         self._storm_flood_tick()
         self._storm_lethal_tick()
 
@@ -2545,7 +2611,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         on = bool(on)
         self.storm.enabled = on
         self._params["storm_enabled"] = on
-        if not on:
+        if not on and not self.storm.manual:
             self.storm.reset()
             self.storm_active = False
             self.storm_pressure = 0.0

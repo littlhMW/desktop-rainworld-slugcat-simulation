@@ -156,6 +156,11 @@ class PetUnit:
             dx = cx - self.body.chunk1.x
             dy = float(spawn_y) - self.body.chunk1.y
             self.body.teleport(cx, float(spawn_y))
+            # 40 帧站姿收敛发生在地板上。传送到光标后必须清除旧地板接触，
+            # 否则首个物理 tick 的钉脚会把幼崽瞬间拉回地面并灌入向上速度。
+            for chunk in (self.body.chunk0, self.body.chunk1):
+                chunk.cx = chunk.cy = chunk.lcx = chunk.lcy = 0
+                chunk.support_y = None
             self.gfx.translate_pose(dx, dy)
         # 尾巴/舌头（caps.tongue 关则不建）
         ax, ay = self.gfx.tail_root_world()

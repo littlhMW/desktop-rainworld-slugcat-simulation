@@ -59,8 +59,7 @@ class StormCycle:
     def __init__(self, enabled=False, focus_minutes=None, warning_minutes=None,
                  sleep_minutes=None):
         self.enabled = bool(enabled)
-        self.manual = False          # 环境面板手动触发的一场雨（跑完自动回到原状）
-        self._manual_prev = False    # 手动触发前 enabled 的值，睡眠结束后还原
+        self.manual = False          # 环境面板手动触发，直到用户切换环境才结束
         self.focus_minutes = float(focus_minutes if focus_minutes is not None
                                    else tuning.STORM_FOCUS_MINUTES)
         self.warning_minutes = float(warning_minutes if warning_minutes is not None
@@ -105,7 +104,7 @@ class StormCycle:
     def active(self):
         """暴雨进行中（猫必须躲进庇护所的那两段）。
 
-        手动触发的那一场不管 enabled（下完会把开关还原）。
+        手动触发的暴雨不管 enabled，须由环境面板显式关闭。
         """
         return (self.enabled or self.manual) and self.phase in (GATHER, SLEEP)
 
@@ -124,7 +123,6 @@ class StormCycle:
 
     def reset(self):
         self.manual = False
-        self._manual_prev = False
         self.phase = FOCUS
         self.phase_t = 0
         self.settle_t = 0
@@ -138,12 +136,10 @@ class StormCycle:
     def trigger_storm(self):
         """环境面板手动放雨：立刻进入集合相位，优先级第一就是进庇护所。
 
-        手动的这一场跑完（暴雨期结束回到 FOCUS）会把 ``enabled`` 还原成触发前的值
-        —— 临时下一场雨不会顺手把整个雨循环打开。
+        暴雨保持到环境面板切换为其它选项；雨循环开关仍独立存在。
         """
         if self.manual and self.phase in (GATHER, SLEEP):
             return False
-        self._manual_prev = bool(self.enabled)
         self.manual = True
         self.phase = GATHER
         self.phase_t = 0
@@ -162,7 +158,6 @@ class StormCycle:
         if not self.manual:
             return False
         self.manual = False
-        self.enabled = self._manual_prev
         self.phase = FOCUS
         self.phase_t = 0
         self.settle_t = 0
@@ -261,28 +256,15 @@ class StormCycle:
                 sh.start_closing()
 
     def _step_sleep(self, shelters):
-        # 手动暴雨也必须拥有真实的暴雨时长。旧代码这里每 tick 把 phase_t
-        # 重置为 0，导致手动暴雨永远停在 SLEEP，表现成「暴雨番茄钟不结束」。
+        # 手动环境效果不是雨循环的定时暴雨：一直维持峰值，直到用户切换环境。
+        # phase_t 仍推进，便于存档恢复和诊断；HUD 本来就不展示手动倒计时。
         self.phase_t += 1
         if self.manual:
             self.pressure = 1.0
-            fade_start = max(0, self.sleep_ticks - self.fade_ticks)
-            if self.phase_t >= fade_start:
-                self.rain_drive = max(0.0, 1.0 - (
-                    self.phase_t - fade_start) / float(max(1, self.fade_ticks)))
-            else:
-                self.rain_drive = 1.0
+            self.rain_drive = min(1.0, self.rain_drive + 1.0 / self.rise_ticks)
             for sh in shelters:
                 if sh.door_state == OPENING:
                     sh.start_closing()
-            if self.phase_t >= self.sleep_ticks:
-                self.phase = FOCUS
-                self.phase_t = 0
-                self.settle_t = 0
-                self.pressure = 0.0
-                self.rain_drive = 0.0
-                self.manual = False
-                self.enabled = self._manual_prev
             return
 
         self.pressure = 1.0
@@ -396,5 +378,13 @@ class StormCycle:
             self.rain_drive = max(0.0, min(1.0, float(d.get("rain_drive", 0.0))))
         except Exception:
             pass
+        if self.manual:
+            # 旧版可能在 manual=true 时存成 FOCUS；恢复时维持手动暴雨。
+            # GATHER 仍沿用其强度爬升，SLEEP 则不受旧存档 fade 值影响。
+            if self.phase == FOCUS:
+                self.phase = SLEEP
+            self.pressure = 1.0
+            if self.phase == SLEEP:
+                self.rain_drive = 1.0
         self.set_durations(d.get("focus_minutes"), d.get("warning_minutes"),
                            d.get("sleep_minutes"))

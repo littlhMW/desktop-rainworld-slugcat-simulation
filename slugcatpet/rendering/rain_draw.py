@@ -22,11 +22,11 @@ _PATTERN = 256
 SCREEN_BLEED = 24.0
 _BOTTOM_BLEED = 52.0
 
-_SHEET_RGBA = (133, 160, 190)
-_DROP_RGB = (173, 201, 226)
-_STORM_TOP = (38, 49, 67)
-_STORM_BOTTOM = (17, 25, 40)
-_FOG = (118, 145, 176)
+_SHEET_RGBA = (133, 130, 145)
+_DROP_RGB = (169, 166, 178)
+_STORM_TOP = (47, 45, 57)
+_STORM_BOTTOM = (18, 18, 25)
+_FOG = (113, 108, 123)
 
 _ALPHA_BANDS = (0.30, 0.48, 0.68)
 
@@ -41,14 +41,14 @@ def make_rain_patterns(seed=0x5A17):
         p = QPainter(img)
         try:
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
-            slant = 8.0 + 8.0 * k
-            count = 90 if k == 0 else 135
+            slant = 2.0 + 3.0 * k
+            count = 145 if k == 0 else 190
             for _ in range(count):
                 x = rng.uniform(-slant - 10.0, _PATTERN + 10.0)
                 y = rng.uniform(-_PATTERN, _PATTERN)
-                ln = rng.uniform(24.0, 72.0) * (1.0 + 0.10 * k)
-                a = int(rng.uniform(18, 42) + 8 * k)
-                w = 1.0 if rng.random() < 0.82 else 1.5
+                ln = rng.uniform(35.0, 105.0) * (1.0 + 0.10 * k)
+                a = int(rng.uniform(16, 34) + 7 * k)
+                w = 0.8 if rng.random() < 0.86 else 1.2
                 p.setPen(QPen(QColor(*_SHEET_RGBA, a), w))
                 p.drawLine(QPointF(x, y), QPointF(x + slant, y + ln))
         finally:
@@ -161,27 +161,53 @@ def draw_rain_over(p, rain, shelters, WL, HL, shake=(0.0, 0.0)):
         n = min(int(getattr(rain, "visible_drops", 0)), len(getattr(rain, "drops", ())))
         if n > 0:
             near = int(n * (0.22 + 0.58 * i))
+            # A storm can draw 100+ drops per frame.  Reusing the small set of
+            # pens avoids constructing QColor/QPen objects in the inner loop.
+            pen_cache = {}
+            heavy_cache = {}
             for k in range(near):
                 d = rain.drops[k]
                 band = d.seed % len(_ALPHA_BANDS)
-                col = QColor(*_DROP_RGB, int(255 * _ALPHA_BANDS[band] * (0.42 + 0.55 * i)))
-                pen = QPen(col, d.width)
-                pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                key = (band, d.width)
+                pen = pen_cache.get(key)
+                if pen is None:
+                    col = QColor(*_DROP_RGB, int(255 * _ALPHA_BANDS[band] * (0.42 + 0.55 * i)))
+                    pen = QPen(col, d.width)
+                    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+                    pen_cache[key] = pen
                 p.setPen(pen)
-                length = d.length * (0.74 + 0.56 * i)
+                length = d.length * (1.1 + 0.72 * i)
                 p.drawLine(
                     QPointF(d.x, d.y),
-                    QPointF(d.x + length * (0.08 + 0.045 * i), d.y + length),
+                    QPointF(d.x + length * (0.025 + 0.018 * i), d.y + length),
                 )
                 # RoomRain.cs:343-351 的 bulletDrips 是暴雨阶段少量更重的近景雨柱。
                 # 用既有固定雨滴池选样，不在 paintEvent 里新建粒子。
                 if i > 0.62 and d.seed % 13 == 0:
                     force = (i - 0.62) / 0.38
-                    p.setPen(QPen(QColor(205, 220, 228, int(34 + 58 * force)),
-                                  1.7 + 0.8 * force))
+                    hkey = int(force * 4.0)
+                    hpen = heavy_cache.get(hkey)
+                    if hpen is None:
+                        hpen = QPen(QColor(188, 184, 198, int(34 + 58 * force)),
+                                    1.7 + 0.8 * force)
+                        heavy_cache[hkey] = hpen
+                    p.setPen(hpen)
                     p.drawLine(QPointF(d.x - 1.5, d.y - length * 0.55),
                                QPointF(d.x + length * 0.12,
                                        d.y + length * (0.90 + 0.55 * force)))
+
+        # 原版 ScreenRain 是密集、近竖直的雨幕。透明桌面窗不能采样背后桌面，
+        # 因此只叠加极低对比度的窄竖纹；不绘制装饰性的水平正弦线。
+        if i > 0.60:
+            force = (i - 0.60) / 0.40
+            phase = float(getattr(rain, 'tile_off', 0.0)) * 0.42
+            sheet_pen = QPen(QColor(147, 143, 157, int(5 + 10 * force)),
+                             0.7 + 0.35 * force)
+            for col in range(20):
+                x = ((col * (WL / 20.0) + phase * (1.0 + col % 3))
+                     % (WL + 20.0)) - 10.0
+                p.setPen(sheet_pen)
+                p.drawLine(QPointF(x, -SCREEN_BLEED), QPointF(x + 6.0, HL + _BOTTOM_BLEED))
 
         # 第一滴重雨：聚焦的落点，不再用整屏闪白。
         if flash > 0 and getattr(rain, "impact_xy", None) is not None:
@@ -189,15 +215,15 @@ def draw_rain_over(p, rain, shelters, WL, HL, shake=(0.0, 0.0)):
             t = flash / float(FIRST_DROP_FLASH)
             pulse = max(0.0, min(1.0, t))
             alpha = int(48 + 132 * pulse)
-            p.setPen(QPen(QColor(210, 231, 249, alpha), 2.2))
+            p.setPen(QPen(QColor(205, 202, 214, alpha), 2.2))
             ln = 32.0 + 64.0 * pulse
             p.drawLine(QPointF(ix, iy - ln), QPointF(ix + 6.0, iy))
 
             r = 7.0 + 22.0 * (1.0 - pulse)
-            p.setPen(QPen(QColor(180, 213, 236, int(34 + 90 * pulse)), 1.4))
+            p.setPen(QPen(QColor(174, 170, 186, int(34 + 90 * pulse)), 1.4))
             p.drawEllipse(QPointF(ix, iy - 1.5), r * 0.55, r * 0.18)
 
-            p.setPen(QPen(QColor(199, 223, 242, int(24 + 78 * pulse)), 1.0))
+            p.setPen(QPen(QColor(190, 186, 202, int(24 + 78 * pulse)), 1.0))
             p.drawLine(QPointF(ix - r, iy - 3.0),
                        QPointF(ix - r * 0.25, iy - 8.0 * (1.0 - pulse)))
             p.drawLine(QPointF(ix + r, iy - 3.0),

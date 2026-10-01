@@ -2051,6 +2051,7 @@ class ItemInteractionMixin:
         if pup is None:
             return
         try:
+            cy = min(cy, self._HL - pup.body.chunk1.rad)
             dx, dy = cx - pup.body.chunk1.x, cy - pup.body.chunk1.y
             pup.body.teleport(cx, cy)
             pup.gfx.translate_pose(dx, dy)
@@ -2084,8 +2085,11 @@ class ItemInteractionMixin:
         self._pup_preview = None
         init_state = {"energy": 1.0, "temper": 0.0, "food": tuning.FOOD_INIT,
                       "karma": tuning.KARMA_INIT, "cold": 0.0}
+        from ..core import chunkphys
+        # 光标触地时 hip 只到脚底。预览采用同一锚点，避免生成首帧与地面重叠。
+        spawn_y = min(float(ly), self._HL - chunkphys.RAD1)
         pet = PetUnit(self, k, f"pup-{k}", PUP_VARIANT, init_state,
-                      spawn_x=lx, spawn_y=ly)
+                      spawn_x=lx, spawn_y=spawn_y)
         self.pets.append(pet)
         self._prev_dirty = None
         self._after_pets_changed()
