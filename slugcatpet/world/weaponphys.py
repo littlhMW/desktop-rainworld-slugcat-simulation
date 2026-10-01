@@ -25,6 +25,14 @@ SPEAR_FLIGHT_FLAT_PX = 110.0  # 掷出的矛先平飞这一段（这段内上抬
                               # 回落到原版的 0.45 上抬 → 半重力自然下落。
                               # 用户点名要「投出的矛需要有一段距离自然下落的物理」；
                               # 平飞段只改出手后的头一段，远处弹道与原版逐帧一致。
+# ── 投掷物档位（文档 §3「武器参数未统一」）──
+# 命中扫掠要按武器取参数：矛细长、石头近似圆，命中的补长不一样；AI 预演过去
+# 写死矛的半径 / 补长，扔石头也按矛算。唯一真值放这里，spear / stone / items /
+# fsm 都读它，别再各写一份。
+SPEAR_RAD = 5.0                # Spear.cs:287 bodyChunks[0].rad
+SPEAR_HIT_PAD = 6.0            # 矛身细长的命中补长（原版 Weapon.cs:416 的 +5f 同量级）
+STONE_RAD = 5.0                # Stone.cs bodyChunks[0].rad
+STONE_HIT_PAD = 2.0            # 石头是圆：补长只留一点点
 STICK_MAX_DIST = 560.0        # 超出这个飞行距离不再插墙
 STICK_NEAR_DIST = 140.0       # 近距离必定插墙
 STICK_CHANCE = 0.33           # 远距离插墙概率（ExplosiveSpear 才 0.8）

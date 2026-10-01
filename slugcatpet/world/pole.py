@@ -1,6 +1,8 @@
 """竖/横杆几何实体；攀爬逻辑见 pole_climb.py。"""
 from __future__ import annotations
 
+import math
+
 from .enums import ItemState
 
 VERTICAL = "vertical"
@@ -89,6 +91,60 @@ class Pole:
     def bottom_y(self) -> float:
         """底端＝ y 较大的那一端 —— 与 top_y 对称，别再用 by 冒充。"""
         return max(self.ay, self.by)
+
+    # ── 统一杆接口（文档 §3 / §7）──
+    # 外面只有这一个杆接口，里面才分竖杆 / 横杆两套运动实现。调用方（FSM /
+    # Planner / blocking / ThreatField）只问这几件事，不再各自读 ax/ay/bx/by
+    # 算「这是哪一头」「离我多远」「在不在我身上」。
+    def geometry(self):
+        """两端点 ``((ax, ay), (bx, by))``。"""
+        return ((self.ax, self.ay), (self.bx, self.by))
+
+    def length(self) -> float:
+        """杆长。"""
+        return math.hypot(self.bx - self.ax, self.by - self.ay)
+
+    def axis(self):
+        """杆轴单位向量（a 端 → b 端）；零长返回 (0, 0)。"""
+        dx, dy = self.bx - self.ax, self.by - self.ay
+        L = math.hypot(dx, dy)
+        if L <= 1e-9:
+            return (0.0, 0.0)
+        return (dx / L, dy / L)
+
+    def nearest_point(self, x, y):
+        """点 (x, y) 到杆段的最近点 ``(x, y)``。"""
+        ax, ay = self.ax, self.ay
+        dx, dy = self.bx - ax, self.by - ay
+        L2 = dx * dx + dy * dy
+        if L2 <= 1e-9:
+            return (ax, ay)
+        t = ((x - ax) * dx + (y - ay) * dy) / L2
+        t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+        return (ax + dx * t, ay + dy * t)
+
+    def progress(self, x, y) -> float:
+        """点在杆上的归一化进度 0..1（a 端 = 0，b 端 = 1）。"""
+        ax, ay = self.ax, self.ay
+        dx, dy = self.bx - ax, self.by - ay
+        L2 = dx * dx + dy * dy
+        if L2 <= 1e-9:
+            return 0.0
+        t = ((x - ax) * dx + (y - ay) * dy) / L2
+        return 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+
+    def contains(self, x, y, tol: float = POLE_RAD) -> bool:
+        """点是否落在杆体上（含 tol 容差）。"""
+        nx, ny = self.nearest_point(x, y)
+        return math.hypot(x - nx, y - ny) <= float(tol)
+
+    def intersection(self, other, tol: float = CROSS_TOL):
+        """与另一根杆的交点；同向 / 不相交返回 None。"""
+        return cross_point(self, other, tol)
+
+    def surface_at(self, x, y) -> str:
+        """(x, y) 附近的表面类型：普通杆给它的 kind（竖/横）。"""
+        return self.kind
 
     def step(self, WL: float, HL: float) -> None:
         """静态，无积分。"""

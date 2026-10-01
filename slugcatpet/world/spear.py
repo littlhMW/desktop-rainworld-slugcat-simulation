@@ -22,7 +22,7 @@ NEEDLE_BLACK_HOLD = 240   # 全黑之后先保持约 6 秒，再开始整体渐�
 NEEDLE_ALPHA_FADE = 80    # 整体渐隐（alpha 1→0）的时长，约 2 秒；褪尽才真的 GONE
 LEN = 53.0               # 杆长（原版 SmallSpear 贴图可视长度）
 HALF_W = 1.6             # 杆的半宽（贴图实测 3px）
-RAD = 5.0                # Spear.cs:287 bodyChunks[0].rad
+RAD = wp.SPEAR_RAD       # Spear.cs:287 bodyChunks[0].rad（唯一真值在 weaponphys）
 MASS = 0.07              # Spear.cs:287 bodyChunks[0].mass
 GRAVITY = 0.9
 AIR_FRICTION = 0.999
@@ -200,14 +200,18 @@ class Spear:
         a = math.radians(self.stuck_angle if self.stuck else self.angle_deg)
         return (self.x - math.sin(a) * LEN * 0.5, self.y + math.cos(a) * LEN * 0.5)
 
-    def pin_tip(self, hx: float, hy: float) -> None:
+    def pin_tip(self, hx: float, hy: float, angle_deg=None) -> None:
         """把矛**尖**摆到真实接触点（撞到东西的同一 tick 用）。
 
         旧实现只把速度清零、位置留在「这一帧飞到的终点」：40px/帧 的位移让
         矛看起来插在目标身后的空气里（用户报的「矛插在空气上」）。
         """
         from .hitgeom import tip_align
-        tip_align(self, hx, hy, LEN)
+        if angle_deg is not None:
+            # 命中瞬间矛头就是顺着弹道方向的（原版 setRotation = throwDir）：
+            # 把渲染角也锁到 impact angle，矛尖才真的贴住接触点（文档 §6）。
+            self.angle_deg = self.last_angle = float(angle_deg) % 360.0
+        tip_align(self, hx, hy, LEN, angle_deg)
         self.last_x, self.last_y = self.x, self.y
         self._seg_x, self._seg_y = self.x, self.y
 
@@ -311,6 +315,28 @@ class Spear:
         self.x = x - dx * (LEN * 0.5 - self.embedded)
         self.y = y - dy * (LEN * 0.5 - self.embedded)
         self._sync_interp()
+
+    def lifecycle(self) -> str:
+        """这只矛现在处于哪个生命周期阶段（文档 §6「统一 SpearLifecycle」）。
+
+        只读归一：不改任何字段，只把 ``state / _thrown / stuck / stuck_to /
+        pinned / pole`` 六个散字段收成一个答案，插针的淡出与场景杆的保留
+        各自按这个答案判，不再各读一半字段。
+        """
+        from .enums import SpearLifecycle
+        if self.state == ItemState.GONE:
+            return SpearLifecycle.GONE
+        if self.state in (ItemState.CARRIED, ItemState.MOUSE):
+            return SpearLifecycle.CARRIED
+        if self.stuck_to is not None:
+            return SpearLifecycle.STUCK_TO_CREATURE
+        if self.pinned and self.pole is not None:
+            return SpearLifecycle.PINNED_POLE
+        if self.stuck:
+            return SpearLifecycle.STUCK
+        if self._thrown:
+            return SpearLifecycle.THROWN
+        return SpearLifecycle.FREE
 
     def unstuck(self) -> None:
         self.stuck = False
@@ -451,8 +477,11 @@ class Spear:
                 self.angle_deg = _ang_lerp(self.angle_deg, want, SPEAR_FLIGHT_TURN) % 360.0
         apply_water(self, self.water_y, self.buoyancy, self.water_friction,
                     self.room_gravity, self.air_friction)
-        self.x += self.vx
-        self.y += self.vy
+        # 摩擦 + 位移只走 trajectory.advance：AI 预演（traj.preview）调的是同一个
+        # 函数，改摩擦 / 入水不会只改一半（文档 §1「advance 成为唯一积分」）。
+        # apply_water 已经在上面乘过 air_friction，这里传 1.0 免得乘两次。
+        self.x, self.y, self.vx, self.vy = traj.advance(
+            self.x, self.y, self.vx, self.vy, 1.0)
         self._seg_x, self._seg_y = self.x, self.y   # 插墙会把 x/y 拽回墙内，命中要用飞到的位置
         # 这一帧的位移算不算「掷出去的那一段」（原版 Weapon.Update 只判 Mode.Thrown）：
         # 刚出手/正在飞/这一帧刚插住的都算；躺地上漂移的、被捡起来的不算 → 不伤人。

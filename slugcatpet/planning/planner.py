@@ -126,16 +126,15 @@ class Planner:
                 if p.kind in kinds and not getattr(p, "virtual", False)]
 
     def transport_dx(self, p) -> float:
-        """猫到这根杆的横向距离（横杆＝到杆面的距离，杆面上为 0）。"""
-        x = self.pet.body.chunk1.x
-        if p.kind == "vertical":
-            return abs(p.bx - x)
-        lo, hi = min(p.ax, p.bx), max(p.ax, p.bx)
-        if x < lo:
-            return lo - x
-        if x > hi:
-            return x - hi
-        return 0.0
+        """猫到这根杆的横向距离（横杆＝到杆面的距离，杆面上为 0）。
+
+        竖杆 / 横杆统一走 ``Pole.nearest_point``：竖杆恒得杆心横距、横杆在
+        跨度内得 0、跨度外得到端点的距离 —— 一份几何，不再按 kind 分两支
+        （文档 §8「_pick_climbable_pole 完全使用 transport 查询」）。
+        """
+        b = self.pet.body
+        nx, _ny = p.nearest_point(b.chunk1.x, b.chunk1.y)
+        return abs(float(nx) - float(b.chunk1.x))
 
     def transport_in_reach(self, p) -> bool:
         """此刻「够得着」这根杆：横距在够取圈内，且身体高度落在杆的纵向跨度内。"""
@@ -143,7 +142,7 @@ class Planner:
         if p.kind == "vertical":
             if self.transport_dx(p) > tuning.POLE_TRANSPORT_NEAR:
                 return False
-            top, bot = min(p.ay, p.by), max(p.ay, p.by)
+            top, bot = p.top_y, p.bottom_y      # 竖杆两端：a 端可能是杆底（见 Pole.top_y）
             y = b.chunk1.y
             return top - tuning.POLE_AIRGRAB_PAD <= y <= bot + tuning.POLE_AIRGRAB_PAD
         return (self.transport_dx(p) <= tuning.HPOLE_TRANSPORT_NEAR

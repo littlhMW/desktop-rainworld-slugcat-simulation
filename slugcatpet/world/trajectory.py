@@ -54,9 +54,35 @@ def preview(ox, oy, vx, vy, ticks, gravity=0.9, room_gravity=1.0,
     vx, vy = float(vx), float(vy)
     for _ in range(int(ticks)):
         vy += gravity_delta(x, y, ox, oy, thrown, gravity, room_gravity)
-        vx *= air_friction
-        vy *= air_friction
-        x += vx
-        y += vy
+        # 摩擦 + 位移只走 advance：真实 Spear.step 调的是同一个函数，
+        # 改摩擦 / 入水 / 平飞段不会只改一半（文档 §1）。
+        x, y, vx, vy = advance(x, y, vx, vy, air_friction)
         pts.append((x, y))
     return pts
+
+
+class ProjectileProfile:
+    """一种投掷物的物理档位：命中半径、命中补长、是否矛。
+
+    AI 预演过去写死矛的半径 / 补长，扔石头也按矛算 —— 石头是圆、矛细长，
+    两者的补长不一样（文档 §3）。这里只放数值，谁是谁由 :func:`profile_for`
+    决定；发射端与命中端读同一份，不再各写一套 if。
+    """
+    __slots__ = ("name", "radius", "hit_pad", "is_spear", "gravity")
+
+    def __init__(self, name: str, radius: float, hit_pad: float,
+                 is_spear: bool, gravity: float):
+        self.name = str(name)
+        self.radius = float(radius)
+        self.hit_pad = float(hit_pad)
+        self.is_spear = bool(is_spear)
+        self.gravity = float(gravity)
+
+
+SPEAR_PROFILE = ProjectileProfile("spear", wp.SPEAR_RAD, wp.SPEAR_HIT_PAD, True, 0.9)
+STONE_PROFILE = ProjectileProfile("stone", wp.STONE_RAD, wp.STONE_HIT_PAD, False, 0.9)
+
+
+def profile_for(is_spear: bool) -> ProjectileProfile:
+    """这一掷的档位：矛 / 石头。"""
+    return SPEAR_PROFILE if is_spear else STONE_PROFILE

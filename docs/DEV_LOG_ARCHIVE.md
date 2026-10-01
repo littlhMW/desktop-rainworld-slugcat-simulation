@@ -4,6 +4,94 @@
 
 ## 2026-10-01
 
+### R150 · R149 后的收口：意图时机 / 唯一积分 / 武器档位 / transport 查询 / EscapeSolver / 统一杆几何
+
+文档：本轮「R149 后收口状态」审计（16 条）。判断是 R149 方向对、进入**继续收口**而不是继续加功能，
+因此本轮不加第三套逻辑，只把 R149 已有的那几套半成品收成一套。收干净 8 条，其余 8 条列在下文「仍未收」。
+
+**① `attack_intent` 只在真的出手后记（文档 §9.1）**
+
+* 旧：`_throw_weapon_at` 起手就 `_note_attack_intent`，`_launch_weapon` 又记一次 —— 只起跳、根本没投的
+  动作也会让同伴白躲，两只猫互相让位卡住。
+* 新：`_throw_weapon_at` 里那次删掉，只保留 `_launch_weapon` 里那一次（=真的投出之后）。
+* 验证：`e2e_r150` 断言「够不到 → 只是起跳」时 `behavior.attack_intent is None`。
+
+**② `trajectory.advance()` 成为唯一积分（文档 §9.2）**
+
+* `preview` 的循环体改成 `vy += gravity_delta(...); x, y, vx, vy = advance(...)`。
+* `Spear.step` 的 `self.x += self.vx` 改成 `traj.advance(self.x, self.y, self.vx, self.vy, 1.0)`
+  （`apply_water` 已经乘过 `air_friction`，传 1.0 免得乘两次）。
+* 现在「摩擦 / 入水 / 平飞段」只有一份；`e2e_r150` 逐帧对拍 40 帧仍一致（误差 < 1e-6）。
+
+**③ `ProjectileProfile`：命中参数按武器取（文档 §9.3）**
+
+* 旧：`_shot_would_hit` 写死 `SPEAR_RAD / SPEAR_HIT_PAD`，`_shot_velocity` 写死 `is_spear=True`，
+  手里只有石头也按矛算。
+* 新：半径 / 补长唯一真值收到 `world/weaponphys.py`（`SPEAR_RAD / SPEAR_HIT_PAD / STONE_RAD /
+  STONE_HIT_PAD`）；`world/trajectory.py` 给 `ProjectileProfile` 与 `profile_for(is_spear)`；
+  `spear.RAD / stone.RAD / items.SPEAR_HIT_PAD` 全部改为引用它。
+* `fsm._shot_profile()` 按「双手都拿着时优先主手」选档，`_shot_velocity / _shot_arc / _shot_would_hit /
+  _note_attack_intent` 全部带档位；意图字典里存 `profile`，同伴躲弹道也按同样的档位预演。
+
+**④ `_pick_climbable_pole` 完全走 transport 查询（文档 §9.8）**
+
+* 旧：`abs(p.bx - hx)` 只对竖杆成立，横杆取的是端点，选杆必错。
+* 新：`self.planner.transport_dx(p)` 取最近；`Planner.transport_dx` 本身也收成一份统一几何
+  （竖杆 / 横杆都走 `Pole.nearest_point`）。
+
+**⑤ `EscapeSolver`：匍匐方向不再由「威胁在左还是右」决定（文档 §9.10）**
+
+* 新增 `planning/escape.py::solve_escape(body, threat, field, step)` → `EscapePlan(movement_dir,
+  posture, face)`；给了 `ThreatField` 就比左右两侧的真实危险度，「左边危险右边安全」时往右挪。
+* `_st_crawlaway` 只执行 `plan.movement_dir` + `plan.face`，不再自己算 `away`。
+
+**⑥ 杆接口统一（文档 §9.7，只统一接口、不合并物理）**
+
+* `Pole` 新增 `geometry / length / axis / nearest_point / progress / contains / intersection /
+  surface_at`。
+* `Planner.transport_dx / transport_in_reach` 改读这套接口；`blocking.is_beam / at_beam_tip` 改问身体
+  自己的 `combat_position()` / `on_beam_tip()`（`creature` 新增 `on_beam_tip()`），FSM 侧不再各自读
+  `ax / ay / bx / by` 或 `animation` 字符串判断杆形。
+
+**⑦ `HitResult`：接触点 + impact angle（文档 §9.6）**
+
+* `world/hitgeom.py` 新增 `HitResult(owner, point, t, tick, normal, impact_angle)`，`sweep_hit /
+  sweep_hit_predicted` 返回它；兼容旧的 `owner, point, t = hit` 解包与 `hit[1][0]` 下标。
+* `tip_align(..., angle_deg=None)` 与 `Spear.pin_tip(hx, hy, angle_deg=None)` 支持用**命中瞬间的飞行角**
+  摆矛尖，并把渲染角也锁到它（原版 `setRotation = throwDir`）；`items` 三个插入分支都传 `impact_angle`。
+* 新增 `CombatTarget.chunks() / preferred_point() / hit_radius()` 三个正式查询（`chunks()` 优先于旧的
+  降级链；`hit_chunks()` 仍兼容）。
+
+**⑧ `SpearLifecycle`：六阶段一处归一（文档 §9.11）**
+
+* `world/enums.py` 新增 `SpearLifecycle`（FREE / THROWN / STUCK / STUCK_TO_CREATURE / PINNED_POLE /
+  CARRIED / GONE）；`Spear.lifecycle()` 只读归一 `state / _thrown / stuck / stuck_to / pinned / pole`
+  六个散字段，不改任何现有字段（场景杆生命周期与骨针生命周期暂未拆开，见下）。
+
+**工具**
+
+* `tools/parts_audit.py` 的 `our_const()` 现在能解析「常量已指向 `weaponphys` 唯一真值」的写法
+  （例如 `RAD = wp.SPEAR_RAD`），不再把迁移到唯一真值源的常量读成 None。
+
+**测试**
+
+* 新增 `work/scratch/e2e_r150.py`（8 组、56 条断言，全绿）；`run_all19.ps1` 已加 `e2e_r150.py`。
+* 同步更新两条旧断言：`e2e_r149.py` 的 `_st_crawlaway` 朝向检查改为校验 `solve_escape` + `plan.face`。
+* 全量回归 `fails=0`。
+
+**仍未收（下一轮）**
+
+* §9.4 / §9.5 `TargetPoint / TargetResolver + AimSolution`（四种投法枚举）：`_throw_weapon_at` 仍是
+  「预演 → 起跳 → 直投」三分支，没有正式的解算器。
+* §9.12 `ThreatField` → 所有 AI 只读、FSM 只判 `ThreatIntent`：FSM 仍保留 `_threat_lizard / _nearby_lizard`
+  等旧威胁读取。
+* §9.7 的 `PoleController`（climb / move_along / dismount / handoff / throw_position）：本轮只统一了
+  `Pole` 几何接口，`PoleClimber` 与 `HPoleController` 两个控制器仍是各自的方法名（物理按文档要求不合并）。
+* §9.11 场景杆生命周期与骨针生命周期仍耦合在 `pinned / pole` 上。
+* §9.13 `Board.crowd` / `CrowdField` 改名 `TargetClaimCost` / `TrafficCost`（纯命名，未做）。
+* §9.15 一个 tick 只有一个 `MovementController` 拥有身体运动权、`_enter_state / _exit_state` 自动释放：
+  仍是分散的 `_pole_release / _hpole_release / _break_active_controllers`。
+
 ### R149 · 一套弹道 / 一套命中几何 / CombatPosition / 匍匐门禁（两套杆逻辑的收口）
 
 文档：本轮审计（5 bug + 4 需求）。核心不是再修 5 个独立 bug，而是把「同一件事有多套判断」

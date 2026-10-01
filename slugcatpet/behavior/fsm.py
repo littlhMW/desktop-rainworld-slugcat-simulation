@@ -10,6 +10,7 @@ from ..core.creature import (RUN_UPPER, ZEROG_GRAB_DIST, THROW_ORIGIN_DX, THROW_
 from ..planning import (GIVEUP, HOLDING, MODE_STAY, MODE_TOUCH, Goal, PlanExecutor, Planner,
                         obj_goal)
 from ..planning.fly_reach import in_reach
+from ..planning.escape import solve_escape
 from .blocking import (blocks_path, yield_target_x, on_same_pole,
                         pole_in_the_way, pole_push_role)
 from . import social
@@ -3904,10 +3905,11 @@ class BehaviorFSM:
         调用方要「只要有高度的上升通道」就传 ("vertical",)，要「任何一根杆」用默认值。
         """
         best = None
-        hx = self.body.chunk1.x
+        best_d = 0.0
         for p in self.planner.reachable_transports(kinds):
-            if best is None or abs(p.bx - hx) < abs(best.bx - hx):
-                best = p
+            d = self.planner.transport_dx(p)     # 横竖杆同一份几何（文档 §8）
+            if best is None or d < best_d:
+                best, best_d = p, d
         return best
 
     def _pole_eat(self) -> bool:
@@ -7714,27 +7716,48 @@ class BehaviorFSM:
                 self._fight_throw_t = tuning.FIGHT_THROW_CD - tuning.FIGHT_RETRY_CD
 
     # ── 弹道预演：物理逐行对照 world/spear.py 的 Spear.step ──
-    def _shot_velocity(self, dir_x):
+    def _shot_profile(self):
+        """这一掷用的是矛还是石头（半径 / 命中补长 / 是否 TossObject 都从这里取）。
+
+        旧实现把 ``is_spear=True`` 写死：手里只有石头时也按矛的口径预演弹道，
+        于是「AI 算能中、实际没中」（文档 §3）。选法与 _launch_weapon 一致：
+        双手都拿着家伙时优先主手（右手）那件。
+        """
+        from ..world import trajectory as traj
+        b = self.body
+        spear = b.carried_spear
+        if (spear is not None and b.carried_stone is not None
+                and b.held_kind("r") == "stone"):
+            spear = None
+        return traj.profile_for(spear is not None)
+
+    def _shot_velocity(self, dir_x, profile=None):
         """这一掷的出手点与初速 (ox, oy, vx, vy)（同 _cob_would_hit 的物理）。"""
+        if profile is None:
+            profile = self._shot_profile()
         c0 = self.body.chunk0
         weak, toss = weaponphys.player_throw_mode(
-            getattr(self.win, "variant", ""), self._exhausted, True, False)
+            getattr(self.win, "variant", ""), self._exhausted,
+            profile.is_spear, False)
         if toss:
             vx, vy = weaponphys.toss_velocity(c0, dir_x, 0.07, 1, 1.0)
         else:
-            vx, vy = weaponphys.throw_velocity(c0, dir_x, True,
+            vx, vy = weaponphys.throw_velocity(c0, dir_x, profile.is_spear,
                                                weaponphys.frc(weak=weak))
         ox, oy = self.body.muzzle(dir_x)
         return (ox, oy, vx, vy)
 
-    def _shot_arc(self, ox, oy, vx, vy, ticks=SHOT_PROBE_TICKS):
-        """掷出后逐 tick 的弹道点（平飞段不落，之后回落到原版半重力）。"""
-        # 弹道走 world/trajectory：真实 Spear.step 的重力块调的是同一个函数，
-        # AI 预演与真实飞行不再各写一套（文档 §8「ProjectileTrajectory」）。
+    def _shot_arc(self, ox, oy, vx, vy, ticks=SHOT_PROBE_TICKS, profile=None):
+        """掷出后逐 tick 的弹道点（平飞段不落，之后回落到原版半重力）。
+
+        重力与摩擦走 world/trajectory：真实 Spear.step 调的是同一个 advance /
+        gravity_delta，AI 预演与真实飞行不再各写一套（文档 §1 / §8）。
+        """
         from ..world import trajectory as traj
-        from ..world.spear import GRAVITY
+        if profile is None:
+            profile = self._shot_profile()
         return traj.preview(
-            ox, oy, vx, vy, ticks, gravity=GRAVITY,
+            ox, oy, vx, vy, ticks, gravity=profile.gravity,
             room_gravity=float(getattr(self.win, "room_gravity", 1.0)))
 
     def _shot_hits_body(self, pts, ob, pad) -> bool:
@@ -7810,13 +7833,15 @@ class BehaviorFSM:
     # ── 攻击意图：让同伴提前知道「他要掷了」 ──
     def _note_attack_intent(self, dir_x, tgt=None) -> None:
         """记下「我这就投掷」：别的猫据此躲弹道（看朝向是猜不出这件事的）。"""
-        ox, oy, vx, vy = self._shot_velocity(dir_x)
+        profile = self._shot_profile()
+        ox, oy, vx, vy = self._shot_velocity(dir_x, profile)
         tp = None
         tx, ty = getattr(tgt, "x", None), getattr(tgt, "y", None)
         if tx is not None and ty is not None:
             tp = (float(tx), float(ty))
         self.attack_intent = {"ox": ox, "oy": oy, "vx": vx, "vy": vy,
                               "dir": 1 if float(dir_x) >= 0.0 else -1,
+                              "profile": profile,
                               "target": tgt, "target_pt": tp,
                               "until": self._shot_clock + SHOT_INTENT_TICKS}
 
@@ -7842,7 +7867,8 @@ class BehaviorFSM:
             if (tp is not None
                     and math.hypot(tp[0] - me.chunk0.x, tp[1] - me.chunk0.y) < 30.0):
                 return o                  # 明确瞄着我：先让开
-            pts = self._shot_arc(it["ox"], it["oy"], it["vx"], it["vy"])
+            pts = self._shot_arc(it["ox"], it["oy"], it["vx"], it["vy"],
+                                 profile=it.get("profile"))
             if self._shot_hits_body(pts, me, SHOT_DODGE_R):
                 return o
         return None
@@ -7853,7 +7879,8 @@ class BehaviorFSM:
         弹道接近竖直时两侧差不多远：那就退离射手那一侧。
         """
         me = self.body.chunk1
-        pts = self._shot_arc(it["ox"], it["oy"], it["vx"], it["vy"])
+        pts = self._shot_arc(it["ox"], it["oy"], it["vx"], it["vy"],
+                             profile=it.get("profile"))
 
         def gap(x):
             return min(math.hypot(px - x, py - me.y) for px, py in pts)
@@ -7900,19 +7927,18 @@ class BehaviorFSM:
         （跳起来 / 爬杆）。判定走的是 world/hitgeom 的扫掠，和真实命中同一个函数。
         """
         from ..world import hitgeom as HG
-        from ..world.items import SPEAR_HIT_PAD
-        from ..world.spear import RAD as SPEAR_RAD
+        profile = self._shot_profile()          # 矛 / 石头各一套半径与补长（文档 §3）
         ob = getattr(tgt, "body", tgt)
         if ob is None:
             return False
-        ox, oy, vx, vy = self._shot_velocity(dir_x)
-        pts = self._shot_arc(ox, oy, vx, vy)
+        ox, oy, vx, vy = self._shot_velocity(dir_x, profile)
+        pts = self._shot_arc(ox, oy, vx, vy, profile=profile)
         if not pts:
             return False
         ax, ay = ox, oy
         for k, (nx, ny) in enumerate(pts):
-            if HG.sweep_hit_predicted(ob, ax, ay, nx, ny, SPEAR_RAD,
-                                      SPEAR_HIT_PAD, float(k + 1)):
+            if HG.sweep_hit_predicted(ob, ax, ay, nx, ny, profile.radius,
+                                      profile.hit_pad, float(k + 1)):
                 return True
             ax, ay = nx, ny
         return False
@@ -7935,7 +7961,8 @@ class BehaviorFSM:
         dir_x = 1 if dx >= 0.0 else -1
         if not self._shot_path_clear(dir_x, tgt):
             return False                        # 弹道上有同伴：先不出手（等它让开）
-        self._note_attack_intent(dir_x, tgt)    # 起手就记：同伴这几帧里让开
+        # 意图只在**真的出手后**记（_launch_weapon 里那一次）。这里提前记会让同伴
+        # 为一次「只是起跳、根本没投」的动作白躲（文档 §1「attack_intent 过早触发」）。
         # 先预演「当前姿态的真实弹道」：能命中就直接投，不能中才起跳对齐高度。
         # （旧实现只看高度差，能中的也先跳一下 —— 用户报的「可直接投矛命中时
         #  AI 仍选择跳跃投掷，导致打空」。）
@@ -8027,7 +8054,10 @@ class BehaviorFSM:
         # 旧版让 walk_to 每 tick 把 facing 改成移动方向，于是三个方向互相抢，
         # 出现「身体朝威胁 / 头朝后 / 平移后退」的错乱组合。现在拆开：
         # facing 交给 face_lock 钉在威胁那一侧，移动仍旧靠 walk_to。
-        away = 1.0 if lz.x < b.chunk1.x else -1.0
+        # 往哪边挪交给 EscapeSolver（ThreatField 的真实危险度），Crawl 只负责
+        # 「以趴姿执行 movement_dir」（文档 §4）。
+        plan = solve_escape(b, lz, self._threat_field(), CRAWL_AWAY_STEP)
+        away = plan.movement_dir
         goal = b.chunk1.x + away * CRAWL_AWAY_STEP
         if b.walk_min is not None:
             goal = min(max(goal, b.walk_min), b.walk_max)
@@ -8037,7 +8067,7 @@ class BehaviorFSM:
             # 残留速度让 x 在 walk_min 上下漂十几像素，corner 会一帧真一帧假。
             corner = True
         self._crawl_wall = corner
-        b.face_lock = 1 if lz.x >= b.chunk1.x else -1
+        b.face_lock = plan.face
         if corner:
             b.stop_walk()                 # 贴到那一侧的边：就地蹲着盯着它
         else:

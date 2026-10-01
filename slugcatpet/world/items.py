@@ -143,7 +143,7 @@ SPEAR_TRAIL_ALPHA = 80
 SPEAR_TRAIL_COLOR = (196, 176, 138)   # 木质杆身的拖尾色
 SCAVENGER_GRAB_PAD = 14.0
 SPEAR_HIT_SPEED = 7.0            # （保留）飞矛最低速度；现按原版只认 Mode.Thrown
-SPEAR_HIT_PAD = 6.0
+SPEAR_HIT_PAD = weaponphys.SPEAR_HIT_PAD
 KARMA_HIT_R = 13.0       # 业力花：花瓣最远 13.5，按整个花冠（花头）判命中
 SPEAR_COB_PAD = 5.0      # 原版 Weapon.cs:416 thrownBy is Player ⇒ 判定半径 +5f
 SPEAR_DMG = 1.0                   # Spear.HitSomething: Violence(Stab, spearDamageBonus=1f, 20f)
@@ -3085,7 +3085,7 @@ class ItemInteractionMixin:
                             pet.behavior.apply_stun(stun)
                     self._shake[0] += 1.6 * (1.0 if sp.vx >= 0.0 else -1.0)
                     self._shake[1] += 1.1
-                    sp.pin_tip(hit[1][0], hit[1][1])
+                    sp.pin_tip(hit[1][0], hit[1][1], hit.impact_angle)
                     sp.vx = sp.vy = 0.0
                     break
         for sp in self.spears:
@@ -3123,7 +3123,7 @@ class ItemInteractionMixin:
                 sp.vx = sp.vy = 0.0
                 sp.stuck = True
                 # 矛尖对齐到真实接触点：矛中心沿杆回退 LEN/2（tip() 的同一套几何）
-                sp.pin_tip(hit_x, hit_y)
+                sp.pin_tip(hit_x, hit_y, hit.impact_angle)
                 sp.stuck_angle = sp.angle_deg
                 sp.stuck_to = (lz, sp.x - lz.x, sp.y - lz.y)
                 sp.stuck_local = _local_frame(lz, sp.x, sp.y, sp.angle_deg)
@@ -3156,7 +3156,7 @@ class ItemInteractionMixin:
                 sp.vx = sp.vy = 0.0
                 sp.stuck = True
                 sp.stuck_angle = sp.angle_deg
-                sp.pin_tip(sc_hit[1][0], sc_hit[1][1])
+                sp.pin_tip(sc_hit[1][0], sc_hit[1][1], sc_hit.impact_angle)
                 sp.stuck_to = (sc, sp.x - sc.x, sp.y - sc.y)
                 self._shake[0] += 1.0 * (1.0 if dvec[0] >= 0.0 else -1.0)
                 self._shake[1] += 0.6

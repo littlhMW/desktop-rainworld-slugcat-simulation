@@ -42,7 +42,18 @@ POLE_ALONG_EPS = 3.0
 
 
 def is_beam(body) -> bool:
-    """横杆位姿（HangFromBeam/GetUpOnBeam/StandOnBeam）；其余 on_pole 视作竖杆。"""
+    """横杆位姿（HangFromBeam/GetUpOnBeam/StandOnBeam）；其余 on_pole 视作竖杆。
+
+    统一问身体自己的战斗站位查询（``creature.combat_position``，文档 §7：
+    FSM / blocking 不该再知道 ClimbOnBeam / StandOnBeam / HangFromBeam 这些
+    名字）。老身体对象没有这个查询时才回落到 animation 字符串。
+    """
+    cp = getattr(body, "combat_position", None)
+    if callable(cp):
+        try:
+            return cp() == "horizontal"
+        except Exception:
+            pass
     return getattr(body, "animation", None) in BEAM_ANIMS
 
 
@@ -85,7 +96,13 @@ def pole_rivals(bodies, me, dist) -> list:
 
 
 def at_beam_tip(body) -> bool:
-    """是否蹲在竖杆杆头上（原版 BeamTip）。"""
+    """是否蹲在竖杆杆头上（原版 BeamTip）——优先问身体自己的查询。"""
+    fn = getattr(body, "on_beam_tip", None)
+    if callable(fn):
+        try:
+            return bool(fn())
+        except Exception:
+            pass
     return getattr(body, "animation", None) == "BeamTip"
 
 

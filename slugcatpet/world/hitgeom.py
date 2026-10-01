@@ -62,8 +62,12 @@ def target_chunks(t):
     没有就按「双 chunk 躯干（蛞蝓猫）→ 头 + 各链节（蜥蜴）→ 单圆（拾荒者 /
     蝠蝇）」逐级降级 —— 旧代码这里每处各写一套，才是「可命中点不对」的来源。
     """
-    hc = getattr(t, "hit_chunks", None)
-    if callable(hc):
+    # 正式接口 CombatTarget.chunks()（文档 §6）：目标自己声明可命中点。
+    # hit_chunks() 是旧名字，保留兼容；两者都没有才走下面的降级链。
+    for name in ("chunks", "hit_chunks"):
+        hc = getattr(t, name, None)
+        if not callable(hc):
+            continue
         try:
             got = [(t, float(cx), float(cy), float(cr)) for (cx, cy, cr) in hc()]
         except Exception:
@@ -101,6 +105,97 @@ def target_chunks(t):
     return out
 
 
+def preferred_point(t):
+    """目标身上「最该瞄准的那个点」``(x, y)``（文档 §6 CombatTarget）。
+
+    目标可以自己实现 ``preferred_point()``（头甲、盾牌、软肋各不相同）；
+    没实现就退回 :func:`target_chunks` 的第一个点。所有瞄准都读这一份，
+    别再「AI 瞄 chunk0、判定判 chunk1」。
+    """
+    fn = getattr(t, "preferred_point", None)
+    if callable(fn):
+        try:
+            px, py = fn()
+            return (float(px), float(py))
+        except Exception:
+            pass
+    ch = target_chunks(t)
+    if not ch:
+        x, y = getattr(t, "x", None), getattr(t, "y", None)
+        if isinstance(x, (int, float)) and isinstance(y, (int, float)):
+            return (float(x), float(y))
+        return None
+    _o, cx, cy, _r = ch[0]
+    return (cx, cy)
+
+
+def hit_radius(t) -> float:
+    """目标的命中半径（文档 §6 CombatTarget）：优先自报，否则取所有 chunk 最大值。"""
+    fn = getattr(t, "hit_radius", None)
+    if callable(fn):
+        try:
+            return float(fn())
+        except Exception:
+            pass
+    ch = target_chunks(t)
+    if not ch:
+        return float(getattr(t, "rad", 0.0) or 0.0)
+    return max(float(cr) for (_o, _x, _y, cr) in ch)
+
+
+class HitResult:
+    """一次命中的统一结果（文档 §6）。
+
+    * ``owner``  ／ 命中的 chunk 或子对象（头部甲、尾巴、荚……）
+    * ``point``  ／ 真实接触点 (x, y)，插矛要贴的就是它
+    * ``t``      ／ 沿这一帧扫掠线段的参数 0..1
+    * ``tick``   ／ 预演时是第几帧扫到的
+    * ``normal`` ／ 接触法线（= 扫掠线段方向的垂线）
+    * ``impact_angle`` ／ 命中瞬间的**飞行角**：矛身朝向可能已经和它不同，
+      插墙 / 插生物改用它，不再拿 ``sp.angle_deg`` 冒充（文档 §6）。
+
+    兼容旧的 ``owner, point, t = hit`` 解包与 ``hit[1][0]`` 下标。
+    """
+    __slots__ = ("owner", "point", "t", "tick", "normal", "impact_angle")
+
+    def __init__(self, owner, point, t, tick=0.0, normal=(0.0, 0.0), impact_angle=None):
+        self.owner = owner
+        self.point = (float(point[0]), float(point[1]))
+        self.t = float(t)
+        self.tick = float(tick)
+        self.normal = (float(normal[0]), float(normal[1]))
+        self.impact_angle = impact_angle
+
+    def __iter__(self):
+        return iter((self.owner, self.point, self.t))
+
+    def __getitem__(self, i):
+        return (self.owner, self.point, self.t)[i]
+
+    def __len__(self):
+        return 3
+
+    def __repr__(self):
+        return "HitResult(%r, %r, t=%.3f)" % (self.owner, self.point, self.t)
+
+
+def _impact_angle(ax, ay, bx, by):
+    """扫掠方向 → 飞行角（0 = 上，顺时针为正，y↓），和 Spear.tip() 同口径。"""
+    dx, dy = bx - ax, by - ay
+    if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+        return None
+    return math.degrees(math.atan2(dx, -dy)) % 360.0
+
+
+def _normal_of(ax, ay, bx, by):
+    """扫掠方向 → 接触法线（单位向量，垂直于飞行方向）。"""
+    dx, dy = bx - ax, by - ay
+    L = math.hypot(dx, dy)
+    if L <= 1e-9:
+        return (0.0, 0.0)
+    return (-dy / L, dx / L)
+
+
 def sweep_hit(target, ball, pad: float = 0.0):
     """飞行中的投掷物 vs 目标：返回 (命中点, 真实接触点 (x, y), t)，没中 None。
 
@@ -120,7 +215,9 @@ def sweep_hit(target, ball, pad: float = 0.0):
             best = (got[0], owner, got[1], got[2])
     if best is None:
         return None
-    return (best[1], (best[2], best[3]), best[0])
+    return HitResult(best[1], (best[2], best[3]), best[0],
+                     normal=_normal_of(ax, ay, bx, by),
+                     impact_angle=_impact_angle(ax, ay, bx, by))
 
 
 def sweep_hit_predicted(target, ax, ay, bx, by, brad, pad: float = 0.0,
@@ -142,14 +239,18 @@ def sweep_hit_predicted(target, ax, ay, bx, by, brad, pad: float = 0.0,
             best = (got[0], owner, got[1], got[2])
     if best is None:
         return None
-    return (best[1], (best[2], best[3]), best[0])
+    return HitResult(best[1], (best[2], best[3]), best[0], tick=tick,
+                     normal=_normal_of(ax, ay, bx, by),
+                     impact_angle=_impact_angle(ax, ay, bx, by))
 
 
-def tip_align(ball, hx: float, hy: float, length: float) -> None:
+def tip_align(ball, hx: float, hy: float, length: float, angle_deg=None) -> None:
     """把投掷物的**尖**摆到接触点上（中心沿自身轴线回退 length/2）。
 
     和 Spear.tip() 同一套几何：angle=0 向上、顺时针为正、y 向下。
     """
-    ang = math.radians(float(getattr(ball, "angle_deg", 90.0)))
+    if angle_deg is None:
+        angle_deg = getattr(ball, "angle_deg", 90.0)
+    ang = math.radians(float(angle_deg))
     ball.x = float(hx) - math.sin(ang) * float(length) * 0.5
     ball.y = float(hy) + math.cos(ang) * float(length) * 0.5

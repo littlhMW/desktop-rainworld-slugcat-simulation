@@ -7,7 +7,7 @@ from ..core.units import lerp
 from . import weaponphys as wp
 from .enums import ItemState
 
-RAD = 5.0
+RAD = wp.STONE_RAD       # Stone.cs bodyChunks[0].rad（唯一真值在 weaponphys）
 MASS = 0.07
 GRAVITY = 0.9            # y↓
 AIR_FRICTION = 0.999

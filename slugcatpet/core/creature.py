@@ -1936,6 +1936,10 @@ class SlugcatBody:
         """
         return bool(self.on_pole and self.animation in ("ClimbOnBeam", "BeamTip"))
 
+    def on_beam_tip(self) -> bool:
+        """此刻是不是蹲在竖杆杆头上（原版 BeamTip）。"""
+        return bool(self.on_pole and self.animation == "BeamTip")
+
     def on_horizontal_beam(self) -> bool:
         """此刻是不是「横杆姿态」接管双手（站杆顶 / 吊杆 / 撑上杆）。
 

@@ -71,10 +71,19 @@ def conn_n(owner: str, i: int):
 
 
 def our_const(rel: str, name: str):
-    """读我们文件里的模块级常量（只认数字字面量）。"""
+    """读我们文件里的模块级常量（数字字面量，或指向 weaponphys 的唯一真值）。"""
     src = read(ROOT / rel)
     m = re.search(r"^%s\s*=\s*([\d.]+)" % re.escape(name), src, re.M)
-    return float(m.group(1)) if m else None
+    if m:
+        return float(m.group(1))
+    # 常量已收到唯一真值源 world/weaponphys.py（例如 RAD = wp.SPEAR_RAD）
+    m = re.search(r"^%s\s*=\s*(?:[A-Za-z_][\w]*\.)?([A-Za-z_]\w*)" % re.escape(name),
+                  src, re.M)
+    if not m:
+        return None
+    wp = read(ROOT / "slugcatpet/world/weaponphys.py")
+    m2 = re.search(r"^%s\s*=\s*([\d.]+)" % re.escape(m.group(1)), wp, re.M)
+    return float(m2.group(1)) if m2 else None
 
 
 def num_in(owner: str, pattern: str):
