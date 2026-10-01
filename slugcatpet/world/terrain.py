@@ -251,9 +251,9 @@ class TerrainGraph(NavGraph):
                 out.append(Leg("walk", b.x, b.y, risk=e.risk))
         return _merge_legs(out)
 
-    # 兼容：旧调用点还会直接喊 _run
-    def _run(self, src, avoid=None):
-        NavGraph._run(self, src, avoid)
+    # 兼容：旧调用点还会直接喊 _run（context 与 NavGraph 同签名）
+    def _run(self, src, avoid=None, context=None):
+        NavGraph._run(self, src, avoid, context)
 
 
 def _merge_legs(legs):

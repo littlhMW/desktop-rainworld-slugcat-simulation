@@ -153,6 +153,17 @@ class Planner:
         """真正能用作位移的杆（Mood / 取食 / 玩杆共用的唯一一份结果）。"""
         return [p for p in self.transports(kinds) if self.transport_in_reach(p)]
 
+    def escape_route(self, threat):
+        """威胁下的逃生路线（文档 §六 Escape Goal）。
+
+        威胁是什么由 ThreatField 描述，去哪由 Planner 在导航节点里挑，怎么走由
+        RouteExecutor 用**动态代价**执行。FSM 只保留「我要不要逃」这一个决定。
+        """
+        if self._route is None:
+            from .surface import SurfaceRoute
+            self._route = SurfaceRoute(self.pet)
+        return self._route.plan_escape(threat)
+
     def surface_route(self, goal):
         """多段寻路：Goal → 表面图 → 最优两段路线。返回 SurfaceHop 或 None。
 

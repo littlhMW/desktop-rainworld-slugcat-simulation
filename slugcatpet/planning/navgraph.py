@@ -39,11 +39,11 @@ class NavigationEdge:
     """一条导航边（文档口径）：带类型、耗时、风险、体力、可逆性与执行计划。"""
 
     __slots__ = ("src", "dst", "type", "time", "energy", "risk", "noise",
-                 "reversible", "capability", "plan", "extra")
+                 "reversible", "capability", "plan", "extra", "occupancy_cost")
 
     def __init__(self, type, src, dst, time=1.0, energy=0.0, risk=0.0,
                  noise=0.0, reversible=True, capability=None, plan=None,
-                 extra=None):
+                 extra=None, occupancy_cost=0.0):
         self.type = type
         self.src = src
         self.dst = dst
@@ -55,6 +55,10 @@ class NavigationEdge:
         self.capability = capability
         self.plan = plan
         self.extra = extra
+        # 静态占用（文档 §CrowdField：「这条边附近常驻几只猫」的固定部分）。
+        # **每 tick 变化**的拥挤在 CrowdField.edge_cost 里，不写回这条边 ——
+        # 图是按几何缓存的，往缓存边上写每 tick 的数会串味。
+        self.occupancy_cost = float(occupancy_cost)
 
     @property
     def lands(self):
@@ -338,6 +342,74 @@ class StuckDetector:
         return self.level
 
 
+def node_xy(n, context=None):
+    """节点的世界坐标。蛞蝓猫的 SurfaceNode 有 anchor，蜥蜴的 NavNode 有 x，
+    而蜥蜴侧的边**只带下标** —— 那就问 context.pos。
+    """
+    if n is None:
+        return None
+    if isinstance(n, int):
+        pos = getattr(context, "pos", None)
+        if pos is None:
+            return None
+        try:
+            return pos(n)
+        except Exception:
+            return None
+    x = getattr(n, "anchor", None)
+    y = getattr(n, "y", None)
+    if x is None or y is None:
+        return None
+    return (float(x), float(y))
+
+
+def edge_points(e, context=None):
+    """这条边的端点坐标（拿不到就是空表，调用方按「没有代价」处理）。"""
+    out = []
+    for n in (getattr(e, "src", None), getattr(e, "dst", None)):
+        p = node_xy(n, context)
+        if p is not None:
+            out.append(p)
+    return out
+
+
+def sample_points(pts, n=3):
+    """把端点插成 n 个采样点（n<3 或端点不足时原样返回）。
+
+    动态代价必须沿整条边采样：只取起点会出现「A 点安全、B 点安全、中间有蜥蜴」。
+    """
+    if len(pts) < 2 or n < 3:
+        return list(pts)
+    (x0, y0), (x1, y1) = pts[0], pts[-1]
+    out = []
+    for i in range(int(n)):
+        t = i / float(int(n) - 1)
+        out.append((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t))
+    return out
+
+
+def edge_pole(e):
+    """这条边依附的竖杆对象（SurfaceNode.pole），没有则 None。"""
+    for n in (getattr(e, "dst", None), getattr(e, "src", None)):
+        p = getattr(n, "pole", None)
+        if p is None or isinstance(p, (int, float, str)):
+            continue
+        return p
+    return None
+
+
+def edge_pole_x(e):
+    """这条边所在竖杆的中线 x（没有则 None）。"""
+    p = edge_pole(e)
+    if p is None:
+        return None
+    for attr in ("bx", "x"):
+        v = getattr(p, attr, None)
+        if v is not None:
+            return float(v)
+    return None
+
+
 def edge_dst(e):
     """边的终点（文档 §39 的收口）：蜥蜴侧直接是节点下标，蛞蝓猫侧是节点对象。
 
@@ -350,6 +422,46 @@ def edge_dst(e):
     return d if isinstance(d, int) else d.nid
 
 
+class NavContext:
+    """一只生物这一 tick 的导航上下文（文档 §二 的那条数据流）。
+
+        World → ThreatField.update() → CrowdField.update()
+              → 每只生物 → NavContext → Planner → Route → Executor
+
+    ThreatField / CrowdField 是**共享世界层**，不写进 FSM：以后新增拾荒者 /
+    秃鹫 / 利维坦，只往 ThreatField 注册一种，不给 FSM 加新的逃跑分支。
+    """
+
+    __slots__ = ("threat_field", "crowd_field", "me", "body", "pos")
+
+    def __init__(self, threat_field=None, crowd_field=None, me=None, body=None,
+                 pos=None):
+        self.threat_field = threat_field
+        self.crowd_field = crowd_field
+        self.me = me              # 这只生物本体（拥挤场用它排除自己）
+        self.body = body          # 它的身体（脚 / 杆判定用）
+        self.pos = pos            # 节点下标 → (x, y)，蜥蜴侧边只带下标时用
+
+
+def dynamic_edge_cost(edge, context):
+    """动态代价 = 威胁代价 + 拥挤代价。
+
+    文档 §四：**动态成本必须和静态成本分离**。edge.time / energy / risk 是
+    「这条边本来就难走」，威胁与拥挤是「这条边现在不好走」；混在一起的话，
+    威胁走开之后路线回不到正常值。
+    """
+    if context is None:
+        return 0.0
+    cost = float(getattr(edge, "occupancy_cost", 0.0) or 0.0)
+    tf = getattr(context, "threat_field", None)
+    if tf is not None:
+        cost += tf.edge_cost(edge, context)
+    cf = getattr(context, "crowd_field", None)
+    if cf is not None:
+        cost += cf.edge_cost(edge, context)
+    return cost
+
+
 class NavGraph:
     """统一移动图：节点 + NavigationEdge。Dijkstra / A* 都用 heapq。
 
@@ -358,7 +470,7 @@ class NavGraph:
     """
 
     __slots__ = ("nodes", "adj", "radj", "comp", "_dist", "_prev", "_src",
-                 "_avoid", "_ret_src", "_ret_set", "version", "_pos")
+                 "_avoid", "_ctx", "_ret_src", "_ret_set", "version", "_pos")
 
     def __init__(self, nodes, adj, version=0, pos=None):
         self.nodes = nodes
@@ -375,6 +487,7 @@ class NavGraph:
         self._prev = None
         self._src = None
         self._avoid = None
+        self._ctx = None
         self._ret_src = None
         self._ret_set = None
 
@@ -397,7 +510,7 @@ class NavGraph:
         return math.hypot(bx - ax, by - ay) * scale
 
     # ── Dijkstra（单源，heapq）──
-    def _run(self, src, avoid=None):
+    def _run(self, src, avoid=None, context=None):
         """单源最短路。``avoid`` 里的节点不可进入（导航级黑名单，文档 §13）。
 
         「A→B 走不通 → 重规划 → 又给 A→B」的死循环只能靠把那条边记下来解决：
@@ -420,23 +533,32 @@ class NavGraph:
                     v = edge_dst(e)
                     if v in avoid and v != src:
                         continue
-                nd = d + e.time
+                nd = d + e.time + dynamic_edge_cost(e, context)
                 if nd < dist[e.dst]:
                     dist[e.dst] = nd
                     prev[e.dst] = (u, e)
                     push(heap, (nd, e.dst))
-        self._dist, self._prev, self._src, self._avoid = dist, prev, src, avoid
+        self._dist, self._prev, self._src = dist, prev, src
+        # _ctx 记的是「这条缓存是用哪个 context 算的」：非 None 就说明它是
+        # 一份带动态代价的结果，下一次不带 context 的查询必须重算。
+        self._avoid, self._ctx = avoid, context
 
-    def _ensure(self, src, avoid=None):
+    def _ensure(self, src, avoid=None, context=None):
         if src is None:
             return False
-        if self._dist is None or self._src != src or self._avoid != avoid:
-            self._run(src, avoid)
+        if context is not None:
+            # 动态代价每 tick 都在变（威胁在走、猫在动），缓存的值一个 tick
+            # 都不能留 —— 带 context 的求解一律现算，并且把旧缓存标成脏的。
+            self._run(src, avoid, context)
+            return True
+        if (self._dist is None or self._src != src or self._avoid != avoid
+                or self._ctx is not None):      # 上一次是带 context 算的：作废
+            self._run(src, avoid, None)
         return True
 
-    def path(self, src, dst, avoid=None):
+    def path(self, src, dst, avoid=None, context=None):
         """返回 [NavigationEdge, ...]；不可达 None。"""
-        if src is None or dst is None or not self._ensure(src, avoid):
+        if src is None or dst is None or not self._ensure(src, avoid, context):
             return None
         if self._dist[dst] == float("inf"):
             return None
@@ -450,7 +572,7 @@ class NavGraph:
         return out
 
     # ── A*（目标明确时用；蜥蜴追猎恒有目标）──
-    def astar(self, src, dst, max_speed=20.0, avoid=None):
+    def astar(self, src, dst, max_speed=20.0, avoid=None, context=None):
         if src is None or dst is None:
             return None
         if src == dst:
@@ -480,7 +602,7 @@ class NavGraph:
                     v = edge_dst(e)
                     if v in avoid and v != src:
                         continue
-                ng = gc + e.time
+                ng = gc + e.time + dynamic_edge_cost(e, context)
                 if ng < g.get(e.dst, float("inf")) - 1e-9:
                     g[e.dst] = ng
                     prev[e.dst] = (u, e)
@@ -488,8 +610,8 @@ class NavGraph:
                                 e.dst))
         return None
 
-    def reachable(self, src, dst):
-        if src is None or dst is None or not self._ensure(src):
+    def reachable(self, src, dst, context=None):
+        if src is None or dst is None or not self._ensure(src, context=context):
             return False
         return self._dist[dst] != float("inf")
 

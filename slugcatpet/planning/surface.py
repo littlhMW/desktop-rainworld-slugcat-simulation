@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import bisect
 import heapq
+import math
 
 from ..behavior import tuning
 from ..core import chunkphys
@@ -47,7 +48,7 @@ from .hop_reach import HopReach, HopReachController, surface_under
 from .jump_arc import get_arc, sweep_hit
 from .jump_reach import _arc_hits_solids
 from .pole_hop import hop_plan, land_sweep, pole_hit
-from .navgraph import NavGraph
+from .navgraph import NavGraph, dynamic_edge_cost
 from .pole_reach import PoleJumpReach
 from .route import edge_for, landing_safe, route_cost
 from .walk_reach import WalkReach
@@ -613,11 +614,15 @@ class SurfaceGraph(NavGraph):
         return self._returnable
 
     # ── 寻路 ──
-    def route_to(self, goal_point, stats, pers=None):
+    def route_to(self, goal_point, stats, pers=None, context=None):
         """Dijkstra：起面 → 目标点。返回 (legs, time, energy)；到不了 None。
 
         finish 是一条普通的 terminal 边：所有可能路径按代价比较完才收尾，
         不再「一弹出就返回」（那样只保证看见了，不保证整条路最便宜）。
+
+        ``context``（NavContext）把**动态代价**接进来：威胁与拥挤沿边采样后
+        折成 tick 当量（见 planning/threat.py / crowd.py）。取食 / 玩耍 / 社交 /
+        逃跑全都自动避开危险和拥堵 —— 不用每个行为各写一次避让。
         """
         if self.start is None or not self.nodes:
             return None
@@ -651,7 +656,8 @@ class SurfaceGraph(NavGraph):
                 j = self.idx(e.dst)
                 if j in done:
                     continue
-                nc = c0 + route_cost(edge_for(e.kind, e.time, e.energy), pers)
+                nc = (c0 + route_cost(edge_for(e.kind, e.time, e.energy), pers)
+                      + dynamic_edge_cost(e, context))
                 old = best.get(j)
                 if old is None or nc < old[0] - 1e-9:
                     best[j] = (nc, t0 + e.time, e0 + e.energy, path + (e,))
@@ -659,6 +665,107 @@ class SurfaceGraph(NavGraph):
         if fin is None:
             return None
         return (fin[1], fin[2], fin[3])
+
+    # ── 逃生路线（文档 §六 Escape Goal）──
+    def escape_route(self, threat_xy, context, pers=None,
+                     min_safety=None, min_dist=None):
+        """威胁下「我该往哪逃」：遍历节点找**安全节点**，不是算一个 x。
+
+        旧口径（FSM._flee_target_x）是「当前 x + away * FLEE_GAP」再 clamp 到
+        可行走范围。平地左右跑还行，放到真正的地形上就是「往右跑 → 撞墙 →
+        停住 → 蜥蜴追过来 → 又往右跑」。这里改成：
+
+            威胁出现 → 问「哪个节点安全」→ A* 用**动态代价**走过去
+
+        安全 = 安全度 exp(-danger) 过线、离威胁够远、且从那里还能走回来
+        （原版 accessibility mapping）。评分再加死胡同与拥挤两项 ——
+        逃到死路等于把敌人引过来，而几只猫同时往同一条路逃会互相堵。
+
+        返回 (legs, time, energy)；一个候选都没有则 None（调用方回落旧口径）。
+        """
+        if self.start is None or not self.nodes:
+            return None
+        tf = getattr(context, "threat_field", None)
+        cf = getattr(context, "crowd_field", None)
+        me = getattr(context, "me", None)
+        lo_safety = tuning.ESCAPE_MIN_SAFETY if min_safety is None else float(min_safety)
+        lo_dist = tuning.ESCAPE_MIN_DIST if min_dist is None else float(min_dist)
+        tx, ty = float(threat_xy[0]), float(threat_xy[1])
+        best = {self.start: (0.0, 0.0, 0.0, ())}
+        done = set()
+        heap = [(0.0, self.start)]
+        out = None
+        out_score = float("inf")
+        while heap:
+            c0, cur = heapq.heappop(heap)
+            rec = best.get(cur)
+            if rec is None or c0 > rec[0] + 1e-9 or cur in done:
+                continue
+            if out is not None and c0 > out_score:
+                break                            # 剩下的都更贵，不用看了
+            done.add(cur)
+            _c, t0, e0, path = rec
+            if path and cur != self.start and cur in self._returnable:
+                node = self.nodes[cur]
+                danger = tf.danger_at(node.anchor, node.y) if tf is not None else 0.0
+                if (math.exp(-danger) >= lo_safety
+                        and self._threat_dist(node, tx, ty) >= lo_dist):
+                    score = c0 + danger * tuning.ESCAPE_DANGER_W
+                    score += self._dead_end_penalty(cur)
+                    if cf is not None:
+                        score += (cf.point_cost(node.anchor, node.y, me)
+                                  * tuning.ESCAPE_CROWD_W)
+                    if score < out_score:
+                        out_score = score
+                        out = (list(path), t0, e0)
+            for e in self.edges(cur):
+                if e.dst is None:
+                    continue
+                j = self.idx(e.dst)
+                if j in done:
+                    continue
+                nc = (c0 + route_cost(edge_for(e.kind, e.time, e.energy), pers)
+                      + dynamic_edge_cost(e, context))
+                old = best.get(j)
+                if old is None or nc < old[0] - 1e-9:
+                    best[j] = (nc, t0 + e.time, e0 + e.energy, path + (e,))
+                    heapq.heappush(heap, (nc, j))
+        if out is None:
+            return self._panic_route(best, tx, ty)
+        return out
+
+    @staticmethod
+    def _threat_dist(node, tx, ty) -> float:
+        return math.hypot(node.anchor - tx, node.y - ty)
+
+    def _dead_end_penalty(self, idx) -> float:
+        """死胡同（只有一条出边）扣分：逃进去等于把蜥蜴引过来然后无路可走。"""
+        n = 0
+        for e in self.edges(idx):
+            if e.dst is not None:
+                n += 1
+                if n > 1:
+                    return 0.0
+        return tuning.ESCAPE_DEAD_END_PENALTY
+
+    def _panic_route(self, best, tx, ty):
+        """没有节点够安全（多半是被围住）：退一步，去离它最远的可达节点。
+
+        仍然走图 —— 不是「朝反方向跑一段」，那样只会撞墙。
+        """
+        far, fd = None, -1.0
+        for j in best:
+            if j == self.start or j not in self._returnable:
+                continue
+            d = self._threat_dist(self.nodes[j], tx, ty)
+            if d > fd:
+                far, fd = j, d
+        if far is None:
+            return None
+        _c, t0, e0, path = best[far]
+        if not path:
+            return None
+        return (list(path), t0, e0)
 
 
 class RoutePlan:
@@ -741,6 +848,7 @@ class SurfaceRoute:
         self._cache_key = None
         self._graph = None            # 锚点图缓存（平台/杆没变就不重建）
         self._gkey = None
+        self._ctx = None              # 本猫的 NavContext（世界层每 tick 换内容）
 
     # ── 当前支撑面 ──
     def _here(self):
@@ -767,13 +875,78 @@ class SurfaceRoute:
             pers = getattr(getattr(self.pet, "cat", None), "personality", None)
         return pers
 
+    def _context(self):
+        """本猫这一 tick 的 NavContext：威胁 / 拥挤由**世界层**统一提供。
+
+        场是世界的（每 tick 更新一次，所有猫共用），上下文是每只猫的（它自己
+        是谁、节点坐标怎么取）。所以这里只做绑定，不重新扫描世界。
+        """
+        pet = self.pet
+        ctx = self._ctx
+        if ctx is None:
+            from .navgraph import NavContext
+            ctx = self._ctx = NavContext(me=pet, body=pet.body)
+        win = getattr(pet, "window", None)
+        ctx.threat_field = getattr(win, "threat_field", None)
+        ctx.crowd_field = getattr(win, "crowd_field", None)
+        return ctx
+
+    def _nav_off(self) -> bool:
+        """这些状态下没有「多段路」可谈：水里 / 无重力 / 已经在杆上。"""
+        b = self.pet.body
+        return (getattr(b, "swimming", False) or getattr(b, "zerog", False)
+                or getattr(b, "on_pole", False))
+
+    def _graph_now(self):
+        """当前站位 + 锚点图（平台 / 杆 / 站位没变就不重建，猫移动不算）。"""
+        pet = self.pet
+        hy, hlo, hhi = self._here()
+        start = SurfaceNode("floor", hy, hlo, hhi, here=True,
+                            anchor=pet.body.chunk1.x, sid="here")
+        gkey = (_nav_version(pet), pet.cat.stats, round(hy, 1),
+                round(hlo, 1), round(hhi, 1))
+        if gkey != self._gkey:
+            self._graph = None
+            self._gkey = gkey
+        if self._graph is None:
+            self._graph = SurfaceGraph.build(pet, start)
+        self._graph.start_at(pet.body.chunk1.x)
+        return self._graph
+
+    def plan_escape(self, threat, context=None):
+        """威胁下的逃生路线（文档 §六）：Planner 找安全节点，FSM 只决定「要逃」。
+
+        返回 RoutePlan（original_goal = 那个安全点）；找不到则 None，调用方
+        回落旧的「朝反方向走一段」。
+        """
+        pet = self.pet
+        if self._nav_off():
+            return None
+        tx = float(getattr(threat, "x", 0.0))
+        ty = float(getattr(threat, "y", 0.0))
+        ctx = self._context() if context is None else context
+        graph = self._graph_now()
+        got = graph.escape_route((tx, ty), ctx, self._pers())
+        if got is None:
+            return None
+        legs, t, e = got
+        if not legs:
+            return None
+        dest = legs[-1].dst
+        if dest is None:
+            return None
+        # 真实起点到「起始锚点」那一小段走路（与 plan() 同一口径）
+        walk0 = (abs(pet.body.chunk1.x - graph.nodes[graph.start].anchor)
+                 / tuning.PLAN_WALK_SPEED)
+        return RoutePlan(point_goal(dest.anchor, dest.y, contact="travel"),
+                         legs, t + walk0 * OPTIMISM,
+                         e + walk0 * tuning.PLAN_EN_RATE_LIGHT)
+
     def plan(self, goal):
         pet = self.pet
         body = pet.body
-        if getattr(body, "swimming", False) or getattr(body, "zerog", False):
-            return None
-        if getattr(body, "on_pole", False):
-            return None                       # 杆上另有杆间跳/落平台的路
+        if self._nav_off():
+            return None                       # 水里 / 无重力 / 杆上另有路
         gx, gy = goal.pos()
         stats = pet.cat.stats
         hy, hlo, hhi = self._here()
@@ -795,18 +968,8 @@ class SurfaceRoute:
         if hit is not None:
             return hit                      # 同一几何同一起点同一目标只解一次
 
-        start = SurfaceNode("floor", hy, hlo, hhi, here=True,
-                            anchor=body.chunk1.x, sid="here")
-        # 图缓存：只有「平台 / 杆 / 站在哪块面」变了才重建（猫移动不算）
-        gkey = (nav_v, stats, round(hy, 1), round(hlo, 1), round(hhi, 1))
-        if gkey != self._gkey:
-            self._graph = None
-            self._gkey = gkey
-        if self._graph is None:
-            self._graph = SurfaceGraph.build(pet, start)
-        graph = self._graph
-        graph.start_at(body.chunk1.x)
-        got = graph.route_to((gx, gy), stats, self._pers())
+        graph = self._graph_now()
+        got = graph.route_to((gx, gy), stats, self._pers(), self._context())
         out = None
         if got is not None:
             legs, t, e = got
@@ -844,16 +1007,44 @@ class RouteExecutor:
 
     MAX_REPLANS = 8
 
-    def __init__(self, pet, planner, goal, mode=MODE_TOUCH):
+    def __init__(self, pet, planner, goal, mode=MODE_TOUCH, route_fn=None,
+                 plan=None):
         self.pet = pet
         self.planner = planner
         self.goal = goal
         self.mode = mode
-        self.plan = planner.surface_route(goal)
+        # 逃命这类「目标随威胁移动」的场景换一个 route_fn（见 FSM._escape_replan）：
+        # 默认问 SurfaceRoute（固定目标），换了就每次重规划都重问一次安全节点。
+        self._route_fn = route_fn
+        # 调用方已经算好路线时直接收下：逃生那一步刚跑过一整次 Dijkstra，
+        # 不该在这里再问一遍（还会让 goal 与 plan 对不上）。
+        self.plan = plan if plan is not None else self._route(goal)
         self._ctrl = None
         self._direct = None
         self._replans = 0
         self._cancelled = False
+
+    def _route(self, goal):
+        """这一轮跑哪条路。默认问 SurfaceRoute；逃命换 route_fn。"""
+        fn = self._route_fn
+        if fn is None:
+            return self.planner.surface_route(goal)
+        return fn(goal)
+
+    def refresh(self):
+        """重取路线（威胁动了）。只在没有正在跑的 leg 时换，免得把半空中
+        的那一跳丢掉；驻留中的直连执行器会被收掉，下一 tick 按新目标重建。"""
+        if self._ctrl is not None or self._cancelled:
+            return
+        if self._direct is not None:
+            self._direct.cancel()
+            self._direct = None
+        plan = self._route(self.goal)
+        if plan is None:
+            return
+        self.plan = plan
+        if plan.original_goal is not None:
+            self.goal = plan.original_goal
 
     def update(self):
         if self._cancelled:
@@ -899,7 +1090,9 @@ class RouteExecutor:
         if self._replans > self.MAX_REPLANS:
             self._cancelled = True
             return GIVEUP
-        self.plan = self.planner.surface_route(self.goal)
+        self.plan = self._route(self.goal)
+        if self.plan is not None and self.plan.original_goal is not None:
+            self.goal = self.plan.original_goal
         leg = self.plan.leg() if self.plan is not None else None
         if leg is None or leg.kind == "finish":
             return self._direct_tick()

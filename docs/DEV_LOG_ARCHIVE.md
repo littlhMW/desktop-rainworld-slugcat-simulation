@@ -4,6 +4,87 @@
 
 ## 2026-10-01
 
+### R147 · ThreatField / CrowdField + 动态导航代价 + EscapeGoal（贴身反应排在路线之前）
+
+文档：《ThreatField 与动态导航代价（调整版）》。核心不是「离威胁多远」一个标量，
+而是给整张导航图加一层**会随时间变化的世界危险场**：威胁带速度、带它所在的杆/面，
+代价按拓扑加权；逃跑不再是 FSM 给一个 x，而是 Planner 在导航节点里挑安全区，
+交给 RouteExecutor 执行。
+
+**① `planning/threat.py`（新）**
+
+* `Threat`（actor / x / y / vx / vy / strength / kind / pole / surface）、
+  `ThreatSample`（danger / nearest / time_to_contact / same_pole / same_surface）、
+  `ThreatField`。
+* `update(win, geom=None)` 每 tick 采一次：活蜥蜩、愤怒的面条蝇成体、敌对拾荒者。
+* `sample(x, y, pole=, surface=)`：主威胁取 max，其余按 `_EXTRA_W=0.25` 少量叠加；
+  拓扑乘数同杆 5.0 / 同面 1.8 / 同区域 1.2 / 隔墙 0.3。
+* `predicted_sample()`：按 (0, 20, 40) tick 三个预测视界算「它冲过来会怎样」。
+* `eta()`（`THREAT_ETA_MIN_SPEED` 兜底）、`edge_cost()`（沿边采 3~5 点取 max ×180，
+  同杆软惩罚 +800 不禁止）、`danger_at()`、`threat_of()`、`pole_surface_at()`。
+* 模块级 `same_terrain()` / `hostile_needleworm()` / `hostile_scavenger()`，
+  `_SCREEN_FLOOR` 给地板一个稳定身份。
+
+**② `planning/crowd.py`（新）**
+
+`CrowdField`：`point_cost()` 半径 180、`exp(-d/55)`；`pole_riders()`；`edge_cost()`
+采样 Σpoint_cost×25 + 杆占用×260。
+
+**③ 导航图吃动态代价**
+
+* `NavigationEdge` 加 `occupancy_cost`（**静态**占用；每 tick 变的拥挤不写回缓存边）。
+* 新增 `NavContext(threat_field, crowd_field, me, body, pos)` 与
+  `dynamic_edge_cost(e, ctx) = occupancy_cost + threat.edge_cost + crowd.edge_cost`。
+* `NavGraph` 的 `_run / _ensure / path / astar / reachable` 全部接 `context`，
+  代价从 `e.time` 变成 `e.time + dynamic_edge_cost(...)`；带 context 的查询每 tick
+  现算，**不缓存**（威胁在动，缓存等于把危险记死）。
+* `planning/surface.py::route_to(..., context=)`、`world/terrain.py::_run` 一路转发。
+
+**④ EscapeGoal：逃跑变成一条导航目标**
+
+* `planning/goal.py` 加 `EscapeGoal`（threat / min_safety=0.75 / min_distance=180）。
+* `SurfaceGraph.escape_route()`：遍历节点 → 安全度 `exp(-danger) >= 0.75` 且离威胁
+  `>= 180` 且 `in _returnable` → 评分 `cost + danger*500 + 死胡同300 + 拥挤*260`；
+  一个都挑不出来就 `_panic_route()`（可达且最远）。
+* `RouteExecutor` 加 `route_fn` / `plan`，新增 `refresh()`（只有没有 leg 在跑才换路线）。
+
+**⑤ 世界层接线**
+
+`window.py` 的 `__init__` 建 `threat_field` / `crowd_field`；`_do_tick()` 在
+`for pet in self.pets: pet.step()` **之前** `update()` 两个场 —— 世界一份，不是每只猫一份。
+
+**⑥ FSM：逃命走路线，但贴身反应永远优先**
+
+第一版把「有没有逃生路线」摆在最前面，路线一有就把三条贴身反应全吃掉，
+表现为：被逼到墙角不再跳过威胁、在它背后不再匈匈、杆上/空中的处置被绕路，
+共 7 个旧回归（r29 / r68 / r78 / r87 / e2e_wants / e2e_r125）一起红。改成分层：
+
+1. 退无可退（贴墙 / 被逼退够远够久）→ 当场 `threat_jump` 跳过它，**路线作废**；
+2. 近处有竖杆 → 爬上去；
+3. 只在真的在它背后 → 匈匈潜行；
+4. 都不适用 → Planner `escape_route()` 找安全区（`_flee_plan` 保鲜 16 tick）→
+   `RouteExecutor`；
+5. 连路线都给不出来 → 旧的横向撤退。
+
+`_st_fleelizard()` 里也补了同一层：执行器在跑的时候仍然先判「退无可退 → 跳」，
+空中则整段交给物理（`walk_target_x = None`，路线留着落地接着走）。
+`_safe_from()` 改成**时间比较**（`tf.eta(t, me) > dist(me, safe)/4.2 + 12` 且
+`danger_at(me) <= 0.22`）；但危险表里查不到这只威胁时仍然回落旧的距离口径 ——
+不然「表这一 tick 还没刷新」会被读成「天下太平」，猫当场退出逃跑态。
+
+**⑦ `_face_threat_tick()`：杆上/空中不再直接退出决策**
+
+旧版 `if not b.on_floor(): return False` 就是「杆上不躲」的来源。现在杆上/空中只处理
+贴脸一档（`_threat_too_close()`：水平 76px，或同一根杆上纵向 150px），中距离的
+迎战 / 捡家伙 / 救人留到落地再走完整决策。
+
+**⑧ 回归**
+
+新增 `work/scratch/e2e_r147.py`（世界层接线 / ThreatField 拓扑与预测 / 动态代价真的进了
+Dijkstra 与 A* / CrowdField / EscapeGoal 与安全节点 / 安全判定是时间不是横向距离 /
+贴身反应优先于路线 / 结构断言），并入 `run_all19.ps1`；全量 148 个脚本
+`fails=0 []`。
+
 ### R146 · 物同帧贴手（去自造偏移）+ 线/矛真实渐隐 + 矛大师爆米花规则
 
 用户实测：**「依旧大量出现物体悬浮、错位」**、要求去掉「重置窗口地形」按钮、

@@ -486,6 +486,9 @@ class BehaviorFSM:
         self._blocked_ticks = 0
         self._block_grace = 0
         self._jump_over_cd = 0
+        self._flee_exec = None             # 逃命路线执行器（Planner 找的安全节点）
+        self._flee_plan = None             # 当前逃生 RoutePlan（安全点在这里）
+        self._flee_plan_age = 0            # 逃生路线的保鲜 tick（别每帧重跑 A*）
         # 被逼退记账（面敌时的「退无可退」判据）：连续退了多远／多久、卡住多久
         self._press_x = None
         self._press_back = 0.0
@@ -1330,6 +1333,8 @@ class BehaviorFSM:
 
     def _act_facethreat_pre(self, ctx):
         self._threat_pressure_tick()      # 被逼退记账（每 tick 无条件）
+        if self._flee_plan_age > 0:
+            self._flee_plan_age -= 1
     def _act_facethreat_gate(self, ctx):
         return (not self.grab.active and not self._exhausted and not self._zerog())
     def _act_facethreat(self, ctx):
@@ -1635,6 +1640,8 @@ class BehaviorFSM:
         """离开欲望态时统一收尾（幂等；_break_active_controllers 已跑过也无害）。"""
         if old in _WANTS_STATES:
             self._wants_break(old)
+        if old == "FleeLizard":
+            self._flee_break()
         if old == "ClearCorpse":
             self._haul_release(0.0)
 
@@ -2537,15 +2544,22 @@ class BehaviorFSM:
         th = self._threat_lizard()
         if th is None:
             return False
-        if not b.on_floor():
-            # 空中没有「匈匐」也没有「跳过它」这些选项：落地再决定。
-            # （旧版这段也在 on_floor 里；中途插嘴会让猫在半空
-            # 就定下「跑」，落地后反而不再评估，于是不会跳过蜥蜩。）
-            return False
         c1 = b.chunk1
         d = abs(th.x - c1.x)
+        # 「贴脸」不再只看欧氏距离：同一根竖杆上的威胁离得再远也是堵着我
+        # （文档 §ThreatField：hypot 说明不了「它就在我这根杆上」）。
+        close = self._threat_too_close(th, d)
+        if not b.on_floor():
+            # 空中 / 杆上**不再直接退出决策**（旧版这里一句
+            # `if not b.on_floor(): return False` 就是「杆上不躲」的来源）。
+            # 杆上能做的动作只有沿杆逃 / 落下去，所以只处理贴脸这一档；
+            # 中距离的选项（迎战 / 捡家伙 / 救人 / 跳过它）落地后再走完整决策。
+            if not close or self.state not in _FACE_PANIC_FROM:
+                return False
+            self._flee_lizard_now(th)
+            return True
         # ① 恐慌区：先脱离接触（如果手里有家伙就回身一掷再走）
-        if d <= tuning.FEAR_TOO_CLOSE_R:
+        if close:
             if self.state not in _FACE_PANIC_FROM:
                 return False
             if (b.on_floor() and self._armed_in_hand() and b.item_ready()
@@ -2686,11 +2700,21 @@ class BehaviorFSM:
         return min(max(x + side * FLEE_GAP, lo), hi)
 
     def _flee_lizard_now(self, lz) -> None:
-        """立刻躲开这只敌人：被逼到角落先跳过它，否则顺背匍匐潜走 / 掉头跑。
+        """立刻躲开这只敌人：先让 Planner 找安全节点，再回落旧的横向撤退。
 
-        对照原版：蜥蜴进恐惧圈时优先逃；匍匐只在「在它背后」时才顺手做。
+        文档 §六：逃跑不再由 FSM 直接给出一个 x，而是
+        「进入 Escape goal → Planner 找安全节点 → Executor 执行」。
+        这样「怎么逃」和「逃去哪」一起交给导航层，逃跑本身变成一个导航目标，
+        于是爬杆 / 跳平台 / 掉下层都自然成为路线的一部分。
+
+        只有导航层给不出任何路线时（世界只有一块地板 / 被围在死点），才用
+        原来的「被逼到角落就跳过它 / 顺背匍匐 / 掉头跑」。
         """
         b = self.body
+        # 战术反应优先于路线：这三条是贴身反应（跳过它 / 上杆 / 顺背匍匐），
+        # 都发生在「威胁已经贴到脸上」这一档，必须先于「规划一条安全路线」。
+        # 旧接口只有后三条；文档 §六 把「逃去哪」交给 Planner 之后，这里仍然
+        # 保留贴身反应，路线只接管「没别的办法，就是跑」的那一档。
         if self._cornered_by(lz) and self._jump_over(lz):
             self._jump_over_cd = tuning.JUMP_OVER_COOLDOWN   # 别落地又立刻再跳
             self._flee_from = lz
@@ -2727,6 +2751,20 @@ class BehaviorFSM:
             self._break_active_controllers()
             self._transition("CrawlAway")
             return
+        # 贴身反应都不适用：让 Planner 找一块「威胁到不了、我又到得了」的安全区
+        # （EscapeGoal → 锚点图 A* → RouteExecutor），爬杆 / 跳平台 / 掉下层自然
+        # 成为路线的一环。找不到任何安全节点（只有一块地板 / 被围在死点）才回落
+        # 到最后的横向撤退。
+        # 路线有保鲜期：A* 走一遍整张锚点图不便宜，而威胁在场时这个入口可能
+        # 每 tick 都被叫到（几 tick 内地形与威胁位置都没变，没必要重算）。
+        plan = self._flee_plan
+        if plan is None or self._flee_plan_age <= 0:
+            self._flee_plan_age = tuning.ESCAPE_REPLAN_TICKS
+            try:
+                plan = self.planner.escape_route(lz)
+            except Exception:
+                plan = None
+            self._flee_plan = plan
         self._flee_from = lz
         self._crawl_cd = T_CRAWL_RETRY
         self._break_active_controllers()
@@ -2842,6 +2880,16 @@ class BehaviorFSM:
         b = self.body
         b.set_posture(True)
         self._flee_cd = FLEE_COOLDOWN      # 进场即计时：被咬断也算躲过一轮
+        plan = self._flee_plan             # 先留住：_flee_break 会把槽清掉
+        self._flee_break()                 # 上一轮的执行器先收掉（幂等）
+        self._flee_plan = plan             # 这一趟要去的安全点（_escape_xy 读它）
+        if plan is not None and getattr(plan, "legs", None) and plan.original_goal:
+            from ..planning.surface import RouteExecutor
+            self._flee_exec = RouteExecutor(
+                self.win, self.planner, plan.original_goal, mode=MODE_STAY,
+                route_fn=self._escape_replan, plan=plan)
+            return
+        # 没有安全节点可去（导航层给不出路线）：走旧的横向撤退。
         # 起跳帧（_flee_lizard_now 刚做威胁跳）不给步点：这一跳的横速已经
         # 钉在 chunk 上，再 walk_to 会把它拽回来，跳完几乎原地落回。
         if b.on_floor() and not b.took_off() and self._flee_from is not None:
@@ -2854,10 +2902,30 @@ class BehaviorFSM:
             return
         lz = self._flee_from
         alive = lz is not None and getattr(lz, "state", None) == ItemState.FREE
-        if ((not alive) or self.timer >= FLEE_MAX_TICKS
-                or abs(lz.x - b.chunk1.x) >= FLEE_SAFE_R):
+        if (not alive) or self.timer >= FLEE_MAX_TICKS or self._safe_from(lz):
             self._transition("IdleStand")
             return
+        # 有逃生路线：这一段全权交给 RouteExecutor（爬杆 / 跳 / 落都是路线的一环）。
+        # 威胁在动，所以每隔十几 tick 重问一次「哪里还安全」。
+        ex = self._flee_exec
+        if ex is not None:
+            self.gfx.look_at = (lz.x, lz.y)
+            # 贴身退无可退：路线作废，当场面向它跳过去（落点已经换到对面）。
+            if (b.on_floor() and self._jump_over_cd <= 0
+                    and self._cornered_by(lz) and self._jump_over(lz)):
+                self._jump_over_cd = tuning.JUMP_OVER_COOLDOWN
+                self._flee_cd = FLEE_COOLDOWN
+                self._flee_break()
+                return
+            if not b.on_floor():
+                # 空中：整段飞行交给物理（路线留着落地接着走），别重取步点。
+                b.walk_target_x = None
+                return
+            if self.timer % tuning.ESCAPE_REPLAN_TICKS == 0:
+                ex.refresh()
+            if ex.update() != GIVEUP:
+                return
+            self._flee_exec = None             # 走不通：回落旧的横向撤退
         if not b.on_floor():
             # 已经在空中（多半是刚跳过它）：整段飞行交给物理，别再重取步点。
             # 旧版每 12 tick 还 walk_to()，空中把横速反向拽回来，跳完几乎原地
@@ -5354,6 +5422,114 @@ class BehaviorFSM:
     def _threat_lizard(self):
         """威胁圈内最近的活威胁：蜥蜴 + 愤怒的面条蝇成体（唤醒/持械/超度/逃跑都用它）。"""
         return self._nearest_throw_target(self._threat_r())
+
+    # ── ThreatField：共享世界危险层（文档 §ThreatField）──
+    def _threat_field(self):
+        """世界那一份危险表。没有就 None —— 老存档 / 单测回落旧的距离口径。"""
+        return getattr(self.win, "threat_field", None)
+
+    def _my_pole_surface(self):
+        """我此刻所在的竖杆（Surface）；没在杆上则 None。"""
+        tf = self._threat_field()
+        if tf is None:
+            return None
+        c1 = self.body.chunk1
+        return tf.pole_surface_at(c1.x, c1.y, self.body)
+
+    def _threat_too_close(self, th, d=None) -> bool:
+        """「贴脸」判定：水平距离 + 同杆拓扑。
+
+        「它离我 70px」和「它就在我这根杆上、正沿杆压下来」是两件事 ——
+        后者用欧氏距离量不出来，要靠 same_pole 加一个纵向量级来判。
+        """
+        b = self.body
+        c1 = b.chunk1
+        if d is None:
+            d = abs(th.x - c1.x)
+        if d <= tuning.FEAR_TOO_CLOSE_R:
+            return True
+        if not getattr(b, "on_pole", False):
+            return False
+        tf = self._threat_field()
+        if tf is None:
+            return False
+        if not tf.sample(c1.x, c1.y, pole=self._my_pole_surface()).same_pole:
+            return False
+        return math.hypot(th.x - c1.x, th.y - c1.y) <= tuning.FEAR_SAME_POLE_R
+
+    def _safe_from(self, lz) -> bool:
+        """逃掉了吗：Threat ETA to me > Escape ETA to safe region（文档 §六）。
+
+        旧口径是 `|lz.x - me.x| >= FLEE_SAFE_R` 这一条横向距离。它会把
+        「水平方向够远了，但人站在死角里」和「距离够远，可蜥蜴爬一下杆就追上」
+        都判成安全。改成比时间：
+
+            威胁到我还要 t_eta；我走到安全点只要 e_eta → t_eta > e_eta 才算甩掉
+
+        没有 ThreatField 时回落旧的距离口径。
+        """
+        b = self.body
+        if lz is None:
+            return True
+        c1 = b.chunk1
+        tf = self._threat_field()
+        if tf is None:
+            return abs(lz.x - c1.x) >= FLEE_SAFE_R
+        t = tf.threat_of(lz)
+        if t is None:
+            # 危险表里没有它（死了 / 走了），但**也可能只是这张表这一 tick 还没刷新**
+            # （单测直接调 body.step() / 世界重启后的第一帧）。老口径的距离判据仍然
+            # 要过一遍 —— 不然「表是空的」会被读成「天下太平」，猫当场退出逃跑态。
+            return abs(lz.x - c1.x) >= FLEE_SAFE_R
+        if tf.danger_at(c1.x, c1.y) > tuning.FLEE_SAFE_DANGER:
+            return False                     # 我这儿还危险，谈不上安全
+        t_eta = tf.eta(t, c1.x, c1.y)
+        safe = self._escape_xy()
+        e_eta = 0.0
+        if safe is not None:
+            e_eta = (math.hypot(safe[0] - c1.x, safe[1] - c1.y)
+                     / tuning.PLAN_WALK_SPEED)
+        return t_eta > e_eta + tuning.FLEE_SAFE_LEAD
+
+    def _escape_xy(self):
+        """我现在要去的那块安全区（逃生路线的终点）；没有则 None。"""
+        plan = self._flee_plan
+        goal = getattr(plan, "original_goal", None) if plan is not None else None
+        if goal is None:
+            return None
+        try:
+            return goal.pos()
+        except Exception:
+            return None
+
+    def _flee_break(self):
+        """收掉逃命路线的执行器（切态 / 被别的 band 抢班都走这里；幂等）。"""
+        ex = self._flee_exec
+        self._flee_exec = None
+        self._flee_plan = None
+        if ex is not None:
+            try:
+                ex.cancel()
+            except Exception:
+                pass
+
+    def _escape_replan(self, goal):
+        """给 RouteExecutor 的 route_fn：威胁在动，每次重规划都重问一次安全节点。
+
+        找不到新的安全点就退回「原来的目标点」那条普通路线 —— 不把已经开始的
+        移动丢在半路。
+        """
+        lz = self._flee_from
+        if lz is not None and getattr(lz, "state", None) == ItemState.FREE:
+            plan = None
+            try:
+                plan = self.planner.escape_route(lz)
+            except Exception:
+                plan = None
+            if plan is not None:
+                self._flee_plan = plan
+                return plan
+        return self.planner.surface_route(goal)
 
     def _hostile_fly(self, f) -> bool:
         """愤怒的面条蝇成体：原版 BigNeedleWormAI 的 Attacks（拿着幼体 / tempLike<-0.25）。"""

@@ -405,6 +405,39 @@ FEAR_PRESS_TICKS = 240        # 被逼退连续这么久（≈6s）也回头跳�
 FEAR_STUCK_EPS = 0.4          # 一 tick 位移小于它算「没挪动」
 FEAR_STUCK_TICKS = 40         # 背后是墙且连续这么久没挪动 → 跳过它
 FEAR_JUMP_VX = 5.6            # 跳过它时的水平初速（比奔跑顶速高：一次越过一个身位）
+FEAR_SAME_POLE_R = 150.0      # 同一根竖杆上的威胁：纵向这么近就算「贴脸」
+                              # （欧氏距离在这里不够用，见 ThreatField.same_pole）
+
+# ── ThreatField / CrowdField：共享世界危险层 → 动态导航代价 ──
+# 文档口径：代价量级「威胁代价 > 拥挤代价 > 普通移动代价」。
+THREAT_SENSE_R = 220.0            # 威胁感知半径（danger 的指数衰减尺度）
+THREAT_SAME_POLE_MUL = 5.0        # 同一根竖杆上的威胁：权重乘数
+THREAT_SAME_SURFACE_MUL = 1.8     # 同一块支撑面
+THREAT_SAME_REGION_MUL = 1.2      # 同一区域（没隔墙）的其它面
+THREAT_WALL_MUL = 0.3             # 隔着墙
+THREAT_PREDICT_HORIZONS = (0.0, 20.0, 40.0)   # 预测采样时刻（tick，≈0.5s / 1.0s）
+THREAT_PREDICT_W = (1.0, 0.8, 0.6)            # 对应权重
+THREAT_EDGE_SCALE = 180.0         # 边的威胁代价 = max(danger) * 它
+THREAT_EDGE_SAMPLES = 3           # 每条边最少采样点数（起点 / 中点 / 终点）
+THREAT_EDGE_SAMPLES_POLE = 5      # 竖边采更多点：A 点安全不代表整条边安全
+THREAT_POLE_EDGE_PENALTY = 800.0  # 同杆边软惩罚（不禁止：走投无路时仍可沿杆逃）
+THREAT_ETA_MIN_SPEED = 2.0        # 静止威胁的 ETA 兜底速度（不许算成永远追不上）
+
+CROWD_R = 180.0                   # 拥挤感知半径
+CROWD_SCALE = 55.0                # exp(-d / 它)
+CROWD_EDGE_SCALE = 25.0           # 边的拥挤代价 = Σpoint_cost * 它
+CROWD_EDGE_SAMPLES = 3            # 每条边的拥挤采样点数
+CROWD_POLE_OCCUPANCY = 260.0      # 同一根竖杆上每多一只猫的额外占用
+                                  # （竖杆是低容量通道：原版一杆一猫）
+
+ESCAPE_MIN_SAFETY = 0.75          # 逃生候选节点要求的最低安全度 exp(-danger)
+ESCAPE_MIN_DIST = 180.0           # 且离威胁至少这么远
+ESCAPE_DANGER_W = 500.0           # 逃生落点的危险度权重（不要停在威胁旁边）
+ESCAPE_CROWD_W = 260.0            # 逃生落点的拥挤权重
+ESCAPE_DEAD_END_PENALTY = 300.0   # 死胡同扣分（逃进去等于把敌人引过来）
+ESCAPE_REPLAN_TICKS = 16          # 逃命途中每隔这么久重问一次「哪里安全」
+FLEE_SAFE_DANGER = 0.22           # 我所在位置的 danger 高于它 → 还谈不上安全
+FLEE_SAFE_LEAD = 12.0             # 安全判定余量（tick）：威胁到我的 ETA 要领先这么多
 # 猎手「拿矛钉鼠标」：旧版是每 tick 掷 1/2400（平均 60s 才轮到一次，还要恰好
 # 站在地上、手上有矛、正在 IdleStand），实际几乎看不见 —— 改成原版那种
 # 「兴趣累积 → 过线再按性格出手」：光标待在附近就开始攒，攒满才掷一次骰子。
