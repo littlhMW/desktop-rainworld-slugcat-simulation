@@ -62,10 +62,10 @@ STALK_COLOR = (0, 0, 0)
 FRUIT_FLESH = (0, 0, 255)
 FRUIT_OUTLINE = (0, 0, 0)
 STONE_COLOR = (74, 76, 82)
-POLE_COLOR = (28, 28, 31)
+POLE_COLOR = (0, 0, 0)
 WALL_MIN_W = 16.0             # 手绘墙矩形的最小宽（拖太窄按它补齐）
 WALL_MIN_H = 16.0             # 手绘墙矩形的最小高
-WALL_COLOR = (104, 108, 102)  # 手绘墙填充（灰石调，和庇护所墙体同色系）
+WALL_COLOR = (0, 0, 0)       # 手绘墙填充：纯黑；纹理只在边缘/磨损处提供细节
 # 暖灯颜色
 LAMP_STICK_COLOR = (0, 0, 0)
 LAMP_BULB_FLESH = (255, 255, 255)
@@ -925,21 +925,93 @@ class ItemInteractionMixin:
         self.update()
         return rect
 
-    def _draw_walls(self, p):
-        """手绘墙块：灰石实心矩形 + 略深的描边（和庇护所墙体同色系）。"""
-        from PySide6.QtCore import QRectF
-        edge = QColor(max(0, WALL_COLOR[0] - 40), max(0, WALL_COLOR[1] - 40),
-                      max(0, WALL_COLOR[2] - 38))
+    @staticmethod
+    def _wall_shape(x0, y0, x1, y1, rng):
+        """Return a lightly notched perimeter for a hand-placed wall.
+
+        The collision remains an axis-aligned rectangle, while the drawn edge has
+        small, stable (per-rectangle) chips.  A local RNG is used so animation
+        frames never make the wall flicker.
+        """
+        w, h = max(1.0, x1 - x0), max(1.0, y1 - y0)
+        notch_depth = max(1.5, min(6.0, min(w, h) * 0.10))
+        path = QPainterPath()
+        path.moveTo(x0, y0)
+
+        # Each side gets zero to two chips.  The edge helper accepts both
+        # directions, so the bottom and left sides trace back correctly.
+        def edge(ax, ay, bx, by, nx, ny):
+            dx, dy = bx - ax, by - ay
+            span = math.hypot(dx, dy)
+            count = rng.randint(0, min(2, max(0, int(span / 75.0))))
+            chips = ([rng.uniform(.20, .70)] if count == 1 else
+                     [rng.uniform(.18, .34), rng.uniform(.58, .74)] if count == 2 else [])
+            for t in chips:
+                width = min(9.0, span * .08)
+                sx, sy = ax + dx * t, ay + dy * t
+                path.lineTo(sx, sy)
+                path.lineTo(sx + dx / span * width * .35 + nx * notch_depth,
+                            sy + dy / span * width * .35 + ny * notch_depth)
+                path.lineTo(sx + dx / span * width * .70 + nx * notch_depth * .75,
+                            sy + dy / span * width * .70 + ny * notch_depth * .75)
+                path.lineTo(sx + dx / span * width, sy + dy / span * width)
+            path.lineTo(bx, by)
+
+        edge(x0, y0, x1, y0, 0, 1)
+        edge(x1, y0, x1, y1, -1, 0)
+        edge(x1, y1, x0, y1, 0, -1)
+        edge(x0, y1, x0, y0, 1, 0)
+        path.closeSubpath()
+        return path
+
+    def _draw_wall_decor(self, p, x0, y0, x1, y1, rng, shape):
+        """Draw sparse wear marks and weeds without changing the black wall fill."""
+        w, h = x1 - x0, y1 - y0
+        # Wear is deliberately charcoal rather than a light outline: the block
+        # stays visually pure black and only catches the eye at close range.
         p.save()
-        p.setBrush(QColor(*WALL_COLOR))
-        for (x0, y0, x1, y1) in (getattr(self, "extra_walls", None) or ()):
-            rc = QRectF(x0, y0, x1 - x0, y1 - y0)
+        p.setClipPath(shape)
+        wear_pen = QPen(QColor(44, 44, 44, 170), pen_width(max(0.7, min(1.4, w / 180.0))))
+        wear_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(wear_pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        count = max(2, min(10, int((w * h) / 4200.0)))
+        for _ in range(count):
+            sx = x0 + rng.uniform(.10, .90) * w
+            sy = y0 + rng.uniform(.12, .88) * h
+            p.drawLine(QPointF(sx, sy), QPointF(sx + rng.uniform(-5.0, 5.0),
+                                                sy + rng.uniform(-2.0, 2.0)))
+        p.restore()
+
+        # Grass silhouettes grow out of the block's upper edge, with an
+        # occasional blade underneath.  Black keeps them one silhouette with
+        # the wall, as in the reference tile.
+        grass = QPen(QColor(0, 0, 0), pen_width(max(0.8, min(1.5, w / 150.0))))
+        grass.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(grass)
+        blades = max(2, min(18, int(w / 22.0)))
+        for i in range(blades):
+            gx = x0 + (i + .5) * w / blades + rng.uniform(-w / (blades * 4.0),
+                                                            w / (blades * 4.0))
+            gh = rng.uniform(3.0, min(12.0, max(4.0, h * .20)))
+            lean = rng.uniform(-3.5, 3.5)
+            p.drawLine(QPointF(gx, y0 + 1.0), QPointF(gx + lean, y0 - gh))
+            if rng.random() < .42:
+                p.drawLine(QPointF(gx, y1 - 1.0), QPointF(gx - lean, y1 + gh * .65))
+
+    def _draw_walls(self, p):
+        """手绘墙块：纯黑实心，边缘有稳定缺洼、磨损与少量杂草。"""
+        p.save()
+        for x0, y0, x1, y1 in (getattr(self, "extra_walls", None) or ()):
+            # Coordinates form the seed, so moving another wall does not change
+            # this wall's texture and every repaint produces the same result.
+            seed = hash((round(x0, 2), round(y0, 2), round(x1, 2), round(y1, 2)))
+            rng = random.Random(seed)
+            shape = self._wall_shape(x0, y0, x1, y1, rng)
             p.setPen(Qt.PenStyle.NoPen)
-            p.drawRect(rc)
-            p.setPen(QPen(edge, pen_width(2.0)))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRect(rc)
             p.setBrush(QColor(*WALL_COLOR))
+            p.drawPath(shape)
+            self._draw_wall_decor(p, x0, y0, x1, y1, rng, shape)
         p.restore()
 
     def _draw_wall_hint(self, p):

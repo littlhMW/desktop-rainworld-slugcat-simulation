@@ -1997,14 +1997,14 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         poly.append(QPointF(-bleed, bottom + bleed))
         # Water.cs:875-890 用 WaterSurface + DeepWater 两层 mesh。桌面透明窗里以
         # 同一波面多段渐变模拟浅表层到深水的层次，不复制原版 shader / 贴图。
-        storm_flood = float(getattr(self.rain, "flood", 0.0)) if not self.water_on else 0.0
         depth = QLinearGradient(0.0, base - 2.0, 0.0, max(base + 1.0, bottom))
         # Water.cs uses a thin WaterSurface mesh in front of an almost black
         # DeepWater mesh. The original flood GIF has grey-purple reflected
         # room light, not a luminous blue pool.
-        depth.setColorAt(0.0, QColor(63, 61, 75, 105 + int(26 * storm_flood)))
-        depth.setColorAt(0.16, QColor(31, 30, 40, 155 + int(27 * storm_flood)))
-        depth.setColorAt(1.0, QColor(9, 9, 16, 209 + int(22 * storm_flood)))
+        # Keep manually raised water and rain-cycle floods on the same palette.
+        depth.setColorAt(0.0, QColor(63, 61, 75, 131))
+        depth.setColorAt(0.16, QColor(31, 30, 40, 182))
+        depth.setColorAt(1.0, QColor(9, 9, 16, 231))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(depth)
         p.drawPolygon(poly)
@@ -2015,11 +2015,11 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         line = QPolygonF()
         for x, y in pts:
             line.append(QPointF(x, y))
-        pen = QPen(QColor(61, 59, 70, 124 + int(22 * storm_flood)))
+        pen = QPen(QColor(61, 59, 70, 146))
         pen.setWidthF(2.6)
         p.setPen(pen)
         p.drawPolyline(line)
-        pen = QPen(QColor(160, 157, 171, 106 + int(34 * storm_flood)))
+        pen = QPen(QColor(160, 157, 171, 140))
         pen.setWidthF(0.85)
         p.setPen(pen)
         p.drawPolyline(line)

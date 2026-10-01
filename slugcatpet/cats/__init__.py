@@ -16,28 +16,36 @@ from .watcher import WATCHER_DEF
 
 DEFAULT_VARIANT = "saint"
 
-# 幼崽（Slugpup）不是常规蛞蛓猫：只能从「生物生成」里放，不进「添加蛞蛓猫」选单。
+# 幼崽（Slugpup）和旧存档的 inv 变体不在「添加蛞蛓猫」选单中。
 PUP_VARIANT = "slugpup"
 
 # 已实装种族（食性/食条/数值全部按反编译；wip=True 的只是外观差异待后续）
 REGISTRY: dict[str, CatDef] = {
-    "saint": SAINT_DEF,
-    "rivulet": RIVULET_DEF,
-    "survivor": SURVIVOR_DEF,
     "monk": MONK_DEF,
+    "survivor": SURVIVOR_DEF,
     "hunter": HUNTER_DEF,
-    "artificer": ARTIFICER_DEF,
     "gourmand": GOURMAND_DEF,
+    "artificer": ARTIFICER_DEF,
+    "rivulet": RIVULET_DEF,
     "spearmaster": SPEARMASTER_DEF,
-    "inv": INV_DEF,
+    "saint": SAINT_DEF,
     "watcher": WATCHER_DEF,
+    # Internal/legacy variant retained for saved pets; it is filtered from
+    # pickable_variants() and therefore does not appear in the chooser.
+    "inv": INV_DEF,
     "slugpup": SLUGPUP_DEF,
 }
 
 
 def pickable_variants() -> tuple:
     """「添加蛞蛓猫」列表里可选的种族（幼崽走生物生成）。"""
-    return tuple(k for k in REGISTRY if k != PUP_VARIANT)
+    return tuple(k for k in REGISTRY if k not in (PUP_VARIANT, "inv"))
+
+
+def display_order(pets) -> list:
+    """按角色选择顺序列出已有蛞蝓猫，同种角色保持加入顺序。"""
+    rank = {variant: i for i, variant in enumerate(pickable_variants())}
+    return sorted(pets, key=lambda pet: rank.get(pet.variant, len(rank)))
 
 
 def get(variant) -> CatDef:

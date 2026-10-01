@@ -73,7 +73,6 @@ KARMA_MIN = 1
 KARMA_MAX = 10           # 最低 1 级、最高 10 级
 
 _INK = QColor(238, 232, 214)
-_PANEL = QColor(12, 11, 10, 150)
 
 # 能画汉字的字体族（有其一才用中文文案）
 _CJK_FAMS = ("Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "SimSun",
@@ -347,12 +346,10 @@ def draw_storm_hud(p, win) -> None:
         return
     if not info:
         return
-    x0, y0, x1, y1 = hud_rect(win)
+    x0, y0, _, _ = hud_rect(win)
     s = _layout_scale()
     p.save()
-    p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(_PANEL)
-    p.drawRoundedRect(QRectF(x0, y0, x1 - x0, y1 - y0), 4.0, 4.0)
+    # Keep the ring, pips, and countdown; the desktop itself is the backdrop.
     # 参考图是硬边像素画：贴图放大用最近邻
     p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
     # 不参与像素化滤镜：圆点/描边开抗锯齿，保持清晰

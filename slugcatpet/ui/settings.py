@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushB
                                QGridLayout, QSpinBox, QSlider)
 from PySide6.QtCore import Qt
 
-from ..cats import REGISTRY, pickable_variants
+from ..cats import REGISTRY, display_order, pickable_variants
 from ..i18n import t
 from .._paths import log_error, resource_dir
 from ..window import MAX_PETS, spawnable_kinds, SPAWN_PERIOD_MIN_S, SPAWN_PERIOD_MAX_S
@@ -122,7 +122,8 @@ class SettingsWindow(QWidget):
     def _section_cats(self, v):
         v.addWidget(self._header(t("settings_cats_section")))
         # 幼崽不是常规蛞蛓猫：不列在蛞蛓猫名单里（它们从生物生成里来）
-        pets = [p for p in self._window.pets if not getattr(p, "is_pup", False)]
+        pets = display_order(p for p in self._window.pets
+                             if not getattr(p, "is_pup", False))
         can_remove = len(pets) > 1
         for pet in pets:
             row = QHBoxLayout()
