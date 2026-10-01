@@ -4,6 +4,7 @@ import math
 import random as _random
 from ..core.chunkphys import aabb_wall_collide, apply_water
 from .enums import ItemState
+from .combat import CombatTarget
 
 RAD = 8.0
 MASS = 0.2               # 舌头弹簧质量比依赖此值
@@ -45,7 +46,7 @@ def _perp(nx, ny):
     return (ny, -nx)
 
 
-class Fruit:
+class Fruit(CombatTarget):
     """果子本体：单点物理+状态机；hanging 受 Stalk 约束。"""
     collision_layer = 1              # 与 Saint/黏菌同层互推
     # 食性（cats/diet.py）：植物性食物，原版 IPlayerEdible.FoodPoints = 1

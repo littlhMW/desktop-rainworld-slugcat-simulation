@@ -4,6 +4,48 @@
 
 ## 2026-10-01
 
+### R153 · CombatTarget 接口迁移 / 杆控制器统一协议 / Spear 生命周期统一状态
+
+文档：R150 审计里当时点名「留专轮」的三条（§7 / §9 / §13），本轮一次收完。
+
+**① §7 hitgeom 降级链删除：每个目标自己回答「我哪里挨打」**
+
+* 新增 `world/combat.py::CombatTarget`：`chunks()` 必答，`preferred_point()` / `hit_radius()`
+  由它派生（默认＝第一个可命中点 / 最大半径）；普通「单点 + rad」对象直接继承，不写任何方法。
+* `hitgeom.target_chunks / preferred_point / hit_radius` 只认 `chunks()`；旧那条
+  `chunks → hit_chunks → chunk0/chunk1 → p0/p1 → x/y + seg` 降级链整条删掉 ——
+  以前「命中点又飘了」得先猜这次走的是第几层。
+* 各目标接接口：`SlugcatBody`（两 chunk）、`Lizard`（头 + 每节，头 owner 归一成蜥蜴自己，
+  `hit_chunk is lz` 判头甲的语义不变）、`NeedleWorm`（`hit_chunks()` 改名 `chunks()`，
+  吻段收细 + 獠牙尖原样）、`SeedCob`（两个挂点）；`Stone / Pearl / Fruit / BatFly / Scavenger`
+  走默认实现（带上 `class X(CombatTarget)`）。
+* 没实现 `chunks()` 的对象＝没有可命中点（不再猜 `chunk0`）。
+
+**② §9 竖杆 / 横杆控制器统一协议（不合成大 Controller）**
+
+* 新增 `world/pole_ctl.py::PoleController`：`kind / pole / update() / release() / jump_off() /
+  can_handoff() / handoff() / position()`；`behavior/pole_climb.py::PoleClimber`（vertical）与
+  `world/hpole.py::HPoleController`（horizontal）各自实现，物理仍完全分开。
+* FSM 从「`poleclimb` / `hpole` 两个槽」收成 `pole_ctl` 一个槽；`poleclimb` / `hpole`
+  变成 read-only property（按 `kind` 过滤），`_hpole_release()` 删除 ——
+  释放只剩 `_pole_release()` 一条路（stun / 切态 / 死亡都走它）。
+* 换杆请求从「直接挂属性」改成协议方法：`can_handoff()` 判能不能换（`no_handoff`
+  的临时竖杆不允许），`handoff()` 取走即清。
+
+**③ §13 `Spear` 生命周期从「统一读取」变成「统一状态」**
+
+* `state / stuck / pinned / _thrown / stuck_to / stuck_local / toss_t` 这些字段现在**只**由
+  `enter_free() / enter_thrown() / enter_stuck() / enter_stuck_to() / enter_gone()` 成组写；
+  `unstuck()` 并入 `enter_free()`。`pole` / `held_by` 仍是杆实体 / 持有者句柄，不在这里动。
+* 五个「插住」入口（`stick` / `embed_in_bar` / `embed_vertical` / `rest_on_ground` /
+  `lodge_in_surface`）全部走 `enter_stuck(pinned=...)`，不再各自抄一遍九个字段。
+* `weaponphys.begin_thrown` 加钩子：`Spear` 走 `enter_thrown()`，`Stone`（没有生命周期机）保持原样。
+* 于是 `stuck=True + _thrown=True`、拔出来还留着 `stuck_to` 这类中间组合不再可能。
+
+验证：新增 `work/scratch/e2e_r153.py`（66 项断言）；`e2e_r47`（假目标 `_Tgt`）与
+`e2e_r151`（假目标 `TwoChunk` / 控制器槽改名）按新接口同步。
+全量 `run_all19.ps1`：`=== round done; fails=0 []`。
+
 ### R152 · DodgeShot 改锁定式避让（起手定一次边，执行期不再重选）
 
 现象：被瞄准的猫进 `DodgeShot` 后原地左右抽搐（状态面板显示「躲弹道」）。根因在执行层，不在弹道 /

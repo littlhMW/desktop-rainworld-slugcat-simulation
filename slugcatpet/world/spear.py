@@ -263,11 +263,8 @@ class Spear:
                                     - 1.0 / max(1.0, float(NEEDLE_ALPHA_FADE)))
         if self.needle_alpha <= 0.0:
             self.needle_alpha = 0.0
-            self.state = ItemState.GONE
-            self.stuck_to = None
-            self.stuck_local = None
+            self.enter_gone()
             self.held_by = None
-            self.vx = self.vy = 0.0
 
     def stick(self, WL: float, wall: int) -> None:
         """掷进左右墙（wall=±1）：杆横着插住、杆尖埋进墙里，成为一截同长的横杆。
@@ -275,16 +272,7 @@ class Spear:
         地面插矛不走这里（原版 ContactPoint.y 分支标 verticalBeam），见
         rest_on_ground（斜插，可拾取）与 embed_vertical（垂直、成竖杆、不可拾取）。
         """
-        self.needle_disconnect()                   # 原版 Mode.StuckInWall 也断连接
-        self.stuck = True
-        self.pinned = True                         # 原版：stuckInWall 的格子标成 beam
-        self._thrown = False
-        self.toss_t = 0
-        self.vx = self.vy = 0.0
-        self.spin = 0.0
-        self.spinning = False
-        self._still = 0
-        self.stuck_angle = 90.0 if wall > 0 else 270.0
+        self.enter_stuck(pinned=True, stuck_angle=90.0 if wall > 0 else 270.0)
         self.x = (WL - LEN * 0.5 + self.embedded) if wall > 0 else (LEN * 0.5 - self.embedded)
         self._sync_interp()
 
@@ -295,21 +283,12 @@ class Spear:
         可以被扎矛。接触点 (x, y) 是这一 tick 扫掠到的落点，杆尖朝表面里埋进去。
         角度约定见 tip()：0=上 90=右 180=下 270=左。
         """
-        self.needle_disconnect()
-        self.stuck = True
-        self.pinned = True
-        self._thrown = False
-        self.toss_t = 0
-        self.vx = self.vy = 0.0
-        self.spin = 0.0
-        self.spinning = False
-        self._still = 0
         if abs(nx) >= abs(ny):
             ang = 90.0 if nx < 0.0 else 270.0      # 侧墙：杆尖指向墙内
         else:
             ang = 180.0 if ny < 0.0 else 0.0       # 顶面朝下扎 / 底面朝上扎
         self.angle_deg = self.last_angle = ang
-        self.stuck_angle = ang
+        self.enter_stuck(pinned=True)
         a = math.radians(ang)
         dx, dy = math.sin(a), -math.cos(a)
         self.x = x - dx * (LEN * 0.5 - self.embedded)
@@ -338,19 +317,100 @@ class Spear:
             return SpearLifecycle.THROWN
         return SpearLifecycle.FREE
 
-    def unstuck(self) -> None:
+    # ---- 第153轮 生命周期：唯一状态写入 -------------------------------------
+    # `state / stuck / pinned / _thrown / stuck_to / stuck_local / toss_t`
+    # 以前由矛自己、items 层、猫、拾荒者各写一半，才会出现 stuck=True 且
+    # _thrown=True、拔出来还留着 stuck_to 这类中间组合。现在这些字段
+    # **只**由下面五个进入方法成组写。`pole` / `held_by` 不在这里动：
+    # 它们是杆实体 / 持有者的句柄（见 items._sync_spear_poles）。
+
+    def enter_free(self, roll: bool = True, state: str = ItemState.FREE) -> None:
+        """唯一「自由身」入口：掷完 / 弹开 / 被拔下 / 被拿着 / 脱钉 / 轻放。
+
+        roll=True 走原版 Weapon.Update 退出 Thrown 的 SetRandomSpin（落地会
+        自己收势插地）；roll=False 用于「当场静止」（被拾取、轻放、脱钉）。
+        """
+        if self.stuck or self.stuck_to is not None or self._thrown:
+            self.needle_disconnect()               # 原版退出 Stuck / Thrown → 断连接
+        self.state = state
         self.stuck = False
-        self.pinned = False                        # 拔出来就恢复成普通矛
+        self.pinned = False
+        self.stuck_to = None
+        self.stuck_local = None
+        self._thrown = False
+        self._exit_spd = 0.0
+        self.toss_t = 0
+        self.cursor_pin = None
         self.embedded = STUCK_SINK
+        self.spinning = bool(roll)
+        self._still = 0
+        self.spin = (wp.spear_random_spin(self._rng, self.room_gravity)
+                     if roll else 0.0)
+
+    def enter_thrown(self) -> None:
+        """唯一「掷出」入口（weaponphys.begin_thrown 的 Spear 分支）。"""
+        self.stuck = False
+        self.pinned = False
+        self.stuck_to = None
+        self.stuck_local = None
+        self._thrown = True
+        self.toss_t = 0
+        self.cursor_pin = None
+        self.spinning = False
+        self._still = 0
+        self.spin = 0.0
+
+    def enter_stuck(self, pinned: bool = False, stuck_angle=None) -> None:
+        """唯一「插住」入口：墙 / 地 / 横挂。
+
+        stick / embed_in_bar / rest_on_ground / lodge_in_surface /
+        embed_vertical 都走这里；落点与朝向由调用者先摆好。stuck_angle
+        传 None ＝ 就地取当前 angle_deg（保持插住那一刻的角度）。
+        """
+        self.needle_disconnect()
+        self.stuck = True
+        self.pinned = bool(pinned)
+        self.stuck_to = None
+        self.stuck_local = None
+        self._thrown = False
+        self.toss_t = 0
+        self.cursor_pin = None
+        self.vx = self.vy = 0.0
+        self.spin = 0.0
+        self.spinning = False
+        self._still = 0
+        self.stuck_angle = (self.angle_deg if stuck_angle is None
+                            else float(stuck_angle))
+
+    def enter_stuck_to(self, host, dx: float, dy: float, local=None) -> None:
+        """唯一「扎在生物身上」入口（items 层：蜥蜴 / 拾荒者 / 爆米花）。"""
+        self.stuck = True
+        self.pinned = False
+        self.stuck_to = (host, float(dx), float(dy))
+        self.stuck_local = local
+        self._thrown = False
+        self.toss_t = 0
+        self.cursor_pin = None
+        self.vx = self.vy = 0.0
+        self.spin = 0.0
+        self.spinning = False
+        self._still = 0
+
+    def enter_gone(self) -> None:
+        """唯一「消失」入口。"""
+        self.state = ItemState.GONE
+        self.stuck = False
+        self.pinned = False
+        self.stuck_to = None
+        self.stuck_local = None
+        self._thrown = False
+        self.toss_t = 0
+        self.cursor_pin = None
+        self.vx = self.vy = 0.0
 
     def _enter_free(self) -> None:
         """Weapon.Update 退出 Thrown：SetRandomSpin + ChangeMode(Free)。"""
-        self.needle_disconnect()                   # 原版 Mode.Free → 断连接
-        self._thrown = False
-        self._exit_spd = 0.0
-        self.spinning = True
-        self._still = 0
-        self.spin = wp.spear_random_spin(self._rng, self.room_gravity)
+        self.enter_free()
 
     def rest_on_ground(self, HL: float) -> None:
         """Spear.Update(Free+spinning) 的收势：停转、速度清零、杆尖朝下插进地面。
@@ -358,14 +418,8 @@ class Spear:
         原版：rotation = DegToVec(Lerp(-50,50,rand)+180) —— 杆尖向地，杆身斜插出地面。
         位置不跳变（只在杆尖越到地面线以下时把整根杆抬回来），所以落地不抖也不穿地。
         """
-        self.needle_disconnect()
-        self.spinning = False
-        self._still = 0
-        self.spin = 0.0
         self.angle_deg = self.last_angle = 180.0 + self._rng.uniform(-50.0, 50.0)
-        self.stuck_angle = self.angle_deg
-        self.vx = self.vy = 0.0
-        self.stuck = True
+        self.enter_stuck(pinned=False)
         self._seat_on_floor(HL)
         self._sync_interp()
 
@@ -375,16 +429,7 @@ class Spear:
         原版只有 ContactPoint == throwDir 的那一掷会把格子变成 beam；斜面掠过
         的矛只是「插在上面」。这里 pinned 保持 False，所以不会有杆实体。
         """
-        self.needle_disconnect()
-        self.stuck = True
-        self.pinned = False
-        self._thrown = False
-        self.toss_t = 0
-        self.vx = self.vy = 0.0
-        self.spin = 0.0
-        self.spinning = False
-        self._still = 0
-        self.stuck_angle = self.angle_deg
+        self.enter_stuck(pinned=False)
         self._sync_interp()
 
     def _sync_interp(self) -> None:
@@ -434,16 +479,8 @@ class Spear:
         原版把这种矛所在的格子标成 verticalBeam —— 即「对应长度的竖杆」，
         所以这里把杆摆正、扎进地里，由 items 层注册成一截竖杆；钉住后不再能拾取。
         """
-        self.needle_disconnect()
-        self.stuck = True
-        self._thrown = False
-        self.vx = self.vy = 0.0
-        self.spin = 0.0
-        self.spinning = False
-        self._still = 0
-        self.pinned = True
         self.angle_deg = self.last_angle = 180.0     # 杆尖朝下
-        self.stuck_angle = 180.0
+        self.enter_stuck(pinned=True)
         self.y = HL - LEN * 0.5                      # 杆尖抵住地面线
         self._sync_interp()
 

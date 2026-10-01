@@ -727,7 +727,8 @@ class ItemInteractionMixin:
     def clear_poles(self):
         from .enums import ItemState as _IS
         for sp in self.spears:            # 矛钉成的杆一并清掉，矛本身回到可拾取
-            sp.pinned = False
+            if sp.pinned:
+                sp.enter_free(roll=False)
             sp.pole = None
         for pl in self.poles:
             pl.state = _IS.GONE
@@ -2893,7 +2894,7 @@ class ItemInteractionMixin:
                     rs = getattr(pet.body, "release_stone", None)
                     if rs is not None:
                         rs()
-            sp.state = ItemState.GONE
+            sp.enter_gone()
         if self.spears:
             self.spears = []
             self.world_version += 1
@@ -2927,11 +2928,8 @@ class ItemInteractionMixin:
         sp = self._spear_at(pos)
         if sp is None:
             return False
-        sp.unstuck()
-        sp.stuck_to = None               # 插在生物身上的也能拔下来
-        sp.stuck_local = None
-        sp.toss_t = 0
-        sp.state = ItemState.MOUSE
+        # 钉成杆的 / 插在生物身上的都能拔下来：统一走生命周期入口
+        sp.enter_free(roll=False, state=ItemState.MOUSE)
         sp.last_x, sp.last_y = pos
         sp.x, sp.y = pos
         self._dragged_spear = sp
@@ -2966,7 +2964,7 @@ class ItemInteractionMixin:
             return False
         speed = math.hypot(sp.vx, sp.vy)
         if sp.state == ItemState.MOUSE:
-            sp.state = ItemState.FREE
+            sp.enter_free(roll=False)
         if speed >= SPEAR_PLAYER_THROW_MIN:
             ux, uy = sp.vx / speed, sp.vy / speed
             power = clampf(speed * SPEAR_PLAYER_POWER_K,
@@ -3120,13 +3118,11 @@ class ItemInteractionMixin:
                     self._shake[1] += 0.4
                     break
                 self._spear_needle_feed(sp, lz)          # 骨矛吸食活物
-                sp.vx = sp.vy = 0.0
-                sp.stuck = True
                 # 矛尖对齐到真实接触点：矛中心沿杆回退 LEN/2（tip() 的同一套几何）
                 sp.pin_tip(hit_x, hit_y, hit.impact_angle)
                 sp.stuck_angle = sp.angle_deg
-                sp.stuck_to = (lz, sp.x - lz.x, sp.y - lz.y)
-                sp.stuck_local = _local_frame(lz, sp.x, sp.y, sp.angle_deg)
+                sp.enter_stuck_to(lz, sp.x - lz.x, sp.y - lz.y,
+                                  _local_frame(lz, sp.x, sp.y, sp.angle_deg))
                 self._shake[0] += 1.0 * (1.0 if dvec[0] >= 0.0 else -1.0)
                 self._shake[1] += 0.6
                 if killed:
@@ -3153,11 +3149,9 @@ class ItemInteractionMixin:
                             subject=_weapon_owner(sp), obj=sc,
                             intensity=1.0 if _sc_died else 0.75,
                             x=sp.x, y=sp.y)
-                sp.vx = sp.vy = 0.0
-                sp.stuck = True
-                sp.stuck_angle = sp.angle_deg
+                sp.stuck_angle = sp.angle_deg      # 原序：记下撞击前的角度
                 sp.pin_tip(sc_hit[1][0], sc_hit[1][1], sc_hit.impact_angle)
-                sp.stuck_to = (sc, sp.x - sc.x, sp.y - sc.y)
+                sp.enter_stuck_to(sc, sp.x - sc.x, sp.y - sc.y)
                 self._shake[0] += 1.0 * (1.0 if dvec[0] >= 0.0 else -1.0)
                 self._shake[1] += 0.6
                 break
@@ -3175,10 +3169,8 @@ class ItemInteractionMixin:
                 if not was_open:
                     cb.open_cob()             # 未开荚：这一扎把荚打开（原版 Spear.cs:1103）
                 kx = 1.0 if sp.vx >= 0.0 else -1.0
-                sp.vx = sp.vy = 0.0
-                sp.stuck = True
                 sp.stuck_angle = sp.angle_deg
-                sp.stuck_to = (cb, hit[0] - cb.x, hit[1] - cb.y)
+                sp.enter_stuck_to(cb, hit[0] - cb.x, hit[1] - cb.y)
                 self._shake[0] += 0.4 * kx
                 break
             for kf in (self.karmaflowers if thrown else ()):
@@ -3261,16 +3253,13 @@ class ItemInteractionMixin:
                     host, ox, oy = sp.stuck_to
                     if host.state == ItemState.GONE:
                         sp.needle_disconnect(cut=True)   # 宿主被删：线跟着一起没
-                        sp.unstuck()
-                        sp.stuck_to = None
-                        sp.stuck_local = None
+                        sp.enter_free(roll=False)
                     elif sp.stuck_local is not None and _step_stuck_local(sp, sp.stuck_local):
                         continue                 # 按身体节局部坐标：身体转，矛跟着转
                     else:
                         sp.last_x, sp.last_y = sp.x, sp.y
                         sp.x, sp.y = host.x + ox, host.y + oy
                         continue
-                sp.stuck_to = None
                 sp._impact_cb = self._shake_impact
                 sp.step(self._WL, self._HL)
                 if (sp.aim_cursor and sp._thrown and sp.moving()
@@ -3299,10 +3288,7 @@ class ItemInteractionMixin:
             sp.last_x, sp.last_y = sp.x, sp.y
             sp.vx, sp.vy = vx, vy
             sp.angle_deg = sp.last_angle = math.degrees(math.atan2(vy, vx))
-            sp.spin = 0.0
-            sp.spinning = False
-            sp._thrown = False
-            sp.state = ItemState.FREE
+            sp.enter_free(roll=False)
             return False
         sp.last_x, sp.last_y = sp.x, sp.y
         sp.x, sp.y = cur[0] + ox, cur[1] + oy
@@ -3387,14 +3373,9 @@ class ItemInteractionMixin:
         if _seg_point_dist(sp.last_x, sp.last_y, sp._seg_x, sp._seg_y,
                            cur[0], cur[1]) > self.CURSOR_PIN_R:
             return False
-        sp.cursor_pin = (sp.x - cur[0], sp.y - cur[1])
+        sp.enter_free(roll=False)
         sp.aim_cursor = False
-        sp.stuck = False
-        sp.stuck_to = None
-        sp.stuck_local = None
-        sp._thrown = False
-        sp.spin = 0.0
-        sp.spinning = False
+        sp.cursor_pin = (sp.x - cur[0], sp.y - cur[1])
         sp.vx = sp.vy = 0.0
         return True
 

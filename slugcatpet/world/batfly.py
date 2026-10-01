@@ -6,6 +6,7 @@ import random as _random
 from ..core.chunkphys import aabb_wall_collide, apply_water
 from ..core.units import lerp, inv_lerp, clampf
 from .enums import ItemState
+from .combat import CombatTarget
 from .batfly_gfx import update_render
 
 # 物理常量
@@ -54,7 +55,7 @@ def _deg_to_vec(deg):
     return (math.sin(t), -math.cos(t))
 
 
-class BatFly:
+class BatFly(CombatTarget):
     # 食性：原版 Fly 实现 IPlayerEdible，FoodPoints = 1（Fly.cs:76）；
     # 红猫/工匠只拿 1 份、圣徒吃下去 -1 会眩晕（SlugcatStats.cs:331）
     food_class = "prey"

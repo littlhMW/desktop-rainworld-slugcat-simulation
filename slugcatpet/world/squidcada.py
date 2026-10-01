@@ -11,6 +11,7 @@ import random as _random
 from ..core.chunkphys import aabb_wall_collide, apply_water
 from ..core.units import clampf, lerp, inv_lerp
 from .enums import ItemState
+from .combat import CombatTarget
 
 RAD = 7.5                 # Cicada.cs:131 bodyChunks[0].rad
 MASS = 0.3                # Cicada.cs:129 总质量 0.65(雄)/0.55(雌)，单点取均值
@@ -74,7 +75,7 @@ WALL_MARGIN = 20.0
 _TENT_SPREAD = ((-2.5, 1.5), (2.5, 1.5), (-4.5, 4.0), (4.5, 4.0))
 
 
-class Squidcada:
+class Squidcada(CombatTarget):
     # 食性：尸体（Player.CanEatMeat，Player.cs:11824）；杂食猫不放行
     food_class = "corpse"
     """蝉乌贼：悬停游走 → 遇猫扑翅逃 → 力竭落地（此时可被猫抓住）。"""

@@ -55,6 +55,7 @@ import random as _random
 
 from ..core.chunkphys import aabb_wall_collide, apply_water
 from ..core.units import clampf, lerp, inv_lerp
+from .combat import CombatTarget
 from .enums import ItemState
 
 # ── 物理：NeedleWorm.cs:101-108 逐项照抄 ──
@@ -242,7 +243,7 @@ def _roll_age(rng):
     return AGE_BIG
 
 
-class NeedleWorm:
+class NeedleWorm(CombatTarget):
     """面条蝇：幼体/成体会飞，卵会孵。接口对齐 Squidcada / BatFly。"""
     collision_layer = 0
 
@@ -1413,7 +1414,7 @@ class NeedleWorm:
         return True
 
     # ── 查询（接口兼容）──
-    def hit_chunks(self):
+    def chunks(self):
         """碰撞体：原版是 bodyChunks（半径取 GraphSegmentRad 的 chunk 半径）+ 獠牙。
 
         宠物里链的前 ``snout_n`` 段是「吻」——只用于作画，``rad`` 记的是描边半径
@@ -1423,20 +1424,19 @@ class NeedleWorm:
         """
         segs = self.seg
         if self.age == AGE_EGG or not segs:
-            return [(s.x, s.y, s.rad) for s in segs]
+            return [(None, s.x, s.y, s.rad) for s in segs]
         fat = lerp(0.75, 1.35, self.fatness)
         head = _chunk_rads(self.age)[0] * fat
         sn = max(1, self.snout_n)
         out = []
         for i, s in enumerate(segs):
             r = lerp(head, head * 0.5, i / float(sn)) if i < sn else s.rad
-            out.append((s.x, s.y, r))
+            out.append((None, s.x, s.y, r))
         if self.age == AGE_BIG and self.fang_out > 0.0:
             tip = self.stab_reach()
             if tip is not None:
-                out.append((tip[0], tip[1], 2.5))
+                out.append((None, tip[0], tip[1], 2.5))
         return out
-
     def stab_reach(self):
         """獠牙尖位置（BigNeedleWorm.cs:37 FangPos）。"""
         if self.age != AGE_BIG or len(self.seg) <= self.snout_n + 1:

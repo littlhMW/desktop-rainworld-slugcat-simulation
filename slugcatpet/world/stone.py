@@ -5,6 +5,7 @@ import random as _random
 from ..core.chunkphys import aabb_wall_collide, apply_water
 from ..core.units import lerp
 from . import weaponphys as wp
+from .combat import CombatTarget
 from .enums import ItemState
 
 RAD = wp.STONE_RAD       # Stone.cs bodyChunks[0].rad（唯一真值在 weaponphys）
@@ -22,7 +23,7 @@ REST_VEL_EPS = 0.6
 EXIT_FLING_SPEED = 8.0   # 脱离投掷阈，同砸晕阈
 
 
-class Stone:
+class Stone(CombatTarget):
     """石头：物理质点+自旋+状态机；fling 态高速命中 saint 致晕。"""
     collision_layer = 2              # 与 Saint(层1) 不同层
 

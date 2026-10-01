@@ -82,7 +82,11 @@ def begin_thrown(obj, dir_x: float, frc_value: float, dir_y: float = 0.0) -> Non
     ContactPoint == throwDir 才插墙，竖直掷不该在擦到侧壁时插住（该扎地由
     矛自己的「近乎垂直落地 → 钉成竖杆」分支管）。
     """
-    obj._thrown = True
+    enter = getattr(obj, "enter_thrown", None)
+    if enter is not None:            # Spear：生命周期字段只能由 Spear.enter_* 成组写
+        enter()
+    else:
+        obj._thrown = True           # Stone 等：没有生命周期机，直接改标志位
     if getattr(obj, "needle", False):
         obj.needle_world = True      # 针已离手：以后谁再把它捡起来，线都断
     if hasattr(obj, "always_stick"):

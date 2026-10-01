@@ -11,6 +11,7 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath
 
 from ..core.units import clampf, lerp
+from .combat import CombatTarget
 from ..rendering.primitives import blit
 from .fruit import Fruit
 from .enums import ItemState
@@ -145,7 +146,7 @@ def _clamp_placed(y: float, root_y: float) -> float:
     return min(float(y), float(root_y) - MIN_CLEAR)
 
 
-class SeedCob:
+class SeedCob(CombatTarget):
     food_class = "plant"            # 食性：植物（原版走 handOnExternalFoodSource 直接啃）
     """爆米花植株：无重力、双质点 + 弹簧固定在挂点，靠 open 动画弹开豆荚。"""
     collision_layer = 0
@@ -214,6 +215,11 @@ class SeedCob:
 
     def collision_chunks(self):
         return ()
+
+    def chunks(self):
+        """可命中点＝两个挂点（文档 §7 CombatTarget；原版 Weapon.cs 逐 chunk 判定）。"""
+        return [(None, float(self.p0[0]), float(self.p0[1]), self.rad),
+                (None, float(self.p1[0]), float(self.p1[1]), self.rad)]
 
     # ── 外部食物源（原版 SeedCob.Update 里给 Player 的 handOnExternalFoodSource）──
     def feed_point(self, x: float, y: float):

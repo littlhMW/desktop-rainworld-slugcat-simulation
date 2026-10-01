@@ -4,7 +4,8 @@ from __future__ import annotations
 import math
 
 from ..behavior import tuning
-from .pole import VERTICAL, cross_partner
+from .pole import HORIZONTAL, VERTICAL, cross_partner
+from .pole_ctl import PoleController
 
 # 各阶段计时/距离/速度常量
 CONN = 17.0
@@ -30,7 +31,8 @@ HANG_EDGE = 6.0
 JUMP_OFF_VX = 2.2
 
 
-class HPoleController:
+class HPoleController(PoleController):
+    kind = HORIZONTAL                   # 横杆：沿 X 轴移动 / 吊挂 / 撑起
     def __init__(self, win, pole, rng=None, start=None, start_x=None):
         self.win = win
         self.body = win.body
@@ -39,7 +41,7 @@ class HPoleController:
         self.pole = pole
         self.rng = rng
         # 换杆请求：("v", 竖杆, "climb") 交叉杆转竖杆
-        self.handoff = None
+        self.handoff_req = None
         self.air_target = None       # 带方向跳杆：空中要抓住的那根杆
         self._cross_t = 0            # 在交点附近逗留的 tick 数
         self._cross_roll = None      # 本次经过交点的换杆掷骰结果（离开交点重置）
@@ -220,7 +222,7 @@ class HPoleController:
             self._cross_t += 1
             if (self._cross_t >= tuning.CROSS_DWELL
                     and self._roll() < tuning.CROSS_SWITCH_PROB):
-                self.handoff = ("v", vp, "climb")  # 交点处转竖杆（原版 上+吊杆）
+                self.handoff_req = ("v", vp, "climb")  # 交点处转竖杆（原版 上+吊杆）
                 return True
         if self.timer > HANG_TICKS and move == 0:
             self.phase = "pullup"
@@ -275,7 +277,7 @@ class HPoleController:
             if (self.goal_x is None and self._cross_t >= tuning.CROSS_DWELL
                     and self._cross_roll is not None
                     and self._cross_roll < tuning.CROSS_SWITCH_PROB):
-                self.handoff = ("v", vp, "climb")  # 站在交点上：转到竖杆
+                self.handoff_req = ("v", vp, "climb")  # 站在交点上：转到竖杆
                 return True
         # 原版要走到交叉格上再按键才换杆；不再主动跑向交点 —— 否则站在横杆上的
         # 猫总会自动跑去爬竖杆，一路爬到竖杆顶（用户反馈的「总往竖杆顶跑」）。
@@ -353,7 +355,7 @@ class HPoleController:
                 self._hop_to(plan)          # 带方向跳到另一根杆，空中抓住（jump-pole-hopping）
                 return True
             if self.rng is not None and self.rng.random() < tuning.HP_JUMP_PROB:
-                self._jump_off()
+                self.jump_off()
             else:
                 self._jump_down()
             return True
@@ -521,18 +523,17 @@ class HPoleController:
         self.gfx.disbalance = 0.0
         self.body.pole_move = 0
 
-    # 打断清理
-    def release(self):
+    def jump_off(self) -> bool:
+        """站横杆面起跳（原版 StandOnBeam canJump=5：向前上跳出去）。"""
+        self._jump_off()
+        return True
+
+    # 打断清理：共通那段在 PoleController.release()，这里只补横杆自己的收尾
+    def _extra_release(self):
         b = self.body
-        b.coyote = max(getattr(b, "coyote", 0), tuning.POLE_COYOTE_TICKS)
-        b.chunk0.pinned = False
-        b.chunk1.pinned = False
-        b.on_pole = False
-        b.animation = None
         b.pole_move = 0
         if self.tongue is not None:
             if self.tongue.attached:
                 self.tongue.retract()
             self.tongue.reset_config()
         b.suspended = False
-        self._reset_pose()

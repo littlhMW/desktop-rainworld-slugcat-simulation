@@ -38,7 +38,7 @@ from ..cats.saint.cursorlick import (BAND_LO as LICK_BAND_LO, BAND_HI as LICK_BA
                                      DWELL_TICKS as LICK_DWELL, DWELL_TOL as LICK_DWELL_TOL,
                                      GATE_FRAC as LICK_GATE_FRAC)
 from ..world import weaponphys
-from ..world.pole import VERTICAL, cross_partner
+from ..world.pole import HORIZONTAL, VERTICAL, cross_partner
 from ..world.enums import ItemState
 from ..core import edges as edgeqm
 from ..core.units import clampf
@@ -378,8 +378,7 @@ class BehaviorFSM:
 
         self.karma = None
         self.climb = None
-        self.poleclimb = None
-        self.hpole = None
+        self.pole_ctl = None             # 手上这台杆控制器（竖杆/横杆同一协议，文档 §9）
         self._hpole_pole = None
         self._hpole_start = None
         self._hpole_start_x = None
@@ -756,10 +755,8 @@ class BehaviorFSM:
             kb()
         elif self.state == "AngryStone":
             self._angrystone_release()
-        elif self.state == "PoleClimb":
+        elif self.state in ("PoleClimb", "HPole"):
             self._pole_release()
-        elif self.state == "HPole":
-            self._hpole_release()
         elif self.state == "SeekWarmth":
             self._seekwarmth_break()
         elif self.state == "SeekHPole":
@@ -926,6 +923,18 @@ class BehaviorFSM:
         self._revive_timer = 0
         self._flower_planted = True      # 持久化恢复：不补长花
 
+    @property
+    def poleclimb(self):
+        """当前控制器是竖杆控制器时返回它（竖杆专属流程 / 面板用）。"""
+        ctl = self.pole_ctl
+        return ctl if (ctl is not None and ctl.kind == VERTICAL) else None
+
+    @property
+    def hpole(self):
+        """当前控制器是横杆控制器时返回它。"""
+        ctl = self.pole_ctl
+        return ctl if (ctl is not None and ctl.kind == HORIZONTAL) else None
+
     def _release_controllers(self) -> None:
         """收掉接管身体的控制器：竖杆 / 横杆 / 攀爬（幂等）。
 
@@ -933,10 +942,8 @@ class BehaviorFSM:
         一套清理，所有权是重复的。现在外部中断（stun / 死亡 / 被抓 / 入水 /
         无重力）统一走这里 —— 谁在跑就先让谁 ``release()``，释放权归控制器。
         """
-        if self.poleclimb is not None:
+        if self.pole_ctl is not None:
             self._pole_release()
-        if self.hpole is not None:
-            self._hpole_release()
         if self.climb is not None:
             self.climb.release()
             self.climb = None
@@ -2282,11 +2289,8 @@ class BehaviorFSM:
 
     def _pole_obj(self):
         """我正抱着的杆。"""
-        for ctl in (self.poleclimb, self.hpole):
-            p = getattr(ctl, "pole", None)
-            if p is not None:
-                return p
-        return None
+        ctl = self.pole_ctl
+        return getattr(ctl, "pole", None) if ctl is not None else None
 
     def _pole_crowd(self) -> list:
         """同一根杆上跟我挤在同一段的全部猫（含我自己）。"""
@@ -3945,10 +3949,7 @@ class BehaviorFSM:
 
     def _pole_release_any(self):
         """松开当前抱着的杆（横杆/竖杆通用）——离开杆之前统一走这里。"""
-        if self.hpole is not None:
-            self._hpole_release()
-        else:
-            self._pole_release()
+        self._pole_release()
 
     def _pole_reach_pickups(self) -> bool:
         """站在杆上伸手也能做的事：捡够得到的矛/石头（有威胁又肯用矛）、徒手抓飞虫。
@@ -4000,8 +4001,8 @@ class BehaviorFSM:
         if pole is None:
             # PoleClimber 是竖杆控制器：这里只要竖杆（横杆走 _hpole_enter）。
             pole = self._pick_climbable_pole(("vertical",))
-        self.poleclimb = (PoleClimber(self.win, pole, self.rng, start=start)
-                          if pole is not None else None)
+        self.pole_ctl = (PoleClimber(self.win, pole, self.rng, start=start)
+                         if pole is not None else None)
 
     def _st_poleclimb(self, cursor, disturbed):
         if self.grab.active:
@@ -4037,10 +4038,11 @@ class BehaviorFSM:
         if self._pole_leave_for_food():  # 杆上等同地面：有别的更想吃的就下杆去拿
             return
         want_dismount = self.body.energy <= tuning.TIP_TIRED_ENERGY
-        done = self.poleclimb.update(want_dismount)
+        pc = self.poleclimb
+        done = pc.update(want_dismount)
         if done:
-            air_t = self.poleclimb.air_target
-            ho = self.poleclimb.handoff
+            air_t = pc.air_target
+            ho = pc.handoff() if pc.can_handoff() else None
             if ho is not None:
                 self._pole_release()
                 self._pole_handoff(ho)
@@ -4063,7 +4065,7 @@ class BehaviorFSM:
             self._transition("HPole")
             return
         if self.state == "PoleClimb":
-            self.poleclimb = PoleClimber(self.win, pole, self.rng, start=arg)
+            self.pole_ctl = PoleClimber(self.win, pole, self.rng, start=arg)
             self.timer = 0
             return
         self._poleclimb_pole = pole
@@ -4071,20 +4073,31 @@ class BehaviorFSM:
         self._transition("PoleClimb")
 
     def _pole_release(self):
+        """松开当前抱着的杆 —— 横杆 / 竖杆唯一的释放入口（文档 §9）。
+
+        以前横竖各有一份 release，清理字段两处各写一遍，漏一处就留下半截状态
+        （钉住的 chunk、挂着的 suspended、停位的 goal_x 各清各的）。现在「抱着谁」
+        只有 ``self.pole_ctl`` 一个答案，释放也只有这一条路；横杆那条路多一步
+        「上杆够东西」的目标清理（竖杆流程没有这个目标）。
+        """
+        ctl = self.pole_ctl
         self._pole_nudge_pin = None
         self._pole_nudge = 0
         self._pole_nudge_point = False
         self._pole_blocker = None
         self._act_end()
-        if self.poleclimb is not None:
-            self._left_pole = self.poleclimb.pole
+        if ctl is not None:
+            if ctl.kind != VERTICAL:
+                self._hpole_goal_clear()
+            self._left_pole = ctl.pole
             self._air_pole_cd = tuning.AIR_POLE_CD
-            self.poleclimb.release()
-            self.poleclimb = None
+            ctl.release()
+            self.pole_ctl = None
         self.body.chunk0.pinned = False
         self.body.chunk1.pinned = False
         self.body.on_pole = False
         self.body.animation = None
+        self.body.suspended = False
         self.gfx.hand_aim["l"] = None
         self.gfx.hand_aim["r"] = None
 
@@ -4109,8 +4122,8 @@ class BehaviorFSM:
         self._hpole_pole = None
         self._hpole_start = None
         self._hpole_start_x = None
-        self.hpole = (HPoleController(self.win, pole, self.rng, start=start, start_x=start_x)
-                      if pole is not None else None)
+        self.pole_ctl = (HPoleController(self.win, pole, self.rng, start=start, start_x=start_x)
+                         if pole is not None else None)
         if self.hpole is not None and self._hp_goal_x is not None:
             self.hpole.goal_x = pole.clamp_axis(self._hp_goal_x, 2.0)
             g = self._hp_goal_obj
@@ -4120,11 +4133,11 @@ class BehaviorFSM:
 
     def _st_hpole(self, cursor, disturbed):
         if self.grab.active:
-            self._hpole_release()
+            self._pole_release()
             self._transition("Dragged")
             return
         if self.hpole is None or self.hpole.pole not in self.win.poles:
-            self._hpole_release()
+            self._pole_release()
             self._transition("IdleStand" if self.body.on_floor() else "Airborne")
             return
         if self._pole_nudge_tick():      # 被同伴挡在杆上：停住扒拉/指指点点
@@ -4142,11 +4155,12 @@ class BehaviorFSM:
             return
         if self._hpole_goal_grab():      # 上杆来够的东西：够到就摘下来
             return
-        done = self.hpole.update()
+        hc = self.hpole
+        done = hc.update()
         if done:
-            air_t = self.hpole.air_target
-            ho = self.hpole.handoff
-            self._hpole_release()
+            air_t = hc.air_target
+            ho = hc.handoff() if hc.can_handoff() else None
+            self._pole_release()
             if air_t is not None:
                 self._air_pole_target = air_t
             if ho is not None:
@@ -4430,7 +4444,7 @@ class BehaviorFSM:
         self._hp_step_cd = tuning.HPOLE_STEP_CD
         d = 1 if f.x >= c0.x else -1
         b.facing = d
-        self._hpole_release()
+        self._pole_release()
         b.release_to_air(move_dir=d)
         self._transition("Airborne")
         return True
@@ -4553,26 +4567,6 @@ class BehaviorFSM:
             return False
         _kind, _hold, _md, lx, _ly = pf
         return abs(lx - f.x) <= tuning.HPOLE_GAP_LAND_R
-
-    def _hpole_release(self):
-        self._hpole_goal_clear()
-        self._pole_nudge_pin = None
-        self._pole_nudge = 0
-        self._pole_nudge_point = False
-        self._pole_blocker = None
-        self._act_end()
-        if self.hpole is not None:
-            self._left_pole = self.hpole.pole
-            self._air_pole_cd = tuning.AIR_POLE_CD
-            self.hpole.release()
-            self.hpole = None
-        self.body.chunk0.pinned = False
-        self.body.chunk1.pinned = False
-        self.body.on_pole = False
-        self.body.animation = None
-        self.body.suspended = False
-        self.gfx.hand_aim["l"] = None
-        self.gfx.hand_aim["r"] = None
 
     # 自主上横杆 SeekHPole
     def _has_hpole_available(self) -> bool:

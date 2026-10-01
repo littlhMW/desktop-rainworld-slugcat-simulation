@@ -5,6 +5,7 @@ import random as _random
 
 from ..core.chunkphys import aabb_wall_collide, apply_water
 from .enums import ItemState
+from .combat import CombatTarget
 
 RAD = 5.0                # DataPearl.cs:184 bodyChunks[0].rad
 MASS = 0.07              # DataPearl.cs:184 bodyChunks[0].mass
@@ -42,7 +43,7 @@ GLIMMER_SPEED = (1.0 / 5.0, 1.0 / 15.0)   # 原版 glimmerSpeed = 1/Lerp(5,15,ra
 GLIMMER_WAIT = (20, 40)                   # 原版 glimmerWait
 
 
-class Pearl:
+class Pearl(CombatTarget):
     """珍珠：单点质点 + 自旋；高弹度小球的滚动与落定。"""
     collision_layer = 2
     is_edible = False        # 不能吃：原版里珍珠是货币

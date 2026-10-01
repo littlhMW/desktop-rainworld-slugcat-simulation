@@ -4,6 +4,7 @@ import math
 
 from ..behavior import tuning
 from ..world.pole import VERTICAL, cross_partner
+from ..world.pole_ctl import PoleController
 
 # 竖杆攀爬参数
 ARRIVE_EPS = 26.0
@@ -17,7 +18,8 @@ DESCEND_TIMEOUT = 400
 ARC_R = 17.0        # 兜底值；真实值取 body._conn_stand（幼崽 12 / 成年 17）
 
 
-class PoleClimber:
+class PoleClimber(PoleController):
+    kind = VERTICAL                     # 竖杆：沿 Y 轴攀爬
     def __init__(self, win, pole, rng=None, start=None, no_handoff=False):
         self.win = win
         # 爆米花植株这种「临时竖杆」不允许换到别的杆上（原版作物不是真杆）
@@ -33,7 +35,7 @@ class PoleClimber:
         self.disbalance = 0.0
         self.balance_counter = 0.0
         # 换杆请求：("h", 横杆, 交点x) 交叉杆转横 / ("v", 竖杆, None) 跳向另一根杆
-        self.handoff = None
+        self.handoff_req = None
         self.air_target = None       # 带方向跳杆：空中要抓住的那根杆
         self._cross_t = 0            # 在交点附近逗留的 tick 数
         self._cross_roll = None      # 本次经过交点的换杆掷骰结果（离开交点重置）
@@ -85,7 +87,7 @@ class PoleClimber:
                 if (self._cross_t >= tuning.CROSS_DWELL
                         and self._cross_roll is not None
                         and self._cross_roll < tuning.CROSS_SWITCH_PROB):
-                    self.handoff = ("h", hp, self.pole.x)   # 交点处转横杆
+                    self.handoff_req = ("h", hp, self.pole.x)   # 交点处转横杆
                     return True
             if c1.y <= self.pole.top_y + TIP_ENTER_PAD or self.timer > CLIMB_TIMEOUT:
                 self._enter_tip()
@@ -257,7 +259,7 @@ class PoleClimber:
         pole, md, _tick, up = plan
         self._snap_axis()
         b.facing = 1 if md > 0 else -1
-        self.handoff = None
+        self.handoff_req = None
         self.air_target = pole
         b.pole_hop(md, move_dir=md, up=up)
         b.chunk0.cy = b.chunk1.cy = 0   # 已经离杆：别用上一帧的落地标记
@@ -349,11 +351,4 @@ class PoleClimber:
         self.gfx.hand_aim["r"] = None
         self.gfx.disbalance = 0.0
 
-    def release(self):
-        self.body.coyote = max(getattr(self.body, "coyote", 0),
-                               tuning.POLE_COYOTE_TICKS)
-        self.body.chunk0.pinned = False
-        self.body.chunk1.pinned = False
-        self.body.on_pole = False
-        self.body.animation = None
-        self._reset_pose()
+    # release() 走 PoleController：解钉 / 清动画 / 收手是两种杆子共通的那一段

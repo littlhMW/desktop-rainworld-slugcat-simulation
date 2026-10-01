@@ -56,81 +56,38 @@ def seg_dist(ax, ay, bx, by, x, y) -> float:
 
 
 def target_chunks(t):
-    """目标身上所有可命中点 ``[(owner, x, y, rad), ...]``（全局唯一口径）。
+    """目标身上所有可命中点 ``[(owner, x, y, rad), ...]``（文档 §7，全局唯一口径）。
 
-    优先用对象自己声明的 ``hit_chunks()``（面条蝇那种吻部要收细的）；
-    没有就按「双 chunk 躯干（蛞蝓猫）→ 头 + 各链节（蜥蜴）→ 单圆（拾荒者 /
-    蝠蝇）」逐级降级 —— 旧代码这里每处各写一套，才是「可命中点不对」的来源。
+    目标自己实现 ``CombatTarget.chunks()``（``world/combat.py``）；这里只做归一：
+    ``owner=None`` 补成目标自己、数值转 float。旧实现那条「chunks → hit_chunks →
+    chunk0/chunk1 → p0/p1 → x/y + seg」的降级链已经删掉 —— 现在每个目标都真的回答
+    「我身上哪里挨打」，不用靠猜。
     """
-    # 正式接口 CombatTarget.chunks()（文档 §6）：目标自己声明可命中点。
-    # hit_chunks() 是旧名字，保留兼容；两者都没有才走下面的降级链。
-    for name in ("chunks", "hit_chunks"):
-        hc = getattr(t, name, None)
-        if not callable(hc):
-            continue
-        try:
-            got = [(t, float(cx), float(cy), float(cr)) for (cx, cy, cr) in hc()]
-        except Exception:
-            got = []
-        if got:
-            return got
-    c0, c1 = getattr(t, "chunk0", None), getattr(t, "chunk1", None)
-    if c0 is not None:
-        out = []
-        for c in (c0, c1):
-            if c is None:
-                continue
-            out.append((t, float(c.x), float(c.y),
-                        float(getattr(c, "rad", 0.0) or 0.0)))
-        if out:
-            return out
-    p0, p1 = getattr(t, "p0", None), getattr(t, "p1", None)
-    if (p0 is not None and p1 is not None
-            and isinstance(p0, (tuple, list)) and isinstance(p1, (tuple, list))):
-        # 双 chunk 物件（爆米花荚：p0/p1 两个悬挂点）。旧 items._cob_hit 就是
-        # 拿这两个点各判一次；统一到 target_chunks 才不丢第二种 chunk。
-        rad = float(getattr(t, "rad", 0.0) or 0.0)
-        return [(t, float(p0[0]), float(p0[1]), rad),
-                (t, float(p1[0]), float(p1[1]), rad)]
+    fn = getattr(t, "chunks", None)
+    if not callable(fn):
+        return []
     out = []
-    x, y = getattr(t, "x", None), getattr(t, "y", None)
-    if (isinstance(x, (int, float)) and not isinstance(x, bool)
-            and isinstance(y, (int, float)) and not isinstance(y, bool)):
-        rad = getattr(t, "head_rad", None)
-        if rad is None:
-            rad = getattr(t, "rad", 0.0)
-        out.append((t, float(x), float(y), float(rad or 0.0)))
-    for s in (getattr(t, "seg", None) or ()):
-        out.append((s, float(s.x), float(s.y), float(getattr(s, "rad", 0.0) or 0.0)))
+    for owner, x, y, r in fn():
+        out.append((t if owner is None else owner, float(x), float(y), float(r)))
     return out
-
-
 def preferred_point(t):
-    """目标身上「最该瞄准的那个点」``(x, y)``（文档 §6 CombatTarget）。
+    """目标身上「最该瞄准的那个点」``(x, y)``（文档 §7 CombatTarget）。
 
-    目标可以自己实现 ``preferred_point()``（头甲、盾牌、软肋各不相同）；
-    没实现就退回 :func:`target_chunks` 的第一个点。所有瞄准都读这一份，
-    别再「AI 瞄 chunk0、判定判 chunk1」。
+    目标自己实现 ``preferred_point()``（头甲、盾牌、软肋各不相同）；没实现就取
+    :func:`target_chunks` 的第一个点。所有瞄准都读这一份，别再「AI 瞄 chunk0、判定判 chunk1」。
     """
     fn = getattr(t, "preferred_point", None)
     if callable(fn):
-        try:
-            px, py = fn()
-            return (float(px), float(py))
-        except Exception:
-            pass
+        pt = fn()
+        if pt is not None:
+            return (float(pt[0]), float(pt[1]))
     ch = target_chunks(t)
     if not ch:
-        x, y = getattr(t, "x", None), getattr(t, "y", None)
-        if isinstance(x, (int, float)) and isinstance(y, (int, float)):
-            return (float(x), float(y))
         return None
     _o, cx, cy, _r = ch[0]
     return (cx, cy)
-
-
 def hit_radius(t) -> float:
-    """目标的命中半径（文档 §6 CombatTarget）：优先自报，否则取所有 chunk 最大值。"""
+    """目标的命中半径（文档 §7 CombatTarget）：优先自报，否则取所有 chunk 最大值。"""
     fn = getattr(t, "hit_radius", None)
     if callable(fn):
         try:
@@ -141,8 +98,6 @@ def hit_radius(t) -> float:
     if not ch:
         return float(getattr(t, "rad", 0.0) or 0.0)
     return max(float(cr) for (_o, _x, _y, cr) in ch)
-
-
 class HitResult:
     """一次命中的统一结果（文档 §6）。
 

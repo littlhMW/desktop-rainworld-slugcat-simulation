@@ -10,6 +10,7 @@ import random as _random
 from dataclasses import dataclass
 
 from ..core.units import clampf, lerp, inv_lerp
+from .combat import CombatTarget
 from ..behavior.relationship import Relations
 from .enums import ItemState
 from .terrain import (Caps, ROUTE_ONE_WAY, ROUTE_RETURNABLE, ROUTE_SAFE)
@@ -1016,7 +1017,7 @@ def _prey_field(name):
     return property(_get, _set)
 
 
-class Lizard:
+class Lizard(CombatTarget):
     food_class = "none"      # 不是食物：尸体算无用尸体（会被猫拖出屏幕清场）
     """一只蜥蜴：头为驱动质点，躯干/尾逐节跟随；巡走 → 警觉 → 扑咬。"""
 
@@ -3546,6 +3547,16 @@ class Lizard:
         sp = self._state_speed(PATROL_SPEED)
         want = clampf(dx * 0.06, -sp, sp)
         self._drive_vx(want, WALK_TURN)
+
+    def chunks(self):
+        """可命中点＝头 + 每节（文档 §7 CombatTarget）。
+
+        头的 owner 是蜥蜴自己（``hit_chunk is lz`` 用来判头甲），躯干 / 尾巴给各自链节。
+        """
+        out = [(None, self.x, self.y, self.head_rad)]
+        for sg in self.seg:
+            out.append((sg, sg.x, sg.y, sg.rad))
+        return out
 
     def stuck_frames(self):
         """给「扎在身上的矛」用的局部坐标系：头 + 每节 (x, y, 朝向角)。

@@ -9,6 +9,7 @@ import math
 import random as _random
 
 from ..core.units import clampf, lerp
+from .combat import CombatTarget
 from ..behavior.relationship import Relations
 from ..core.gfxmath import _hsl2rgb
 from ..rendering.primitives import (SCAV_STANCE, scav_pose, scav_spear_pose,
@@ -356,7 +357,7 @@ def body_colors(rng, iv, elite=False):
             pupil,
             _mix255(_hsl255(deco_h, deco_s, deco_l), BLACK_RGB, 0.0))
 
-class Scavenger:
+class Scavenger(CombatTarget):
     """拾荒者：巡走/警觉/投矛/逃跑 四态。"""
     collision_layer = 0
     food_class = "none"      # 不是食物：尸体算无用尸体（会被猫拖出屏幕清场）
@@ -773,8 +774,7 @@ class Scavenger:
                 sp.x, sp.y, sp.angle_deg = gx, gy, ang
             else:
                 sp.last_x, sp.last_y, sp.last_angle = gx, gy, ang
-        sp.state = ItemState.CARRIED
-        sp.unstuck()
+        sp.enter_free(roll=False, state=ItemState.CARRIED)
 
     # ── 头/眼（绘制用）──
     def head_pos(self):

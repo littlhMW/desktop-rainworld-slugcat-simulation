@@ -10,6 +10,7 @@ from ..core import chunkphys as cp
 from ..core.chunkphys import BodyChunk, solve_conn
 from ..core.units import K_VEL, K_IMP, lerp, inv_lerp, clampf
 from ..world import weaponphys
+from ..world.combat import CombatTarget
 from ..world.enums import ItemState
 
 RUN_UPPER = 4.2 * K_VEL
@@ -127,7 +128,7 @@ EAT_BITES_MIN = 1
 # 浅水浮沉常量
 WATER_FRICTION = 0.96
 
-class SlugcatBody:
+class SlugcatBody(CombatTarget):
     collision_layer = 1              # 与果/黏菌同层互推
 
     def __init__(self, hip_xy, world_w: float, world_h: float,
@@ -320,6 +321,12 @@ class SlugcatBody:
     def collision_chunks(self):
         """两 body chunk 恒可碰撞。"""
         return (self.chunk0, self.chunk1)
+
+    def chunks(self):
+        """可命中点＝两个 body chunk（文档 §7 CombatTarget）。"""
+        c0, c1 = self.chunk0, self.chunk1
+        # owner 回传身体本身：和旧的 chunk0/chunk1 分支一致（命中哪一节靠接触点判）
+        return [(None, c0.x, c0.y, c0.rad), (None, c1.x, c1.y, c1.rad)]
 
     def clamp_cold(self):
         self.cold = 0.0 if self.cold < 0.0 else (1.0 if self.cold > 1.0 else self.cold)
@@ -721,18 +728,14 @@ class SlugcatBody:
         """
         old = self.back_spear
         if old is not None and old is not spear:
-            old.state = ItemState.FREE
+            old.enter_free(roll=False)
             old.held_by = None
-            old.stuck = False
-            old.stuck_to = None
         side = self.spear_side(spear)
         if side is not None:              # 从手里挪到背上：那只手要腾出来，
             self.release_spear(to_free=False, side=side)   # 不然同一根矛会占两个槽
         self.back_spear = spear
-        spear.state = ItemState.CARRIED
+        spear.enter_free(roll=False, state=ItemState.CARRIED)
         spear.held_by = self
-        spear.stuck = False
-        spear.stuck_to = None
 
     def take_back_spear(self, side="r"):
         """从背上把矛抽到手里。"""
@@ -2222,7 +2225,7 @@ class SlugcatBody:
         if getattr(spear, "pinned", False):
             if not getattr(self.stats, "is_artificer", False):
                 return False
-            spear.unstuck()
+            spear.enter_free(roll=False)
 
         # 槽位规则：
         #   Hunter：双手各一支（双持，用户要求）＋ 背上仍可备一支；
@@ -2253,9 +2256,7 @@ class SlugcatBody:
             spear.needle_disconnect(cut=True)
         self.hand_spears[side] = spear
         self._sync_spear_slots()
-        spear.state = ItemState.CARRIED
-        spear.stuck = False
-        spear.stuck_to = None
+        spear.enter_free(roll=False, state=ItemState.CARRIED)
         spear.held_by = self
         self.eat_raise = 0.0
         if arm:
@@ -2275,8 +2276,8 @@ class SlugcatBody:
         if sp is not None:
             sp.held_by = None
             if to_free:
-                sp.state = ItemState.FREE
                 sp.needle_disconnect()     # 放下/丢掉＝原版 Mode.Free：骨矛失活
+                sp.enter_free(roll=False)
         if side is not None:
             self.arm_aim[side] = None
         return side
@@ -2396,15 +2397,13 @@ class SlugcatBody:
                 c0, dir_x, float(getattr(sp, "mass", 0.07)), 1, 1.0,
                 one_hand=False,   # 矛是 BigOneHand
                 input_x=int(input_x), input_y=int(input_y), flip=bool(flip))
+            sp.enter_free(roll=False)
             sp.spin = float(dir_x) * 3.0
             sp.angle_deg = sp.last_angle = weaponphys.toss_angle(
                 dir_x, int(input_x), int(input_y), bool(flip))
-            sp.stuck = False
-            sp.stuck_to = None
             sp.toss_t = TOSS_COB_T       # 轻抛期内可以敲开爆米花（原版打不开，用户要求）
             sp._f1 = True                # 第一帧扫掠也要从出手前位置起算（同 Thrown 的
                                          # firstFrameTraceFromPos，否则轻抛第一帧漏判）
-            sp.state = ItemState.FREE
             self.release_spear(to_free=False)
             c0.vx += float(dir_x) * 4.0 * recoil
             c1.vx -= float(dir_x) * 2.0 * recoil
@@ -2427,9 +2426,7 @@ class SlugcatBody:
             sp.angle_deg = sp.last_angle = (180.0 if float(dir_y) < 0.0 else 0.0)
         else:
             sp.angle_deg = sp.last_angle = (90.0 if float(dir_x) >= 0.0 else 270.0)
-        sp.stuck = False
-        sp.stuck_to = None
-        sp.state = ItemState.FREE
+        sp.enter_free(roll=False)
         weaponphys.begin_thrown(sp, dir_x, float(frc), float(dir_y))
         self.release_spear(to_free=False)
         if self.back_spear is not None:      # 原版掷出后背上的矛立刻补到手上
