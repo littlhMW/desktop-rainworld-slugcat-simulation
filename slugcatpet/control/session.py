@@ -28,9 +28,10 @@ RESET_TABLE: dict[str, object] = {
     "_ctrl_fall_speed": 0.0,
     "_ctrl_prev_floor": True,
     "_ctrl_long_belly": False,       # 防再入残留长滑铲
-    "_ctrl_lower_on_ground": 0,      # 防再入误触 StandUp/DownOnFours
-    "_ctrl_upper_off_ground": 0,
-    "_ctrl_crawl_turn_delay": 0,
+    "_lower_on_ground": 0,           # 与控制态/AI 共用的接地帧计数
+    "_upper_off_ground": 0,
+    "_crawl_turn_delay": 0,          # 与控制态/AI 共用的 Crawl 帧计数
+    "_crawl_turn_left": 0,           # CrawlTurn 剩余帧（共用的翻身上限）
     "_ctrl_pyro": None,              # 工匠专属，非工匠恒 None
     "_ctrl_pyro_jumped": False,      # 与 PYRO_DEFAULTS 同步
     "_ctrl_pyro_counter": 0,

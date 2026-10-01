@@ -1435,8 +1435,11 @@ class SlugcatBody(CombatTarget):
             self.bodyMode = "Stand"
         else:
             self.bodyMode = "Crawl"
-        if self.bodyMode != "Crawl":
-            self._crawl_turn_delay = 0      # 原版 Player.cs:12425-12431
+        # 匍匐帧计数与翻身判据走**控制态同一份**实现（control/moves_posture）：
+        # 离 Crawl 自动清零（原版 Player.cs:12425-12431）。旧版 AI 与控制态各写一份，
+        # 于是出现「玩家操作的猫匍匐/转身对、AI 猫不对」—— 修一边改不到另一边。
+        from ..control import moves_posture as _mp
+        _mp.crawl_turn_delay(self)
 
         dyn0 = RUN_UPPER * self.stats.runspeed_fac      # 顶速×种族因子，不乘加速度
         dyn1 = RUN_LOWER * self.stats.runspeed_fac
@@ -1450,20 +1453,15 @@ class SlugcatBody(CombatTarget):
         elif self.bodyMode == "Crawl":
             dyn0 = dyn1 = CRAWL_SPEED      # 平地趴行恒速，不乘隧道爬速因子
             if self.animation == "CrawlTurn":
-                if c1.on_floor:
-                    self._crawl_turn(move_x)      # 原版 Player.cs:7518-7535
-                else:
-                    self.animation = None         # 空中打断：落地别接着翻
-            elif (move_x > 0) == (c0.x < c1.x):
+                self._crawl_turn(move_x)      # 原版 Player.cs:7518-7535
+            else:
                 # 原版 Player.cs:9088-9100：朝身体反方向爬 → 先按 0.75 减速；
-                # 连着 5 帧以上还在反着爬就换 CrawlTurn（原地翻过来），
-                # 而不是一路倒着滑（旧实现只有减速、没有翻身）。
-                dyn0 *= 0.75
-                dyn1 *= 0.75
-                if self._crawl_turn_delay > 5 and move_x != 0:
-                    self._crawl_turn_delay = 0
-                    self._crawl_turn_left = CRAWL_TURN_MAX
-                    self.animation = "CrawlTurn"
+                # 连着 5 帧以上还在反着爬就换 CrawlTurn（原地翻过来），而不是一路
+                # 倒着滑。判据与控制态**同一份**（moves_posture.crawl_turn_entry）。
+                if (move_x > 0) == (c0.x < c1.x):
+                    dyn0 *= 0.75
+                    dyn1 *= 0.75
+                _mp.crawl_turn_entry(self, move_x)
             # 原版 Player.cs:9126：胸**不贴地**、髋又比胸低 3px 以上 → 逐帧抬髋，
             # 让整条身体贴着地面走（旧实现把 ContactPoint.y > -1 抄成了 c0.on_floor，
             # 条件正好反过来，于是「立着骨架贴地滑」）。
@@ -1475,8 +1473,6 @@ class SlugcatBody(CombatTarget):
                     and not c0.pinned and not c1.pinned
                     and self._jump_pending is None):
                 self._crawl_pose(moving=(move_x != 0))
-            self._crawl_turn_delay += 1
-
         if self.walk_speed_target is not None:
             dyn0 = min(dyn0, self.walk_speed_target)
             dyn1 = min(dyn1, self.walk_speed_target)
@@ -1687,8 +1683,18 @@ class SlugcatBody(CombatTarget):
              把 facing 钉在威胁那侧 → 后退那一半速度被吃掉，看起来就是平移。
         现在两道锁都拆了（见 _movement_update 的 Crawl 分支），并加一个帧数上限：
         就算几何判据一直不满足（贴墙 / 被拽），也不会永远卡在 CrawlTurn 里。
+
+        **这是翻身力唯一的实现**：控制态（``control/moves_posture.anim_forces``）和
+        AI 都走这里，判据在 ``moves_posture.crawl_turn_entry``。R157 之前控制态里
+        还有一份逐行拷贝，两条路会各自漂移。
         """
         c0, c1 = self.chunk0, self.chunk1
+        if not c1.on_floor:
+            # 空中打断：落地别接着翻（原版 CrawlTurn 在接地分支里跑）。
+            # 这个闸放在这里而不是调用点，控制态（moves_posture.anim_forces）
+            # 直接调这一个方法时行为一致。
+            self.animation = None
+            return
         # 原版 Player.cs:7520：翻身的这几帧 bodyMode 切成 Default —— 这样下面那段
         # 「匍匐朝反方向就把速度乘以 CRAWL_BACK_DAMP」不会把髋部的反剪速度吃掉
         # （那一下正是整条身体翻过来的力；被吃掉就只剩「减速后倒着滑」）。

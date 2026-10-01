@@ -8290,6 +8290,13 @@ class BehaviorFSM:
             if b.walk_min is not None:
                 goal = min(max(goal, b.walk_min), b.walk_max)
             corner = (goal - b.chunk1.x) * away <= CRAWL_CORNER_EPS
+        # 朝向＝匍匐的**移动意图**（原版 Player.cs:12113-12116：flipDirection 是输入
+        # 方向，不是从落点反推的）。旧版只 b.walk_to(goal)：落点被 walk_min/max 夹到
+        # 墙里时 dx≈0，walk_to 回退到 move_dir（上一个状态留下的 0 / 旧方向），facing
+        # 于是翻错或干脆不翻 —— 就是「身体面对着目标、人却在倒退」。这里由状态写死，
+        # walk_to 只负责落点；move_dir 一起写，贴墙夹住时也保持往里压的意图（同按键）。
+        b.facing = 1 if away > 0.0 else -1
+        b.move_dir = b.facing
         if self._crawl_wall:
             # 本次匍匐已经缩到墙角了：这一整段就保持「蹲下、面朝威胁」，否则
             # 残留速度让 x 在 walk_min 上下漂十几像素，corner 会一帧真一帧假。

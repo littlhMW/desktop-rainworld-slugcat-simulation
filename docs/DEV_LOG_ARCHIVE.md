@@ -4,6 +4,64 @@
 
 ## 2026-10-01
 
+### R157 · 匠伏朝向归意图层 / CrawlTurn 判据与翻身力单实现 / 蜥蝎 LashOut 与 PrepareToJump 与 爬墙身体轴
+
+用户线索：「玩家操作的蜥蝎猫匠伏和转身正确」—— 手动控制那条路
+（`control/moves_posture.py`）就是参照实现。原来它和 AI 那条路（`core/creature.py`）**各**
+有一份 CrawlTurn 判据和翻身每帧力的拷贝 —— 修一边改不到另一边。本轮把它收成一份，
+并把匠伏朝向的写入权收到意图层；另完成蜥蝎舌头 / 起跳 / 爬墙三块反编译对拍。
+
+**① CrawlTurn：判据与翻身力只存在一份**
+
+* `control/moves_posture.py` 新增 `crawl_turn_entry(body, move_x)`（反着爬 + 连爬 5 帧 +
+  当前无其它姿态动画，原版 `Player.cs:9088-9100`）与 `crawl_turn_delay(body)`（离 Crawl 清零，
+  `Player.cs:12425-12431`），两条路公用。
+* 身体动作的翻身每帧力只保留 `SlugcatBody._crawl_turn`（`Player.cs:7518-7535` 逐行）；
+  控制态的 `anim_forces` 改成直接调它，不再自带第二份拷贝。「空中打断」的闸也搬进
+  `_crawl_turn` 内部，两条路行为一致。
+* 相关字段改成共用名：`_crawl_turn_delay` / `_crawl_turn_left` / `_lower_on_ground` /
+  `_upper_off_ground`（`control/session.py` 复位表跟着改）。
+
+**② 匠伏朝向：由意图层写死，不再从落点反推**
+
+* 原版 `flipDirection`（`Player.cs:12113-12116`）是**输入方向**，不是「目标点在哪边」。
+  旧版 `_st_crawlaway` 只 `b.walk_to(goal)`：落点被 `walk_min/max` 夹到墙里时 `dx≈0`，
+  `walk_to` 回退到 `move_dir`（上一个状态留下的 0 / 旧方向），`facing` 于是翻错或干脆不翻
+  —— 就是「身体面对着目标、人却在倒退」。现在由状态写 `b.facing = ±away` +
+  `b.move_dir = b.facing`，`walk_to` 只负责落点；贴墙被夹住时也保持往里压的意图（同按键）。
+
+**③ 蜥蝎舌头（`LizardTongue.cs` 对拍）**
+
+* **方向闸**（`:519` `LashOut` 第一件事）：体前轴（`chunks[1]→chunks[0]`）与「头→目标」点积
+  `≤ 0.3` 直接 `return`，舌头根本不出。旧实现没这道闸 —— 背后的目标也照射。
+* **出手速度按距离插值**：`num = Lerp(InverseLerp(elRange*0.5, totR, dist), 1, 0.75)`
+  → `TONGUE_LASH_MIN 0.75` + `TONGUE_LASH_K 0.25`，存进 `self.tongue_speed` 供每帧推进用。
+* **反作用**：`bodyChunks[1].vel -= vector * lashOutSpeed` —— 舌一甩出去，身体后节被顶退。
+* **外伸期拖拽**（`:262-280` `Update`）：只要舌头还在外面，每 tick
+  `chunks[0].vel += DirVec(c0→tip)*4`、`chunks[1].vel -= 同向*4` —— 所以「舌头拽着重物」时蜥蝎
+  自己会被拉过去、「甩出去」时身体被反推。旧实现完全没有这一层，舌头就只是画出来的一条线。
+
+**④ 起跳：`PrepareToJump` 的分节冲量**（`Lizard.cs:2589-2612`）
+
+* 中节 `bodyChunks[1].vel *= 0.5`（速度减半）、前节沿起跳方向 `+1.5`、后节 `-2.0`。
+* **尾节逐节冲量**：`tail[i].vel -= initVel.normalized * i`（越往后越强）`+` 垂直方向 `±5`
+  每 3 帧交替 —— 尾巴是「甩出去」的，不是跟着平移。新增 `BODY_JUMP_TAIL` / `BODY_JUMP_WOBBLE`。
+
+**⑤ 爬墙：身体轴沿墙面切向 + 换向摆体**
+
+* 旧实现只写驱动点的 `x/y`，躯干完全被动跟，看起来像「被提着贴在墙上」。现在贴墙后前节朝
+  爬行方向、后节反向拉开（`WALL_LEAN`），并把 `chain_dir` 交给 `climb_side`（身体轴
+  沿墙面切向）。
+* 上↔下换向时先给 `WALL_TURN_TICKS` 帧反向冲量把身体摆过去（对应文档 §四
+  「表面切线接管身体轴」）。
+
+**仍未做**
+
+* 猫挤成一团的 `MovementController` 层伪裁只做了战斗站位那一腿。
+* `SlugcatBody` 的 `bodyMode` 判据（AI 看 `standing` 意图、控制态看位置）仍有一小处不一致。
+* 猫的 `_strip_path()` 软管拓扑重排、BodyChunk 拓扑重排（「独立 head + 3 torso seg」 →
+  「3 核心 chunk + 视觉头/下頴」）仍然是独立一轮。
+
 ### R156 · EscapeSolver 迟滞 / 救援路径吃危险代价 / 同层行为交通让位 / 蜥蝎 JawsSnapShut 夹合反作用
 
 R155 之后仍挂着的四件事：① `EscapeSolver` 内部没改，只在 FSM 层加了方向锁；

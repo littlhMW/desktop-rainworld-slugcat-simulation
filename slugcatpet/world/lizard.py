@@ -241,6 +241,15 @@ TONGUE_PULL = 7.0             # 每 tick 拽猎物的速度（原版 DragChunk�
 TONGUE_CD = 70                # 射舌冷却
 TONGUE_W = 3.2                # 舌根半宽（px，向舌尖渐细）
 TONGUE_JAW = 0.65             # 射舌时嘴至少张到这么大（原版 ShootTongue）
+TONGUE_LASH_MIN = 0.75         # 原版 LashOut：出手速度 = 基础速度 ×（0.75~1.0，看距离）
+TONGUE_LASH_K = 0.25           # 上式里距离插值的幅度
+TONGUE_DOT_MIN = 0.3           # 目标与体前轴的点积门槛：≤ 它舌头根本不出（原版 LashOut 直接 return）
+TONGUE_RECOIL = 0.55           # 射舌反作用：后节 vel -= 方向 × 出手速度（原版 bodyChunks[1]）
+TONGUE_DRAG = 1.5              # 舌外伸期间每 tick：头被拽向舌尖、后节反向（原版 Update 里的 ±4）
+BODY_JUMP_TAIL = 0.06          # PrepareToJump：尾节逐节冲量（越往后越强）
+BODY_JUMP_WOBBLE = 1.6         # PrepareToJump：尾巴垂直方向 ± 交替甩动
+WALL_LEAN = 0.35               # 爬墙时前节朝爬行方向、后节反向拉开（身体贴墙而不是被提着）
+WALL_TURN_TICKS = 12           # 墙上换向（上↔下）时先给一次反向冲量摆过去
 
 # ── 原版后空翻（文档 §9.4）：不是「跳高一点」，是身体姿态序列的角动量 ──
 # 原版翻身的角动量来自 PrepareToJump 给各 chunk 的反向冲量；这里补上真正的
@@ -1060,6 +1069,7 @@ class Lizard(CombatTarget):
                  "_body_imp_x", "_body_imp_y", "_jaw_rec_x", "_jaw_rec_y",
                  "_atk_phase", "_atk_t", "_atk_dir", "wiggle",
                  "_wiggle_ph", "_desp", "_anim_rng",
+                 "tongue_speed", "_wall_turn_left", "_wall_dir_prev",
                  "held_by_hand", "water_y", "room_gravity", "_contact_floor",
                  "dead", "spacing", "spikes", "cosmetics", "cosmetic_pts", "like", "tamed", "friend_id",
                  "climb_x", "climb_dir", "climb_surfaces", "hauler",
@@ -1290,6 +1300,9 @@ class Lizard(CombatTarget):
         # JawsSnapShut 的反作用（前节前冲 / 中后节后坐），_step_chain 取走并清零
         self._jaw_rec_x = 0.0
         self._jaw_rec_y = 0.0
+        self.tongue_speed = TONGUE_SPEED      # 本次射舌的出手速度（按距离插值）
+        self._wall_turn_left = 0              # 墙上换向的摆体剩余帧
+        self._wall_dir_prev = None            # 上一帧的爬行方向（换向检测）
         # Attack 动作序列（文档 §9.3 / §10.3）：Prepare → Lunge → Bite → Recover，
         # 由 _start_bite 触发，_step_attack_pose 每 tick 给各 chunk 单独写速度。
         self._atk_phase = None
@@ -2028,6 +2041,19 @@ class Lizard(CombatTarget):
         self.y += self.vy
         self._contact_floor = False
         self.wall_dir = self.climb_side
+        # 身体轴贴墙：前节朝爬行方向、后节反向拉开（墙面切向＝纵向）。旧实现只写
+        # 驱动点的 x/y，躯干完全被动跟，看起来像「被提着贴在墙上」。
+        if self._wall_dir_prev is not None and self._wall_dir_prev != self.climb_dir:
+            self._wall_turn_left = WALL_TURN_TICKS     # 上↔下换向：先摆过去再爬
+        self._wall_dir_prev = self.climb_dir
+        lean = -1.0 if self.climb_dir >= 0 else 1.0
+        if self._wall_turn_left > 0:
+            self._wall_turn_left -= 1
+            lean = -lean                               # 换向那几帧先把身体反着甩
+        if len(self.seg) >= 3:
+            self.seg[0].vy -= WALL_LEAN * lean
+            self.seg[2].vy += WALL_LEAN * lean
+        self.chain_dir = 1.0 if self.climb_side >= 0 else -1.0
         top, bot = self.climb_top, self.climb_bot
         if bot is not None and self.y > bot:
             self.y = min(bot, floor)              # 爬到底 / 线到头：站住并脱墙
@@ -3921,8 +3947,16 @@ class Lizard(CombatTarget):
         # 一起平移。chunk0 的位置由驱动点钉住（速度每 tick 会被重算），所以这里只补
         # 中节和后节。
         if len(self.seg) >= 3:
+            self.seg[1].vx *= 0.5                    # 原版：中节速度减半
             self.seg[1].vy += vy * BODY_JUMP_MID
             self.seg[2].vy -= vy * BODY_JUMP_REAR
+        # 尾节逐节冲量（原版 PrepareToJump：tail[i].vel -= initVel.normalized * i
+        #   + 垂直方向 ±5 每 3 帧交替）—— 尾巴是「甩出去」的，不是跟着平移。
+        if len(self.seg) > 3:
+            wob = BODY_JUMP_WOBBLE * (1.0 if int(self.walk_phase) % 2 == 0 else -1.0)
+            for k in range(3, len(self.seg)):
+                self.seg[k].vy -= vy * float(k - 2) * BODY_JUMP_TAIL
+                self.seg[k].vy += wob
         self.wiggle = min(1.0, self.wiggle + WIGGLE_BUMP)
         # 跳得猛的品种：这一跳带着身体翻过去（文档 §9.4）
         self._start_flip(1 if self.facing >= 0 else -1)
@@ -3952,6 +3986,18 @@ class Lizard(CombatTarget):
         d = math.hypot(dx, dy)
         if d <= 1e-6:
             return False
+        # 原版 LizardTongue.LashOut（LizardTongue.cs:519）第一件事就是方向闸：
+        # 体前轴（chunks[1]→chunks[0]）与「头→目标」的点积 ≤ 0.3 直接 return，
+        # 舌头根本不出来。旧实现没这道闸，背后的目标也照射（「背后长舌头」）。
+        ax, ay = self.x - self.seg[0].x, self.y - self.seg[0].y
+        ad = math.hypot(ax, ay)
+        if ad > 1e-6 and (ax * dx + ay * dy) / (ad * d) <= TONGUE_DOT_MIN:
+            return False
+        # 出手速度按距离插值（原版 num = Lerp(InverseLerp(elRange*0.5, totR, dist), 1, 0.75)）
+        rng = float(self.breed.tongue_range)
+        self.tongue_speed = TONGUE_SPEED * (
+            TONGUE_LASH_MIN
+            + TONGUE_LASH_K * clampf((d - rng * 0.5) / max(1.0, rng * 0.5), 0.0, 1.0))
         self.tongue_dir = (dx / d, dy / d)
         self.tongue_len = 0.0
         self.tongue_tip = (mx, my)
@@ -3962,6 +4008,12 @@ class Lizard(CombatTarget):
         self.tongue_cd = int(TONGUE_CD)
         self.jaw = max(self.jaw, TONGUE_JAW)
         self.wiggle = min(1.0, self.wiggle + WIGGLE_BUMP)
+        # 反作用（原版 LashOut：bodyChunks[1].vel -= vector * lashOutSpeed）：
+        # 舌头一甩出去，身体后节被顶退 —— 舌越猛、自己越退。旧实现完全没有这一下，
+        # 于是「舔」看起来只是头上多了一条线。
+        if len(self.seg) >= 2:
+            self.seg[1].vx -= (dx / d) * self.tongue_speed * TONGUE_RECOIL
+            self.seg[1].vy -= (dy / d) * self.tongue_speed * TONGUE_RECOIL
         return True
 
     def _tongue_reset(self) -> None:
@@ -4015,8 +4067,23 @@ class Lizard(CombatTarget):
         mx, my = self._mouth_point()
         dx, dy = self.tongue_dir
         st = self.tongue_state
+        # 舌外伸期间的拖拽（原版 LizardTongue.Update 262-280）：只要舌头还在外面，
+        # 每 tick chunks[0].vel += DirVec(c0→tip)*4、chunks[1].vel -= 同向*4。
+        # 所以「舌头拽着重物」时蜥蝎自己会被拉过去、「甩出去」时身体被反推 ——
+        # 这一层旧实现完全没有，舌头就只是画出来的一条线。
+        if st in ("out", "hold"):
+            tipx, tipy = self.tongue_tip
+            tdx, tdy = tipx - self.x, tipy - self.y
+            tl = math.hypot(tdx, tdy)
+            if tl > 1e-6:
+                k = TONGUE_DRAG * min(1.0, tl / 60.0)
+                self.vx += (tdx / tl) * k
+                self.vy += (tdy / tl) * k
+                if len(self.seg) >= 2:
+                    self.seg[1].vx -= (tdx / tl) * k
+                    self.seg[1].vy -= (tdy / tl) * k
         if st == "out":
-            self.tongue_len += TONGUE_SPEED
+            self.tongue_len += self.tongue_speed
             tip = (mx + dx * self.tongue_len, my + dy * self.tongue_len)
             # 射程到头（原版 tongueRange）→ 收回
             if self.tongue_len >= self.breed.tongue_range:
