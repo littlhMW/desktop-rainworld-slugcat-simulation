@@ -1872,9 +1872,18 @@ class SlugcatBody:
         """此刻是不是「抱着竖杆」（ClimbOnBeam / BeamTip）。
 
         竖杆上的持物要偏到杆侧，不能正好压在杆线上看上去像插进杆里。
-        横杆（StandOnBeam / HangFromBeam / GetUpOnBeam）不走这一档。
+        横杆（StandOnBeam / HangFromBeam / GetUpOnBeam）走 `on_horizontal_beam()`。
         """
         return bool(self.on_pole and self.animation in ("ClimbOnBeam", "BeamTip"))
+
+    def on_horizontal_beam(self) -> bool:
+        """此刻是不是「横杆姿态」接管双手（站杆顶 / 吊杆 / 撑上杆）。
+
+        参考图（玩家实机）：横杆上手里的东西要偏到杆**上方**，
+        不能正好压在杆身上（看上去像嵌进杆里）。
+        """
+        return bool(self.on_pole and self.animation in
+                    ("StandOnBeam", "HangFromBeam", "GetUpOnBeam"))
 
     def hand_world(self, side):
         """这只手此刻的世界坐标（渲染层每帧写回的真值）；没跑过渲染帧时 None。"""
@@ -1909,6 +1918,8 @@ class SlugcatBody:
             return cx, cy, False
         if self.on_vertical_pole():          # 抱着竖杆：物偏到杆侧，别画进杆里
             hw = (hw[0] + (-POLE_CARRY_DX if side == "l" else POLE_CARRY_DX), hw[1])
+        elif self.on_horizontal_beam():      # 横杆：物偏到杆上方，别压在杆身上
+            hw = (hw[0], hw[1] - POLE_CARRY_DX)
         return hw[0], hw[1], False
 
     def reach_for(self, fruit, side):
@@ -2194,10 +2205,13 @@ class SlugcatBody:
             # 参考图：双持时两支矛向外撇（左手向屏幕左、右手向屏幕右），
             # 屏幕空间固定 —— 不乘 fdir，这样朝向反过来时整体镜像。
             splay = DUAL_SPEAR_SPLAY * (-1.0 if side == "l" else 1.0)
-        if self.on_pole:
-            # 杆上不要用两个 chunk 的瞬时 dx 算角度；它会在抓杆/摆动时左右翻转。
-            if self.animation in ("StandOnBeam", "HangFromBeam", "GetUpOnBeam"):
-                return 90.0 if fdir > 0 else 270.0
+        if self.on_pole and not self.on_horizontal_beam():
+            # 竖杆：杆顺着体轴朝上（否则横着的矛会插进竖杆里）。
+            # 不要用两个 chunk 的瞬时 dx 算角度；它会在抓杆/摆动时左右翻转。
+            #
+            # 横杆姿态（StandOnBeam / HangFromBeam / GetUpOnBeam）**不在这里**：
+            # 旧代码给它 90°/270°（沿杆横放），矛正好躺在横杆里。
+            # 参考图（玩家实机）里是**正常持矛角**（25° 前上）。
             return 0.0
         base = (SPEAR_HOLD_TILT if tilt is None else float(tilt)) * dual_k
         wob = 0.0

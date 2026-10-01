@@ -4,6 +4,37 @@
 
 ## 2026-10-01
 
+### R141 · 横杆持物订正（两手张开 + 物不压杆 + 矛不横放）
+
+用户反馈「横杆持物还是做错了」，附两张玩家实机截图（站在横杆顶：两臂向两侧张开、手里的矛是**正常斜持角**而不是横躺在杆上；竖杆上托石头：石头偏出杆线、不压杆身）。根因是两处硬编码：
+
+**① 两只手被拉到身体中线（`rendering/graphics.py::_beam_hand_target`）**
+
+旧版 `StandOnBeam` 有一段「平衡样态混合」`if anim == "StandOnBeam" and self.disbalance < 40.0:`（s = 1 时把 `relx` 归零、`rely_up` 拉到 15px）。但 **`self.disbalance` 全仓库只有 `graphics.py` 里的初始值 `0.0`，从来没有地方写过它** —— 所以 `s = (40-0)/40 = 1.0`，分支**永远生效**：站杆顶时两只手（以及手里的东西）永远堆在身体中线上方，看上去就像没有输出「两臂张开」的姿态。现在删掉该分支，只保留参考图那一档：`relx = -20 + 40*j`、`rely_up = -4 - 6*sway*∓1`、`speed = 5.0 / quickness = 0.2`。
+
+**② 横杆上的矛被强行横放（`core/creature.py::spear_hold_angle`）**
+
+旧版 `if self.on_pole:` 里有一条 `if self.animation in ("StandOnBeam", "HangFromBeam", "GetUpOnBeam"): return 90.0 if fdir > 0 else 270.0` —— 矛被摆成**沿横杆方向**，等于躺进横杆里。参考图里是**正常持矛角（25° 前上）**。现在改成 `if self.on_pole and not self.on_horizontal_beam(): return 0.0`（只给竖杆留「顺体轴朝上」），横杆走普通 `fdir*(base+wob)+splay` 链路 —— 与站立时逐位相同，且双持时仍然走外八字。
+
+**③ 新增横杆姿态判定 + 持物上抬（`core/creature.py`）**
+
+- 新增 `on_horizontal_beam()` = `on_pole and animation in ("StandOnBeam", "HangFromBeam", "GetUpOnBeam")`，与 `on_vertical_pole()`（`ClimbOnBeam` / `BeamTip`）互斥。
+- `_carry_anchor()` 新增一档：横杆上物偏到手**上方** `POLE_CARRY_DX = 7px`（`HangFromBeam` / `GetUpOnBeam` 的手本来就在杆线上，不偏就压杆）；竖杆仍走横向 ±7px，两者不共存。
+
+**A/B 目视核对（`work/scratch/_vis141b.py` → `work/scratch/r141_beam.png`，上行=旧（R140）、下行=新（R141），五格：站杆顶 / 站杆顶+矛 / 吊杆+矛 / 撑上杆+石头 / 竖杆+石头）**
+
+| 场景 | 旧（R140） | 新（R141） |
+|---|---|---|
+| 站杆顶 两手 x | `(200, 200)`（中线重合） | `(180, 220)`（分居两侧） |
+| 站杆顶+矛 矛角 | **90.0°**（沿杆横放） | **25.0°**（正常持矛角） |
+| 吊杆+矛 矛角 | 90.0° | 25.0° |
+| 矛与手的位置关系 | 矛心 = 手心（压杆） | 矛心 = 手心 **上方 7px** |
+| 竖杆+石头 | 物在手右 7px | **逐位不变**（R140 不回退） |
+
+**测试：新增 `work/scratch/e2e_r141.py`**（25 项，全绿）—— `on_horizontal_beam()` 对三种横杆动画为 True、对 `ClimbOnBeam`/`BeamTip`/`on_pole=False` 为 False；横杆时 `_carry_anchor` 返回 `(hand.x, hand.y - POLE_CARRY_DX)` 且 `aimed=False`；横杆矛角 == 站立矛角且 ≠ 90/270；竖杆矛角仍为 0；`_beam_hand_target(0/1, "StandOnBeam")` 分居身体两侧且间距 > 24px；竖杆横向 ±7px 回归；源码级守护（两条旧分支彻底删掉）。`run_all19.ps1` 已登记（126 个脚本）。
+
+**回归**：`run_all19.ps1` **126 个脚本 fails=0 []**；`tools/parts_audit.py --check` exit=0；`tools/sprite_variants.py` 正常。
+
 ### R140 · 面板超长/身体拓扑/动作序列/面条蝇三连修 + 手部动画与持矛角度订正
 
 本轮两批需求一起交付。前一批是上一轮遗留的三件大事（面条蝇三连修、身体拓扑、动作序列），后一批是手部动画与持矛姿态。

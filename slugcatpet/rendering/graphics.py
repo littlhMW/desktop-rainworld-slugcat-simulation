@@ -857,13 +857,16 @@ class SlugcatGraphics(GraphicsDrawMixin):
             sh = 10.0 + 3.0 * math.sin(2.0 * math.pi * self.anim_frame / 20.0)
             hx = c0.x + (-1.0 if j == 0 else 1.0) * sh
             return (hx, beam_y), HUNT_SPEED, HAND_QUICKNESS
+        # 站杆顶 / 撑上杆：两手向两侧张开扮演平衡（参考图）。
+        #
+        # 旧版这里还有一段 `if anim == "StandOnBeam" and self.disbalance < 40.0`
+        # 的样态混合（把两手拉到身体中线上方 15px）。但 `disbalance`
+        # 全仓库只有初始值 0.0、从来没人写过 → 分支**永远生效**，
+        # 手（和手里的东西）永远堆在身体中线上 = 用户报的「横杆持物还是错的」。
+        # 现在只保留参考图那一档：两手向外张开、随平衡计数器轻摆。
         sway = math.sin(2.0 * math.pi * self.balance_counter / 300.0)
         relx = -20.0 + 40.0 * j
         rely_up = -4.0 - 6.0 * sway * (-1.0 if j == 0 else 1.0)
-        if anim == "StandOnBeam" and self.disbalance < 40.0:
-            s = (40.0 - self.disbalance) / 40.0
-            rely_up = rely_up * (1.0 - s) - s * 15.0
-            relx = relx * (1.0 - s)
         ox, oy = _rot(relx, -rely_up, axis)
         return (c0.x + ox, c0.y + oy), 5.0, 0.2
 
