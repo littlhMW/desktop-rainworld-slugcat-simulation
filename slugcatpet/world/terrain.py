@@ -395,9 +395,15 @@ class TerrainQuery:
         if caps is None or ty >= y - FLOOR_TOL:
             return None                       # 目标不比我高：直冲 / 跳跃那套
         best = None
-        for sx, top, bot, kind in self.climb_surfaces():
-            if not caps.allows_climb(kind):
-                continue                  # 这个品种用不了这一类竖线
+        support_y = self.geom.support_contact(x, y, caps).y
+        for surface in self.geom.verticals(caps):
+            sx, top, bot, kind = surface.x, surface.top, surface.bot, surface.climb
+            if kind == CLIMB_POLE:
+                # 这是 Floor→Climb 的回退提示。空中抓杆由跳跃路径负责；
+                # 只有竖杆与当前支撑面实际相交时，才把它当作能从地面走到的杆。
+                pole = surface.pole
+                if pole is None or not pole.touches_support_y(support_y):
+                    continue
             if top > ty + 12.0:
                 continue                      # 线顶还够不着目标那一层
             on_line = top - 12.0 <= y <= bot + 12.0
@@ -538,6 +544,7 @@ class TerrainQuery:
         vnodes = []        # [(node_i, x, y, usable)]
         vlines = []        # [(surface, nf, nh, can)]：②b 插桩要用
         vline_of = {}      # 节点 → (kind, x)：同一条竖线上的两点之间不建跳跃 / 跳下
+        vline_surface = {}  # node id -> original surface for pole support checks
         for s in self.geom.verticals(None):
             if s.bot - s.top < 8.0:
                 continue
@@ -555,6 +562,7 @@ class TerrainQuery:
             vnodes.append((nh, s.x, s.top, can))
             vlines.append((s, nf, nh, can))
             vline_of[nf] = vline_of[nh] = (kind, round(s.x, 1))
+            vline_surface[nf] = vline_surface[nh] = s
             if can:
                 c = (s.bot - s.top) / max(0.5, caps.climb_speed) + CLIMB_COST
                 et = _CLIMB_EDGE_TYPE[kind]
@@ -581,6 +589,7 @@ class TerrainQuery:
                               top=s.top, bot=s.bot, sid=s.sid)
                 vnodes.append((nm, s.x, ay, can))
                 vline_of[nm] = (kind, round(s.x, 1))
+                vline_surface[nm] = s
                 if not can:
                     continue
                 et = _CLIMB_EDGE_TYPE[kind]
@@ -605,7 +614,14 @@ class TerrainQuery:
                 for (na, ax) in row:
                     if abs(ax - vx) > caps.climb_reach:
                         continue
-                    if abs(node_y[na] - vy) > ATTACH_DY:
+                    vline = vline_surface.get(nv)
+                    if vline is not None and vline.kind == VPOLE:
+                        # Pole entry edges require actual support contact. Grab
+                        # reach and ATTACH_DY must not connect a floating pole to floor.
+                        if (vline.pole is None
+                                or not vline.pole.touches_support_y(node_y[na])):
+                            continue
+                    elif abs(node_y[na] - vy) > ATTACH_DY:
                         continue
                     link(na, nv, E_WALK,
                          abs(ax - vx) / max(0.5, caps.walk_speed) + ATTACH_COST)

@@ -261,9 +261,15 @@ _FACE_PANIC_FROM = frozenset((
     "IdleStand", "PostThrowWander", "PostThrowStand", "MakeWay", "ChaseCursor",
     "Socialize", "FetchFruit", "CatchFly", "ItemPlay", "HelpFeed", "PoleClimb",
     "ScoldBlocker", "LieDown"))
+_CARRIED_PEER_INTERRUPT_FROM = (_FACE_PANIC_FROM | _RESCUE_PREEMPT_FROM
+                                | frozenset(("FightThreat", "CoverAlly", "DodgeShot",
+                                             "HPole", "SeekHPole", "WakeSequence",
+                                             "ClearCorpse", "HuntFly", "AngryStone",
+                                             "Airborne", "FleeLizard", "CrawlAway")))
 CRAWL_AWAY_STEP = 60.0     # 匍匐潜行每 tick 朝反方向重取的「一步」长度
 CRAWL_CORNER_EPS = 1.0     # 夹进可走范围后离原地的余量 ≤ 此值 = 贴边（不再推）
 REVIVE_SAFE_PAD = 1.6      # 倒地同伴离威胁小于「我离威胁的距离×此值」＝在刀口上，不去
+CARRIED_PEER_PICKUP_BYPASS_R = 96.0  # 叼住同伴的紧急战斗允许短距离直取武器
 
 
 
@@ -410,6 +416,7 @@ class BehaviorFSM:
         self._hpole_start_x = None
         self._poleclimb_pole = None
         self._poleclimb_start = None
+        self._poleclimb_flee_from = None
         self._hp = None
         self._hp_phase = None
         self.fetch = None
@@ -1717,8 +1724,9 @@ class BehaviorFSM:
         full = self.body.food >= self.body.food_max
         meat = self._meat_zeal()
         rage = self._spear_rage()
-        hunting = ((not fed and (meat > 0.0 or rage)
-                    and self._food_seek_ready()))   # 没到冬眠阈：正经狩猎（吃素的猫不猎；矛大师狂暴时必猎）
+        needle_hunter = self._needle_only()
+        hunting = ((not fed and (meat > 0.0 or needle_hunter or rage)
+                    and self._food_seek_ready()))   # 特殊食性：以活体狩猎觅食，不按普通肉食偏好拦截
         # 吃到顶格：捕食也算娱乐项目（空手也会先去捡石头/矛再打）
         playing = (full and self.rng.random() < tuning.HUNT_PLAY_PROB)
         self._fly_hunt_on = hunting or playing    # 记账结果给 gate 读（pre 无条件先跑）
@@ -1732,10 +1740,19 @@ class BehaviorFSM:
     def _act_huntfly(self, ctx):
             from .huntfly import FlyHunter
             probe = FlyHunter(self.win, self.rng, self)
-            if probe._flies() and (self._spear_rage()
-                                   or probe.ground_pool()
-                                   or self.body.carried_stone is not None
-                                   or self.body.carried_spear is not None):
+            if self._needle_only():
+                # HuntFly 的选取阶段没有“等待尾针长成”的分支：若只因饥饿 rage
+                # 提前进入，它会立刻 giveup 并压上很长的 hunt cooldown。未持有或
+                # 地上没有活白针时留在 idle，让 tail-needle ticker 完成生长后再猎。
+                held_needle = any(self._own_needle(sp)
+                                  for sp in self.body.hand_spears.values())
+                weapon_ready = (held_needle
+                                or bool(probe.ground_pool()))
+            else:
+                weapon_ready = (bool(probe.ground_pool())
+                                or self.body.carried_stone is not None
+                                or self.body.carried_spear is not None)
+            if probe._flies() and weapon_ready:
                 self._break_active_controllers()
                 self._act_or_wake("HuntFly")
 
@@ -1843,10 +1860,16 @@ class BehaviorFSM:
             self.gfx.sleeping = False
             self.body.sleeping = False
             self.gfx.sleep_curl = 0.0
-        # 移动权不跨状态：新状态要自己重新认领（见 SlugcatBody.claim_move）。
-        # 否则上一个状态残留的 walk_target_x 会继续把身体往前拖（「切态了还在走」），
-        # 而这正是同层行为（战斗/救援/逃跑）互相抢步点的入口之一。
+        # 移动意图不跨状态：新状态要自己重新认领（见 SlugcatBody.claim_move）。
+        # 旧代码只清 move_owner，却保留 walk_target_x；新态即使没有主动走路，物理层
+        # 仍会沿旧目标移动，遇到新状态的站位/躲避/攻击指令时就会互相拉扯。保留
+        # 起跳和松杆时明确设置的 move_dir，避免清掉刚发出的水平冲量。
+        took_off = self.body.took_off()
+        self.body.walk_target_x = None
+        self.body.walk_facing = None
         self.body.move_owner = None
+        if not took_off and new != "Airborne":
+            self.body.move_dir = 0
         self.state = new
         self.timer = 0
         self.phase = 0
@@ -2777,6 +2800,68 @@ class BehaviorFSM:
         th = self._threat_lizard()
         if th is None:
             return False
+        # 同伴被叼住时，复活筛选会正确地把它排除（蜥蜴松口前无法救），但这也
+        # 曾让处于社交/取食/玩耍状态的猫继续原地围观：普通中距离威胁只抢 idle。
+        # 把叼人事件提升为紧急战术：有可用手持武器就打蜥蜴，否则先撤离；硬控制、
+        # 死亡、眩晕等状态仍由各自的状态机处理。这样不会为了一个不可救目标反复贴身。
+        carrier = self._lizard_carrying_peer()
+        if carrier is not None:
+            th = carrier
+            if self.state == "FightThreat" and self._fight_target is carrier:
+                return False               # 已在应对同一只叼人蜥蜴：保留拾取/移动/瞄准阶段
+            can_interrupt = self.state in _CARRIED_PEER_INTERRUPT_FROM
+            if can_interrupt:
+                armed_now = self._armed_in_hand()
+                has_weapon = armed_now
+                if (not has_weapon and b.on_floor() and not self._exhausted
+                        and self._face_cd <= 0):
+                    gw = self._nearest_ground_weapon()
+                    weapon_dist = (math.hypot(gw.x - b.chunk1.x,
+                                              gw.y - b.chunk1.y)
+                                   if gw is not None else math.inf)
+                    # Saving a carried companion is an emergency: if a weapon
+                    # is already within a short arm-and-step reach, do not let
+                    # the generic flee-path safety margin reject the pickup.
+                    path_ok = (weapon_dist <= CARRIED_PEER_PICKUP_BYPASS_R
+                               or (gw is not None
+                                   and self._weapon_path_safe(gw, carrier)))
+                    has_weapon = (gw is not None
+                                  and weapon_dist <= tuning.ARM_SEEK_R
+                                  and path_ok)
+                    if (not has_weapon
+                            and getattr(self.pers, "bravery", 0.5)
+                            >= tuning.RIP_SPEAR_BRAVE):
+                        has_weapon = self._nearest_rip_spear(carrier) is not None
+                # A ground-weapon pickup that repeatedly fails its route must
+                # not re-enter FightThreat and reset that route on every tick.
+                # Keep immediate response for an already held weapon, but let
+                # failed pickup attempts respect the short fight retry cooldown.
+                pickup_retry_ready = armed_now or self._fight_cd <= 0
+                if (has_weapon and pickup_retry_ready and not self._exhausted
+                        and self._face_cd <= 0):
+                    if self.state == "FightThreat":
+                        # 目标被重识别为叼人蜥蜴：就地重定向，不走一般 break
+                        # （它会清空当前 FightThreat 目标），也不反复重建状态。
+                        self._fight_climber_release()
+                        self.body.stop_walk()
+                        self._fight_throw_t = 0
+                        self._blocked_t = 0
+                        self._fight_slot_flip = 0
+                        self._shot_blocked = False
+                    else:
+                        self._break_active_controllers()
+                        self._transition("FightThreat")
+                    self._fight_target = th
+                    self._fight_left = tuning.FIGHT_TICKS
+                    return True
+                # Once a flee/crawl route is active, keep it intact while no
+                # usable weapon exists (or a failed pickup is cooling down).
+                # A later nearby weapon is still checked above and can preempt
+                # this state into FightThreat.
+                if self.state in ("FleeLizard", "CrawlAway"):
+                    return True
+                self._flee_lizard_now(th)
+                return True
         c1 = b.chunk1
         d = abs(th.x - c1.x)
         # Exhaustion limits optional actions, but must never suppress the
@@ -2986,6 +3071,7 @@ class BehaviorFSM:
                     and abs(pole.x - b.chunk1.x) <= tuning.FLEE_POLE_R):
                 self._poleclimb_pole = pole
                 self._poleclimb_start = None
+                self._poleclimb_flee_from = lz
                 self._flee_from = lz
                 self._flee_cd = FLEE_COOLDOWN
                 self._crawl_cd = T_CRAWL_RETRY
@@ -3160,11 +3246,23 @@ class BehaviorFSM:
         if self.grab.active:
             self._transition("Dragged")
             return
+        ex = self._flee_exec
+        leg = (ex.plan.leg() if ex is not None and ex.plan is not None
+               else None)
+        pole_ctl = getattr(self, "pole_ctl", None)
+        leg_source_pole = getattr(getattr(leg, "src", None), "pole", None)
+        on_planned_source = (bool(getattr(b, "on_pole", False))
+                             and leg_source_pole is not None
+                             and getattr(pole_ctl, "pole", None) is leg_source_pole)
+        route_controls_motion = (ex is not None and leg is not None
+                                 and leg.kind in ("walk", "climb_pole", "pole_beam",
+                                                  "jump", "drop", "finish")
+                                 and (ex._ctrl is not None or on_planned_source))
         # FaceThreat can interrupt a pole action on the same tick.  If the
         # controller was released after the state transition, the body may still
-        # carry the on_pole flag for one frame; release it here so RouteExecutor
-        # does not return GIVEUP forever while FleeLizard waits out its timeout.
-        if getattr(b, "on_pole", False):
+        # carry a stale on_pole flag for one frame. Keep real route-managed pole
+        # legs intact; release only when no route owns this support.
+        if getattr(b, "on_pole", False) and not route_controls_motion:
             self._pole_release()
         lz = self._flee_from
         alive = lz is not None and getattr(lz, "state", None) == ItemState.FREE
@@ -3176,7 +3274,6 @@ class BehaviorFSM:
             return
         # 有逃生路线：这一段全权交给 RouteExecutor（爬杆 / 跳 / 落都是路线的一环）。
         # 威胁在动，所以每隔十几 tick 重问一次「哪里还安全」。
-        ex = self._flee_exec
         if ex is not None:
             self.gfx.look_at = (lz.x, lz.y)
             # 贴身退无可退：路线作废，当场面向它跳过去（落点已经换到对面）。
@@ -3186,8 +3283,9 @@ class BehaviorFSM:
                 self._flee_cd = FLEE_COOLDOWN
                 self._flee_break()
                 return
-            if not b.on_floor():
-                # 空中：整段飞行交给物理（路线留着落地接着走），别重取步点。
+            if not b.on_floor() and not route_controls_motion:
+                # 普通跳跃的空中帧交给物理；已规划的杆/平台 leg 仍需推进其
+                # 控制器，负责定向抓杆、落点与路线续接。
                 b.walk_target_x = None
                 return
             if self.timer % tuning.ESCAPE_REPLAN_TICKS == 0:
@@ -3836,8 +3934,8 @@ class BehaviorFSM:
         elif px < c0.x - 1.0:
             self.body.move_dir = -1
 
-    def _air_pole_grab(self) -> bool:
-        """空中抓住杆子：贴杆即抓，抓到就转攀爬/吊杆（原版空中抓 beam）。"""
+    def _air_pole_grab(self, route_owned=False) -> bool:
+        """空中抓杆；路线控制器可接管后续动作而不切断当前寻路状态。"""
         b = self.body
         c0 = b.chunk0
         tgt = self._air_pole_target
@@ -3857,8 +3955,11 @@ class BehaviorFSM:
                     continue
                 self._air_pole_target = None
                 self._poleclimb_pole = p
-                self._poleclimb_start = None
-                self._transition("PoleClimb")
+                self._poleclimb_start = "climb" if route_owned else None
+                if route_owned:
+                    self._poleclimb_enter()
+                else:
+                    self._transition("PoleClimb")
                 return True
             lo, hi = p.span_x()
             if not (lo - tuning.POLE_AIRGRAB_PAD <= c0.x <= hi + tuning.POLE_AIRGRAB_PAD
@@ -3868,7 +3969,10 @@ class BehaviorFSM:
             self._hpole_pole = p
             self._hpole_start = "hang"
             self._hpole_start_x = c0.x
-            self._transition("HPole")
+            if route_owned:
+                self._hpole_enter()
+            else:
+                self._transition("HPole")
             return True
         return False
 
@@ -4343,6 +4447,42 @@ class BehaviorFSM:
             return
         want_dismount = self.body.energy <= tuning.TIP_TIRED_ENERGY
         pc = self.poleclimb
+        # 逃生攀杆需要一个明确的纵向目标。旧逻辑在没有物件目标时把
+        # target_y 留为 None，PoleClimber 因而一直爬到杆顶；到了顶端也只
+        # 等随机跳杆/超时。威胁若在同一根杆上，就停在它的反方向一段距离；
+        # 已经甩开威胁则主动沿杆下行，回到可继续寻路的地面。
+        flee_target = self._poleclimb_flee_from
+        if flee_target is not None:
+            flee_live = (getattr(flee_target, "state", None) == ItemState.FREE
+                         and not getattr(flee_target, "dead", False))
+            flee_safe = not flee_live or self._safe_from(flee_target)
+            if flee_safe:
+                if pc.phase != "approach":
+                    pc.request_descend()
+            else:
+                pole = pc.pole
+                b = self.body
+                me_y = float(b.chunk1.y)
+                threat_x = float(getattr(flee_target, "x", pole.x))
+                threat_y = float(getattr(flee_target, "y", me_y))
+                same_pole = (abs(threat_x - pole.x) <= max(
+                                 tuning.POLE_AIRGRAB_R,
+                                 float(getattr(flee_target, "body_rad", 8.0)) * 2.0)
+                             and pole.top_y - tuning.POLE_AIRGRAB_PAD <= threat_y
+                             <= pole.bottom_y + tuning.POLE_AIRGRAB_PAD)
+                clearance = max(72.0, float(getattr(b, "_conn_stand", 17.0)) * 4.0)
+                if same_pole and threat_y < me_y - 8.0:
+                    # 威胁在上方：往杆下方停；避免继续爬向它。
+                    target_y = max(me_y + clearance, threat_y + clearance)
+                elif same_pole:
+                    # 威胁在下方或与我同高：向上撤离并停在其上方。
+                    target_y = min(me_y - clearance, threat_y - clearance)
+                else:
+                    # 威胁不在这根竖杆上：继续使用竖杆的高处作为避险点。
+                    target_y = pole.top_y + float(getattr(b, "_conn_stand", 17.0))
+                pc.target_y = clampf(target_y,
+                                     pole.top_y + float(getattr(b, "_conn_stand", 17.0)),
+                                     pole.bottom_y - float(getattr(b.chunk1, "rad", 8.0)))
         done = pc.update(want_dismount)
         if done:
             air_t = pc.air_target
@@ -4389,6 +4529,7 @@ class BehaviorFSM:
         self._pole_nudge = 0
         self._pole_nudge_point = False
         self._pole_blocker = None
+        self._poleclimb_flee_from = None
         self._act_end()
         if ctl is not None:
             if ctl.kind != VERTICAL:
@@ -5612,8 +5753,13 @@ class BehaviorFSM:
         self.gfx.look_at = (edge, self.HL - 12.0)
 
     def _hunt_cd_after(self) -> int:
-        """一次捕猎后的冷却：越爱吃肉越想接着打（荤 0.6× / 杂 1.0× / 素 1.4×）。"""
-        return int(HUNT_CD * (1.4 - 0.8 * self._meat_zeal()))
+        """一次捕猎后的冷却：猎手型猫会更快重试。
+
+        矛大师不吃肉，但活体狩猎是它唯一的进食方式；按素食冷却倍率会让
+        它在普通饥饿阶段长期不再尝试，只在狂暴阈值附近突然积极起来。
+        """
+        zeal = max(self._meat_zeal(), 0.7 if self._needle_only() else 0.0)
+        return int(HUNT_CD * (1.4 - 0.8 * zeal))
 
     def _flyhunt_release(self):
         """收尾：松手、清瞄准、清控制器（矛大师自己尾巴长的活白针继续拿着）。"""
@@ -5957,6 +6103,20 @@ class BehaviorFSM:
             if getattr(lz, "carry_body", None) is ob:
                 return True
         return False
+
+    def _lizard_carrying_peer(self):
+        """返回正叼着一只成年同伴的活蜥蜴；幼崽和尸体不触发群体救援战术。"""
+        peer_bodies = {getattr(p, "body", None) for p in self._living_peers()
+                       if not getattr(p, "is_pup", False)}
+        if not peer_bodies:
+            return None
+        for lz in getattr(self.win, "lizards", ()):
+            if (getattr(lz, "dead", False)
+                    or getattr(lz, "state", None) != ItemState.FREE):
+                continue
+            if getattr(lz, "carry_body", None) in peer_bodies:
+                return lz
+        return None
 
     def _weapon_path_safe(self, gw, th) -> bool:
         """从当前位置到这件家伙的**直线路径**会不会穿过恐惧安全线？
@@ -9015,7 +9175,18 @@ class BehaviorFSM:
             return
         if self.grab.active or self._hibernating or b.swimming or self._zerog():
             return
-        if self.state not in ("IdleStand", "PostThrowStand", "PostThrowWander"):
+        # A threat response moves a Spearmaster into FleeLizard before it can
+        # ever return to an idle state.  Requiring an idle state here meant it
+        # could neither grow its own weapon nor switch to fighting; it would
+        # just flee/idle until it found an ordinary spear (which it cannot use).
+        # Let an active, interruptible threat response grow a needle in the
+        # background while its flee/route controller keeps moving the body.
+        threat_response = (
+            self._threat_lizard() is not None
+            and self.state in ("FleeLizard", "CrawlAway", "FightThreat", "CoverAlly")
+        )
+        if (self.state not in ("IdleStand", "PostThrowStand", "PostThrowWander")
+                and not threat_response):
             return
         # 原版 newSpearSlot()：这一针从尾上哪一格冒出来（行/列/针型）
         g = self.gfx

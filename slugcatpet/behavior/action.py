@@ -24,10 +24,10 @@ band（照文档的分类）：
 
 ``start(ctx)`` 返回 ``True`` 表示「这一 tick 真的做了」。
 
-链式语义：``decide`` 按 band 顺序、band 内按注册顺序**逐条**评估 ``gate``，
-命中就 ``start``，然后继续评估后面的动作 —— 这正是旧版主 tick 里那条
-互不互斥的 ``if`` 链的语义（旧版每个 ``if`` 都会被评估），所以把代码搬进注册表
-不会改变行为，也不会改变随机数流。``pre(ctx)`` 是「必须无条件先跑的记账」
+仲裁：``decide`` 按 band 顺序、band 内按注册顺序评估 ``gate``。保命层保留
+链式检查；在 need 层，如果 ``start`` 真的切换了 FSM 状态，就不再起手同层的
+其他动作，防止新意图在同一 tick 被下一条规则覆盖。剩余动作的 ``pre(ctx)`` 仍
+会执行，让冷却和计数器持续记账。``pre(ctx)`` 是「必须无条件先跑的记账」
 （冷却回落 / 计数器自增），放在注册表里让整条 tick 的顺序在一处可见。
 
 ``choose`` / ``pick`` 是单赢家视角：调试面板和测试用它们问「这只猫此刻最想做
@@ -209,11 +209,11 @@ class ActionArbiter:
         return self.choose(band, ctx)
 
     def run_band(self, band: str, ctx: ActionContext) -> list[ActionSpec]:
-        """跑一个 band：按序评估 gate，命中就 start，继续评估后面的（链式）。"""
+        """跑一个 band：按序评估 gate；need 里一次状态切换后只记账不再起新动作。"""
         fired = []
         order = (self._ordered(band, ctx) if band == BAND_PERSONALITY
                  else self._order_all(band))
-        for spec in order:
+        for index, spec in enumerate(order):
             if spec.pre is not None:
                 try:
                     spec.pre(ctx)       # 记账抛异常：记下，别拖垮整只猫
@@ -222,11 +222,13 @@ class ActionArbiter:
             if not self._eligible(spec, ctx):
                 continue
             try:
+                old_state = ctx.state
                 ok = spec.start(ctx)
             except Exception as e:
                 self.errors.append((spec.key + ":start", repr(e)))
                 continue
-            if ok:
+            transitioned = ctx.state != old_state
+            if ok or transitioned:
                 self.last = spec.key
                 fired.append(spec)
                 ctx.fired.append(spec.key)
@@ -235,6 +237,20 @@ class ActionArbiter:
                     self.arm(spec.key, spec.cooldown)
             else:
                 ctx.skip.add(spec.key)
+            if transitioned and band == BAND_NEED:
+                # Most FSM action starts transition state but return None. Stop
+                # same-band decisions after that transition so a later need
+                # cannot immediately replace the new movement/combat intent.
+                # Still run every remaining pre hook: cooldowns and per-tick
+                # accounting must advance even when their start is suppressed.
+                for pending in order[index + 1:]:
+                    if pending.pre is None:
+                        continue
+                    try:
+                        pending.pre(ctx)
+                    except Exception as e:
+                        self.errors.append((pending.key + ":pre", repr(e)))
+                break
         return fired
 
     def touch(self, band: str, ctx: ActionContext) -> None:

@@ -2530,6 +2530,16 @@ class Lizard(CombatTarget):
                 and self.climb_kind in ("wall", "background", "pole")):
             self.climb_dir = 1 if up else -1
             return
+        grounded = (self._contact_floor
+                    or self.y >= self._ground - self.body_rad * HEAD_STAND_FAC
+                    - FLOOR_GRIP_TOL)
+        pole_surfaces = ()
+        if grounded and self.terrain is not None:
+            try:
+                pole_surfaces = tuple(s for s in self.terrain.geom.verticals(None)
+                                      if s.climb == "pole")
+            except Exception:
+                pole_surfaces = ()
         best = None
         for surf in self.climb_surfaces:
             sx, top, bot = float(surf[0]), float(surf[1]), float(surf[2])
@@ -2539,6 +2549,19 @@ class Lizard(CombatTarget):
                     continue            # 不会 Background Climb 的品种：背景不是它的地形
             elif not self.breed.climb_pole:
                 continue
+            if kind == "pole" and grounded:
+                # A grounded lizard may walk to a pole only when its actual
+                # support plane touches that pole. Keep airborne on-line grabs
+                # available so jump capture of floating poles still works.
+                supported = any(
+                    ps.pole is not None
+                    and abs(ps.x - sx) <= 1.0
+                    and abs(ps.top - top) <= 1.0
+                    and abs(ps.bot - bot) <= 1.0
+                    and ps.pole.touches_support_y(self._ground)
+                    for ps in pole_surfaces)
+                if not supported:
+                    continue
             if up and top > o.y + 10.0:
                 continue                        # 线不够高，爬上去也够不着
             if down and bot < o.y - 10.0:

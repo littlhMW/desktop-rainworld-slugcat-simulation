@@ -12,6 +12,7 @@ POLE_RAD = 1.4            # 杆体半宽（视觉）：细一点，贴原版像�
 MIN_LENGTH = 40.0
 TOP_MARGIN = 48.0
 CROSS_TOL = 6.0          # 交点到端点/线心的容差（原版 tile 级判定）
+SUPPORT_EPS = 2.0        # 竖杆与水平支撑面接触的数值容差（不能用抓杆伸手范围代替）
 
 
 def _within(a, b, v, tol):
@@ -187,6 +188,19 @@ class Pole:
         """这个沿杆坐标是否落在杆的跨度内（含 r 余量）。"""
         lo, hi = self.span_y() if self.kind == VERTICAL else self.span_x()
         return lo - r <= float(v) <= hi + r
+
+    def touches_support_y(self, y: float, tol: float = SUPPORT_EPS) -> bool:
+        """竖杆是否实际跨过水平支撑面 y。
+
+        抓杆半径/空中抓杆余量描述的是生物伸手能否碰到杆，不代表杆已与地面或
+        平台相连。把这两种距离混用会令端点悬空数像素的竖杆被导航图接到地面，
+        多只猫随后会一起走到杆底反复尝试攀爬。这里只给物理端点留少量浮点容差；
+        可跳抓的浮杆仍由空中抓杆路径处理。
+        """
+        if self.kind != VERTICAL:
+            return False
+        top, bottom = self.span_y()
+        return top - float(tol) <= float(y) <= bottom + float(tol)
 
     def nearest(self, x, y):
         """最近点与距离 ``(cx, cy, d)``（点-段距离的唯一口径）。"""

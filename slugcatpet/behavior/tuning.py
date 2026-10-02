@@ -588,6 +588,7 @@ POLE_LEAVE_MIN_TICKS = 90      # 杆上待够这么久才会为了吃东西下�
 POLE_TIP_LOITER_MAX = 300      # 杆顶最多赖这么久：到点主动跳杆/下杆（别都挤在杆头）
 POLE_AIRGRAB_R = 12.0          # 空中贴杆即抓（jump-pole-hopping）
 POLE_AIRGRAB_PAD = 10.0        # 杆端外这点范围仍算够得着
+POLE_CLIMB_ARRIVE_EPS = 26.0   # 地面走到竖杆下的抓杆横向容差（与 PoleClimber 一致）
 POLE_TRANSPORT_NEAR = 170.0    # 「这根杆此刻用得上」的横距：再远不算可爬
                                # （旧版只看「世界上有没有竖杆」，猫在 x=100、杆在
                                #  x=900 也算可爬，于是杆一多就乱爬）

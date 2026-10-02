@@ -2535,7 +2535,7 @@ class SlugcatBody(CombatTarget):
         return _lerp_ang(_ang_from_up(vx, vy), target, abs(sd))
 
     def throw_spear(self, dir_x, frc=1.0, up=1.5, recoil=1.0, vel=None, toss=False,
-                    dir_y=0.0, input_x=1, input_y=0, flip=False):
+                    dir_y=0.0, input_x=1, input_y=0, flip=False, side=None):
         """Throw carried spear; return spear (free + velocity) or None.
 
         初速走原版 Weapon.Thrown：vx = c0.vx*0.2 + dir*40*frc；vy = c0.vy*0.5 - 1.5（矛上抬少）。
@@ -2543,9 +2543,15 @@ class SlugcatBody(CombatTarget):
         toss=True 改走 Player.TossObject 轻抛（圣徒投矛）：不进 Thrown、不插墙；
         input_x/input_y/flip 是原版 input[0] 与 animation == Flip，选平抛/斜上抛/纯上抛/后空翻下掷档。
         """
-        sp = self.carried_spear
+        # Most callers throw the primary-hand spear. Dual-spear behavior can
+        # name a hand explicitly so an off-hand Spearmaster needle is not
+        # replaced by (or confused with) an unrelated primary-hand weapon.
+        if side not in ("l", "r") or self.hand_spears.get(side) is None:
+            side = None
+        sp = self.hand_spears.get(side) if side is not None else self.carried_spear
         if sp is None:
             return None
+        side = self.spear_side(sp)
         rng = getattr(self.stats, "spear_dmg_range", None)
         mul = float(getattr(self.stats, "spear_dmg_mul", 1.0) or 1.0)
         if rng is not None:
@@ -2575,7 +2581,7 @@ class SlugcatBody(CombatTarget):
             sp.toss_t = TOSS_COB_T       # 轻抛期内可以敲开爆米花（原版打不开，用户要求）
             sp._f1 = True                # 第一帧扫掠也要从出手前位置起算（同 Thrown 的
                                          # firstFrameTraceFromPos，否则轻抛第一帧漏判）
-            self.release_spear(to_free=False)
+            self.release_spear(to_free=False, side=side)
             self.dont_grab_ticks = 15 if self._ctrl_on else 45
             c0.vx += float(dir_x) * 4.0 * recoil
             c1.vx -= float(dir_x) * 2.0 * recoil
@@ -2600,7 +2606,7 @@ class SlugcatBody(CombatTarget):
             sp.angle_deg = sp.last_angle = (90.0 if float(dir_x) >= 0.0 else 270.0)
         sp.enter_free(roll=False)
         weaponphys.begin_thrown(sp, dir_x, float(frc), float(dir_y))
-        self.release_spear(to_free=False)
+        self.release_spear(to_free=False, side=side)
         self.dont_grab_ticks = 15 if self._ctrl_on else 45
         if self.back_spear is not None:      # 原版掷出后背上的矛立刻补到手上
             bs = self.back_spear

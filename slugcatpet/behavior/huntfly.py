@@ -72,6 +72,7 @@ class FlyHunter:
         # 矛大师饿疯了：整屏的生物都是猎物，食性过滤直接跳过（原版矛大师靠
         # 尾针进食，没有「吃素」这一说）。
         rage = bool(getattr(self.fsm, "_spear_rage", lambda: False)())
+        needle_hunter = bool(self.win.cat.tuning.get("tail_needle"))
         seek_r = tuning.SPEAR_RAGE_R if rage else SEEK_R
         out = []
         pool = [*self.win.batflies, *self.win.squidcadas,
@@ -81,9 +82,9 @@ class FlyHunter:
             pool += [*getattr(self.win, "lizards", ()),
                      *getattr(self.win, "scavengers", ())]
         for f in pool:
-            if not rage and not _edible(f, diet):
+            if not rage and not needle_hunter and not _edible(f, diet):
                 continue
-            if rage and (f.dead or f.state != "free"):
+            if (rage or needle_hunter) and (f.dead or f.state != "free"):
                 continue
             c0 = self._c0()
             dx, dy = f.x - c0.x, f.y - c0.y
@@ -102,6 +103,28 @@ class FlyHunter:
     def _pick_side(self, o):
         from ..world.spear import Spear
         return self.body.pick_hand("spear" if isinstance(o, Spear) else "stone") or "r"
+
+    def _held_hunt_weapon(self):
+        """Return (weapon, hand) without letting Spearmaster throw other gear.
+
+        `carried_spear` is only the primary-hand view. Spearmaster can hold two
+        needles, so hunting must inspect each grasp and remember the exact hand
+        through aim/throw. Other cats keep the historical main-spear/stone order.
+        """
+        if bool(self.win.cat.tuning.get("tail_needle")):
+            for side in ("r", "l"):
+                spear = self.body.hand_spears.get(side)
+                if (spear is not None and getattr(spear, "needle", False)
+                        and getattr(spear, "needle_live", False)):
+                    return spear, side
+            return None, None
+        spear = self.body.carried_spear
+        if spear is not None:
+            return spear, self.body.spear_side(spear) or "r"
+        stone = self.body.carried_stone
+        if stone is not None:
+            return stone, self.body.hand_of.get("stone") or "r"
+        return None, None
 
     def _ground_stones(self):
         return [s for s in self.win.stones
@@ -171,12 +194,10 @@ class FlyHunter:
             self.win, f, math.hypot(c0.x - f.x, c0.y - f.y),
             tuning.INTEREST_JITTER, tuning.INTEREST_TAKEN_MUL,
             kind="hunt"))
-        # 已有武器直接用
-        if self.body.carried_stone is not None or self.body.carried_spear is not None:
-            self.weapon = self.body.carried_spear or self.body.carried_stone
-            held = (self.body.hand_of.get("spear")
-                    if self.body.carried_spear is not None
-                    else self.body.hand_of.get("stone"))
+        # 已有可用于狩猎的武器直接用。矛大师两手都可能有针；主手视图
+        # 不能代表应该投掷的那一支，也不能把普通矛/石头误当成尾针。
+        self.weapon, held = self._held_hunt_weapon()
+        if self.weapon is not None:
             self.grab_side = held or self._pick_side(self.target)
             self.phase = "aim"
             self.timer = 0
@@ -229,7 +250,10 @@ class FlyHunter:
     def _phase_aim(self, want):
         f = self.target
         rage = bool(getattr(self.fsm, "_spear_rage", lambda: False)())
-        if f is None or not want or (not rage and not _edible(f, self._diet())):
+        needle_hunter = bool(self.win.cat.tuning.get("tail_needle"))
+        if (f is None or not want or f.dead or f.state != "free"
+                or (not rage and not needle_hunter
+                    and not _edible(f, self._diet()))):
             return "giveup"
         if self.timer > GIVEUP_TICKS:
             return "giveup"
@@ -238,7 +262,9 @@ class FlyHunter:
         c0 = self._c0()
         # 原版 Weapon.Thrown：throwDir = IntVector2(sign(x), 0) —— 玩家只能水平投，
         # 所以先要跳到猎物所在高度，再对齐出手（也允许跳着发射矛/石）。
-        speed = SPEED_SPEAR if self.body.carried_spear is not None else SPEED_STONE
+        held_weapon, _held_side = self._held_hunt_weapon()
+        from ..world.spear import Spear
+        speed = SPEED_SPEAR if isinstance(held_weapon, Spear) else SPEED_STONE
         lead_x = f.x + f.vx * clampf(abs(f.x - c0.x) / speed, MIN_FLIGHT, 12.0)
         dx = lead_x - c0.x
         dy = f.y - c0.y
@@ -265,12 +291,17 @@ class FlyHunter:
     def _phase_throw(self, want):
         if self.throw_t == 0:
             c0 = self._c0()
+            held_weapon, held_side = self._held_hunt_weapon()
+            from ..world.spear import Spear
+            is_spear = isinstance(held_weapon, Spear)
+            if held_weapon is None:
+                return "giveup"
             weak, toss = weaponphys.player_throw_mode(
                 getattr(self.win, "variant", ""), getattr(self.fsm, "_exhausted", False),
-                self.body.carried_spear is not None, False)
-            if self.body.carried_spear is not None:
+                is_spear, False)
+            if is_spear:
                 self.body.throw_spear(self.throw_dir, weaponphys.frc(weak=weak),
-                                      recoil=RECOIL, toss=toss)
+                                      recoil=RECOIL, toss=toss, side=held_side)
             else:
                 self.body.throw_stone(self.throw_dir, weaponphys.frc(weak=weak),
                                       fling=True, recoil=RECOIL)

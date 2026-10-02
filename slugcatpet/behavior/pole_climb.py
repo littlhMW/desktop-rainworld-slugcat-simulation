@@ -7,7 +7,7 @@ from ..world.pole import VERTICAL, cross_partner
 from ..world.pole_ctl import PoleController
 
 # 竖杆攀爬参数
-ARRIVE_EPS = 26.0
+ARRIVE_EPS = tuning.POLE_CLIMB_ARRIVE_EPS
 APPROACH_TIMEOUT = 400
 CLIMB_TIMEOUT = 1200
 GRAV = 0.9
@@ -73,7 +73,9 @@ class PoleClimber(PoleController):
             # 光标虚杆悬空、底部不接地，鼠标抬高时地面上的猫就算走到光标正下方
             # 也接不上这根杆（否则会「贴着空气从地面一路爬上杆顶」）。
             reach = top - tuning.POLE_AIRGRAB_PAD <= c1.y <= bot + tuning.POLE_AIRGRAB_PAD
-            if d < ARRIVE_EPS and c1.on_floor and reach:
+            ground_linked = (c1.on_floor
+                             and self.pole.touches_support_y(b.support_y()))
+            if d < ARRIVE_EPS and ground_linked and reach:
                 self._grab()
             elif not c1.on_floor and d < tuning.POLE_AIRGRAB_R and reach:
                 self._grab()      # jump-pole-hopping：空中贴杆即抓
@@ -118,7 +120,7 @@ class PoleClimber(PoleController):
             target = self.target_y
             if target is not None:
                 target = max(self.pole.top_y + getattr(b, "_conn_stand", ARC_R),
-                             min(self.pole.bottom_y, float(target)))
+                             min(self.pole.bottom_y - c1.rad, float(target)))
             if target is not None and abs(c1.y - target) > 8.0:
                 c0 = b.chunk0
                 c0.pinned = c1.pinned = False
@@ -150,7 +152,7 @@ class PoleClimber(PoleController):
         target = self.target_y
         if target is not None:
             target = max(self.pole.top_y + getattr(b, "_conn_stand", ARC_R),
-                         min(self.pole.bottom_y, float(target)))
+                         min(self.pole.bottom_y - c1.rad, float(target)))
         direction = 1 if target is None or c1.y > target + 4.0 else -1
         if target is not None and abs(c1.y - target) <= 4.0:
             self._begin_hold()

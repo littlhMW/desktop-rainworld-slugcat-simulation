@@ -40,11 +40,12 @@ from ..behavior import tuning
 from ..core import chunkphys
 from ..core.units import clampf
 from .ability import (DONE, GIVEUP, HOLD, HOLDING, MODE_TOUCH, RUNNING,
-                      walk_band)
+                      reach_assist, walk_band)
 from . import navgeom
 from .backflip_reach import takeoff_c0_h
 from .goal import point_goal
-from .hop_reach import HopReach, HopReachController, surface_under
+from .hop_reach import (HopReach, HopReachController, SETTLE_MAX, SETTLE_VX,
+                        surface_under)
 from .jump_arc import (get_arc, get_backflip_arc, get_drop_arc,
                        get_jump_fall_arc, get_pole_hop_arc, sweep_hit)
 from .jump_reach import _arc_hits_solids
@@ -105,7 +106,7 @@ def _envelope(stats):
 
 
 def _arc_grab(stats, lx, ly, pole, r):
-    """从地面起跳，飞行轨迹上够到某根杆就抓住：返回第几 tick 抓到，无解 None。"""
+    """从地面起跳抓杆：返回 (hold, move_dir, hit_tick)，无解 None。"""
     for hold in tuning.PLAN_JUMP_HOLD_GEARS:
         for md in (1, -1):
             arc = get_arc(stats, hold, md)
@@ -116,14 +117,444 @@ def _arc_grab(stats, lx, ly, pole, r):
                 if i < 1:
                     continue
                 if pole_hit(pole, lx + px, ly + py, r):
-                    return i + 1
+                    return (hold, md, i + 1)
     return None
+
+
+class PoleBeamRouteController:
+    """执行 SurfaceGraph 给出的起跳抓杆边，避免执行时换成另一套估算轨迹。"""
+
+    def __init__(self, pet, leg):
+        self.pet = pet
+        self.leg = leg
+        self.target = getattr(leg.dst, "pole", None)
+        self.plan = leg.plan
+        self.phase = "approach"
+        self.timer = 0
+        self._airborne = False
+        self._captured = False
+        self.climber = None
+        self.target_walk = None
+
+    def _walk_horizontal_target(self):
+        self.target_walk = PoleWalkRouteController(
+            self.pet, pole=self.target, target_x=self.leg.dst.anchor)
+        self.phase = "walk_target"
+
+    def _update_horizontal_target(self):
+        status = self.target_walk.update()
+        if status == DONE:
+            self.target_walk.cancel()
+            self.target_walk = None
+            self._captured = True
+            return DONE
+        if status == GIVEUP:
+            return GIVEUP
+        return RUNNING
+
+    def _target_grabbed(self):
+        b, p = self.pet.body, self.target
+        if p is None or not b.on_pole:
+            return False
+        c0 = b.chunk0
+        if getattr(p, "kind", None) == "vertical":
+            return (abs(c0.x - p.x) <= tuning.POLE_AIRGRAB_R + 2.0
+                    and p.top_y - tuning.POLE_AIRGRAB_PAD <= c0.y
+                    <= p.bottom_y + tuning.POLE_AIRGRAB_PAD)
+        lo, hi = p.span_x()
+        return (abs(c0.y - p.cross_coord()) <= tuning.HPOLE_AIRGRAB_Y + 2.0
+                and lo - tuning.POLE_AIRGRAB_PAD <= c0.x
+                <= hi + tuning.POLE_AIRGRAB_PAD)
+
+    def _aim_at_target(self):
+        fsm = getattr(self.pet, "behavior", None)
+        if fsm is not None and hasattr(fsm, "_air_pole_target"):
+            fsm._air_pole_target = self.target
+
+    def _climb_vertical_target(self):
+        fsm = getattr(self.pet, "behavior", None)
+        self.climber = getattr(fsm, "poleclimb", None)
+        if self.climber is None or self.climber.pole is not self.target:
+            from ..behavior.pole_climb import PoleClimber
+            self.climber = PoleClimber(self.pet, self.target,
+                                       getattr(self.pet, "rng", None),
+                                       start="climb", no_handoff=True)
+        else:
+            self.climber.no_handoff = True
+        self.phase = "climb"
+
+    def update(self):
+        b = self.pet.body
+        self.timer += 1
+        if self.target is None or self.target not in getattr(self.pet, "poles", ()):
+            return GIVEUP
+        if self._captured:
+            return DONE
+
+        if self.phase == "walk_target":
+            return self._update_horizontal_target()
+
+        if self.phase == "climb":
+            if self.climber is None:
+                return GIVEUP
+            self.climber.update(want_dismount=False)
+            if getattr(self.climber, "giveup", False):
+                return GIVEUP
+            if self.climber.phase == "tip":
+                self._captured = True
+                return DONE
+            return RUNNING
+
+        if self.phase == "approach":
+            if not self.plan:
+                return GIVEUP
+            source_kind = self.plan[0]
+            if source_kind == "pole":
+                # ('pole', hop_plan)；hop_plan = (target pole, dir, hit tick, height tier)
+                _tag, hop = self.plan
+                _target, md, _hit, up = hop
+                if not b.on_pole:
+                    return GIVEUP
+                fsm = getattr(self.pet, "behavior", None)
+                # 交还当前竖/横杆控制器，但保留身体当前坐标，由计划弧直接离杆。
+                if fsm is not None and getattr(fsm, "pole_ctl", None) is not None:
+                    fsm._pole_release()
+                self._aim_at_target()
+                b.facing = 1 if md > 0 else -1
+                b.pole_hop(md, move_dir=md, up=up)
+                b.chunk0.cy = b.chunk1.cy = 0
+                self._air_timeout = self.timer + max(90, int(_hit) + 60)
+                self.phase = "air"
+                return RUNNING
+            if source_kind != "ground":
+                return GIVEUP
+
+            # ('ground', hold, dir, launch_x, launch_y, hit_tick)
+            _tag, hold, md, launch_x, _launch_y, hit = self.plan
+            if b.on_pole:
+                return GIVEUP
+            if not b.on_floor():
+                return GIVEUP
+            if abs(b.chunk1.x - launch_x) > tuning.PLAN_JUMP_TAKEOFF_EPS:
+                b.walk_to(launch_x)
+                return RUNNING
+            b.stop_walk()
+            still = (abs(b.chunk0.vx) < SETTLE_VX
+                     and abs(b.chunk1.vx) < SETTLE_VX)
+            if not still and self.timer < SETTLE_MAX:
+                return RUNNING
+            self._aim_at_target()
+            b.facing = 1 if md > 0 else -1
+            b.request_jump("stand", hold_ticks=hold)
+            b.move_dir = md
+            self.phase = "air"
+            self._air_timeout = self.timer + max(90, int(hit) + 60)
+            return RUNNING
+
+        if self._target_grabbed():
+            if getattr(self.target, "kind", None) == "vertical":
+                # A pole_beam edge is represented by the pole-tip node. The jump
+                # can catch anywhere along the rod, so climb to that node before
+                # handing the route to its next leg.
+                self._climb_vertical_target()
+                return RUNNING
+            self._walk_horizontal_target()
+            return self._update_horizontal_target()
+        if self.phase == "air":
+            # Fetch/flee controllers can own a jump without entering the global
+            # Airborne FSM state. Let this planned edge perform the same exact
+            # beam contact check and attach the specified target pole in place;
+            # a normal state transition here would cancel the multi-leg route.
+            fsm = getattr(self.pet, "behavior", None)
+            grab = getattr(fsm, "_air_pole_grab", None)
+            if grab is not None and grab(route_owned=True):
+                if getattr(self.target, "kind", None) == "vertical":
+                    self._climb_vertical_target()
+                    return RUNNING
+                self._walk_horizontal_target()
+                return self._update_horizontal_target()
+        if b.on_pole or b.on_floor():
+            # 还没起跳时不能把源杆/地面误认作到达；空中落回地面则此边失败。
+            if self._airborne or self.timer > 2:
+                return GIVEUP
+            return RUNNING
+        self._airborne = True
+        if self.timer > getattr(self, "_air_timeout", 180):
+            return GIVEUP
+        if self.plan[0] == "pole":
+            md = self.plan[1][1]
+        else:
+            md = self.plan[2]
+        b.move_dir = md
+        return RUNNING
+
+    def cancel(self):
+        b = self.pet.body
+        if self.target_walk is not None:
+            self.target_walk.cancel()
+            self.target_walk = None
+        if not self._captured:
+            if self.phase == "climb" and self.climber is not None:
+                self.climber.release()
+            fsm = getattr(self.pet, "behavior", None)
+            if (fsm is not None and getattr(fsm, "_air_pole_target", None) is self.target):
+                fsm._air_pole_target = None
+        b.stop_walk()
+
+
+def _pole_beam_controller(pet, leg):
+    """建 pole_beam 专用控制器；旧路线没有保存执行所需的发射参数时安全回退。"""
+    if leg.plan and leg.plan[0] in ("ground", "pole"):
+        return PoleBeamRouteController(pet, leg)
+    return None
+
+
+class PoleClimbRouteController:
+    """执行 climb_pole 图边：只爬边上指定的竖杆，登顶即交还路线。"""
+
+    def __init__(self, pet, leg):
+        self.pet = pet
+        self.pole = getattr(leg.dst, "pole", None)
+        self.climber = None
+        self.completed = False
+
+    def update(self):
+        if (self.pole is None
+                or self.pole not in getattr(self.pet, "poles", ())):
+            return GIVEUP
+        if self.climber is None:
+            from ..behavior.pole_climb import PoleClimber
+            self.climber = PoleClimber(self.pet, self.pole,
+                                       getattr(self.pet, "rng", None),
+                                       no_handoff=True)
+        done = self.climber.update(want_dismount=False)
+        if self.climber.phase == "tip":
+            self.completed = True
+            return DONE
+        if self.climber.giveup or done:
+            return GIVEUP
+        return RUNNING
+
+    def cancel(self):
+        if not self.completed and self.climber is not None:
+            self.climber.release()
+
+
+class PoleTipJumpRouteController:
+    """从竖杆顶按 SurfaceGraph 的站立跳弧起跳并等待落地。"""
+
+    def __init__(self, pet, leg):
+        self.pet = pet
+        self.goal = leg.goal()
+        self.plan = leg.plan
+        self.phase = "launch"
+        self.move_dir = 0
+        self.timer = 0
+        self.airborne = False
+
+    def update(self):
+        body = self.pet.body
+        self.timer += 1
+        if not self.plan:
+            return GIVEUP
+        kind, hold, move_dir, _land_x, _land_y, ticks, _launch_x = self.plan
+        if kind not in ("jump", "jumpfall", "drop", "flip"):
+            return GIVEUP
+        self.move_dir = int(move_dir)
+
+        if self.phase == "launch":
+            if not body.on_pole:
+                return GIVEUP
+            fsm = getattr(self.pet, "behavior", None)
+            climber = getattr(fsm, "poleclimb", None)
+            if climber is not None and climber.phase != "tip":
+                return RUNNING
+            # Keep the body at its real pole-tip position; HopReach's ground
+            # walk/settle phase can never become ready while on a vertical rod.
+            if fsm is not None:
+                fsm._pole_release()
+            body.facing = 1 if self.move_dir >= 0 else -1
+            if kind == "drop":
+                body.release_to_air(move_dir=self.move_dir)
+            elif kind == "flip":
+                body.backflip_launch(self.move_dir, boosted=bool(hold))
+            else:
+                body.tip_launch(hold_ticks=hold, move_dir=self.move_dir)
+            self.phase = "air"
+            self._timeout = max(90, int(ticks) + 60)
+            return RUNNING
+
+        reach_assist(self.pet, self.goal, *self.goal.pos())
+        if not body.on_floor():
+            self.airborne = True
+            body.move_dir = self.move_dir
+        elif self.airborne:
+            body.stop_walk()
+            return DONE
+        if self.timer > getattr(self, "_timeout", 180):
+            return GIVEUP
+        return RUNNING
+
+    def cancel(self):
+        self.pet.body.stop_walk()
+
+
+class PoleWalkRouteController:
+    """横杆上的同面 walk 边由横杆控制器执行，不调用地面 WalkReach。"""
+
+    ARRIVE_EPS = 8.0
+    TIMEOUT = 900
+
+    def __init__(self, pet, leg=None, pole=None, target_x=None, wait_stand=False):
+        self.pet = pet
+        self.pole = pole if pole is not None else getattr(leg.src, "pole", None)
+        self.target_x = float(target_x if target_x is not None else leg.dst.anchor)
+        self.wait_stand = bool(wait_stand)
+        self.controller = None
+        self.timer = 0
+
+    def update(self):
+        from ..world.hpole import HPoleController
+
+        self.timer += 1
+        if (self.pole is None
+                or self.pole not in getattr(self.pet, "poles", ())
+                or self.timer > self.TIMEOUT):
+            return GIVEUP
+        body = self.pet.body
+        if not getattr(body, "on_pole", False):
+            return GIVEUP
+        fsm = getattr(self.pet, "behavior", None)
+        ctl = getattr(fsm, "pole_ctl", None)
+        if ctl is None or getattr(ctl, "pole", None) is not self.pole:
+            ctl = HPoleController(self.pet, self.pole,
+                                  getattr(self.pet, "rng", None),
+                                  start="hang", start_x=body.chunk0.x)
+            if fsm is not None:
+                fsm.pole_ctl = ctl
+        self.controller = ctl
+        ctl.goal_x = self.target_x
+        ctl.goal_eps = self.ARRIVE_EPS
+        done = ctl.update()
+        arrived = (getattr(body, "on_pole", False)
+                   and abs(float(body.chunk0.x) - self.target_x) <= self.ARRIVE_EPS)
+        if arrived:
+            if not self.wait_stand or getattr(ctl, "phase", None) == "stand":
+                ctl.goal_x = None
+                ctl.goal_eps = None
+                return DONE
+            # A route finish may need a real StandOnBeam takeoff. Let the
+            # original hang→pullup→stand transition finish at the launch point.
+            return RUNNING
+        if done or getattr(ctl, "giveup", False):
+            return GIVEUP
+        return RUNNING
+
+    def cancel(self):
+        if self.controller is not None:
+            self.controller.goal_x = None
+            self.controller.goal_eps = None
+
+
+class PoleSurfaceFinishRouteController:
+    """从杆面执行规划跳跃；落地后交回路线重规划目标。"""
+
+    def __init__(self, pet, goal, leg):
+        self.pet = pet
+        self.goal = goal
+        self.node = leg.src
+        self.plan = leg.plan
+        self.finish = leg.dst is None
+        self.kind = self.plan[0] if self.plan else None
+        if self.plan and self.finish:
+            # finish: (jump, hold, dir, launch_x, launch_y, ticks)
+            self.launch_x = float(self.plan[3])
+            self.move_dir = int(self.plan[2])
+            self.ticks = int(self.plan[5])
+        elif self.plan:
+            # edge: (kind, hold, dir, land_x, land_y, ticks, launch_x)
+            self.launch_x = float(self.plan[6])
+            self.move_dir = int(self.plan[2])
+            self.ticks = int(self.plan[5])
+        else:
+            self.launch_x = 0.0
+            self.move_dir = 0
+            self.ticks = 0
+        self.walk = None
+        self.phase = "approach"
+        self.timer = 0
+        self.airborne = False
+
+    def update(self):
+        body = self.pet.body
+        self.timer += 1
+        if not self.plan or self.kind not in ("jump", "jumpfall", "drop", "flip"):
+            return GIVEUP
+        if self.node.kind not in ("pole_tip", "pole_h"):
+            return GIVEUP
+        if self.phase == "approach":
+            if not body.on_pole:
+                return GIVEUP
+            if self.node.kind == "pole_h":
+                if self.walk is None:
+                    self.walk = PoleWalkRouteController(
+                        self.pet, pole=self.node.pole, target_x=self.launch_x,
+                        wait_stand=True)
+                status = self.walk.update()
+                if status != DONE:
+                    return status
+                self.walk.cancel()
+                self.walk = None
+            else:
+                climber = getattr(self.pet.behavior, "poleclimb", None)
+                if climber is not None and climber.phase != "tip":
+                    return RUNNING
+            self.phase = "launch"
+
+        if self.phase == "launch":
+            if not body.on_pole:
+                return GIVEUP
+            fsm = getattr(self.pet, "behavior", None)
+            if fsm is not None:
+                fsm._pole_release()
+            body.facing = 1 if self.move_dir >= 0 else -1
+            if self.kind == "drop":
+                body.release_to_air(move_dir=self.move_dir)
+            elif self.kind == "flip":
+                body.backflip_launch(self.move_dir, boosted=bool(self.plan[1]))
+            else:
+                body.tip_launch(hold_ticks=self.plan[1], move_dir=self.move_dir)
+            self.phase = "air"
+            self._timeout = max(90, self.ticks + 60)
+            return RUNNING
+
+        gx, gy = self.goal.pos()
+        reach_assist(self.pet, self.goal, gx, gy)
+        if not body.on_floor():
+            self.airborne = True
+            body.move_dir = self.move_dir
+        elif self.airborne:
+            body.stop_walk()
+            return DONE
+        if self.timer > getattr(self, "_timeout", 180):
+            return GIVEUP
+        return RUNNING
+
+    def cancel(self):
+        if self.walk is not None:
+            self.walk.cancel()
+            self.walk = None
+        self.pet.body.stop_walk()
 
 
 def _hop_controller(pet, leg):
     '''按边自带的实测轨迹建 HopReachController（先走到起跳锚点再起跳）。'''
     if leg.plan is None:
         return None
+    if getattr(leg.src, "kind", None) == "pole_tip":
+        return PoleTipJumpRouteController(pet, leg)
+    if getattr(leg.src, "kind", None) == "pole_h":
+        return PoleSurfaceFinishRouteController(pet, leg.goal(), leg)
     k, hold, md, land_x, _ly, ticks, launch_x = leg.plan
     return HopReachController(pet, leg.goal(), (k, hold, md, launch_x, land_x, ticks))
 
@@ -199,7 +630,7 @@ def _reach_from_surface(stats, y0, lo, hi, start_x, gx, gy):
             and abs(gx - wx) <= tuning.GRAB_REACH
             and not _walk_blocked(start_x, wx, y0)):
         t = abs(wx - start_x) / tuning.PLAN_WALK_SPEED
-        best = (t, t * tuning.PLAN_EN_RATE_LIGHT)
+        best = (t, t * tuning.PLAN_EN_RATE_LIGHT, ("reach", wx))
     # ② 面上起跳（土狼跳那套弧线族）：起跳点取锚点附近几档
     launch_y = y0 - takeoff_c0_h(stats)
     xs = _dedupe(sorted(clampf(start_x + k * tuning.PLAN_WALK_X_PAD, lo, hi)
@@ -221,7 +652,7 @@ def _reach_from_surface(stats, y0, lo, hi, start_x, gx, gy):
                 e = (t * tuning.PLAN_EN_RATE_LIGHT
                      + hit * tuning.PLAN_EN_RATE_VIGOROUS)
                 if best is None or t < best[0]:
-                    best = (t, e)
+                    best = (t, e, ("jump", hold, md, lx, launch_y, hit))
     return best
 
 
@@ -261,6 +692,18 @@ class SurfaceNode:
     def __repr__(self):
         return "<%s y=%.0f [%.0f..%.0f] @%.0f>" % (self.kind, self.y, self.lo,
                                                    self.hi, self.anchor)
+
+
+def _walkable_span(node):
+    """Return the real stand/walk interval for a support node."""
+    lo, hi = float(node.lo), float(node.hi)
+    if node.kind == "pole_h":
+        from ..world.hpole import WALK_MARGIN
+        lo += WALK_MARGIN
+        hi -= WALK_MARGIN
+        if hi < lo:
+            lo = hi = (lo + hi) * 0.5
+    return lo, hi
 
 
 class SurfaceEdge:
@@ -360,6 +803,12 @@ class SurfaceGraph(NavGraph):
         for a, b in zip(idxs, idxs[1:]):
             d = abs(self.nodes[b].anchor - self.nodes[a].anchor)
             if d < 0.5:
+                continue
+            # Surface 上也可能有另一块实体墙横在中间（例如多块墙体叠在一层
+            # 横杆/平台之间）。同面节点并不等于物理上能直走；漏掉这项检查会让
+            # A* 生成穿墙 walk，执行器撞墙后反复重规划，永远到不了后续跳跃段。
+            if _walk_blocked(self.nodes[a].anchor, self.nodes[b].anchor,
+                             self.nodes[a].y):
                 continue
             t = d / tuning.PLAN_WALK_SPEED
             self.add_edge(a, SurfaceEdge("walk", self.nodes[a], self.nodes[b], t,
@@ -524,18 +973,30 @@ class SurfaceGraph(NavGraph):
             k1 = bisect.bisect_right(cx, a.anchor + reach_x)
             for b in cand[k0:k1]:
                 j = b.nid
-                if i == j or a.sid == b.sid:
+                if i == j:
                     continue
                 up = a.y - b.y                 # >0：目标更高
                 same_level_block = (abs(up) <= 2.0
                                     and _walk_blocked(a.anchor, b.anchor, a.y))
+                same_surface_jump = (a.sid == b.sid and same_level_block)
+                if a.sid == b.sid and not same_surface_jump:
+                    continue
                 if abs(up) <= 2.0 and not same_level_block:
                     continue                   # 同高且没有墙：walk 已经负责
                 if up > rise_max + tuning.GRAB_REACH:
                     continue                   # 高过一个跳跃的极限（空间粗筛）
                 if abs(b.anchor - a.anchor) > span_pad + abs(up):
                     continue                   # 横向太远（空间粗筛）
-                launches = self._launches(a, b.anchor, launch_y)
+                if same_surface_jump:
+                    # Same-surface wall crossings must take off on the source
+                    # side. Sampling around the destination would ask the cat
+                    # to walk through the very wall this edge is meant to jump.
+                    direction = 1.0 if b.anchor > a.anchor else -1.0
+                    want_launch = a.anchor + direction * min(
+                        60.0, abs(b.anchor - a.anchor) * 0.45)
+                    launches = self._launches(a, want_launch, launch_y)
+                else:
+                    launches = self._launches(a, b.anchor, launch_y)
                 r = land_sweep(stats, [(b.lo, b.y, b.hi)], launches,
                                want=(b.anchor, b.y), land_off=off)
                 if r is None:
@@ -565,7 +1026,7 @@ class SurfaceGraph(NavGraph):
                      + ticks + tuning.PLAN_STARTUP_TICKS)
                 e = t * tuning.PLAN_EN_RATE_LIGHT + ticks * tuning.PLAN_EN_RATE_VIGOROUS
                 risk = 0.15 if kind == "flip" else 0.05
-                ekind = "jump" if up > 0.0 else "drop"
+                ekind = "jump" if (up > 0.0 or same_surface_jump) else "drop"
                 self.add_edge(i, SurfaceEdge(ekind, a, b, t, e, land_x, "crouch",
                                              plan=r, risk=risk))
 
@@ -592,8 +1053,7 @@ class SurfaceGraph(NavGraph):
                 pole = b.pole
                 if b.y >= a.y - 2.0:
                     continue
-                lo, hi = min(pole.ay, pole.by), max(pole.ay, pole.by)
-                if not (lo - tuning.POLE_AIRGRAB_PAD <= a.y <= hi + tuning.POLE_AIRGRAB_PAD):
+                if not pole.touches_support_y(a.y):
                     continue
                 if abs(pole.bx - a.anchor) > tuning.POLE_TRANSPORT_NEAR:
                     continue
@@ -621,7 +1081,11 @@ class SurfaceGraph(NavGraph):
                 if a.pole is not None and a.pole is b.pole:
                     continue
                 if a.kind in ("pole_tip", "pole_h"):
-                    plan = hop_plan(stats, [b.pole], a.anchor, a.y,
+                    # pole_tip 上的胸块实际位于杆顶以下一个身体连接长度；
+                    # 横杆空中抓取则胸块就在横杆高度。规划与执行必须使用同一起点。
+                    launch_y = (a.y - float(getattr(pet.body, "_conn_stand", 17.0))
+                                if a.kind == "pole_tip" else a.y)
+                    plan = hop_plan(stats, [b.pole], a.anchor, launch_y,
                                     grab=r, want=(b.anchor, b.y))
                     if plan is None:
                         continue
@@ -629,23 +1093,29 @@ class SurfaceGraph(NavGraph):
                     # 实体墙检查，避免隔墙跳杆。
                     _target, hmd, _hticks, hup = plan
                     hop_arc = get_pole_hop_arc(stats, hmd, hup)
-                    if _arc_hits_solids(hop_arc, a.anchor, a.y):
+                    if _arc_hits_solids(hop_arc, a.anchor, launch_y):
                         continue
                     hit = plan[2]
+                    route_plan = ("pole", plan)
                 else:
-                    hit = _arc_grab(stats, a.anchor, a.y - off, b.pole, r)
-                    if hit is None:
+                    launch_y = a.y - off
+                    grab_plan = _arc_grab(stats, a.anchor, launch_y, b.pole, r)
+                    if grab_plan is None:
                         continue
+                    hold, md, hit = grab_plan
+                    route_plan = ("ground", hold, md, a.anchor, launch_y, hit)
                 t = hit + tuning.PLAN_STARTUP_TICKS
                 self.add_edge(i, SurfaceEdge("pole_beam", a, b, t * BEAM_PENALTY,
                                              t * tuning.PLAN_EN_RATE_VIGOROUS,
-                                             b.anchor, "hang", risk=0.5))
+                                             b.anchor, "hang", plan=route_plan,
+                                             risk=0.5))
 
     @staticmethod
     def _launches(a, want, launch_y):
+        lo, hi = _walkable_span(a)
         xs = []
         for k in (-2, -1, 0, 1, 2):
-            x = a.clamp(want + k * 24.0)
+            x = min(max(want + k * 24.0, lo), hi)
             if x not in xs:
                 xs.append(x)
         return [(x, launch_y) for x in xs[:5]]
@@ -679,6 +1149,7 @@ class SurfaceGraph(NavGraph):
         done = set()
         heap = [(0.0, self.start)]
         fin = None
+        one_way_fin = None
         while heap:
             c0, cur = heapq.heappop(heap)
             rec = best.get(cur)
@@ -689,15 +1160,28 @@ class SurfaceGraph(NavGraph):
             done.add(cur)
             _c, t0, e0, path = rec
             node = self.nodes[cur]
-            fin_est = _reach_from_surface(stats, node.y, node.lo, node.hi,
+            # Horizontal beams are wider than the cat's supported standing
+            # range: HPoleController keeps stand/walk motion inside its end
+            # margin. A finish jump planned from the physical endpoint can
+            # otherwise choose an unreachable takeoff x, leaving RouteExecutor
+            # walking against the beam clamp forever. Keep the graph surface
+            # geometry intact for hanging/grabbing, but constrain stand-jump
+            # launch samples to the controller's actual walk band.
+            fin_lo, fin_hi = _walkable_span(node)
+            fin_est = _reach_from_surface(stats, node.y, fin_lo, fin_hi,
                                           node.anchor, gx, gy)
-            if fin_est is not None and cur in self._returnable:
+            if fin_est is not None:
                 legs = list(path) + [SurfaceEdge("finish", node, None, fin_est[0],
-                                                 fin_est[1], node.anchor, "reach")]
+                                                 fin_est[1], node.anchor, "reach",
+                                                 plan=fin_est[2])]
                 fcost = c0 + route_cost(edge_for("finish", fin_est[0], fin_est[1]), pers)
-                if fin is None or fcost < fin[0]:
-                    fin = (fcost, legs, (t0 + fin_est[0]) * OPTIMISM,
-                           (e0 + fin_est[1]) * OPTIMISM)
+                result = (fcost, legs, (t0 + fin_est[0]) * OPTIMISM,
+                          (e0 + fin_est[1]) * OPTIMISM)
+                if cur in self._returnable:
+                    if fin is None or fcost < fin[0]:
+                        fin = result
+                elif one_way_fin is None or fcost < one_way_fin[0]:
+                    one_way_fin = result
             for e in self.edges(cur):
                 if e.dst is None:
                     continue
@@ -710,8 +1194,10 @@ class SurfaceGraph(NavGraph):
                 if old is None or nc < old[0] - 1e-9:
                     best[j] = (nc, t0 + e.time, e0 + e.energy, path + (e,))
                     heapq.heappush(heap, (nc, j))
-        if fin is None:
+        if fin is None and one_way_fin is None:
             return None
+        if fin is None:
+            fin = one_way_fin
         return (fin[1], fin[2], fin[3])
 
     # ── 逃生路线（文档 §六 Escape Goal）──
@@ -1071,11 +1557,13 @@ class SurfaceRoute:
         if leg is None or leg.kind == "finish":
             return None
         if leg.kind == "walk":
+            if getattr(leg.src, "kind", None) == "pole_h":
+                return PoleWalkRouteController(self.pet, leg)
             return WalkReach(self.pet).make_controller(leg.goal())
         if leg.kind == "climb_pole":
-            return PoleJumpReach(self.pet).make_controller(leg.goal())
+            return PoleClimbRouteController(self.pet, leg)
         if leg.kind == "pole_beam":
-            return PoleJumpReach(self.pet).make_controller(leg.goal())
+            return _pole_beam_controller(self.pet, leg)
         return _hop_controller(self.pet, leg)
 
 
@@ -1134,11 +1622,39 @@ class RouteExecutor:
         if not self.goal.valid():
             return GIVEUP
         body = self.pet.body
-        if (getattr(body, "swimming", False) or getattr(body, "zerog", False)
-                or getattr(body, "on_pole", False)):
+        if getattr(body, "swimming", False) or getattr(body, "zerog", False):
             return GIVEUP
         leg = self.plan.leg() if self.plan is not None else None
-        if leg is None or leg.kind == "finish":
+        # A planned route may intentionally continue from one pole surface to
+        # another. Reject stale on-pole starts, but let the edge controller own
+        # a pole walk/climb/jump while the current leg says that is the source.
+        if getattr(body, "on_pole", False):
+            pole_source = (leg is not None
+                           and getattr(leg.src, "kind", None)
+                           in ("pole_tip", "pole_h")
+                           and leg.kind in ("walk", "climb_pole", "pole_beam",
+                                            "jump", "drop", "finish"))
+            active_pole_leg = (leg is not None and self._ctrl is not None
+                               and leg.kind in ("climb_pole", "pole_beam"))
+            if not (pole_source or active_pole_leg):
+                return GIVEUP
+        if leg is None:
+            return self._direct_tick()
+        if leg.kind == "finish":
+            if (getattr(leg.src, "kind", None) in ("pole_tip", "pole_h")
+                    and leg.plan and leg.plan[0] == "jump"):
+                if self._ctrl is None:
+                    self._ctrl = PoleSurfaceFinishRouteController(
+                        self.pet, self.goal, leg)
+                status = self._ctrl.update()
+                if status == RUNNING:
+                    return RUNNING
+                ctrl, self._ctrl = self._ctrl, None
+                if hasattr(ctrl, "cancel"):
+                    ctrl.cancel()
+                # A successful departure must be replanned from the landing
+                # surface; a failed arc gets one bounded route retry as well.
+                return self._replan()
             return self._direct_tick()
         if self._ctrl is None:
             self._ctrl = self._build(leg)
@@ -1151,6 +1667,13 @@ class RouteExecutor:
         ctrl, self._ctrl = self._ctrl, None
         if hasattr(ctrl, "cancel"):
             ctrl.cancel()
+        if status == DONE and getattr(body, "on_pole", False):
+            # Keep the graph plan while traversing a pole chain. Replanning from
+            # an arbitrary point on a vertical rod loses the source surface and
+            # used to strand the cat after the first successful grab.
+            next_leg = self.plan.advance() if self.plan is not None else None
+            if next_leg is not None:
+                return RUNNING
         # DONE（落地）或 GIVEUP（这一段没走通）：都重新规划，接着朝原目辵走
         return self._replan()
 
@@ -1182,11 +1705,13 @@ class RouteExecutor:
 
     def _build(self, leg):
         if leg.kind == "walk":
+            if getattr(leg.src, "kind", None) == "pole_h":
+                return PoleWalkRouteController(self.pet, leg)
             return WalkReach(self.pet).make_controller(leg.goal())
         if leg.kind == "climb_pole":
-            return PoleJumpReach(self.pet).make_controller(leg.goal())
+            return PoleClimbRouteController(self.pet, leg)
         if leg.kind == "pole_beam":
-            return PoleJumpReach(self.pet).make_controller(leg.goal())
+            return _pole_beam_controller(self.pet, leg)
         return _hop_controller(self.pet, leg)
 
     def cancel(self):

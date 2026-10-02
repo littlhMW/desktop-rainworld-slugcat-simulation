@@ -142,6 +142,12 @@ class Planner:
         if p.kind == "vertical":
             if self.transport_dx(p) > tuning.POLE_TRANSPORT_NEAR:
                 return False
+            # On a support, only advertise a vertical pole as a climb route when
+            # its segment actually meets that support. Grab reach is not ground
+            # connectivity; otherwise every nearby floating pole attracts cats.
+            if (getattr(b.chunk1, "on_floor", False)
+                    and not p.touches_support_y(b.support_y())):
+                return False
             top, bot = p.top_y, p.bottom_y      # 竖杆两端：a 端可能是杆底（见 Pole.top_y）
             y = b.chunk1.y
             return top - tuning.POLE_AIRGRAB_PAD <= y <= bot + tuning.POLE_AIRGRAB_PAD
