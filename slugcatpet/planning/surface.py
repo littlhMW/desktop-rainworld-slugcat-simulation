@@ -45,7 +45,8 @@ from . import navgeom
 from .backflip_reach import takeoff_c0_h
 from .goal import point_goal
 from .hop_reach import HopReach, HopReachController, surface_under
-from .jump_arc import get_arc, get_pole_hop_arc, sweep_hit
+from .jump_arc import (get_arc, get_backflip_arc, get_drop_arc,
+                       get_jump_fall_arc, get_pole_hop_arc, sweep_hit)
 from .jump_reach import _arc_hits_solids
 from .pole_hop import hop_plan, land_sweep, pole_hit
 from .navgraph import NavGraph, dynamic_edge_cost
@@ -539,14 +540,22 @@ class SurfaceGraph(NavGraph):
                                want=(b.anchor, b.y), land_off=off)
                 if r is None:
                     continue
-                if same_level_block:
-                    # 轨迹按「真实起跳点」摆正后再查地形：
-                    # land_sweep 返回 (kind, hold, md, land_x, land_y, ticks, launch_x)，
-                    # 拿第 4 个（落点）当起跳点会把弧整条挪到墙的另一侧，绕墙跳就漏判。
-                    _rk, rh, rmd, _rland, _rly, _rticks, rlx = r
+                # 轨迹按「真实起跳点」摆正后再查地形：
+                # land_sweep 返回 (kind, hold, md, land_x, land_y, ticks, launch_x)，
+                # 不能拿落点当起跳点，否则弧线会被挪到墙的另一侧而漏判。
+                _rk, rh, rmd, _rland, _rly, _rticks, rlx = r
+                if _walk_blocked(a.anchor, rlx, a.y):
+                    continue
+                if _rk == "jumpfall":
+                    arc = get_jump_fall_arc(stats, rh, rmd)
+                elif _rk == "drop":
+                    arc = get_drop_arc(stats, rmd)
+                elif _rk == "flip":
+                    arc = get_backflip_arc(stats, rmd, bool(rh))
+                else:
                     arc = get_arc(stats, rh, rmd)
-                    if _arc_hits_solids(arc, rlx, a.y - arc.takeoff_h):
-                        continue
+                if _arc_hits_solids(arc, rlx, a.y - arc.takeoff_h):
+                    continue
                 kind, hold, md, land_x, _ly, ticks, launch_x = r
                 if not landing_safe(land_x, b.lo, b.hi):
                     continue                   # 落点贴着平台边：这只猫不愿意赌
