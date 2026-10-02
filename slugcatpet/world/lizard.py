@@ -19,8 +19,8 @@ from ..planning.navgraph import STUCK_NAVIGATION, STUCK_PHYSICS, StuckDetector
 from .lizard_ai import (CARRY_HURRY, DEN_ARRIVE_R, DOMINANCE_DEFER, WARN_R,
                         ApproachPlan, Observation, PackAlert, PreyState,
                         SocialMemory, _terrain_route, choose_den, flank_offset,
-                        los_blocked, los_blocked_idx, pack_slot_for, pack_slots,
-                        plan_approach, prune_side, prefs_for, route_kinds,
+                        pack_slot_for, pack_slots,
+                        plan_approach, prefs_for, route_kinds,
                         virtual_dens, PERCEIVE_EVERY)
 
 # ── 物理 ──
@@ -1118,7 +1118,8 @@ class Lizard(CombatTarget):
                  "climb_kind", "climb_attached", "climb_side",
                  "climb_top", "climb_bot", "caps", "terrain", "_ground",
                  "_stuck", "_pack_point", "_pack_point_tick",
-                 "_blk_start", "_blk_end", "_blk_ver", "_claims", "_scanned",
+                 "_claims", "_scanned", "_scan_tick",
+                 "_cursor_until", "_cursor_retry",
                  # 舌头（LizardTongue）：state / 已经伸多长 / 方向 / 舌尖 / 猎物 / 冷却
                  "tongue_state", "tongue_len", "tongue_dir", "tongue_tip",
                  "tongue_prey", "tongue_grab", "tongue_t", "tongue_cd",
@@ -1215,13 +1216,11 @@ class Lizard(CombatTarget):
         self.peers = ()              # 同场其它蜥蜴（认猎物归属用）
         self._blockers = ()          # 视线遮挡物：(杆子线段, 大生物圆)
         self._tick = 0
-        # 视线两端裁剪缓存（文档 §37）：起点（自己）一 tick 算一次、终点（每个目标）
-        # 一 tick 算一次；_claims 是这一 tick 全场的猎物归属表。
-        self._blk_start = (frozenset(), frozenset())
-        self._blk_end = {}
-        self._blk_ver = -1
         self._claims = None          # None = 没有全场归属表（旧入口/测试）
         self._scanned = False        # 还没看过第一眼 → 第一次必须扫
+        self._scan_tick = -PERCEIVE_EVERY
+        self._cursor_until = 0
+        self._cursor_retry = 120 + self.id % 180
         # loungeTendency：锁定新目标时掷一次（绿蜥 1.0 必全速冲，蓝蜥 0.01 慢慢蹭）
         self.sprint = 0.55
 
@@ -1670,7 +1669,7 @@ class Lizard(CombatTarget):
         self.perceive(WL, HL, targets=targets, prey=prey, threats=threats,
                       others=others, pack=pack, lizards=lizards,
                       blockers=blockers, surfaces=surfaces, tick=tick)
-        self.decide(WL, HL)
+        self.decide(WL, HL, cursor=cursor)
         self.act(WL, HL, cursor=cursor)
         self.step_physics(WL, HL, cursor=cursor)
 
@@ -2128,7 +2127,7 @@ class Lizard(CombatTarget):
             return True
         # 旧存档超出 AI 时间片预算时，有些个体会隔数帧才轮到自己。
         # 再次轮到时必须刷新过期观察，避免追赶早已离开的目标。
-        if int(tick) - self._tick > PERCEIVE_EVERY:
+        if int(tick) - self._scan_tick >= PERCEIVE_EVERY:
             return True
         return (int(tick) + self.id) % PERCEIVE_EVERY == 0
 
@@ -2145,9 +2144,9 @@ class Lizard(CombatTarget):
         遮挡 / 同伴这些便宜字段，直接复用上一次的 `obs`。记忆按跳过的 tick 数
         一次性衰减，保证有效速率和逐帧跑时一致。
         """
-        if tick is not None:
-            self._tick = int(tick)
-        self._blockers = blockers or ()
+        self._tick = int(tick) if tick is not None else self._tick + 1
+        # 桌面生态按用户设定不做视觉遮挡；实体碰撞和路径阻挡仍由地形层处理。
+        self._blockers = ()
         self.climb_surfaces = tuple(surfaces or ())   # 这一帧可攀爬的竖线
         if terrain is not None:
             self.terrain = terrain                    # 全场共用的一份地形快照
@@ -2156,6 +2155,7 @@ class Lizard(CombatTarget):
             self.mem.miss()
             return self.obs
         self._scanned = True
+        self._scan_tick = self._tick
         cats, preys, thrs, rivs, pk = [], [], [], [], []
         for row in targets:
             obj, ox, oy, dead, fainted = _cat_row(row)
@@ -2178,15 +2178,23 @@ class Lizard(CombatTarget):
             cats.append(self._observe(obj, ox, oy, "cat", w, dead, fainted,
                                       "crawl" if crawl else "stand"))
         for obj, w in prey:
+            if obj is self:
+                continue
             preys.append(self._observe(obj, getattr(obj, "x", self.x),
                                        getattr(obj, "y", self.y), "prey", w))
         for obj, w in threats:
+            if obj is self:
+                continue
             thrs.append(self._observe(obj, getattr(obj, "x", self.x),
                                       getattr(obj, "y", self.y), "threat", w))
         for obj, w in others:
+            if obj is self:
+                continue
             rivs.append(self._observe(obj, getattr(obj, "x", self.x),
                                       getattr(obj, "y", self.y), "rival", w))
         for obj, w in pack:
+            if obj is self:
+                continue
             pk.append(self._observe(obj, getattr(obj, "x", self.x),
                                     getattr(obj, "y", self.y), "pack", w))
         self.obs = {"cats": tuple(cats), "prey": tuple(preys),
@@ -2196,41 +2204,14 @@ class Lizard(CombatTarget):
         return self.obs
 
     def _los(self, x0, y0, x1, y1, obj) -> bool:
-        """两点之间视线是否通畅（带两端裁剪缓存，文档 §37）。
-
-        `prune_blockers` 的起点裁剪与终点裁剪互相独立，所以拆开缓存：起点（自己）
-        一 tick 只算一次，终点（每个目标）一 tick 只算一次；之后每个候选只做一次
-        下标集合的交集判断，不再对每个「蜥蜴 × 目标」重跑一遍几何。
-        """
-        segs, circles = self._blockers
-        if self._blk_ver != self._tick:
-            self._blk_ver = self._tick
-            self._blk_start = prune_side(x0, y0, segs, circles)
-            self._blk_end = {}
-        ek = self._blk_end.get(id(obj))
-        if ek is None:
-            ek = prune_side(x1, y1, segs, circles)
-            self._blk_end[id(obj)] = ek
-        return not los_blocked_idx(x0, y0, x1, y1, segs, circles,
-                                   self._blk_start, ek)
+        """兼容旧调用：桌面生态不做几何视觉遮挡。"""
+        return True
 
     def _observe(self, obj, ox, oy, kind, w=1.0, dead=False, fainted=False,
                  stance="stand") -> Observation:
-        """把一个候选变成观察记录（视野锥 + 视线遮挡）。
-
-        视线只算一次：旧版 `_observe` 先跑一遍 `los_blocked`，`sees()` 里又跑一遍。
-        另外超过任何消费者会用到的距离（`notice_r * THREAT_NOTICE_FAC`）就不再判
-        遮挡 —— 远处的东西本来就够不着（文档 §37，`_pick_threat` / `_flee_util`
-        / `_hunt_util` 三个消费者都只在这个半径内看 `los`）。
-        """
+        """把一个候选变成观察记录，保留品种视距和视野锥。"""
         d = math.hypot(ox - self.x, oy - self.y)
         v = self._visual_fac(ox, oy)
-        los = True
-        if self._blockers and d <= self.notice_r * THREAT_NOTICE_FAC:
-            los = self._los(self.x, self.y, ox, oy, obj)
-        if not los:
-            return Observation(obj, ox, oy, d, kind, w, v, False, dead, fainted,
-                               stance, self._claimed_by(obj), los=False)
         if obj is self.target_obj:
             in_cone = d <= self.notice_r
         else:
@@ -2266,12 +2247,14 @@ class Lizard(CombatTarget):
             self.mem.miss()
 
     # ══ 第二层：行为效用（原版 Behavior.* 的权重顺序）══
-    def decide(self, WL, HL) -> str:
+    def decide(self, WL, HL, cursor=None) -> str:
         """Flee(威胁) > ReturnPrey/CarryPrey(猎物) > Injured > 同族竞争 > Hunt
         > InvestigateSound > Pack > Lurk > Idle。产出行为名与接近路线，不碰速度。
         """
         self.warning_t = max(0, self.warning_t - 1)
         self.guard_t = max(0, self.guard_t - 1)
+        # 兼容旧存档字段；桌面生态不再启用驯服或认主关系。
+        self.tamed, self.friend_id, self.like = False, None, 0.0
         if self.dead or self.state != ItemState.FREE or self.hauled:
             return self._stage("")
         if self.rock_push > 0:
@@ -2283,9 +2266,6 @@ class Lizard(CombatTarget):
             self._release_carry()                 # 被砸晕/击晕 → 松口（原版猎物掉出来）
             self.vx *= 0.90
             return self._stage("Stunned")
-        if self.tamed:                            # 认主的蜥蜴不再咬人，只跟着走
-            self._release_carry()
-            return self._stage("FollowFriend")
         obs = self.obs
         # ① 原版 Behavior.Flee（ThreatTracker，utility 权重 1.0 最高）
         self._pick_threat(obs["threats"])
@@ -2338,17 +2318,40 @@ class Lizard(CombatTarget):
         # ⑧ 原版 Pack（黄蜥）：按同伴的猎物情报包夹，其次跟住同伴
         if self._pack_wants(obs):
             return self._stage("PackCoordination")
+        cursor_obs = self._cursor_interest(WL, HL, cursor)
+        if cursor_obs is not None:
+            return self._stage("InvestigateCursor", cursor_obs)
         if self._lurk_pref():
             return self._stage("Lurk", None)
         return self._stage("Wander")
 
     def _stage(self, name, obs=None) -> str:
         """记下这一帧的行为（观察记录一起留着，执行阶段要用）。"""
+        if name != "InvestigateCursor":
+            self._cursor_until = 0
         self.stage = name
         self.stage_obj = obs if isinstance(obs, Observation) else None
         if self.stage_obj is not None:
             self.look_at = (self.stage_obj.x, self.stage_obj.y)
         return name
+
+    def _cursor_interest(self, WL, HL, cursor):
+        """桌面交互：闲暇时偶尔靠近鼠标，不占用猎物记忆或攻击目标。"""
+        if cursor is None:
+            return None
+        x, y = cursor
+        d = math.hypot(x - self.x, y - self.y)
+        if not (0 <= x <= WL and 0 <= y <= HL and 28.0 < d < 420.0):
+            return None
+        if self._tick >= self._cursor_until:
+            if self._tick < self._cursor_retry:
+                return None
+            self._cursor_retry = self._tick + self.rng.randint(180, 420)
+            if self.rng.random() >= 0.08:
+                return None
+            self._cursor_until = self._tick + self.rng.randint(90, 180)
+            self.plan = None
+        return Observation(None, x, y, d, "cursor")
 
     # ══ 第三层：动作（真正改速度 / 下巴；世界结算在 items.py）══
     def act(self, WL, HL, cursor=None) -> None:
@@ -2363,11 +2366,11 @@ class Lizard(CombatTarget):
         # 上面的 _climb_plan 与下面的 _approach_tick，互不打架。
         if (self.plan is not None and self.plan.legs
                 and st in ("HuntPrey", "ApproachPrey", "InvestigatePos",
-                           "InvestigateSound", "PackCoordination", "Flee")
+                           "InvestigateSound", "InvestigateCursor", "PackCoordination", "Flee")
                 and self._route_tick(o, WL, HL)):
             return
-        if st == "FollowFriend":
-            self._follow(WL, HL)
+        if st == "InvestigateCursor":
+            self._investigate_tick(o, WL, HL)
             return
         if st == "Flee":
             self._threat_tick(HL)
@@ -2421,7 +2424,7 @@ class Lizard(CombatTarget):
         —— Flee / ReturnPrey 之类的路线也会爬墙，但没有路线时不该临时抓线。
         """
         if st in ("Attack", "HuntPrey", "ApproachPrey", "InvestigatePos",
-                  "InvestigateSound", "PackCoordination"):
+                  "InvestigateSound", "InvestigateCursor", "PackCoordination"):
             return o
         plan = self.plan
         if (o is not None and plan is not None and plan.alive(self._tick)
@@ -2730,7 +2733,7 @@ class Lizard(CombatTarget):
 
     def offer_alert(self):
         """黄蜥广播「我在哪看见什么猎物」（原版 Pack 情报，不是站在一起）。"""
-        if self.dead or self.tamed or self.prey.carrying:
+        if self.dead or self.prey.carrying:
             return None
         if self.breed.key not in PACK_BREEDS:
             return None
@@ -2741,7 +2744,7 @@ class Lizard(CombatTarget):
 
     def absorb_alert(self, alert) -> None:
         """收到同伴的情报：记下来，包夹位置按自己的序号错开（不要全挤一个点）。"""
-        if alert is None or self.dead or self.tamed:
+        if alert is None or self.dead:
             return
         if self.prey.carrying or alert.obj is None:
             return
@@ -2795,9 +2798,6 @@ class Lizard(CombatTarget):
         best = None
         for o in list(obs["cats"]) + list(obs["prey"]):
             if not o.visible or o.dead:
-                continue
-            if (o.kind == "cat" and self.friend_id is not None
-                    and getattr(o.obj, "id", None) == self.friend_id):
                 continue
             if o.claimed_by is not None and o.claimed_by is not self:
                 continue
@@ -2877,9 +2877,7 @@ class Lizard(CombatTarget):
         return clampf(1.0 - inv_lerp(perfect, perif, dot), 0.0, 1.0)
 
     def sees(self, tx, ty, target=None, blockers=None) -> bool:
-        """可见性：锥内按满视距，锥外只留 VIS_BACK_FAC 倍（原版按 VisualScore 扣分的近似），
-        并且**中间不能有东西挡着**（杆子 / 石堆 / 别的生物）。已锁定的目标不重判视野锥
-        （原版 forgetCounter 期间继续追），但遮挡照样算 —— 挡住就等于看不见，记忆衰减。"""
+        """可见性：只受视野锥和距离限制，地形不遮挡桌面生态的视线。"""
         d = math.hypot(tx - self.x, ty - self.y)
         if target is not None and target is self.target_obj:
             if d > self.notice_r:
@@ -2888,17 +2886,11 @@ class Lizard(CombatTarget):
             v = self._visual_fac(tx, ty)
             if d > self.notice_r * (VIS_BACK_FAC + (1.0 - VIS_BACK_FAC) * v):
                 return False
-        if blockers is None:
-            blockers = self._blockers
-        if blockers:
-            segs, circles = blockers
-            if los_blocked(self.x, self.y, tx, ty, segs, circles):
-                return False
         return True
 
     def hear_noise(self, x: float, y: float) -> None:
         """原版 ReactToNoise（LizardAI.cs:1741-1763）：记住最近一次响声的位置。"""
-        if self.dead or self.tamed:
+        if self.dead:
             return
         if math.hypot(x - self.x, y - self.y) > NOISE_R:
             return
@@ -3506,20 +3498,10 @@ class Lizard(CombatTarget):
         return True
 
     def gift_received(self, alive: bool, friend_id) -> None:
-        """收到礼物（对照 LizardAI.GiftRecieved）。
-
-        原版：like += (活体 1.2 : 尸体 0.6) / tamingDifficulty，
-        tamingDifficulty = lizardParams.tamingDifficulty * Lerp(0.9,1.1,dominance)。
-        粉蜥难度 1.0 → 一次活体 +0.6；绿蜥 0.8 → +0.75（wiki：1-2 次）；红蜥 7 → +0.086。
-        """
-        # LizardAI.GiftRecieved: flag = 礼物是尸体 → InfluenceLike((flag ? 1.2 : 0.6) / diff)
-        gain = (0.6 if alive else 1.2) / max(0.1, self.breed.taming_difficulty)
-        self.like += gain
-        if not self.tamed and self.like > TAME_LIKE:
-            self.tamed = True
-            self.friend_id = friend_id
-            self.jaw = 0.0
-            self.bite_event = None
+        """兼容旧存档和猫侧调用；本项目不启用蜥蜴驯服。"""
+        self.like = 0.0
+        self.tamed = False
+        self.friend_id = None
 
     def _start_bite(self, obj=None) -> None:
         """原版 Lizard.cs:1238 AttemptBite：先张嘴压上去，`biteDelay` 帧后 JawsSnapShut。
@@ -4397,6 +4379,9 @@ class Lizard(CombatTarget):
         elif st in ("HuntPrey", "ApproachPrey", "InvestigatePos"):
             it.alert, it.aggression = 0.5, 0.4
             it.locomotion = "run" if self.sprint else "walk"
+        elif st == "InvestigateCursor":
+            it.alert = 0.25
+            it.locomotion = "walk"
         elif st == "Flee":
             it.fear, it.body_compress, it.alert = 1.0, 0.5, 0.9
             it.locomotion = "run"

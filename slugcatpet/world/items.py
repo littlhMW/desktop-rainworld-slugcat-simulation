@@ -1945,7 +1945,9 @@ class ItemInteractionMixin:
         self._step_lizard_drag()
         if not self.lizards:
             return
-        cur = self.cursor_logical()
+        # 关闭鼠标劫持时，光标不参与虚杆、点击或蜥蜴的兴趣行为。
+        cur = (self.cursor_logical()
+               if bool(getattr(self, "cursor_hijack_allowed", True)) else None)
         tick = getattr(self, "_pole_tick", 0)
         # 每只猫带上「死了 / 昏迷」两个标记：蜥蜴靠它们决定叼走、咬死还是追击
         targets = []
@@ -1955,7 +1957,9 @@ class ItemInteractionMixin:
                 continue
             targets.append((pet, pet.body.chunk0.x, pet.body.chunk0.y,
                             beh.is_dead(), beh.state == "Stunned"))
-        blockers = self._lizard_blockers()
+        # 蜥蜴保持视野锥 / 距离限制，但不再把杆、墙或其它生物当作视觉遮挡；
+        # 这也移除了每帧构建全场线段/圆形集合的平方级开销。
+        blockers = ()
         # 地形查询：这一帧一份，全场蜥蜴共用（地面 / 墙 / 竖杆 / 横杆 / 背景墙）
         terrain = self.terrain = TerrainQuery(self)
         surfaces = terrain.climb_surfaces()
@@ -1997,7 +2001,7 @@ class ItemInteractionMixin:
                         surfaces=surfaces, terrain=terrain, tick=tick, scan=scan)
         # ② 决策；黄蜥在这一步之后广播猎物情报，同伴按自己的序号去包夹
         for lz in ai_live:
-            lz.decide(self._WL, self._HL)
+            lz.decide(self._WL, self._HL, cursor=cur)
         alerts = [a for a in (lz.offer_alert() for lz in ai_live)
                   if a is not None]
         for a in alerts:
@@ -2032,35 +2036,8 @@ class ItemInteractionMixin:
         return TerrainQuery(self).climb_surfaces()
 
     def _lizard_blockers(self):
-        """蜥蜴的视线遮挡物：地形（线段）与体型够大的生物（圆）。
-
-        原版蜥蜴的视觉会被环境影响；桌宠里能挡视线的就是杆、庇护所墙、背景墙、
-        窗口竖边和别的生物。线段直接取**共用的 NavGeometry.obstacles**（文档
-        §8/§9：旧实现只发了杆子，庇护所墙 / 背景墙 / 窗口竖边在蜥蜴眼里是空气），
-        于是「挡不挡视线」和「走不走得过去」用的是同一份几何、同一套 capsule 判交。
-        每 tick 建一次快照，整场蜥蜴共用同一份（「同一份世界快照」也就顺带保证了）。
-        """
-        segs = []
-        try:
-            geom = TerrainQuery(self).geom
-        except Exception:
-            geom = None
-        if geom is not None and geom.obstacles:
-            for ob in geom.obstacles:
-                segs.append((ob.x0, ob.y0, ob.x1, ob.y1, max(ob.r, 1.0)))
-        else:
-            # 极端兜底（没有几何层时）：杆子照旧，至少不比旧版弱
-            for pl in self.poles:
-                if (getattr(pl, "state", None) != ItemState.FREE
-                        or getattr(pl, "virtual", False)):
-                    continue
-                segs.append((pl.ax, pl.ay, pl.bx, pl.by, 3.0))
-        circles = [(lz.x, lz.y, lz.body_rad) for lz in self.lizards
-                   if not lz.dead and lz.state == ItemState.FREE]
-        for sc in self.scavengers:
-            if not sc.dead and sc.state == ItemState.FREE:
-                circles.append((sc.x, sc.y, float(getattr(sc, "rad", 14.0))))
-        return (tuple(segs), tuple(circles))
+        """兼容旧调用；视觉不再把地形或其它生物作为遮挡物。"""
+        return ((), ())
 
     def _lizard_relations(self, lz):
         """按原版关系表（StaticWorld.cs:3668-3726 + LizardAI.ModuleToTrackRelationship）
@@ -4526,37 +4503,19 @@ class ItemInteractionMixin:
 
     # ── 驯服：猫把蝉乌贼递给蜥蜴（原版 FriendTracker.GiftRecieved）──
     def untamed_lizards(self):
-        """还没被驯服的蜥蜴。"""
-        return [lz for lz in self.lizards if not lz.tamed and lz.state == ItemState.FREE]
+        """兼容旧猫行为接口；本项目不启用蜥蜴驯服。"""
+        return []
 
     def nearest_untamed_lizard(self, x):
-        best, bd = None, 1e9
-        for lz in self.untamed_lizards():
-            d = abs(lz.x - x)
-            if d < bd:
-                best, bd = lz, d
-        return best
+        return None
 
     def tame_ready(self) -> bool:
-        """有未驯服蜥蜴 + 场上有够得到的蝉乌贼 → 允许猫为驯服而取物。"""
-        if not self.untamed_lizards():
-            return False
-        return (any(sc.fetch_ready for sc in self.squidcadas)
-                or any(nw.fetch_ready for nw in self.needleworms))
+        """驯服逻辑已禁用，保留入口避免旧行为树报错。"""
+        return False
 
     def deliver_gift(self, pet, lz) -> bool:
-        """交接礼物：蝉乌贼转给蜥蜴，按原版结算 like（活体 0.6 / 尸体 1.2）。"""
-        item = pet.body.carried_fruit
-        if item is None or not getattr(item, "is_tame_food", False):
-            return False
-        alive = not getattr(item, "dead", False)
-        item.held_by_hand = None
-        item.stalk = None
-        item.state = ItemState.EATEN
-        pet.body.release_fruit()
-        lz.gift_received(alive, pet.id)
-        self._gift_fx(lz)
-        return True
+        """驯服逻辑已禁用，不消耗猫手里的食物。"""
+        return False
 
     def _gift_fx(self, lz):
         """送礼反馈：一小圈彩色火花 + 轻微抖动。"""
