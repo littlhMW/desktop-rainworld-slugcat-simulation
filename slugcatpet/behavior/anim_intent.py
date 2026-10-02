@@ -30,7 +30,7 @@ from dataclasses import dataclass
 # 注意：扶墙下滑的 WallClimb 不在其中 —— 它的 bodyMode 也叫 ClimbingOnBeam，
 # 但手并没有被 beam 姿态接管。
 BEAM_LIMB_ANIMS = ("ClimbOnBeam", "BeamTip", "StandOnBeam",
-                   "HangFromBeam", "GetUpOnBeam")
+                   "HangFromBeam", "GetUpOnBeam", "HangUnderVerticalBeam")
 
 PRIO_NONE = -1        # 本 tick 还没人表态
 PRIO_FALLBACK = 0     # 兜底（把 look 清成 None）

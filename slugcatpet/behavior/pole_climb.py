@@ -39,6 +39,9 @@ class PoleClimber(PoleController):
         self.air_target = None       # 带方向跳杆：空中要抓住的那根杆
         self._cross_t = 0            # 在交点附近逗留的 tick 数
         self._cross_roll = None      # 本次经过交点的换杆掷骰结果（离开交点重置）
+        # 可选的高度目标（屏幕坐标 y 向下）。战斗/取食爬杆会把目标物的
+        # 高度写进来；抵达后进入 hold，而不是无条件一路爬到杆顶。
+        self.target_y = None
         # 刚从横杆换过来时先离开交点，否则会在交点被反复换回去（卡死）
         self._cross_armed = (start != "climb")
         # 竖杆和横杆一样需要一个明确的「停住」相：旧实现只会持续向上
@@ -112,6 +115,17 @@ class PoleClimber(PoleController):
             if want_dismount:
                 self._begin_descend()
                 return False
+            target = self.target_y
+            if target is not None:
+                target = max(self.pole.top_y + getattr(b, "_conn_stand", ARC_R),
+                             min(self.pole.bottom_y, float(target)))
+            if target is not None and abs(c1.y - target) > 8.0:
+                c0 = b.chunk0
+                c0.pinned = c1.pinned = False
+                self.phase = "climb"
+                self.timer = 0
+                self._drive_climb()
+                return False
             self._drive_hold()
             return False
 
@@ -133,15 +147,30 @@ class PoleClimber(PoleController):
     def _drive_climb(self):
         b = self.body
         c0, c1 = b.chunk0, b.chunk1
-        b.pole_move = 1
+        target = self.target_y
+        if target is not None:
+            target = max(self.pole.top_y + getattr(b, "_conn_stand", ARC_R),
+                         min(self.pole.bottom_y, float(target)))
+        direction = 1 if target is None or c1.y > target + 4.0 else -1
+        if target is not None and abs(c1.y - target) <= 4.0:
+            self._begin_hold()
+            return
+        b.pole_move = direction
         tx = self.pole.x + b.facing * SIDE_OFF
         c0.vx = 0.0
         c0.x = (c0.x + tx) / 2.0
         c1.x = (c1.x * 7.0 + tx) / 8.0
         c0.vy *= 0.5
-        c0.vy += -1.0 * b.stats.pole_fac    # 爬升推进×种族因子，抗重力项不缩放
-        c0.vy += -(1.0 + GRAV)
-        c1.vy += (1.0 - GRAV)
+        if direction > 0:
+            c0.vy += -1.0 * b.stats.pole_fac    # 爬升推进×种族因子
+            c0.vy += -(1.0 + GRAV)
+            c1.vy += (1.0 - GRAV)
+        else:
+            # 原版 input.y<0 是沿杆下移：减小上冲、给下节向下速度，
+            # 同时保留两节的自然间距，不直接瞬移。
+            c0.vy += 0.95 * b.stats.pole_fac
+            c0.vy += (1.0 + GRAV)
+            c1.vy += -(1.0 - GRAV)
         if self.stop_requested:
             self._begin_hold()
 
@@ -321,7 +350,10 @@ class PoleClimber(PoleController):
 
     def _begin_descend(self):
         b = self.body
-        self._snap_axis()
+        # 只有从杆顶下杆才需先归到顶端。旧实现从半途 hold/攀爬转下杆
+        # 也调用 _snap_axis，把身体瞬间传送到杆顶。
+        if self.phase == "tip":
+            self._snap_axis()
         b.chunk0.pinned = False
         b.chunk1.pinned = False
         b.animation = "ClimbOnBeam"

@@ -7609,6 +7609,8 @@ class BehaviorFSM:
         """爬杆途中：爬到和豆荚同高就横着投一矛；杆爬完（到顶/跳走）就收工。"""
         b = self.body
         cl = self._cob_climber
+        if cl is not None:
+            cl.target_y = (cb.p0[1] + cb.p1[1]) * 0.5
         px = (cb.p0[0] + cb.p1[0]) * 0.5
         py = (cb.p0[1] + cb.p1[1]) * 0.5
         dir_x = 1 if px >= b.chunk0.x else -1
@@ -7968,6 +7970,8 @@ class BehaviorFSM:
         """爬杆途中：到目标高度就出手；杆爬完（到顶/跳走）就收杆回普通战斗。"""
         b = self.body
         cl = self._fight_climber
+        if cl is not None:
+            cl.target_y = float(tgt.y)
         self._aim_target(tgt)                # 爬杆途中手也一直指着猎物
         # 高度判据换成「真实弹道能不能命中」：爬杆时 chunk0 被钉在抓杆手上、
         # 不是胸口，绝对高度差永远对不上 → 杆上几乎不出手。

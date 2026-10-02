@@ -336,7 +336,7 @@ class GraphicsDrawMixin:
             hx = _lerp(hand.lx, hand.x, ts)
             hy = _lerp(hand.ly, hand.y, ts)
 
-            if anim in ("ClimbOnBeam", "ZeroGPoleGrab") and hand.reached:
+            if anim in ("ClimbOnBeam", "HangUnderVerticalBeam", "ZeroGPoleGrab") and hand.reached:
                 continue
 
             sh_spread = 4.5 / (hand.retract_counter + 1.0)
@@ -368,7 +368,7 @@ class GraphicsDrawMixin:
     def _draw_hand_grips(self, p, atlas, ts=1.0):
         """抓握精灵，须在 draw_sprites 与画杆之后单独调。"""
         anim = getattr(self.body, "animation", None)
-        grip_elem = ("OnTopOfTerrainHand" if anim in ("ClimbOnBeam", "ZeroGPoleGrab")
+        grip_elem = ("OnTopOfTerrainHand" if anim in ("ClimbOnBeam", "HangUnderVerticalBeam", "ZeroGPoleGrab")
                      else "OnTopOfTerrainHand2" if anim in ("HangFromBeam", "GetUpOnBeam")
                      else None)
         if grip_elem is None:
@@ -379,7 +379,7 @@ class GraphicsDrawMixin:
                 continue
             hx = _lerp(hand.lx, hand.x, ts)
             hy = _lerp(hand.ly, hand.y, ts)
-            gy = hy - (0.0 if anim in ("ClimbOnBeam", "ZeroGPoleGrab") else 3.0)
+            gy = hy - (0.0 if anim in ("ClimbOnBeam", "HangUnderVerticalBeam", "ZeroGPoleGrab") else 3.0)
             scale_x = -1.0 if j == 1 else 1.0
             blit(p, atlas, grip_elem, hx, gy, 0.0, scale_x, 1.0, self.BODY, ax=0.5, ay=0.5)
 

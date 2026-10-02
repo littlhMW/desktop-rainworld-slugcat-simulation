@@ -40,6 +40,7 @@ RESET_TABLE: dict[str, object] = {
     "_ctrl_win": None,               # 控制态取物要用窗口的物品表
     "_ctrl_variant": "",             # 投掷力档（圣徒轻抛/弱者减半）读种别
     "_ctrl_pole": None,
+    "_ctrl_pole_hang": False,
     "_ctrl_pole_cd": 0,
     "_ctrl_sleep_hold": 0,
 }

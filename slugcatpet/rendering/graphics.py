@@ -432,7 +432,7 @@ class SlugcatGraphics(GraphicsDrawMixin):
                     self.anim_frame -= 1
                 elif self.anim_frame < 10:
                     self.anim_frame += 1
-            elif anim in ("ClimbOnBeam", "GetUpOnBeam"):
+            elif anim in ("ClimbOnBeam", "GetUpOnBeam", "HangUnderVerticalBeam"):
                 # 竖杆也有和 HangFromBeam 一样的停杆姿态。pole_move=0
                 # 时收回到中性帧，避免 AI 已经停住但四肢仍循环爬行。
                 if getattr(b, "pole_move", 0):
@@ -545,7 +545,7 @@ class SlugcatGraphics(GraphicsDrawMixin):
 
         elif b.bodyMode == "ClimbingOnBeam":
             anim = getattr(b, "animation", None)
-            if anim == "ClimbOnBeam":
+            if anim in ("ClimbOnBeam", "HangUnderVerticalBeam"):
                 ph = af / 20.0 * TAU
                 self.draw0[0] += flip * 2.5 + flip * 0.5 * math.sin(ph)
                 self.draw1[0] += flip * 2.5 * math.cos(ph)
@@ -760,7 +760,7 @@ class SlugcatGraphics(GraphicsDrawMixin):
         anim = getattr(b, "animation", None)
         if b.bodyMode == "ClimbingOnBeam" and anim in BEAM_LIMB_ANIMS:
             c0 = b.chunk0
-            if anim == "ClimbOnBeam":
+            if anim in ("ClimbOnBeam", "HangUnderVerticalBeam"):
                 ph = self.anim_frame / 20.0 * 2.0 * math.pi
                 tx = c0.x + (-b.facing) * (5.0 - math.sin(ph))
                 ty = c0.y + 16.0 + 5.0 * math.cos(ph)
@@ -961,6 +961,14 @@ class SlugcatGraphics(GraphicsDrawMixin):
             # R142 曾把持物的手推开 7px（手浮在杆旁），R145 又把 7px 加到物上
             # （矛浮在杆旁）—— 两次都是自造。现在手和物都贴杆：
             # 物由 core/creature.py 直接摆到手上（原版 Player.cs:5989）。
+            return (hx, hy), HUNT_SPEED, HAND_QUICKNESS
+        if anim == "HangUnderVerticalBeam":
+            # 双手抓在竖杆底端，身体在杆下；横向输入只摆动下节，
+            # 手的锚点仍保持在杆轴上，避免持物被拉到身侧。
+            px = getattr(b, "pole_x", c0.x)
+            ph = self.anim_frame / 20.0 * 2.0 * math.pi
+            hx = px + (-1.0 if j == 0 else 1.0) * (1.0 + 0.8 * math.sin(ph))
+            hy = getattr(b, "pole_y", c0.y)
             return (hx, hy), HUNT_SPEED, HAND_QUICKNESS
         if anim in ("HangFromBeam", "GetUpOnBeam"):
             beam_y = getattr(b, "pole_y", c0.y)
