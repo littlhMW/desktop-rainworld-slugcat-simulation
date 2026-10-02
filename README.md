@@ -20,6 +20,7 @@
 - Downpour / More Slugcats DLC
 
 源码运行需要本机安装 Rain World。首次启动时选择 Rain World 安装目录，程序从本机读取所需素材。
+可选安装工坊MOD：push to meow，安装后蛞蝓猫可以发出叫声。
 
 ## 安装与运行
 
@@ -97,6 +98,7 @@ The repository also includes a [visual showcase](docs/showcase/) of the current 
 - Downpour / More Slugcats DLC
 
 Running from source requires a local Rain World installation. On first launch, select the Rain World installation directory so the program can read the required local assets.
+Optional installation workshop MOD: push to meow, after installation, Slug Cat can make a sound.
 
 ## Installation
 
