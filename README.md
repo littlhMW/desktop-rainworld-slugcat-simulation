@@ -1,17 +1,9 @@
 # 桌面雨世界-蛞蝓猫模拟
 
-![桌面雨世界-蛞蝓猫模拟](slugcatpet/resources/icons/app_icon.png)
+![桌面雨世界-蛞蝓猫模拟](slugcatpet/resources/icons/app_icon.png)  ![icon](docs/showcase/icon.png)  ![gobgjiang](docs/showcase/gobgjiang.png)  ![shengtu](docs/showcase/shengtu.png)  ![xiliu](docs/showcase/xiliu.png) 
+ ![hongmao](docs/showcase/hongmao.png)  ![huangmao](docs/showcase/huangmao.png)  ![taotie](docs/showcase/taotie.png)  ![maodashi](docs/showcase/maodashi.png) 
 
 面向蛞蝓猫桌宠的 Rain World 生态模拟器。项目重点是蛞蝓猫的日常行为、AI、寻路、物理与互动，同时提供一个可运行的雨世界生态沙盒。
-
-## 视觉展示
-
-仓库中的角色图标和项目图标：
-
-| 项目图标 | 角色图标 | 角色图标 | 角色图标 |
-| --- | --- | --- | --- |
-| ![icon](docs/showcase/icon.png) | ![gobgjiang](docs/showcase/gobgjiang.png) | ![shengtu](docs/showcase/shengtu.png) | ![xiliu](docs/showcase/xiliu.png) |
-| ![hongmao](docs/showcase/hongmao.png) | ![huangmao](docs/showcase/huangmao.png) | ![taotie](docs/showcase/taotie.png) | ![maodashi](docs/showcase/maodashi.png) |
 
 ## 项目内容
 
