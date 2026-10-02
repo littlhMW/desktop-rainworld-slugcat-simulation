@@ -1013,9 +1013,9 @@ class ItemInteractionMixin:
 
         # The reference uses a near-black, pixelated vegetation fringe rather
         # than isolated line blades.  Build overlapping tapered polygons and
-        # a few dangling stems along every edge.  The wall body stays pure
-        # black; the restrained charcoal layers make the fringe readable
-        # against the black body and the desktop background.
+        # a few dangling stems along the top/bottom edges.  Side edges only
+        # get occasional nicks: a wall should read as a worn tile, rather
+        # than four equally dense brushes.  The wall body stays pure black.
         p.setPen(Qt.PenStyle.NoPen)
         grass_colors = (QColor(18, 20, 28, 240), QColor(46, 49, 60, 225),
                         QColor(78, 81, 92, 175))
@@ -1032,37 +1032,48 @@ class ItemInteractionMixin:
                                      QPointF(tx2 - wx * .18, ty2 - wy * .18))))
 
         def fringe(side_len, start, tx, ty, nx, ny, side_index):
-            # Chunk spacing gives a continuous, blocky ragged edge without
-            # turning it into the thin "brush" seen in the old version.
-            spacing = rng.uniform(7.0, 10.0) if side_index < 2 else rng.uniform(9.0, 13.0)
-            count = min(110, max(3, int(side_len / spacing) + 1))
-            for i in range(count):
-                t = (i + rng.uniform(-.42, .42)) / max(1, count - 1)
-                t = max(.015, min(.985, t))
+            horizontal = side_index < 2
+            # Top/bottom edges carry the reference's hanging fringe.  On the
+            # vertical edges use a very low density so the silhouette is
+            # broken by only a few accidental tufts.  Randomised positions
+            # avoid the old picket-fence rhythm.
+            if horizontal:
+                spacing = rng.uniform(5.0, 10.5)
+                count = min(150, max(3, int(side_len / spacing) + 1))
+            else:
+                spacing = rng.uniform(42.0, 78.0)
+                count = min(7, max(1, int(side_len / spacing) + 1))
+            positions = sorted(rng.uniform(.018, .982) for _ in range(count))
+            for t in positions:
                 bx = start[0] + tx * side_len * t
                 by = start[1] + ty * side_len * t
-                # A broad irregular base mass is the important visual cue in
-                # the references: grass reads as a dark hanging tile edge,
-                # with individual blades only breaking the silhouette.
-                half = rng.uniform(3.0, 7.0)
-                depth = rng.uniform(4.0, max_h * (0.78 if side_index < 2 else .55))
+                # Sink each tuft's root into the solid so gaps/notches do not
+                # make the grass appear to float just outside the wall edge.
+                root_in = rng.uniform(5.0, 8.0)
+                bx -= nx * root_in
+                by -= ny * root_in
+                # Keep each tuft narrow.  Density comes from the number of
+                # nearby tufts on the horizontal edges, not oversized blades.
+                half = rng.uniform(1.0, 3.0) if horizontal else rng.uniform(.7, 1.8)
+                depth = rng.uniform(2.5, max(4.0, max_h * (0.72 if horizontal else .42)))
                 p.setBrush(rng.choice(grass_colors[:2]))
                 p.drawPolygon(QPolygonF((QPointF(bx - tx * half, by - ty * half),
                                          QPointF(bx + tx * half, by + ty * half),
-                                         QPointF(bx + tx * half * .72 + nx * depth * .52,
-                                                 by + ty * half * .72 + ny * depth * .52),
-                                         QPointF(bx + tx * rng.uniform(-.45, .45) * half + nx * depth,
-                                                 by + ty * rng.uniform(-.45, .45) * half + ny * depth),
-                                         QPointF(bx - tx * half * .72 + nx * depth * .55,
-                                                 by - ty * half * .72 + ny * depth * .55))))
-                for _ in range(rng.randint(1, 2)):
+                                         QPointF(bx + tx * half * rng.uniform(.45, .82) + nx * depth * .48,
+                                                 by + ty * half * rng.uniform(.45, .82) + ny * depth * .48),
+                                         QPointF(bx + tx * rng.uniform(-.55, .55) * half + nx * depth,
+                                                 by + ty * rng.uniform(-.55, .55) * half + ny * depth),
+                                         QPointF(bx - tx * half * rng.uniform(.45, .82) + nx * depth * .50,
+                                                 by - ty * half * rng.uniform(.45, .82) + ny * depth * .50))))
+                for _ in range(rng.randint(1, 2) if horizontal else 1):
                     leaf(bx + tx * rng.uniform(-2.8, 2.8),
                          by + ty * rng.uniform(-2.8, 2.8), nx, ny, tx, ty,
-                         rng.uniform(4.0, max_h), rng.uniform(1.0, 2.0),
+                         rng.uniform(3.0, max_h * (.88 if horizontal else .62)),
+                         rng.uniform(.45, 1.25) if horizontal else rng.uniform(.35, .85),
                          rng.choice(grass_colors))
                 # Long, thin hanging roots break the even fringe and produce
                 # the vertical drips visible in the reference image.
-                if rng.random() < (.24 if side_index < 2 else .12):
+                if rng.random() < (.20 if horizontal else .08):
                     stem = rng.uniform(7.0, max_h + 5.0)
                     sx = bx + tx * rng.uniform(-2.5, 2.5)
                     sy = by + ty * rng.uniform(-2.5, 2.5)
@@ -1165,39 +1176,59 @@ class ItemInteractionMixin:
             p.drawLine(QPointF(cx - nx * span, cy - ny * span),
                        QPointF(cx + nx * span, cy + ny * span))
 
-        # The rod reference is a thin black stem with irregular short side
-        # buds, not a picket fence.  Use small tapered polygons every 6-8 px
-        # and occasional longer hanging stems so the silhouette stays dense
-        # but the rod remains legible.
+        # The rod reference is a thin black stem with two different treatments:
+        # vertical rods have only a few short side buds (like reversed wall
+        # chips), while horizontal rods collect narrow hanging grass beneath
+        # the beam.  Do not use the old all-around picket-fence fringe.
         p.setPen(Qt.PenStyle.NoPen)
         rod_colors = (QColor(0, 0, 0, 245), QColor(15, 17, 22, 225),
                       QColor(38, 41, 47, 165))
-        count = min(150, max(3, int(length / rng.uniform(8.0, 11.0)) + 1))
-        outward = -1.0 if abs(uy) < .5 else rng.choice((-1.0, 1.0))
+        vertical = abs(bx - ax) < abs(by - ay)
 
-        def rod_leaf(px, py, ln, width, color):
-            lean = rng.uniform(-2.0, 2.0)
-            ex = px + nx * outward * ln + ux * lean
-            ey = py + ny * outward * ln + uy * lean
+        def rod_leaf(px, py, out_x, out_y, ln, width, color, lean_x=0.0, lean_y=0.0):
+            ex = px + out_x * ln + lean_x
+            ey = py + out_y * ln + lean_y
+            # Width is measured along the rod so every tuft stays a narrow
+            # pixel-art strip instead of a broad triangular leaf.
             wx, wy = ux * width, uy * width
             p.setBrush(color)
             p.drawPolygon(QPolygonF((QPointF(px - wx, py - wy),
                                      QPointF(px + wx, py + wy),
-                                     QPointF(ex + wx * .15, ey + wy * .15),
-                                     QPointF(ex - wx * .15, ey - wy * .15))))
+                                     QPointF(ex + wx * .12, ey + wy * .12),
+                                     QPointF(ex - wx * .12, ey - wy * .12))))
 
-        for i in range(count):
-            t = (i + rng.uniform(-.35, .35)) / max(1, count - 1)
-            t = max(.015, min(.985, t))
-            cx = ax + ux * length * t
-            cy = ay + uy * length * t
-            for _ in range(rng.randint(1, 2)):
-                rod_leaf(cx + ux * rng.uniform(-1.5, 1.5),
-                         cy + uy * rng.uniform(-1.5, 1.5),
-                         rng.uniform(3.0, 6.5), rng.uniform(1.0, 1.8),
-                         rng.choice(rod_colors))
-            if rng.random() < .22:
-                rod_leaf(cx, cy, rng.uniform(5.0, 10.0), .8, rod_colors[2])
+        if vertical:
+            # A few asymmetric side protrusions are enough to make a vertical
+            # rod feel weathered.  Their positions are random, never evenly
+            # repeated along the full height.
+            count = min(9, max(1, int(length / rng.uniform(38.0, 66.0))))
+            for t in sorted(rng.uniform(.06, .94) for _ in range(count)):
+                cx = ax + ux * length * t
+                cy = ay + uy * length * t
+                side = rng.choice((-1.0, 1.0))
+                ln = rng.uniform(1.4, 4.2)
+                rod_leaf(cx, cy, nx * side, ny * side, ln,
+                         rng.uniform(.35, .75), rng.choice(rod_colors),
+                         ux * rng.uniform(-.8, .8), uy * rng.uniform(-.8, .8))
+        else:
+            # Horizontal beams hang grass only from their lower edge.  Use a
+            # down-facing normal independent of the line's drawing direction.
+            count = min(110, max(3, int(length / rng.uniform(6.5, 11.0)) + 1))
+            for t in sorted(rng.uniform(.015, .985) for _ in range(count)):
+                cx = ax + ux * length * t
+                cy = ay + uy * length * t
+                ln = rng.uniform(2.5, 8.5)
+                # Horizontal rods have uy≈0, so a down normal is simply +Y.
+                rod_leaf(cx + ux * rng.uniform(-1.1, 1.1),
+                         cy + rng.uniform(-.35, .35), 0.0, 1.0, ln,
+                         rng.uniform(.35, 1.05), rng.choice(rod_colors),
+                         ux * rng.uniform(-1.8, 1.8), rng.uniform(-.8, .8))
+                if rng.random() < .10:
+                    # A rare longer drip breaks up the fringe without making
+                    # every interval identical.
+                    rod_leaf(cx, cy, 0.0, 1.0, rng.uniform(7.0, 12.0),
+                             rng.uniform(.3, .65), rod_colors[2],
+                             ux * rng.uniform(-2.0, 2.0), rng.uniform(-1.0, 1.0))
 
     def _draw_pole_hint(self, p):
         cur = self.cursor_logical()
