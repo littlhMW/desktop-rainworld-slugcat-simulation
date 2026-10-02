@@ -185,9 +185,10 @@ def _reach_from_surface(stats, y0, lo, hi, start_x, gx, gy):
     best = None
     wx = min(max(gx, lo), hi)
     hand_y = y0 - HAND_UP
-    # ① 走过去伸手
+    # ① 走过去伸手。快速收尾也要遵守实体墙阻挡，不能穿墙到目标侧。
     if (abs(gy - hand_y) <= tuning.GRAB_REACH + 6.0
-            and abs(gx - wx) <= tuning.GRAB_REACH):
+            and abs(gx - wx) <= tuning.GRAB_REACH
+            and not _walk_blocked(start_x, wx, y0)):
         t = abs(wx - start_x) / tuning.PLAN_WALK_SPEED
         best = (t, t * tuning.PLAN_EN_RATE_LIGHT)
     # ② 面上起跳（土狼跳那套弧线族）：起跳点取锚点附近几档
@@ -198,6 +199,11 @@ def _reach_from_surface(stats, y0, lo, hi, start_x, gx, gy):
         for md in (0, 1, -1):
             arc = get_arc(stats, hold, md)
             for lx in xs:
+                # 起跳前必须在墙的同一侧，且跳弧不能穿过实体墙。
+                if _walk_blocked(start_x, lx, y0):
+                    continue
+                if _arc_hits_solids(arc, lx, launch_y):
+                    continue
                 hit = sweep_hit(arc, gx - lx, gy - launch_y, tuning.GRAB_REACH)
                 if hit is None:
                     continue
