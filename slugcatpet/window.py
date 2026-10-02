@@ -623,6 +623,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             for pet in self.pets:
                 if pet.behavior is not None and pet.behavior.grab.active:
                     pet.behavior.on_release()
+            self._mouse_pole_tick(None)
         self._update_passthrough()
 
     def set_cursor_cat_attention_allowed(self, allowed):
@@ -633,12 +634,9 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._update_passthrough()
 
     def set_cursor_passthrough_allowed(self, allowed):
-        """设置窗口是否接管系统鼠标；关闭时立即释放锁定/拖动。"""
-        allowed = self._set_cursor_permission("cursor_passthrough_allowed", allowed)
-        if not allowed:
-            self.stop_cursor_hijack()
-            self._storm_hud_drag = None
-            self._mouse_pole_tick(None)
+        """设置鼠标是否穿透桌宠；不改变蛞蝓猫主动追逐/劫持鼠标的能力。"""
+        self._set_cursor_permission("cursor_passthrough_allowed", allowed)
+        self._storm_hud_drag = None
         self._update_passthrough()
 
     def set_cursor_hijack_allowed(self, allowed):
@@ -676,34 +674,31 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
     def _passthrough_want(self, cur) -> bool:
         """这一刻窗口该不该鼠标穿透（纯判定；测试直接调它，不碰 Win32）。
 
-        两条硬规则，与暴雨是否接管点击无关：
-        1. 下延带（地板线以下那条贴着屏幕底边的带子＝任务栏那一条）永远放行，
-           所以暴雨点杀也不可能挡住任务栏 / 托盘右键菜单；
-        2. 光标不在窗口上（cur is None）时放行。
-        其余照旧：压着猫 / 正拖着东西 / 正在摆放 / 暴雨接管（开关打开时）才不穿透。
+        开启“鼠标穿透”时整块桌宠窗口都放行；关闭时只在桌宠部件、
+        状态面板和玩家控制区域接收鼠标，空白处仍交给桌面。
+        下延带（地板线以下的任务栏区域）始终放行。
         """
+        # 开启穿透后，桌宠窗口的所有区域都放行；鼠标只能命中桌面内容。
+        if self.cursor_passthrough_allowed:
+            return True
         if cur is None:
             return True
         if cur[1] > self._HL:
             return True                  # 下延带＝任务栏：任何情况下都不接管
-        # 关闭穿透时，窗口区域始终接收鼠标；任务栏仍由上面的规则放行。
-        if not self.cursor_passthrough_allowed:
-            return False
+        # 关闭穿透时，只在桌宠部件/可交互 HUD 上接收鼠标，空白处仍交给桌面。
         if self.controlled_pet() is not None:
             return False                 # 玩家控制时，场景空白处也接收投掷/拾取点击
-        # 计时器是屏幕上的可拖动控件；仅在鼠标劫持开启时接管其区域，
-        # 关闭劫持后点击可以直接落到桌面/任务栏。
-        if self.cursor_passthrough_allowed and storm_hud.visible(self):
+        if storm_hud.visible(self):
             hx0, hy0, hx1, hy1 = storm_hud.hud_rect(self)
             if hx0 - 8.0 <= cur[0] <= hx1 + 8.0 and hy0 - 8.0 <= cur[1] <= hy1 + 8.0:
                 return False
         from .control.mouse import is_over
         active = any(pet.behavior is not None and pet.behavior.grab.active for pet in self.pets)
-        over_body = self.cursor_cat_interaction_allowed and any(
+        over_body = any(
             ((pet.behavior is None) or not pet.behavior.blocks_interaction())
             and is_over(pet.body, pet.gfx, cur, pad=6.0)
             for pet in self.pets)
-        storm_capture = (self.cursor_passthrough_allowed
+        storm_capture = (not self.cursor_passthrough_allowed
                          and bool(getattr(self.storm, "active", False))
                          and bool(self.storm_block_clicks))
         dragging_fruit = self._dragged_fruit is not None
@@ -2497,7 +2492,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if not self.pets:
             return
         # 关闭鼠标互动时，不再右键点猫、左键抓猫，也不对猫执行暴雨点杀。
-        cats_interactive = self.cursor_cat_interaction_allowed
+        # 鼠标能否点击蛞蝓猫只由“鼠标穿透”决定，与猫主动互动开关无关。
+        cats_interactive = not self.cursor_passthrough_allowed
         if e.button() == Qt.MouseButton.RightButton:
             # 受控猫沿用原版 PickUpAndThrow 的鼠标映射：右键拾取/放下，
             # 只有未进入控制会话时右键才打开角色菜单。

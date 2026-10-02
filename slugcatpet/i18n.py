@@ -154,8 +154,8 @@ _STR = {
     "settings_mouse_passthrough": {"zh": "允许鼠标穿透桌宠窗口",
                                     "en": "Allow the cursor to pass through the pet window"},
     "settings_mouse_passthrough_tip": {
-        "zh": "开启后空白区域点击会传给桌面；关闭后窗口区域始终接收鼠标。",
-        "en": "When enabled, blank areas pass clicks to the desktop; off keeps the window interactive."},
+        "zh": "开启后桌宠区域完全穿透，只能点击桌面内容；关闭后仅桌宠部件和面板接收鼠标，空白处仍可点击桌面。",
+        "en": "When enabled, the entire pet area passes through to desktop content; off keeps pet parts and panels clickable while blank areas still pass through."},
     "settings_pause_world": {"zh": "暂停世界", "en": "Pause world"},
     "settings_pause_world_tip": {
         "zh": "暂停 AI、物理、环境和雨循环；设置与状态面板仍可查看。",
