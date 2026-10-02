@@ -45,7 +45,7 @@ from . import navgeom
 from .backflip_reach import takeoff_c0_h
 from .goal import point_goal
 from .hop_reach import HopReach, HopReachController, surface_under
-from .jump_arc import get_arc, sweep_hit
+from .jump_arc import get_arc, get_pole_hop_arc, sweep_hit
 from .jump_reach import _arc_hits_solids
 from .pole_hop import hop_plan, land_sweep, pole_hit
 from .navgraph import NavGraph, dynamic_edge_cost
@@ -107,7 +107,11 @@ def _arc_grab(stats, lx, ly, pole, r):
     """从地面起跳，飞行轨迹上够到某根杆就抓住：返回第几 tick 抓到，无解 None。"""
     for hold in tuning.PLAN_JUMP_HOLD_GEARS:
         for md in (1, -1):
-            for i, (px, py) in enumerate(get_arc(stats, hold, md).points):
+            arc = get_arc(stats, hold, md)
+            # 隔着实体墙不能直接抓杆；先验证整条跳弧，再检查命中点。
+            if _arc_hits_solids(arc, lx, ly, r):
+                continue
+            for i, (px, py) in enumerate(arc.points):
                 if i < 1:
                     continue
                 if pole_hit(pole, lx + px, ly + py, r):
@@ -126,6 +130,8 @@ def _hop_controller(pet, leg):
 def _point_in_solids(x, y, shrink=1.0):
     """点是不是落在庇护所墙体 / 关上的门里面（各边向内收，避免贴着面误判）。"""
     for (a0, b0, a1, b1) in chunkphys.cat_solids():
+        a0, a1 = sorted((float(a0), float(a1)))
+        b0, b1 = sorted((float(b0), float(b1)))
         if a0 + shrink < x < a1 - shrink and b0 + shrink < y < b1 - shrink:
             return True
     return False
@@ -140,6 +146,8 @@ def _walk_blocked(x0, x1, y):
     """
     lo, hi = (x0, x1) if x0 <= x1 else (x1, x0)
     for (a0, b0, a1, b1) in chunkphys.cat_solids():
+        a0, a1 = sorted((float(a0), float(a1)))
+        b0, b1 = sorted((float(b0), float(b1)))
         if a1 <= a0 or b1 <= b0:
             continue
         if a1 <= lo or a0 >= hi:
@@ -554,6 +562,20 @@ class SurfaceGraph(NavGraph):
 
     def _link_poles(self, pet):
         """沿竖杆爬上杆顶（climb_pole）。"""
+
+        def pole_blocked(pole, y0, y1):
+            """竖杆穿过实心墙时，不生成穿墙的爬杆边。"""
+            x = float(pole.x)
+            lo, hi = sorted((float(y0), float(y1)))
+            # 贴着墙边是合法的攀爬面；只有进入矩形内部才算阻挡。
+            pad = 2.5
+            for x0, yy0, x1, yy1 in chunkphys.cat_solids():
+                x0, x1 = sorted((float(x0), float(x1)))
+                yy0, yy1 = sorted((float(yy0), float(yy1)))
+                if x0 + pad < x < x1 - pad and hi > yy0 and lo < yy1:
+                    return True
+            return False
+
         for i, a in enumerate(self.nodes):
             for j, b in enumerate(self.nodes):
                 if a.sid == b.sid or b.kind != "pole_tip" or b.pole is None:
@@ -565,6 +587,11 @@ class SurfaceGraph(NavGraph):
                 if not (lo - tuning.POLE_AIRGRAB_PAD <= a.y <= hi + tuning.POLE_AIRGRAB_PAD):
                     continue
                 if abs(pole.bx - a.anchor) > tuning.POLE_TRANSPORT_NEAR:
+                    continue
+                if pole_blocked(pole, a.y, b.y):
+                    continue
+                # 到杆底的走位也必须在同一侧，不能穿过实体墙后再“自动抓杆”。
+                if _walk_blocked(a.anchor, pole.bx, a.y):
                     continue
                 rise = a.y - b.y
                 t = (abs(pole.bx - a.anchor) / tuning.PLAN_WALK_SPEED
@@ -588,6 +615,12 @@ class SurfaceGraph(NavGraph):
                     plan = hop_plan(stats, [b.pole], a.anchor, a.y,
                                     grab=r, want=(b.anchor, b.y))
                     if plan is None:
+                        continue
+                    # hop_plan 只负责选择命中哪根杆；这里补上完整杆间弧线的
+                    # 实体墙检查，避免隔墙跳杆。
+                    _target, hmd, _hticks, hup = plan
+                    hop_arc = get_pole_hop_arc(stats, hmd, hup)
+                    if _arc_hits_solids(hop_arc, a.anchor, a.y):
                         continue
                     hit = plan[2]
                 else:
