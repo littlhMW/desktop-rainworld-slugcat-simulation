@@ -393,4 +393,3 @@ def draw_storm_hud(p, win) -> None:
     _draw_pips(p, info)
     _draw_countdown(p, info)
     p.restore()
-
