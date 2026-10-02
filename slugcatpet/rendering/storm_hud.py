@@ -55,31 +55,71 @@ KARMA_MIN = 1
 KARMA_MAX = 10           # 最低 1 级、最高 10 级
 
 _INK = QColor(245, 245, 245)
-_BACKDROP = None
+_BACKDROP_CACHE = {}
 
 
-def _draw_backdrop(p, x0: float, y0: float) -> None:
-    """按矩形的圆角距离生成 8px 柔边，缓存后每帧只贴一次图。"""
-    global _BACKDROP
-    if _BACKDROP is None:
-        pad = 6
-        w, h = int(HUD_W) + pad * 2, int(HUD_H) + pad * 2
+def _backdrop_bounds(info, scale: float):
+    """Return the visible timer bounds in local HUD coordinates.
+
+    The old backdrop used the whole 220x76 drag rectangle, which left a large
+    empty black block below the countdown.  Keep the drag rectangle unchanged,
+    but size the painted background from the ring, food pips and countdown.
+    """
+    n, hib, pitch, d, xpip, _div = pip_geometry(info)
+    ring_pad = DOT_R + 1.8       # include the soft outline/glow around dots
+    left = RING_CX - RING_R - ring_pad
+    right = RING_CX + RING_R + ring_pad
+    top = RING_CY - RING_R - ring_pad
+    bottom = RING_CY + RING_R + ring_pad
+    if n:
+        first = _pip_cx(0, hib, pitch, xpip)
+        last = _pip_cx(n - 1, hib, pitch, xpip)
+        pip_pad = d * 0.5 + PIP_RING * 0.5 + 1.5
+        left = min(left, first - pip_pad)
+        right = max(right, last + pip_pad)
+        top = min(top, PIP_CY - pip_pad)
+        bottom = max(bottom, PIP_CY + pip_pad)
+    cx, _cy, _cw, ch = countdown_box(info)
+    left = min(left, cx - 1.0)
+    # countdown_box reserves a wide alignment area, but only the short MM:SS
+    # glyph run is visible; do not let that invisible reserve widen the panel.
+    right = max(right, cx + 44.0)
+    bottom = max(bottom, cy + ch * 0.5 + 1.5)
+
+    # Reference coordinates are transformed in draw_storm_hud immediately
+    # after the backdrop is painted.
+    tx = _PAD - REF_X0 * scale
+    ty = (HUD_H - REF_H * scale) * 0.5 - REF_Y0 * scale
+    margin = 3.0
+    return (tx + scale * left - margin,
+            ty + scale * top - margin,
+            tx + scale * right + margin,
+            ty + scale * bottom + margin)
+
+
+def _draw_backdrop(p, x0: float, y0: float, info, scale: float) -> None:
+    """Draw a small rounded black backdrop around the actual timer content."""
+    bounds = _backdrop_bounds(info, scale)
+    key = tuple(round(v, 2) for v in bounds)
+    im = _BACKDROP_CACHE.get(key)
+    pad = 6
+    if im is None:
+        bx0, by0, bx1, by1 = bounds
+        rw, rh = bx1 - bx0, by1 - by0
+        w, h = max(1, int(math.ceil(rw)) + pad * 2), max(1, int(math.ceil(rh)) + pad * 2)
         im = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
-        cx, cy = w * 0.5, h * 0.5
-        # 以矩形为基准的圆角 SDF；外侧只留窄窄的柔边，避免椭圆黑雾。
-        rx, ry, rad = HUD_W * 0.5 - 4.0, HUD_H * 0.5 - 4.0, 3.5
-        for y in range(h):
-            for x in range(w):
-                dx, dy = abs(x + 0.5 - cx) - rx, abs(y + 0.5 - cy) - ry
+        cx, cy = pad + rw * 0.5, pad + rh * 0.5
+        rx, ry, rad = rw * 0.5, rh * 0.5, 3.5
+        for yy in range(h):
+            for xx in range(w):
+                dx = abs(xx + 0.5 - cx) - (rx - rad)
+                dy = abs(yy + 0.5 - cy) - (ry - rad)
                 dist = math.hypot(max(dx, 0.0), max(dy, 0.0)) + min(max(dx, dy), 0.0) - rad
                 t = max(0.0, min(1.0, (4.5 - dist) / 7.0))
                 t = t * t * (3.0 - 2.0 * t)
-                u = x / float(w)
-                right_fade = (1.0 if u <= 0.38 else
-                              max(0.0, (1.0 - u) / 0.62) ** 1.8)
-                im.setPixel(x, y, int(190.0 * t * right_fade) << 24)
-        _BACKDROP = im
-    p.drawImage(QPointF(x0 - 6.0, y0 - 6.0), _BACKDROP)
+                im.setPixel(xx, yy, int(175.0 * t) << 24)
+        _BACKDROP_CACHE[key] = im
+    p.drawImage(QPointF(x0 + bounds[0] - pad, y0 + bounds[1] - pad), im)
 
 # 能画汉字的字体族（有其一才用中文文案）
 _CJK_FAMS = ("Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "SimSun",
@@ -369,7 +409,7 @@ def draw_storm_hud(p, win) -> None:
     # 默认底边正好贴任务栏上沿，柔边也不能伸到任务栏下方。
     p.setClipRect(QRectF(0.0, 0.0, float(win._WL), float(win._HL)),
                   Qt.ClipOperation.IntersectClip)
-    _draw_backdrop(p, x0, y0)
+    _draw_backdrop(p, x0, y0, info, s)
     # 参考图是硬边像素画：贴图放大用最近邻
     p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
     # 不参与像素化滤镜：圆点/描边开抗锯齿，保持清晰
