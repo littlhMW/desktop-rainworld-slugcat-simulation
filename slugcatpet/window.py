@@ -463,6 +463,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._ts = 1.0                  # 0..1 插值因子
         self._hwnd = 0
         self._passthrough = None        # None 强制首次同步
+        self._storm_hud_pos = None      # None＝左下默认；拖动计时器后为逻辑坐标
+        self._storm_hud_drag = None     # (dx, dy) 鼠标相对计时器左上角偏移
 
         self.anim = QTimer(self)
         self.anim.setTimerType(Qt.TimerType.PreciseTimer)
@@ -613,6 +615,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             return True                  # 下延带＝任务栏：任何情况下都不接管
         if self.controlled_pet() is not None:
             return False                 # 玩家控制时，场景空白处也接收投掷/拾取点击
+        # 计时器是屏幕上的可拖动控件；仅在鼠标劫持开启时接管其区域，
+        # 关闭劫持后点击可以直接落到桌面/任务栏。
+        if self.cursor_hijack_allowed and storm_hud.visible(self):
+            hx0, hy0, hx1, hy1 = storm_hud.hud_rect(self)
+            if hx0 - 8.0 <= cur[0] <= hx1 + 8.0 and hy0 - 8.0 <= cur[1] <= hy1 + 8.0:
+                return False
         from .control.mouse import is_over
         active = any(pet.behavior is not None and pet.behavior.grab.active for pet in self.pets)
         over_body = self.cursor_hijack_allowed and any(
@@ -2307,7 +2315,32 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         """
         return QRectF(-1.0e5, -1.0e5, 2.0e5, 1.0e5 + self._HL - self._shake[1])
 
+    def _storm_hud_hit(self, pos):
+        if not self.cursor_hijack_allowed or pos is None or not storm_hud.visible(self):
+            return False
+        x, y = pos
+        x0, y0, x1, y1 = storm_hud.hud_rect(self)
+        return x0 - 8.0 <= x <= x1 + 8.0 and y0 - 8.0 <= y <= y1 + 8.0
+
+    def _storm_hud_drag_to(self, pos):
+        if self._storm_hud_drag is None or pos is None:
+            return
+        ox, oy = self._storm_hud_drag
+        x = float(pos[0]) - ox
+        y = float(pos[1]) - oy
+        x = max(0.0, min(max(0.0, self._WL - storm_hud.HUD_W), x))
+        y = max(0.0, min(max(0.0, self._HL - storm_hud.HUD_H), y))
+        self._storm_hud_pos = (x, y)
+        self._prev_dirty = None
+        self.update()
+
     def mousePressEvent(self, e):
+        pos = self.to_logical(e.position().x(), e.position().y())
+        if (e.button() == Qt.MouseButton.LeftButton
+                and self._storm_hud_hit(pos)):
+            x0, y0, _x1, _y1 = storm_hud.hud_rect(self)
+            self._storm_hud_drag = (pos[0] - x0, pos[1] - y0)
+            return
         if self._place_mode:
             if e.button() == Qt.MouseButton.LeftButton:
                 lx, ly = self.to_logical(e.position().x(), e.position().y())
@@ -2420,6 +2453,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         super().keyPressEvent(e)
 
     def mouseMoveEvent(self, e):
+        if self._storm_hud_drag is not None:
+            if e.buttons() & Qt.MouseButton.LeftButton:
+                self._storm_hud_drag_to(self.to_logical(e.position().x(), e.position().y()))
+            else:
+                self._storm_hud_drag = None
+            return
         # 放庇护所：按下 → 拖 → 松开。万一「按下」那一下没落到窗口上（工具栏抢了
         # 鼠标），只要左键还按着，第一个移动事件就当作起点，拖动照样能框出矩形。
         if self._place_mode and self._place_kind in ("shelter", "vpole", "hpole",
@@ -2438,6 +2477,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
+        if self._storm_hud_drag is not None:
+            if e.button() == Qt.MouseButton.LeftButton:
+                self._storm_hud_drag = None
+            return
         if self._place_mode and self._place_kind in ("shelter", "vpole", "hpole",
                                                      "pole", "wall"):
             if e.button() == Qt.MouseButton.LeftButton:

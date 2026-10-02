@@ -51,7 +51,7 @@ _STR = {
     "tip_seedcob": {"zh": "爆米花", "en": "Popcorn plant"},
     "tip_karmaflower": {"zh": "业力花", "en": "Karma flower"},
     "tip_slugpup": {"zh": "猫崽", "en": "Slugpup"},
-    "tip_clear":   {"zh": "清除可交互实体", "en": "Clear placed items"},
+    "tip_clear":   {"zh": "清除所有实体", "en": "Clear all entities"},
     "tip_shelter": {"zh": "庇护所", "en": "Shelter"},
 
     # —— settings：自然生成生物列表 ——

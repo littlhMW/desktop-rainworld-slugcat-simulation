@@ -744,11 +744,11 @@ class ItemInteractionMixin:
         self._exit_place_mode()
         self.update()
 
-    def clear_all_items(self, clear_pups=False):
-        """清除所有可交互实体。
+    def clear_all_items(self, clear_pups=False, clear_terrain=False):
+        """清除实体，默认保留手绘杆和墙。
 
-        clear_pups=True 时连幼崽一起清（「清除可交互实体」按钮）；转生调的是默认值，
-        幼崽和成年猫一样整体复活，不该在换雨循环时消失。
+        矛仍会连同自己钉成的杆一起撤销。clear_pups=True 时清掉幼崽；
+        全体转生显式请求 clear_terrain=True，保留原有的新循环重置行为。
         """
         self.clear_fruits()
         self.clear_stones()
@@ -763,8 +763,9 @@ class ItemInteractionMixin:
         self.clear_seedcobs()
         self.clear_seeds()
         self.clear_karmaflowers()
-        self.clear_poles()
-        self.clear_walls()
+        if clear_terrain:
+            self.clear_poles()
+            self.clear_walls()
         self.clear_lamp()
         if clear_pups:
             self.clear_pups()
@@ -775,7 +776,7 @@ class ItemInteractionMixin:
         除了可交互实体，还要清掉「死后原地长业力花」的排期 —— 转生是新循环，
         上一轮尸体的花不该再冒出来。
         """
-        self.clear_all_items()
+        self.clear_all_items(clear_terrain=True)
         if getattr(self, "_karma_flower_spawns", None):
             self._karma_flower_spawns = []
         self._dragged_spear = None
@@ -3313,6 +3314,7 @@ class ItemInteractionMixin:
         for sp in self.spears:
             pl = sp.pole                            # 钉住的矛＝一截杆：连杆一起撤
             if pl is not None:
+                pl.state = ItemState.GONE
                 if pl in self.poles:
                     self.poles.remove(pl)
                 sp.pole = None

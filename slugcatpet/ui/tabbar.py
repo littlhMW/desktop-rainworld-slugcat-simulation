@@ -1005,12 +1005,12 @@ class TabBar(QWidget):
 
     def _clear_all(self):
         if (self.pet.fruits or self.pet.stones or self.pet.slimemolds
-                or self.pet.batflies or self.pet.lizards or self.pet.poles
+                or self.pet.batflies or self.pet.lizards
                 or self.pet.squidcadas or self.pet.pearls or self.pet.spears
                 or self.pet.needleworms
                 or self.pet.scavengers or self.pet.seedcobs or self.pet.seeds
-                or self.pet.lamp is not None
-                or self.pet.pup_count() > 0):          # 幼崽也算「可交互实体」
+                or self.pet.karmaflowers or self.pet.lamp is not None
+                or self.pet.pup_count() > 0):
             self.pet.clear_all_items(clear_pups=True)
             # 清完重新枚举窗口地形：用户实测「清了重画就好」的那份过期
             # 平台 / 背景就在这里一起重置掉。

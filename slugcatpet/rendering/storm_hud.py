@@ -15,7 +15,7 @@ from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
 from ..i18n import t
 
 HUD_W = 220.0        # 参考图的横向矩形；只包住计时器本体并留一小段右侧余量
-HUD_H = 55.0
+HUD_H = 76.0
 HUD_MARGIN = 10.0
 _LINE_H = 15.0
 _PAD = 3.0           # 面板内边距（逻辑像素）
@@ -24,7 +24,7 @@ _PAD = 3.0           # 面板内边距（逻辑像素）
 REF_X0 = 3.0             # 内容左边界（最左那个圆点的左沿）
 REF_Y0 = 4.0             # 内容上边界（最上那个圆点的上沿）
 REF_W = 205.0            # 内容宽（主圆环 + 示例的 7 格饥饿条）
-REF_H = 50.0             # 内容高
+REF_H = 70.0             # 内容高
 RING_CX = 27.0           # 主圆环中心 x
 RING_CY = 29.0           # 主圆环中心 y
 RING_R = 19.0            # 一圈圆点所在半径
@@ -39,8 +39,8 @@ PIP_CORE = 6.0           # 实心圆直径
 PIP_CY = 29.0            # 格圆心 y
 DIV_EXTRA = 8.0          # 分隔线额外占宽
 DIV_H = 22.0             # 分隔线高（比圆圈高一截）
-TIME_FONT = 14.0         # 保留数据接口；参考图不显示数字
-TIME_CY = 62.6           # 倒计时文字中心 y：饥饿条正下方
+TIME_FONT = 14.0         # 饥饿条下方显示剩余时间
+TIME_CY = 59.0           # 倒计时文字中心 y：饥饿条正下方
 TIME_TRACK = 1.0         # 字距（参考单位）
 DOT_START_DEG = -90.0   # RainMeter.cs:189：i=0 从正上方起，末颗落在右上
 BLINK_TICKS = 28         # 征兆期「呼吸」的半周期（40 tick/s → 0.7s 呼气，整次呼吸 1.4s）
@@ -194,7 +194,7 @@ def ring_opacity(info) -> float:
 
 
 def _draw_ring(p, info) -> None:
-    """RainMeter.cs:189：正上方起逆时针排，末颗从右上开始消失。"""
+    """RainMeter.cs:189：正上方起逆时针排，耗尽的时间点保留为空心圆。"""
     lit = ring_lit(info)
     count = ring_count(info)
     step = 360.0 / float(count)
@@ -202,11 +202,20 @@ def _draw_ring(p, info) -> None:
     _op = ring_opacity(info)
     if _op < 1.0:
         p.setOpacity(_op)        # 征兆期：整圈一起柔和呼吸
+    # 先画完整的空心刻度，消耗时间后只移除内部填充，位置不会跳变。
+    outline = QPen(_INK)
+    outline.setWidthF(max(0.7, DOT_R * 0.7))
+    p.setPen(outline)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    for i in range(count):
+        a = math.radians(DOT_START_DEG - i * step)
+        c = QPointF(RING_CX + RING_R * math.cos(a), RING_CY + RING_R * math.sin(a))
+        p.drawEllipse(c, DOT_R, DOT_R)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(_INK)
     for i in range(lit):
         a = math.radians(DOT_START_DEG - i * step)
         c = QPointF(RING_CX + RING_R * math.cos(a), RING_CY + RING_R * math.sin(a))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(_INK)
         p.drawEllipse(c, DOT_R, DOT_R)
     p.restore()
 
@@ -319,10 +328,17 @@ def hud_lines(info) -> list:
 
 
 def hud_rect(win):
-    """HUD 在逻辑坐标里的包围盒 (x0, y0, x1, y1)。"""
+    """HUD 在逻辑坐标里的包围盒 (x0, y0, x1, y1)。
+
+    默认贴屏幕左边缘与任务栏上沿；用户拖动后使用窗口保存的临时位置。
+    """
     hl = float(getattr(win, "_HL", 0.0) or 0.0)
-    return (HUD_MARGIN, hl - HUD_H - HUD_MARGIN,
-            HUD_MARGIN + HUD_W, hl - HUD_MARGIN)
+    pos = getattr(win, "_storm_hud_pos", None)
+    if pos is None:
+        x0, y1 = 0.0, hl
+        return (x0, y1 - HUD_H, x0 + HUD_W, y1)
+    x0, y0 = float(pos[0]), float(pos[1])
+    return (x0, y0, x0 + HUD_W, y0 + HUD_H)
 
 
 def visible(win) -> bool:
@@ -344,6 +360,9 @@ def draw_storm_hud(p, win) -> None:
     s = _layout_scale()
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    # 默认底边正好贴任务栏上沿，柔边也不能伸到任务栏下方。
+    p.setClipRect(QRectF(0.0, 0.0, float(win._WL), float(win._HL)),
+                  Qt.ClipOperation.IntersectClip)
     _draw_backdrop(p, x0, y0)
     # 参考图是硬边像素画：贴图放大用最近邻
     p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
@@ -372,4 +391,5 @@ def draw_storm_hud(p, win) -> None:
     _draw_ring(p, info)
     _draw_karma(p, win, info)
     _draw_pips(p, info)
+    _draw_countdown(p, info)
     p.restore()
