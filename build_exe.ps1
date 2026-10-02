@@ -11,6 +11,7 @@ if (-not $DistPath) { $DistPath = Join-Path $root "dist" }
 
 & $Python -m PyInstaller --noconfirm --clean --windowed --onedir --name $Name `
     --icon (Join-Path $root "slugcatpet\resources\icons\app_icon.ico") `
+    --collect-submodules UnityPy `
     --distpath $DistPath `
     --workpath (Join-Path $root "build\work") `
     --specpath (Join-Path $root "build") `
