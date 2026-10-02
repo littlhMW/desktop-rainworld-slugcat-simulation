@@ -1947,7 +1947,9 @@ class ItemInteractionMixin:
             return
         # 关闭鼠标劫持时，光标不参与虚杆、点击或蜥蜴的兴趣行为。
         cur = (self.cursor_logical()
-               if bool(getattr(self, "cursor_hijack_allowed", True)) else None)
+               if bool(getattr(self, "cursor_cat_attention_allowed",
+                               getattr(self, "cursor_hijack_allowed", True)))
+               else None)
         tick = getattr(self, "_pole_tick", 0)
         # 每只猫带上「死了 / 昏迷」两个标记：蜥蜴靠它们决定叼走、咬死还是追击
         targets = []

@@ -21,7 +21,11 @@ class EffectsMixin:
 
     def start_cursor_hijack(self, logical_x, logical_y, lock_ticks=None,
                             restore_on_land=False):
-        if not getattr(self, "cursor_hijack_allowed", True):
+        # Programmatic pointer locks are a passthrough concern.  Cat
+        # interaction/attention can be disabled independently without
+        # breaking Saint/Rivulet cursor effects that do not involve AI input.
+        if not getattr(self, "cursor_passthrough_allowed",
+                       getattr(self, "cursor_hijack_allowed", True)):
             return None
         from ..platform.cursorfx import CursorHijack, release_others
 
@@ -35,7 +39,8 @@ class EffectsMixin:
             restore_on_land=restore_on_land, **kw)
 
     def start_cursor_hold(self, logical_x, logical_y, max_ticks):
-        if not getattr(self, "cursor_hijack_allowed", True):
+        if not getattr(self, "cursor_passthrough_allowed",
+                       getattr(self, "cursor_hijack_allowed", True)):
             return None
         from ..platform.cursorfx import CursorHijack, release_others
 
@@ -93,7 +98,12 @@ class EffectsMixin:
                 self.bubbles = [b for b in self.bubbles
                                 if b.update(surf.level_at(b.x), self._bubble_rng)]
 
-        if self.cursor_hijack is not None and not self.cursor_hijack.update():
+        if (self.cursor_hijack is not None
+                and not getattr(self, "cursor_passthrough_allowed",
+                                getattr(self, "cursor_hijack_allowed", True))):
+            self.cursor_hijack.release()
+            self.cursor_hijack = None
+        elif self.cursor_hijack is not None and not self.cursor_hijack.update():
             self.cursor_hijack = None
         if self.cursor_hijack is None:
             # 兜底：没有当前劫持时，任何残留 / 孤儿劫持都不该继续夹着光标

@@ -368,8 +368,22 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._mouse_pole_vel = None        # 本 tick 光标位移（PoleClimber 读它判甩落）
         self._mouse_pole_suppress = 0      # 松开鼠标后的静默 tick（期间不当杆）
         self._cursor_half = None           # 光标虚杆半长缓存（逻辑单位）
-        # 鼠标与蛞蝓猫互动总开关（托盘右键可关）。
-        self.cursor_hijack_allowed = bool(self._params.get("cursor_hijack", True))
+        # 鼠标权限拆成三个互不混淆的开关：
+        #   interaction  —— 点击/抓取蛞蝓猫；
+        #   attention    —— AI 是否把光标当作兴趣目标；
+        #   passthrough  —— 窗口是否允许接管/锁定系统光标。
+        # 新键优先，旧版 ``cursor_hijack`` 同时迁移到三项，保证旧存档行为不变。
+        _legacy_cursor = bool(self._params.get("cursor_hijack", True))
+        self.cursor_cat_interaction_allowed = bool(
+            self._params.get("cursor_cat_interaction_allowed", _legacy_cursor))
+        self.cursor_cat_attention_allowed = bool(
+            self._params.get("cursor_cat_attention_allowed", _legacy_cursor))
+        self.cursor_passthrough_allowed = bool(
+            self._params.get("cursor_passthrough_allowed", _legacy_cursor))
+        # 保留旧属性给插件/旧菜单读取；通过 setter 改动旧开关时会同步三项。
+        self.cursor_hijack_allowed = _legacy_cursor
+        # 用户暂停只冻结世界步进，保留 Qt 事件循环和绘制，设置/计时器仍可查看。
+        self.world_paused = bool(self._params.get("world_paused", False))
 
         # 自然生成（设置面板「生物列表」勾选的类型）
         saved_spawn = self._params.get("spawn_kinds")
@@ -595,9 +609,46 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         g = self.mapFromGlobal(QCursor.pos())
         return self.to_logical(g.x(), g.y())
 
+    def _set_cursor_permission(self, name, allowed):
+        allowed = bool(allowed)
+        setattr(self, name, allowed)
+        self._params[name] = allowed
+        return allowed
+
+    def set_cursor_cat_interaction_allowed(self, allowed):
+        """设置蛞蝓猫点击/抓取权限，不影响 AI 注意光标。"""
+        self._set_cursor_permission("cursor_cat_interaction_allowed", allowed)
+        if not allowed:
+            self.stop_cursor_hijack()
+            for pet in self.pets:
+                if pet.behavior is not None and pet.behavior.grab.active:
+                    pet.behavior.on_release()
+        self._update_passthrough()
+
+    def set_cursor_cat_attention_allowed(self, allowed):
+        """设置 AI 是否把鼠标作为兴趣目标（含鼠标虚杆）。"""
+        self._set_cursor_permission("cursor_cat_attention_allowed", allowed)
+        if not allowed:
+            self._mouse_pole_tick(None)
+        self._update_passthrough()
+
+    def set_cursor_passthrough_allowed(self, allowed):
+        """设置窗口是否接管系统鼠标；关闭时立即释放锁定/拖动。"""
+        allowed = self._set_cursor_permission("cursor_passthrough_allowed", allowed)
+        if not allowed:
+            self.stop_cursor_hijack()
+            self._storm_hud_drag = None
+            self._mouse_pole_tick(None)
+        self._update_passthrough()
+
     def set_cursor_hijack_allowed(self, allowed):
-        """托盘开关即时生效，包括抓猫、点击猫和鼠标虚杆。"""
-        self.cursor_hijack_allowed = bool(allowed)
+        """旧版总开关：同步三项鼠标权限并保留旧参数。"""
+        allowed = bool(allowed)
+        self.cursor_hijack_allowed = allowed
+        self._params["cursor_hijack"] = allowed
+        self._set_cursor_permission("cursor_cat_interaction_allowed", allowed)
+        self._set_cursor_permission("cursor_cat_attention_allowed", allowed)
+        self._set_cursor_permission("cursor_passthrough_allowed", allowed)
         if not allowed:
             self.stop_cursor_hijack()
             self._storm_hud_drag = None
@@ -606,6 +657,18 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                     pet.behavior.on_release()
             self._mouse_pole_tick(None)
         self._update_passthrough()
+
+    def set_world_paused(self, paused):
+        """冻结/恢复 AI、物理、环境与雨循环；界面仍保持响应。"""
+        self.world_paused = bool(paused)
+        self._params["world_paused"] = self.world_paused
+        if self.world_paused:
+            self._phys_acc = 0.0
+            self._t = 0.0
+        else:
+            self._last_ms = self._clock.elapsed()
+        self._prev_dirty = None
+        self.update()
 
     # ── 动态穿透 ──
     def _passthrough_want(self, cur) -> bool:
@@ -621,21 +684,24 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             return True
         if cur[1] > self._HL:
             return True                  # 下延带＝任务栏：任何情况下都不接管
+        # 关闭穿透时，窗口区域始终接收鼠标；任务栏仍由上面的规则放行。
+        if not self.cursor_passthrough_allowed:
+            return False
         if self.controlled_pet() is not None:
             return False                 # 玩家控制时，场景空白处也接收投掷/拾取点击
         # 计时器是屏幕上的可拖动控件；仅在鼠标劫持开启时接管其区域，
         # 关闭劫持后点击可以直接落到桌面/任务栏。
-        if self.cursor_hijack_allowed and storm_hud.visible(self):
+        if self.cursor_passthrough_allowed and storm_hud.visible(self):
             hx0, hy0, hx1, hy1 = storm_hud.hud_rect(self)
             if hx0 - 8.0 <= cur[0] <= hx1 + 8.0 and hy0 - 8.0 <= cur[1] <= hy1 + 8.0:
                 return False
         from .control.mouse import is_over
         active = any(pet.behavior is not None and pet.behavior.grab.active for pet in self.pets)
-        over_body = self.cursor_hijack_allowed and any(
+        over_body = self.cursor_cat_interaction_allowed and any(
             ((pet.behavior is None) or not pet.behavior.blocks_interaction())
             and is_over(pet.body, pet.gfx, cur, pad=6.0)
             for pet in self.pets)
-        storm_capture = (self.cursor_hijack_allowed
+        storm_capture = (self.cursor_passthrough_allowed
                          and bool(getattr(self.storm, "active", False))
                          and bool(self.storm_block_clicks))
         dragging_fruit = self._dragged_fruit is not None
@@ -848,7 +914,11 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if not self.isVisible():
             return
         self._update_passthrough()
-        self._advance(min(dt, self._MAX_DT))
+        if not self.world_paused:
+            self._advance(min(dt, self._MAX_DT))
+        else:
+            # 丢弃暂停期间累积的时间，取消暂停后从当前帧继续，不产生快进。
+            self._phys_acc = 0.0
         region = self._update_region()
         dragging = self._dragged_fruit is not None or self._dragged_stone is not None
         grabbing = any(pet.behavior is not None and pet.behavior.grab.active for pet in self.pets)
@@ -1215,7 +1285,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # 空闲下来、光标还在窗口内就照旧出现。
         busy = (self._mouse_pole_suppress > 0 or self._place_mode
                 or self._mouse_pole_busy())
-        on = (self.cursor_hijack_allowed and self._mouse_pole_on
+        on = (self.cursor_cat_attention_allowed
+              and self.cursor_passthrough_allowed and self._mouse_pole_on
               and not busy and self._cursor_play_active()
               and cx is not None
               and 0.0 <= cx <= self._WL and 0.0 <= cy <= self._HL)
@@ -2354,7 +2425,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         return QRectF(-1.0e5, -1.0e5, 2.0e5, 1.0e5 + self._HL - self._shake[1])
 
     def _storm_hud_hit(self, pos):
-        if not self.cursor_hijack_allowed or pos is None or not storm_hud.visible(self):
+        if (not self.cursor_passthrough_allowed or pos is None
+                or not storm_hud.visible(self)):
             return False
         x, y = pos
         x0, y0, x1, y1 = storm_hud.hud_rect(self)
@@ -2424,12 +2496,14 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if not self.pets:
             return
         # 关闭鼠标互动时，不再右键点猫、左键抓猫，也不对猫执行暴雨点杀。
-        cats_interactive = self.cursor_hijack_allowed
+        cats_interactive = (self.cursor_cat_interaction_allowed
+                            and self.cursor_passthrough_allowed)
         if e.button() == Qt.MouseButton.RightButton:
             # 受控猫沿用原版 PickUpAndThrow 的鼠标映射：右键拾取/放下，
             # 只有未进入控制会话时右键才打开角色菜单。
             controlled = self.controlled_pet()
-            if controlled is not None and self._control_hud is not None:
+            if (controlled is not None and self._control_hud is not None
+                    and self.cursor_cat_interaction_allowed):
                 self._control_hud.mouse_action(pick=True)
                 self._control_hud.activateWindow()
                 self._control_hud.setFocus()
@@ -2447,7 +2521,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             return
         if e.button() == Qt.MouseButton.LeftButton:
             controlled = self.controlled_pet()
-            if controlled is not None and self._control_hud is not None:
+            if (controlled is not None and self._control_hud is not None
+                    and self.cursor_cat_interaction_allowed):
                 self._control_hud.mouse_action(throw=True)
                 self._control_hud.activateWindow()
                 self._control_hud.setFocus()

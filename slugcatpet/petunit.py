@@ -303,13 +303,20 @@ class PetUnit:
                 if cursor is not None:
                     grab.drag(cursor)
                 g.grabbed = True
+        # Cursor attention is separate from click interaction: disabling it
+        # removes the cursor from AI goals/look candidates, while physics,
+        # keyboard control, and an already active external drag remain intact.
+        cursor_attention = bool(getattr(
+            w, "cursor_cat_attention_allowed",
+            getattr(w, "cursor_hijack_allowed", True)))
+        ai_cursor = cursor if cursor_attention else None
         if self.controlled and not waa_lock:
             # FSM 冻结期同步晕态
             g.stunned = b.stun > 0
             g.look_at = None
         elif self.behavior is not None and not waa_lock:
-            self.behavior.update(cursor)
-        elif not waa_lock and w.follow_cursor:
+            self.behavior.update(ai_cursor)
+        elif not waa_lock and w.follow_cursor and cursor_attention:
             g.look_at = cursor
 
         if self.tongue is not None:
