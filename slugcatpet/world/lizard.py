@@ -1336,7 +1336,7 @@ class Lizard(CombatTarget):
         # the standalone/default room.  Keep this per individual so two
         # salamanders can legitimately have different body/eye palettes.
         self.black_salamander = bool(self.breed.key == "salamander"
-                                     and self.rng.random() < (1.0 / 3.0))
+                                     and self._anim_rng.random() < (1.0 / 3.0))
         self._wall_turn_left = 0              # 墙上换向的摆体剩余帧
         self._wall_dir_prev = None            # 上一帧的爬行方向（换向检测）
         # Attack 动作序列（文档 §9.3 / §10.3）：Prepare → Lunge → Bite → Recover，
