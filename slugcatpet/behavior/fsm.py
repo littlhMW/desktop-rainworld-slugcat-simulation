@@ -1554,6 +1554,7 @@ class BehaviorFSM:
     def _act_exhaustion_gate(self, ctx):
         return (not self._exhausted and not self._hibernating and not self.grab.active
                 and not self._cold_urgent() and not self._zerog()
+                and not self._threat_present()
                 and self.body.energy < tuning.EXHAUST_ENTER_ENERGY
                 and self.state not in _EXHAUST_BLOCKED)
     def _act_exhaustion(self, ctx):
