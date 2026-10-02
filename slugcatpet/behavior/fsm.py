@@ -239,6 +239,19 @@ FLEE_SAFE_R = 150.0       # 拉开到此距离 → 安全，收工
 _THREAT_SEARCH_R = float("inf")
 FLEE_MAX_TICKS = 200      # 单次逃跑上限
 FLEE_COOLDOWN = 300       # 两次躲之间至少隔这么久（进场即计时）
+# 威胁行为的无进展看门狗：路线控制器可能仍返回 RUNNING，但身体被墙、
+# 残留移动权或失效的落点卡住。超过这些帧后由 FSM 收势并重新选战术，避免
+# 一只猫卡住后把所有猫的威胁决策拖成「集体发呆」。
+THREAT_STUCK_TICKS = {
+    "FleeLizard": 42,
+    "CrawlAway": 30,
+    "FightThreat": 84,
+    "CoverAlly": 52,
+    "Socialize": 64,
+    "PostThrowWander": 70,
+    "PostThrowStand": 96,
+}
+THREAT_STUCK_EPS = 1.25
 # 只从「没事干」的态里起跑：取果/送礼这类有目的的态不打断
 _FLEE_FROM = frozenset(("IdleStand", "PostThrowWander", "PostThrowStand", "MakeWay"))
 
@@ -518,6 +531,11 @@ class BehaviorFSM:
         self._press_back = 0.0
         self._press_t = 0
         self._stuck_t = 0
+        # threat-state progress watchdog (position is sampled once per behavior tick)
+        self._threat_stuck_state = None
+        self._threat_stuck_x = None
+        self._threat_stuck_y = None
+        self._threat_stuck_ticks = 0
         # 挡路升级：跳过 → 推人 → 回头指指点点；杆上被挡 → 停住扒拉
         self._jump_tries = 0
         self._push_left = 0
@@ -1057,6 +1075,11 @@ class BehaviorFSM:
             handler = getattr(self, "_st_" + self.state.lower(), None)
         if handler:
             handler(cursor, disturbed)
+        # A route/controller may report RUNNING forever when its target is on the
+        # far side of a wall or when another action left a stale move owner.  Sample
+        # progress after the state handler so every threat-capable state gets the
+        # same bounded recovery instead of silently idling.
+        self._threat_progress_watchdog()
         self._push_pose_tick()
         e_delta = _energy_delta(self.state, self._drain_fac)
         if self.state == "HPole":
@@ -1124,6 +1147,123 @@ class BehaviorFSM:
         self._food_prev_q = food_now_q
         self.mood.tick_freshness(self._active_mood())
         self.timer += 1
+
+    def _threat_motion_expected(self) -> bool:
+        """Whether the current threat state still has a displacement to make.
+
+        Stationary aiming/pressing is deliberate, so the watchdog only counts a
+        state when it has an active route/target that should move the body.
+        """
+        st = self.state
+        b = self.body
+        if st == "FleeLizard":
+            return (self._flee_exec is not None or
+                    getattr(b, "walk_target_x", None) is not None)
+        if st == "CrawlAway":
+            return (not self._crawl_wall and
+                    getattr(b, "walk_target_x", None) is not None)
+        if st == "FightThreat":
+            tgt = self._fight_target
+            if tgt is None or getattr(tgt, "dead", False):
+                return False
+            return (self._fight_climber is not None or
+                    getattr(b, "walk_target_x", None) is not None or
+                    b.carried_spear is not None or b.carried_stone is not None)
+        if st == "CoverAlly":
+            ally = self._cover_ally
+            ob = getattr(ally, "body", None) if ally is not None else None
+            th = self._threat_lizard()
+            tx = self._cover_x(ally, th) if ob is not None and th is not None else None
+            return tx is not None and abs(tx - b.chunk1.x) > WALK_STOP_EPS
+        if st == "Socialize":
+            tgt = self._social_target
+            ob = getattr(tgt, "body", None) if tgt is not None else None
+            if ob is None or self._social_kind != "revive":
+                return getattr(b, "walk_target_x", None) is not None
+            return self._touch_dist(ob) > tuning.SOCIAL_ARRIVE
+        if st in ("PostThrowWander", "PostThrowStand"):
+            return getattr(b, "walk_target_x", None) is not None
+        return False
+
+    def _threat_progress_watchdog(self) -> None:
+        """Recover a threat state that has made no physical progress for too long.
+
+        This is deliberately a last resort.  Normal route failures are handled by
+        PlanExecutor/RouteExecutor; this catches the remaining case where the
+        executor stays RUNNING while the body cannot move (wall, stale ownership,
+        or a pole controller that was released mid-transition).
+        """
+        st = self.state
+        limit = THREAT_STUCK_TICKS.get(st)
+        if (limit is None or self.body.dead or self.grab.active
+                or self.body.swimming or getattr(self.body, "on_pole", False)
+                or not self._threat_motion_expected()):
+            self._threat_stuck_state = None
+            self._threat_stuck_x = None
+            self._threat_stuck_y = None
+            self._threat_stuck_ticks = 0
+            return
+        x, y = float(self.body.chunk1.x), float(self.body.chunk1.y)
+        if self._threat_stuck_state != st:
+            self._threat_stuck_state = st
+            self._threat_stuck_x, self._threat_stuck_y = x, y
+            self._threat_stuck_ticks = 0
+            return
+        dx = x - self._threat_stuck_x
+        dy = y - self._threat_stuck_y
+        self._threat_stuck_x, self._threat_stuck_y = x, y
+        if math.hypot(dx, dy) > THREAT_STUCK_EPS:
+            self._threat_stuck_ticks = 0
+            return
+        self._threat_stuck_ticks += 1
+        if self._threat_stuck_ticks < limit:
+            return
+        self._threat_stuck_ticks = 0
+        self._threat_stuck_state = None
+        self._threat_stuck_recover()
+
+    def _threat_stuck_recover(self) -> None:
+        """Break a stalled threat action and hand the next tick back to arbitration."""
+        st = self.state
+        b = self.body
+        th = self._threat_lizard()
+        if st == "FleeLizard":
+            # A jump is the safest way out of a blocked route.  Keep the flee state
+            # while airborne; _st_fleelizard will resume once the arc lands.
+            if th is not None and b.on_floor() and self._jump_over_cd <= 0:
+                if self._jump_over(th):
+                    self._jump_over_cd = tuning.JUMP_OVER_COOLDOWN
+                    return
+            self._flee_break()
+            self._flee_cd = max(self._flee_cd, FLEE_COOLDOWN // 2)
+            self._crawl_cd = max(self._crawl_cd, T_CRAWL_RETRY)
+            self._face_cd = max(self._face_cd, tuning.FACE_REENGAGE_TICKS)
+            self._transition("IdleStand")
+            return
+        if st == "CrawlAway":
+            self._wants_break("CrawlAway")
+            self._crawl_cd = max(self._crawl_cd, T_CRAWL_RETRY)
+            self._transition("FleeLizard" if th is not None else "IdleStand")
+            if self.state == "FleeLizard":
+                self._flee_from = th
+                self._flee_plan_age = 0
+            return
+        if st == "FightThreat":
+            self._fight_end()
+            return
+        if st == "CoverAlly":
+            self._wants_break("CoverAlly")
+            self._transition("IdleStand")
+            return
+        if st == "Socialize":
+            self._revive_gave_up = (self._social_kind == "revive")
+            self._social_cleanup()
+            self._transition("IdleStand")
+            return
+        if st in ("PostThrowWander", "PostThrowStand"):
+            self._clear_hands()
+            self.body.stop_walk()
+            self._transition("IdleStand")
 
     # ── 统一动作注册表：主 tick 的全部「决定」都登记在这里 ──
     # 旧版 update() 里那条又长又散的 if 链搬进来了：顺序 = 注册顺序，
@@ -1395,7 +1535,10 @@ class BehaviorFSM:
         if self._flee_plan_age > 0:
             self._flee_plan_age -= 1
     def _act_facethreat_gate(self, ctx):
-        return (not self.grab.active and not self._exhausted and not self._zerog())
+        # Exhaustion suppresses optional actions, but never the threat response.
+        # Keeping this gate open lets a tired cat leave the LieDown/WakeSequence
+        # loop and reach a pole or a safe surface.
+        return (not self.grab.active and not self._zerog())
     def _act_facethreat(self, ctx):
             self._face_threat_tick(ctx.cursor)
 
@@ -2625,6 +2768,10 @@ class BehaviorFSM:
             return False
         c1 = b.chunk1
         d = abs(th.x - c1.x)
+        # Exhaustion limits optional actions, but must never suppress the
+        # predator response.  Otherwise a tired cat loops LieDown -> WakeSequence
+        # while the threat keeps approaching.
+        exhausted = bool(self._exhausted)
         # 「贴脸」不再只看欧氏距离：同一根竖杆上的威胁离得再远也是堵着我
         # （文档 §ThreatField：hypot 说明不了「它就在我这根杆上」）。
         close = self._threat_too_close(th, d)
@@ -2647,6 +2794,9 @@ class BehaviorFSM:
         if close:
             if self.state not in _FACE_PANIC_FROM:
                 return False
+            if exhausted:
+                self._flee_lizard_now(th)
+                return True
             if (b.on_floor() and self._armed_in_hand() and b.item_ready()
                     and (b.carried_stone is not None or b.carried_spear is not None)):
                 self._fight_target = th
@@ -2666,6 +2816,9 @@ class BehaviorFSM:
         # ② 中距离：只在「没正事」的态里抢班
         if self.state not in _WANTS_FROM or not b.on_floor():
             return False
+        if exhausted:
+            self._flee_lizard_now(th)
+            return True
         if self._armed_in_hand() and self._face_cd <= 0:
             self._fight_target = th
             self._fight_left = tuning.FIGHT_TICKS
