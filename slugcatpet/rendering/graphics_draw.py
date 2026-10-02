@@ -65,13 +65,19 @@ class GraphicsDrawMixin:
         col = self.vis.get("glow")
         if not col:
             return
-        x, y = self.draw0
-        r = 30.0
+        # draw0 is the upper body chunk (and therefore visually close to the
+        # head).  Anchor the aura to the body's geometric centre so it stays
+        # centred while the watcher leans or crawls.  A slightly larger radius
+        # makes the glow read as an aura around the whole body rather than a
+        # small head lamp.
+        x = (self.draw0[0] + self.draw1[0]) * 0.5
+        y = (self.draw0[1] + self.draw1[1]) * 0.5
+        r = 56.0
         p.save()
         aa_hint(p)
         g = QRadialGradient(QPointF(x, y), r)
-        g.setColorAt(0.0, QColor(col[0], col[1], col[2], 96))
-        g.setColorAt(0.55, QColor(col[0], col[1], col[2], 28))
+        g.setColorAt(0.0, QColor(col[0], col[1], col[2], 108))
+        g.setColorAt(0.55, QColor(col[0], col[1], col[2], 34))
         g.setColorAt(1.0, QColor(col[0], col[1], col[2], 0))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(g)
@@ -642,6 +648,11 @@ class GraphicsDrawMixin:
             idx = int(clampf(idx, 0, 8))
             element = frames[min(idx, n_max)]
 
+        # 浮空隐身时脸也随身体渐隐；普通 camo 仍保持原版「脸可见」效果。
+        float_alpha = float(getattr(self, "watcher_float_alpha", 0.0))
+        if float_alpha > 0.001:
+            p.save()
+            p.setOpacity(max(0.05, 1.0 - 0.95 * float_alpha))
         self._draw_face_scar(p, atlas, element, fx, fy, rot)   # 疤在脸下、头上
         blit(p, atlas, element, fx, fy, rot, sx, 1.0, face_color, ax=0.5, ay=0.5)
         if getattr(self, "meow_t", 0) > 0 and not self.dead:
@@ -656,6 +667,8 @@ class GraphicsDrawMixin:
                 p.drawArc(QRectF(cx - radius, cy - radius,
                                  radius * 2.0, radius * 2.0),
                           (320 if side > 0 else 140) * 16, 80 * 16)
+            p.restore()
+        if float_alpha > 0.001:
             p.restore()
 
     def _draw_face_scar(self, p, atlas, element, fx, fy, rot):

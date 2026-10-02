@@ -16,10 +16,12 @@
   Player.cs:2568-2610      camoLimit 1600（涟漪等级不足时）/ enterIntoCamoDuration 80 /
                            exitOutOfCamoDuration 40 / 耗尽后有一段强制解除的疲劳
 
-桌宠简化：涟漪等级、传送点、泪隙这些子系统不存在，所以只实装「发光 + 伪装」两件：
+桌宠简化：涟漪等级、传送点、泪隙这些子系统不存在，所以实装「发光 + 伪装 + 追光浮游」：
   * 发光 —— 自身一圈冷光（wiki：首遇陀螺后开始发光）
   * 伪装 —— 站住不动且附近没有威胁时进入半透明隐身，蜥蜴更难盯上它；
              电量按原版 1600 tick 上限，耗尽强制解除并进入数秒疲劳
+  * 追光浮游 —— 安静时偶尔高跳，在最高点闭眼、渐隐并缓慢追随鼠标约 4 秒；
+                以蓝紫扰动环表现能力，不改变圣徒的超度状态
 """
 from __future__ import annotations
 
@@ -31,6 +33,189 @@ from ..core.units import clampf
 from .base import CatCaps, CatDef
 from .personality import DEFAULT_PERSONALITY
 from .stats import DEFAULT_STATS
+
+# Watcher 专属「追光浮游」玩耍：这是桌宠中的轻量化实现，不会改变圣徒的
+# Ascension 状态。40Hz 下浮空保持 4 秒，起跳阶段仍使用正常物理，鼠标拖动、
+# 碰撞和落地因此不会被伪造的传送位置吞掉。
+WATCH_FLOAT_TICKS = 160
+WATCH_FLOAT_COOLDOWN = 900
+WATCH_FLOAT_CHANCE = 0.0022
+WATCH_LAUNCH_VY = -17.5
+WATCH_LAUNCH_VX_MAX = 5.5
+WATCH_LAUNCH_MIN_RISE = 48.0
+
+
+class WatcherFloatFX:
+    """守望者浮空期间的蓝紫扭曲火焰环。"""
+
+    def __init__(self, fsm):
+        self.fsm = fsm
+        self.phase = 0.0
+
+    def _center(self):
+        b = self.fsm.body
+        c0, c1 = b.chunk0, b.chunk1
+        return (0.5 * (c0.x + c1.x), 0.5 * (c0.y + c1.y))
+
+    def draw_under(self, p, ts=1.0):
+        # 柔和底光让身体渐隐时仍能读出轮廓。
+        from PySide6.QtCore import QPointF, Qt
+        from PySide6.QtGui import QColor, QRadialGradient, QBrush
+        from ..rendering.pixelmode import aa_hint
+        x, y = self._center()
+        p.save()
+        aa_hint(p)
+        radius = 38.0 + 4.0 * math.sin(self.phase * 1.7)
+        grad = QRadialGradient(QPointF(x, y), radius)
+        grad.setColorAt(0.0, QColor(92, 92, 255, 80))
+        grad.setColorAt(0.56, QColor(114, 50, 220, 38))
+        grad.setColorAt(1.0, QColor(40, 22, 120, 0))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(grad))
+        p.drawEllipse(QPointF(x, y), radius, radius)
+        p.restore()
+
+    def draw(self, p):
+        # 多段扰动曲线组成环状火焰，避开昂贵的路径布尔运算。
+        from PySide6.QtCore import QPointF, Qt
+        from PySide6.QtGui import QColor, QPainterPath, QPen
+        from ..rendering.pixelmode import aa_hint
+        x, y = self._center()
+        p.save()
+        aa_hint(p)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for ring, (base_r, color, width, alpha) in enumerate((
+                (26.0, (116, 104, 255), 1.8, 190),
+                (32.0, (177, 74, 238), 1.2, 145))):
+            path = QPainterPath()
+            count = 28
+            for i in range(count + 1):
+                a = math.tau * i / count
+                wobble = (2.7 * math.sin(self.phase * 2.1 + a * 3.0 + ring)
+                          + 1.6 * math.sin(self.phase * 3.7 - a * 5.0))
+                r = base_r + wobble
+                q = QPointF(x + math.cos(a) * r, y + math.sin(a) * r)
+                if i == 0:
+                    path.moveTo(q)
+                else:
+                    path.lineTo(q)
+            p.setPen(QPen(QColor(*color, alpha), width))
+            p.drawPath(path)
+        p.restore()
+
+
+class WatcherFloat:
+    """起跳→最高点隐身→延迟追光标→落回正常物理的 4 秒状态。"""
+
+    def __init__(self, fsm):
+        self.fsm = fsm
+        self.fx = WatcherFloatFX(fsm)
+        self.phase = "launch"
+        self.timer = 0
+        self.float_timer = 0
+        self.apex_y = None
+        self.lag_x = float(fsm.body.chunk1.x)
+        self.lag_y = float(fsm.body.chunk1.y)
+        self.target_x = self.lag_x
+        self.alpha = 0.0
+        self.rise_y = float(fsm.body.chunk1.y)
+
+    def enter(self):
+        fsm, b = self.fsm, self.fsm.body
+        c0, c1 = b.chunk0, b.chunk1
+        self.rise_y = c1.y
+        b.set_posture(True)
+        b.stop_walk()
+        b.suspended = False
+        b.hover = False
+        b.on_pole = False
+        b.wall_side = 0
+        b.ceil_cling = False
+        c0.pinned = c1.pinned = False
+        cur = fsm.cursor
+        move_x = 0
+        if cur is not None:
+            self.target_x = float(cur[0])
+            d = max(-WATCH_LAUNCH_VX_MAX,
+                    min(WATCH_LAUNCH_VX_MAX, (self.target_x - c1.x) * 0.025))
+            c0.vx = c1.vx = d
+            move_x = 1 if d > 0.05 else (-1 if d < -0.05 else 0)
+        else:
+            c0.vx = c1.vx = 0.0
+        # 走内部起跳路径清掉 feet_stuck / coyote 等接地锁，再把高度提升到
+        # 守望者的高跳档；直接改速度会被站立态的脚钉住逻辑吃掉。
+        b._do_jump("stand", move_x, hold_ticks=8)
+        c0.vy = WATCH_LAUNCH_VY
+        c1.vy = WATCH_LAUNCH_VY * 0.92
+        fsm.gfx.watcher_float_alpha = 0.0
+
+    def _at_apex(self):
+        b = self.fsm.body
+        c0, c1 = b.chunk0, b.chunk1
+        rise = self.rise_y - c1.y
+        # 两节速度均已过顶，并且确实离开地面，避免低矮地板误触发。
+        return (rise >= WATCH_LAUNCH_MIN_RISE and c0.vy >= -0.25
+                and c1.vy >= -0.25)
+
+    def _begin_float(self):
+        b = self.fsm.body
+        c0, c1 = b.chunk0, b.chunk1
+        self.phase = "float"
+        self.float_timer = 0
+        self.apex_y = 0.5 * (c0.y + c1.y)
+        self.lag_x = 0.5 * (c0.x + c1.x)
+        self.lag_y = self.apex_y
+        b.hover = True
+        c0.vx = c1.vx = c0.vy = c1.vy = 0.0
+
+    def tick(self):
+        fsm, b, g = self.fsm, self.fsm.body, self.fsm.gfx
+        self.timer += 1
+        self.fx.phase += 0.11
+        if self.phase == "launch":
+            g.look_at = fsm.cursor
+            if self._at_apex():
+                self._begin_float()
+            return False
+        self.float_timer += 1
+        cur = fsm.cursor
+        if cur is not None:
+            self.target_x = float(cur[0])
+        # 明显延迟、极慢靠近光标的水平追踪；上下只作轻柔的落后摆动。
+        self.lag_x += (self.target_x - self.lag_x) * 0.012
+        bob = math.sin(max(0.0, self.float_timer - 12.0) * 0.065) * 9.0
+        target_y = float(self.apex_y) + bob
+        self.lag_y += (target_y - self.lag_y) * 0.08
+        cx = 0.5 * (b.chunk0.x + b.chunk1.x)
+        cy = 0.5 * (b.chunk0.y + b.chunk1.y)
+        vx = max(-2.2, min(2.2, (self.lag_x - cx) * 0.07))
+        vy = max(-1.5, min(1.5, (self.lag_y - cy) * 0.07))
+        b.chunk0.vx = b.chunk1.vx = vx
+        b.chunk0.vy = b.chunk1.vy = vy
+        # 最高点闭眼并缓慢隐身，尾段提前渐显。
+        fade_in = min(1.0, self.float_timer / 32.0)
+        fade_out = min(1.0, max(0.0, (WATCH_FLOAT_TICKS - self.float_timer) / 28.0))
+        self.alpha = min(fade_in, fade_out)
+        g.watcher_float_alpha = self.alpha
+        g.camo = self.alpha
+        g.blink = 3
+        g.look_at = fsm.cursor
+        if self.float_timer >= WATCH_FLOAT_TICKS:
+            return True
+        return False
+
+    def finish(self):
+        b, g = self.fsm.body, self.fsm.gfx
+        b.hover = False
+        b.chunk0.vy += 1.0
+        b.chunk1.vy += 1.0
+        g.camo = 0.0
+        self.fsm._camo_level = 0.0
+        g.watcher_float_alpha = 0.0
+        g.blink = 0
+
+    def abort(self):
+        self.finish()
 
 # 伪装（Player.cs:2568-2610 + wiki Controls）
 CAMO_MAX = 1600          # camoLimit：涟漪等级不足时的原版上限
@@ -44,15 +229,22 @@ CAMO_SHAKE_DECAY = 0.72  # 晃动幅度的衰减（松开鼠标后 ~10 tick 回�
 
 
 def _fsm_mount(fsm):
-    """守望者：伪装电量 + 半透明隐身。"""
+    """守望者：伪装电量 + 半透明隐身 + 追光浮游玩耍。"""
     fsm._camo_charge = CAMO_MAX
     fsm._camo_level = 0.0
     fsm._camo_fatigue = 0
     fsm._camo_regen = 0
     fsm._camo_shake = 0.0
+    fsm._watcher_float = None
+    fsm._watcher_float_cd = 180
 
     def camo_tick():
         g, b = fsm.gfx, fsm.body
+        # 浮游状态自己驱动渐隐，避免普通伪装电量在同一帧覆盖视觉值。
+        wf = getattr(fsm, "_watcher_float", None)
+        if wf is not None:
+            g.camo = float(getattr(wf, "alpha", 0.0))
+            return
         if fsm._camo_fatigue > 0:
             fsm._camo_fatigue -= 1
         th = fsm._threat_lizard()
@@ -86,6 +278,67 @@ def _fsm_mount(fsm):
         g.camo = fsm._camo_level
 
     fsm.register_ticker(camo_tick)
+
+    # 追光浮游属于「偶尔玩耍」而不是保命动作：仅在安静、落地、未被抓时
+    # 抽签，且设冷却避免多只守望者在同一帧一起起飞。
+    from ..behavior.action import BAND_PREEMPT, TAG_CHARACTER
+
+    def float_gate(ctx):
+        if fsm.state != "IdleStand" or fsm.grab.active:
+            return False
+        b = fsm.body
+        if not b.on_floor() or b.swimming or fsm._zerog():
+            return False
+        if fsm._threat_lizard() is not None:
+            return False
+        cur = ctx.cursor
+        if cur is None:
+            return False
+        if getattr(fsm.win, "cursor_cat_attention_allowed", True) is False:
+            return False
+        # 每 180 tick 至少留出一次机会；用个体 RNG 保持可复现。
+        if fsm._watcher_float_cd > 0:
+            return False
+        return fsm.rng.random() < WATCH_FLOAT_CHANCE
+
+    def float_start(ctx):
+        fsm._watcher_float = WatcherFloat(fsm)
+        fsm._watcher_float.enter()
+        fsm._watcher_float_cd = WATCH_FLOAT_COOLDOWN
+        fsm._transition("WatcherFloat")
+        return True
+
+    fsm.register_action("WatcherFloat", BAND_PREEMPT, gate=float_gate,
+                        start=float_start, tags=(TAG_CHARACTER,))
+
+    def float_tick():
+        wf = getattr(fsm, "_watcher_float", None)
+        if fsm._watcher_float_cd > 0:
+            fsm._watcher_float_cd -= 1
+        if wf is None:
+            # 浮游只从 ticker 起手，动作仲裁仍记录在统一注册表里。
+            fsm.actions.try_action("WatcherFloat", fsm.act_ctx())
+            return
+        if wf.tick():
+            wf.finish()
+            fsm._watcher_float = None
+            fsm._transition("Airborne")
+
+    fsm.register_ticker(float_tick)
+
+    def float_break():
+        wf = getattr(fsm, "_watcher_float", None)
+        if wf is not None:
+            wf.abort()
+        fsm._watcher_float = None
+
+    fsm.register_state("WatcherFloat", enter=lambda: None,
+                       tick=lambda cursor, disturbed: None,
+                       brk=float_break, kill_break=float_break,
+                       fx=lambda: (getattr(fsm, "_watcher_float", None).fx
+                                   if getattr(fsm, "_watcher_float", None) is not None
+                                   else None))
+    fsm._interaction_blockers.add("WatcherFloat")
 
 
 WATCHER_DEF = CatDef(

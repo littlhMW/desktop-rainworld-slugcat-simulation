@@ -761,6 +761,9 @@ class BehaviorFSM:
                           "HelpFeed", "FightThreat", "CrawlAway", "EatCob",
                           "ScoldBlocker", "CatchFly", "ItemPlay"):
             self._wants_break(self.state)
+        elif self.state == "WatcherFloat":
+            # 受击/晕眩打断守望者的追光浮游，避免 hover 与 Stunned 并存。
+            self._break_active_controllers()
         self._break_tongue()
         if drop_items and self.fetch is not None:
             self.fetch.release()

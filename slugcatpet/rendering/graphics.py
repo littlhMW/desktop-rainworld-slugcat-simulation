@@ -243,6 +243,8 @@ class SlugcatGraphics(GraphicsDrawMixin):
         self.sleeping = False
         self.sleep_curl = 0.0
         self.camo = 0.0                # 1=完全隐身（守望者伪装，见 cats/watcher.py）
+        # 守望者追光浮游期间单独驱动的渐隐量（不占用普通 camo 电量）。
+        self.watcher_float_alpha = 0.0
         self.gills_flat = 0.0          # 1=鳃锚退回世界水平（趴/睡）
         self.dead = False
         self.stunned = False           # 晕脸 + 头帧0耷拉
