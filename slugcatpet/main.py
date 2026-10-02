@@ -195,10 +195,44 @@ def main():
     act_hud.triggered.connect(hud.toggle_visible)
     act_quit = QAction(t("tray_quit"))
     act_quit.triggered.connect(app.quit)
+
+    # 任务栏菜单提供与设置窗口相同的四个即时控制项。鼠标权限放在子菜单，
+    # 避免把三个互相独立的开关误认为一个旧的总开关。
+    mouse_menu = QMenu(t("tray_mouse_section"), menu)
+    act_mouse_interaction = QAction(t("tray_mouse_interaction"), mouse_menu)
+    act_mouse_attention = QAction(t("tray_mouse_attention"), mouse_menu)
+    act_mouse_passthrough = QAction(t("tray_mouse_passthrough"), mouse_menu)
+    for action in (act_mouse_interaction, act_mouse_attention, act_mouse_passthrough):
+        action.setCheckable(True)
+        mouse_menu.addAction(action)
+    act_pause = QAction(t("tray_pause_world"), menu)
+    act_pause.setCheckable(True)
+
+    act_mouse_interaction.toggled.connect(pet.set_cursor_cat_interaction_allowed)
+    act_mouse_attention.toggled.connect(pet.set_cursor_cat_attention_allowed)
+    act_mouse_passthrough.toggled.connect(pet.set_cursor_passthrough_allowed)
+    act_pause.toggled.connect(pet.set_world_paused)
+
+    def _sync_tray_controls():
+        values = (
+            (act_mouse_interaction, pet.cursor_cat_interaction_allowed),
+            (act_mouse_attention, pet.cursor_cat_attention_allowed),
+            (act_mouse_passthrough, pet.cursor_passthrough_allowed),
+            (act_pause, pet.world_paused),
+        )
+        for action, value in values:
+            action.blockSignals(True)
+            action.setChecked(bool(value))
+            action.blockSignals(False)
+
     menu.addAction(act_settings)
     menu.addAction(act_hud)
+    menu.addMenu(mouse_menu)
+    menu.addAction(act_pause)
     menu.addSeparator()
     menu.addAction(act_quit)
+    menu.aboutToShow.connect(_sync_tray_controls)
+    _sync_tray_controls()
     tray.setContextMenu(menu)
     tray.show()
     tray.showMessage(t("app_title"), t("tray_started"),

@@ -339,6 +339,11 @@ _STR = {
     # —— main：托盘菜单 / 通知 ——
     "tray_settings": {"zh": "设置", "en": "Settings"},
     "tray_hud":     {"zh": "显示/隐藏状态面板 (Ctrl+Alt+H)", "en": "Show/Hide status panel (Ctrl+Alt+H)"},
+    "tray_mouse_section": {"zh": "鼠标权限", "en": "Mouse permissions"},
+    "tray_mouse_interaction": {"zh": "蛞蝓猫与鼠标互动", "en": "Slugcat interaction with cursor"},
+    "tray_mouse_attention": {"zh": "蛞蝓猫注意鼠标", "en": "Slugcats notice cursor"},
+    "tray_mouse_passthrough": {"zh": "鼠标穿透桌宠窗口", "en": "Cursor passes through pet window"},
+    "tray_pause_world": {"zh": "暂停世界", "en": "Pause world"},
     "tray_quit":    {"zh": "退出程序", "en": "Quit program"},
     "tray_started": {"zh": "已启动。被超度的光标按 Ctrl+Alt+Q 解除；Ctrl+Alt+X 退出程序。",
                      "en": "Launched. Press Ctrl+Alt+Q to release a salvaged cursor; Ctrl+Alt+X to quit the program."},
