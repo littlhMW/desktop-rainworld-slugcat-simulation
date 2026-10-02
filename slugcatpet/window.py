@@ -2411,6 +2411,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if self._place_mode and e.key() == Qt.Key.Key_Escape:
             self._exit_place_mode()
             return
+        # The control HUD can lose focus when the scene receives a mouse
+        # click.  Keep Escape as a reliable application-level exit even in
+        # that case; ordinary pick/throw clicks must never end the session.
+        if e.key() == Qt.Key.Key_Escape and self.controlled_pet() is not None:
+            self.stop_control()
+            return
         super().keyPressEvent(e)
 
     def mouseMoveEvent(self, e):
@@ -2448,7 +2454,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if e.button() == Qt.MouseButton.LeftButton:
             self._mouse_pole_suppress = MOUSE_POLE_RELEASE_TICKS   # 松手后 2s 不当杆
             for pet in self.pets:
-                if pet.behavior is not None:
+                # A controlled cat's left/right scene click is a one-frame
+                # throw/pick input.  Do not route the release through the AI
+                # grab controller: doing so can clear the control gesture (or
+                # make the HUD look like the session ended).
+                if (pet.behavior is not None
+                        and not getattr(pet, "controlled", False)):
                     pet.behavior.on_release()
             self._end_fruit_drag()
             self._end_stone_drag()

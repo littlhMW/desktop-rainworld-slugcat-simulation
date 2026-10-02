@@ -292,6 +292,17 @@ class PetUnit:
             # and external impulses still move the cat.  The audio manager
             # supplies the living green lizard's head position each frame.
             g.look_at = getattr(self, "_waa_look_at", None)
+            # The normal FSM tick is intentionally skipped during Waa so its
+            # planner cannot immediately replace the blocked locomotion with a
+            # new path.  Mouse dragging is an external input, however, and
+            # must continue to update the pinned chunk while the call plays.
+            beh = self.behavior
+            grab = getattr(beh, "grab", None) if beh is not None else None
+            if grab is not None and grab.active:
+                grab.tick()
+                if cursor is not None:
+                    grab.drag(cursor)
+                g.grabbed = True
         if self.controlled and not waa_lock:
             # FSM 冻结期同步晕态
             g.stunned = b.stun > 0

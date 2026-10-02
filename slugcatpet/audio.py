@@ -310,6 +310,19 @@ class MeowManager:
         self._waa_elapsed = 0.0
         return True
 
+    def _waa_playing(self) -> bool:
+        """Return whether SU_7 is actually audible right now.
+
+        ``_waa_mode`` is the candidate mode (only Survivor is present and the
+        feature is enabled).  It deliberately remains true while waiting for a
+        local extraction or between threats, so it must not be used to mute
+        ordinary meows.  Only the media player's running state represents an
+        active waa call.
+        """
+        player = self._waa_player
+        return bool(player is not None
+                    and player.playbackState() == QMediaPlayer.PlaybackState.PlayingState)
+
     def _prefix(self, pet) -> str:
         return _VARIANT_PREFIX.get(getattr(pet, "variant", ""), "Normal")
 
@@ -363,8 +376,10 @@ class MeowManager:
         if (beh is None or (dead_fn() if callable(dead_fn) else getattr(beh, "dead", False))
                 or getattr(getattr(pet, "body", None), "dead", False)):
             return
-        # Waa~ 完全替代唯一求生者的普通猫叫。
-        if self._waa_mode and getattr(pet, "variant", "") == "survivor":
+        # Waa~ 仅在 SU_7 真正在播放时替代普通猫叫。候选模式本身还包括
+        # 音轨准备中、没有绿蜥或尚未遇到威胁的时间，不能把普通叫声一起吞掉。
+        if (self._waa_mode and self._waa_playing()
+                and getattr(pet, "variant", "") == "survivor"):
             return
         key = "%s:%s" % (getattr(pet, "id", id(pet)), kind)
         if self._event_cd.get(key, 0) > 0:
@@ -402,6 +417,7 @@ class MeowManager:
                 del self._event_cd[key]
         if self._waa_cooldown > 0:
             self._waa_cooldown -= 1
+        waa_playing = False
         if self._waa_mode:
             pet = pets[0]
             dead_fn = getattr(getattr(pet, "behavior", None), "is_dead", None)
@@ -424,8 +440,8 @@ class MeowManager:
                         if gfx is not None:
                             gfx.meow_t = 6
             # Keep the vocal pose and call arcs alive while SU_7 is playing.
-            if (self._waa_player is not None
-                    and self._waa_player.playbackState() != QMediaPlayer.PlaybackState.StoppedState):
+            if self._waa_playing():
+                waa_playing = True
                 self._waa_elapsed += 1.0 / 40.0
                 try:
                     pos_s = max(0.0, float(self._waa_player.position()) / 1000.0)
@@ -439,7 +455,11 @@ class MeowManager:
                     gfx.waa_active = True
                 setattr(pet, "_waa_look_at", self._waa_lizard_focus(pet))
                 setattr(pet, "_waa_active", True)
-            return
+            # No active SU_7 call: fall through to the normal probability
+            # meow pass. This is important for a lone Survivor with no green
+            # lizard, and while a valid threat is still waiting for audio.
+            if waa_playing:
+                return
         if not self.enabled or not self.available:
             return
         if len(self._playing) >= 3:

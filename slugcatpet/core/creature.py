@@ -837,7 +837,10 @@ class SlugcatBody(CombatTarget):
         if self._input_provider is not None:
             # 晕/死改推零包，防晕醒瞬间吃到晕期边沿
             pkg = self._input_provider()
-            if self.stun > 0 or self.dead or getattr(self, "_waa_movement_lock", False):
+            # Waa suppresses autonomous locomotion in PetUnit; it must not
+            # discard explicit player input.  Otherwise opening control while
+            # SU_7 is playing silently turns every input into a zero package.
+            if self.stun > 0 or self.dead:
                 from ..control.input import InputPackage
                 pkg = InputPackage()
             if pkg is not None:
@@ -1375,7 +1378,10 @@ class SlugcatBody(CombatTarget):
         self._breath_update()
 
     def _movement_update(self):
-        if self._ctrl_on and not getattr(self, "_waa_movement_lock", False):
+        # Manual control is an explicit intent and takes precedence over the
+        # Waa AI-intent lock.  The lock only prevents BehaviorFSM path goals;
+        # it must not make keyboard or mouse throw/pick input inert.
+        if self._ctrl_on:
             # 控制态覆盖口，惰性 import 防环导
             from ..control.moves import ctrl_movement_update
             return ctrl_movement_update(self)
