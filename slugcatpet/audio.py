@@ -164,6 +164,23 @@ class MeowManager:
         return len(pets or ()) == 1 and getattr(pets[0], "variant", "") == "survivor"
 
     @staticmethod
+    def _waa_single_green_lizard(pet) -> bool:
+        """彩蛋只对场上唯一一只存活的绿蜥生效。"""
+        window = getattr(pet, "window", None)
+        lizards = getattr(window, "lizards", ()) if window is not None else ()
+        active = []
+        for lizard in lizards or ():
+            if getattr(lizard, "dead", False):
+                continue
+            state = getattr(lizard, "state", None)
+            if getattr(state, "name", str(state)) != "FREE":
+                continue
+            active.append(lizard)
+        if len(active) != 1:
+            return False
+        return getattr(getattr(active[0], "breed", None), "key", "") == "green"
+
+    @staticmethod
     def _pet_in_threat(pet) -> bool:
         beh = getattr(pet, "behavior", None)
         if beh is None:
@@ -311,7 +328,8 @@ class MeowManager:
                     self._waa_player.stop()
                 self._waa_threat_latched = False
                 return
-            threatened = self._pet_in_threat(pet)
+            threatened = (self._waa_single_green_lizard(pet)
+                          and self._pet_in_threat(pet))
             if not threatened:
                 self._waa_threat_latched = False
             if threatened and not self._waa_threat_latched and self._waa_cooldown <= 0:
