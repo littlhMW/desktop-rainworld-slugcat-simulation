@@ -40,7 +40,7 @@ PIP_CY = 29.0            # 格圆心 y
 DIV_EXTRA = 8.0          # 分隔线额外占宽
 DIV_H = 22.0             # 分隔线高（比圆圈高一截）
 TIME_FONT = 14.0         # 饥饿条下方显示剩余时间
-TIME_CY = 59.0           # 倒计时文字中心 y：饥饿条正下方
+TIME_CY = 62.6           # 倒计时文字中心 y：饥饿条正下方
 TIME_TRACK = 1.0         # 字距（参考单位）
 DOT_START_DEG = -90.0   # RainMeter.cs:189：i=0 从正上方起，末颗落在右上
 BLINK_TICKS = 28         # 征兆期「呼吸」的半周期（40 tick/s → 0.7s 呼气，整次呼吸 1.4s）
@@ -393,3 +393,4 @@ def draw_storm_hud(p, win) -> None:
     _draw_pips(p, info)
     _draw_countdown(p, info)
     p.restore()
+
