@@ -4,6 +4,15 @@
 
 面向蛞蝓猫桌宠的 Rain World 生态模拟器。项目重点是蛞蝓猫的日常行为、AI、寻路、物理与互动，同时提供一个可运行的雨世界生态沙盒。
 
+## 视觉展示
+
+仓库中的角色图标和项目图标：
+
+| 项目图标 | 角色图标 | 角色图标 | 角色图标 |
+| --- | --- | --- | --- |
+| ![icon](docs/showcase/icon.png) | ![gobgjiang](docs/showcase/gobgjiang.png) | ![shengtu](docs/showcase/shengtu.png) | ![xiliu](docs/showcase/xiliu.png) |
+| ![hongmao](docs/showcase/hongmao.png) | ![huangmao](docs/showcase/huangmao.png) | ![taotie](docs/showcase/taotie.png) | ![maodashi](docs/showcase/maodashi.png) |
+
 ## 项目内容
 
 - **蛞蝓猫桌宠**：不同角色的 AI、社交、寻路、步态、物理和物件互动。
@@ -78,6 +87,8 @@ Rain World 及其游戏素材归原权利人所有。程序运行时读取用户
 # Desktop Rain World — Slugcat Simulation
 
 A Rain World desktop ecology simulator focused on slugcat pets, with creature behavior, pathfinding, physics, interactions, environmental systems, and persistent scenes.
+
+The repository also includes a [visual showcase](docs/showcase/) of the current project icon and character artwork.
 
 ## Features
 
