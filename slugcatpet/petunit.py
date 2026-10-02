@@ -276,16 +276,21 @@ class PetUnit:
             return
         w = self.window
         b, g = self.body, self.gfx
-        if self.controlled:
+        # The Survivor's waa cue is deliberately a full vocal pose: keep the
+        # body fixed for the entire playback instead of letting the FSM,
+        # gravity, tongue or pole logic move it underneath the animation.
+        waa_lock = bool(getattr(self, "_waa_active", False)
+                        and self.variant == "survivor")
+        if self.controlled and not waa_lock:
             # FSM 冻结期同步晕态
             g.stunned = b.stun > 0
             g.look_at = None
-        elif self.behavior is not None:
+        elif self.behavior is not None and not waa_lock:
             self.behavior.update(cursor)
         elif w.follow_cursor:
             g.look_at = cursor
 
-        if self.tongue is not None:
+        if self.tongue is not None and not waa_lock:
             mox, moy = g.mouth_world()
             # 游泳态禁舌，落水自救例外
             escaping = (self.behavior is not None and self.behavior.state == "TongueClimb")
@@ -297,7 +302,7 @@ class PetUnit:
                 self.tongue.update(mox, moy, b.chunk0)
                 # 尸体不被舌头吊住
                 b.suspended = self.tongue.attached and not b.dead and not b.swimming
-        else:
+        elif not waa_lock:
             b.suspended = False
 
         # water_surface 由 window 每 tick 注入
@@ -307,7 +312,13 @@ class PetUnit:
         if self.tongue is not None:
             self.tongue.room_gravity = rg
 
-        b.step()
+        if waa_lock:
+            for chunk in b.collision_chunks():
+                chunk.vx = chunk.vy = 0.0
+                chunk.last_last_x = chunk.last_x = chunk.x
+                chunk.last_last_y = chunk.last_y = chunk.y
+        else:
+            b.step()
         if self.controlled:
             g.sleeping = b.sleeping
         if self._spawn_floor_hold > 0 and not b.on_pole and not b.wall_side:

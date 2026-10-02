@@ -105,7 +105,7 @@ class MeowManager:
         for effect in self._playing:
             effect.setVolume(self.volume / 100.0)
         if self._waa_output is not None:
-            self._waa_output.setVolume(min(1.0, self.volume / 100.0 * 3.0))
+            self._waa_output.setVolume(min(1.0, self.volume / 100.0 * 9.0))
 
     @property
     def waa_eligible(self) -> bool:
@@ -199,7 +199,7 @@ class MeowManager:
             self._waa_output = QAudioOutput()
             # SU_7 is mastered considerably quieter than the short meow clips.
             # Apply the requested 3x gain while keeping Qt's output ceiling.
-            self._waa_output.setVolume(min(1.0, self.volume / 100.0 * 3.0))
+            self._waa_output.setVolume(min(1.0, self.volume / 100.0 * 9.0))
             self._waa_player = QMediaPlayer()
             self._waa_player.setAudioOutput(self._waa_output)
         source = QUrl.fromLocalFile(str(self.waa_path))

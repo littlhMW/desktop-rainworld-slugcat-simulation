@@ -28,44 +28,61 @@ def cached_cue() -> Path | None:
     the game is temporarily unavailable.
     """
     dest = user_dir() / "cache" / "waa_su_7.wav"
-    if not dest.is_file():
+    gain9 = dest.with_name(dest.stem + "_gain9" + dest.suffix)
+
+    def valid(path: Path) -> bool:
+        if not path.is_file():
+            return False
+        try:
+            with wave.open(str(path), "rb") as wav:
+                return wav.getnframes() / wav.getframerate() >= 60
+        except (OSError, EOFError, ZeroDivisionError, wave.Error):
+            return False
+
+    # New caches are marked as gain=9.  Older builds left a gain=3 cache;
+    # amplify that user-local file once and keep the result separate so the
+    # same file is never multiplied again on the next launch.
+    if valid(dest) and dest.with_suffix(dest.suffix + ".gain9").exists():
+        return dest
+    if valid(gain9) and gain9.with_suffix(gain9.suffix + ".gain9").exists():
+        return gain9
+    if not valid(dest):
         return None
     try:
         with wave.open(str(dest), "rb") as wav:
-            if wav.getnframes() / wav.getframerate() < 60:
-                return None
+            params = wav.getparams()
+            pcm = audioop.mul(wav.readframes(wav.getnframes()), params.sampwidth, 3.0)
+        gain9.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(gain9), "wb") as out:
+            out.setparams(params)
+            out.writeframes(pcm)
+        gain9.with_suffix(gain9.suffix + ".gain9").write_text(
+            "legacy SU_7 cache boosted from gain=3 to gain=9\n", encoding="ascii")
+        return gain9
     except (OSError, EOFError, ZeroDivisionError, wave.Error):
-        return None
+        return dest
     return dest
 
 
 def _valid_cache(dest: Path, source: Path) -> bool:
-    gain_tag = dest.with_suffix(dest.suffix + ".gain3")
-    # Older builds wrote the WAV before the ``.gain3`` marker was added.  A
-    # complete cached SU_7 is still perfectly usable (playback applies the
-    # requested gain), and forcing UnityPy to parse resources.assets again
-    # made packaged builds fail with ``UnityPy.resources``/FileNotFoundError.
-    # Validate the audio itself first; the marker is only metadata now.
+    gain_tag = dest.with_suffix(dest.suffix + ".gain9")
+    # A cache without the gain=9 marker belongs to an older build.  Let the
+    # extractor replace it when the game resource is available; when it is
+    # not, cached_cue() above creates a separate boosted copy instead.
     if (not dest.is_file() or dest.stat().st_mtime_ns < source.stat().st_mtime_ns):
+        return False
+    if not gain_tag.exists():
         return False
     try:
         with wave.open(str(dest), "rb") as wav:
             valid = wav.getnframes() / wav.getframerate() >= 60
-        if valid and not gain_tag.exists():
-            # Best effort migration.  Never make a playable cache depend on
-            # this sidecar being writable (read-only user profiles are valid).
-            try:
-                gain_tag.write_text("legacy SU_7 cache; playback gain=3.0\n",
-                                    encoding="ascii")
-            except OSError:
-                pass
         return valid
     except (OSError, EOFError, ZeroDivisionError, wave.Error):
         return False
 
 
 def prepare_cue(source: Path, dest: Path | None = None) -> Path:
-    """Extract SU_7 into a user-only, 3x-gained cache; never ship game audio."""
+    """Extract SU_7 into a user-only, 9x-gained cache; never ship game audio."""
     source = Path(source)
     dest = Path(dest) if dest is not None else user_dir() / "cache" / "waa_su_7.wav"
     if _valid_cache(dest, source):
@@ -88,7 +105,7 @@ def prepare_cue(source: Path, dest: Path | None = None) -> Path:
             if wav.getnframes() / wav.getframerate() < 60:
                 raise ValueError("Rain World SU_7 audio clip is incomplete")
             params = wav.getparams()
-            pcm = audioop.mul(wav.readframes(wav.getnframes()), params.sampwidth, 3.0)
+            pcm = audioop.mul(wav.readframes(wav.getnframes()), params.sampwidth, 9.0)
     except (EOFError, ZeroDivisionError, wave.Error) as exc:
         raise ValueError("Rain World SU_7 audio clip cannot be decoded") from exc
 
@@ -96,14 +113,14 @@ def prepare_cue(source: Path, dest: Path | None = None) -> Path:
     fd, name = tempfile.mkstemp(prefix=dest.name + ".", suffix=".tmp", dir=dest.parent)
     os.close(fd)
     temp = Path(name)
-    tag = dest.with_suffix(dest.suffix + ".gain3")
+    tag = dest.with_suffix(dest.suffix + ".gain9")
     tag_temp = tag.with_suffix(tag.suffix + ".tmp")
     try:
         with wave.open(str(temp), "wb") as out:
             out.setparams(params)
             out.writeframes(pcm)
         os.replace(temp, dest)
-        tag_temp.write_text("SU_7 gain=3.0 clipped\n", encoding="ascii")
+        tag_temp.write_text("SU_7 gain=9.0 clipped\n", encoding="ascii")
         os.replace(tag_temp, tag)
     finally:
         if temp.exists():
