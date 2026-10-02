@@ -1011,45 +1011,71 @@ class ItemInteractionMixin:
                                                     ey + rng.uniform(-1.5, 1.5)))
         p.restore()
 
-        # Grass silhouettes grow densely from every exposed edge.  The
-        # reference tiles are heavily overgrown; a few top clumps read as
-        # sparse decoration at desktop scale, so distribute small tufts along
-        # the complete perimeter while keeping all blades black.
-        grass = QPen(QColor(0, 0, 0), pen_width(max(0.9, min(1.3, w / 150.0))))
-        grass.setCapStyle(Qt.PenCapStyle.RoundCap)
-        p.setPen(grass)
-        max_h = min(8.5, max(4.0, min(w, h) * .16))
+        # The reference uses a near-black, pixelated vegetation fringe rather
+        # than isolated line blades.  Build overlapping tapered polygons and
+        # a few dangling stems along every edge.  The wall body stays pure
+        # black; the restrained charcoal layers make the fringe readable
+        # against the black body and the desktop background.
+        p.setPen(Qt.PenStyle.NoPen)
+        grass_colors = (QColor(18, 20, 28, 240), QColor(46, 49, 60, 225),
+                        QColor(78, 81, 92, 175))
+        max_h = min(18.0, max(6.0, min(w, h) * .30))
 
-        def tuft(base_x, base_y, nx, ny, tangent_x, tangent_y):
-            # A compact tuft contains 2-4 blades.  Bases are jittered along
-            # the edge so neighboring tufts overlap into a near-continuous
-            # overgrown silhouette rather than isolated pickets.
-            for _ in range(rng.randint(2, 4)):
-                along = rng.uniform(-3.5, 3.5)
-                bx = base_x + tangent_x * along
-                by = base_y + tangent_y * along
-                gh = rng.uniform(3.0, max_h)
-                lean = rng.uniform(-4.5, 4.5)
-                p.drawLine(QPointF(bx, by), QPointF(
-                    bx + nx * gh + tangent_x * lean,
-                    by + ny * gh + tangent_y * lean))
+        def leaf(bx, by, nx, ny, tx, ty, length, width, color):
+            lean = rng.uniform(-2.8, 2.8)
+            tx2, ty2 = bx + nx * length + tx * lean, by + ny * length + ty * lean
+            wx, wy = tx * width, ty * width
+            p.setBrush(color)
+            p.drawPolygon(QPolygonF((QPointF(bx - wx, by - wy),
+                                     QPointF(bx + wx, by + wy),
+                                     QPointF(tx2 + wx * .18, ty2 + wy * .18),
+                                     QPointF(tx2 - wx * .18, ty2 - wy * .18))))
 
-        # One tuft about every 12-18 px along each side.  Use a hard cap to
-        # prevent a very large dragged wall from producing unbounded draw
-        # calls, while still making normal blocks visibly full of grass.
-        for side_len, spacing, start, tangent, normal in (
-            (w, 14.0, (x0, y0), (1.0, 0.0), (0.0, -1.0)),
-            (w, 14.0, (x0, y1), (1.0, 0.0), (0.0, 1.0)),
-            (h, 14.0, (x0, y0), (0.0, 1.0), (-1.0, 0.0)),
-            (h, 14.0, (x1, y0), (0.0, 1.0), (1.0, 0.0)),
-        ):
-            count = min(64, max(2, int(side_len / spacing) + 1))
+        def fringe(side_len, start, tx, ty, nx, ny, side_index):
+            # Chunk spacing gives a continuous, blocky ragged edge without
+            # turning it into the thin "brush" seen in the old version.
+            spacing = rng.uniform(7.0, 10.0) if side_index < 2 else rng.uniform(9.0, 13.0)
+            count = min(110, max(3, int(side_len / spacing) + 1))
             for i in range(count):
-                t = (i + rng.uniform(-.28, .28)) / max(1, count - 1)
-                t = max(0.02, min(.98, t))
-                bx = start[0] + tangent[0] * side_len * t
-                by = start[1] + tangent[1] * side_len * t
-                tuft(bx, by, normal[0], normal[1], tangent[0], tangent[1])
+                t = (i + rng.uniform(-.42, .42)) / max(1, count - 1)
+                t = max(.015, min(.985, t))
+                bx = start[0] + tx * side_len * t
+                by = start[1] + ty * side_len * t
+                # A broad irregular base mass is the important visual cue in
+                # the references: grass reads as a dark hanging tile edge,
+                # with individual blades only breaking the silhouette.
+                half = rng.uniform(3.0, 7.0)
+                depth = rng.uniform(4.0, max_h * (0.78 if side_index < 2 else .55))
+                p.setBrush(rng.choice(grass_colors[:2]))
+                p.drawPolygon(QPolygonF((QPointF(bx - tx * half, by - ty * half),
+                                         QPointF(bx + tx * half, by + ty * half),
+                                         QPointF(bx + tx * half * .72 + nx * depth * .52,
+                                                 by + ty * half * .72 + ny * depth * .52),
+                                         QPointF(bx + tx * rng.uniform(-.45, .45) * half + nx * depth,
+                                                 by + ty * rng.uniform(-.45, .45) * half + ny * depth),
+                                         QPointF(bx - tx * half * .72 + nx * depth * .55,
+                                                 by - ty * half * .72 + ny * depth * .55))))
+                for _ in range(rng.randint(1, 2)):
+                    leaf(bx + tx * rng.uniform(-2.8, 2.8),
+                         by + ty * rng.uniform(-2.8, 2.8), nx, ny, tx, ty,
+                         rng.uniform(4.0, max_h), rng.uniform(1.0, 2.0),
+                         rng.choice(grass_colors))
+                # Long, thin hanging roots break the even fringe and produce
+                # the vertical drips visible in the reference image.
+                if rng.random() < (.24 if side_index < 2 else .12):
+                    stem = rng.uniform(7.0, max_h + 5.0)
+                    sx = bx + tx * rng.uniform(-2.5, 2.5)
+                    sy = by + ty * rng.uniform(-2.5, 2.5)
+                    p.setPen(QPen(grass_colors[2], pen_width(.75)))
+                    p.drawLine(QPointF(sx, sy),
+                               QPointF(sx + nx * stem + tx * rng.uniform(-2, 2),
+                                       sy + ny * stem + ty * rng.uniform(-2, 2)))
+                    p.setPen(Qt.PenStyle.NoPen)
+
+        fringe(w, (x0, y0), 1.0, 0.0, 0.0, -1.0, 0)
+        fringe(w, (x0, y1), 1.0, 0.0, 0.0, 1.0, 1)
+        fringe(h, (x0, y0), 0.0, 1.0, -1.0, 0.0, 2)
+        fringe(h, (x1, y0), 0.0, 1.0, 1.0, 0.0, 3)
 
     def _draw_walls(self, p):
         """手绘墙块：纯黑实心，边缘有稳定缺洼、磨损与少量杂草。"""
@@ -1139,28 +1165,39 @@ class ItemInteractionMixin:
             p.drawLine(QPointF(cx - nx * span, cy - ny * span),
                        QPointF(cx + nx * span, cy + ny * span))
 
-        # Dense tufts run along the full rod.  Original implementation placed
-        # a single tuft on long rods, which disappeared at normal scale.  A
-        # tuft every ~14 px gives the desired overgrown silhouette while the
-        # cap keeps pathological dragged rods inexpensive to paint.
-        grass = QPen(QColor(0, 0, 0), pen_width(0.8))
-        grass.setCapStyle(Qt.PenCapStyle.RoundCap)
-        p.setPen(grass)
-        count = min(96, max(2, int(length / 14.0) + 1))
-        outward_sign = -1.0 if abs(uy) < .5 else rng.choice((-1.0, 1.0))
+        # The rod reference is a thin black stem with irregular short side
+        # buds, not a picket fence.  Use small tapered polygons every 6-8 px
+        # and occasional longer hanging stems so the silhouette stays dense
+        # but the rod remains legible.
+        p.setPen(Qt.PenStyle.NoPen)
+        rod_colors = (QColor(0, 0, 0, 245), QColor(15, 17, 22, 225),
+                      QColor(38, 41, 47, 165))
+        count = min(150, max(3, int(length / rng.uniform(8.0, 11.0)) + 1))
+        outward = -1.0 if abs(uy) < .5 else rng.choice((-1.0, 1.0))
+
+        def rod_leaf(px, py, ln, width, color):
+            lean = rng.uniform(-2.0, 2.0)
+            ex = px + nx * outward * ln + ux * lean
+            ey = py + ny * outward * ln + uy * lean
+            wx, wy = ux * width, uy * width
+            p.setBrush(color)
+            p.drawPolygon(QPolygonF((QPointF(px - wx, py - wy),
+                                     QPointF(px + wx, py + wy),
+                                     QPointF(ex + wx * .15, ey + wy * .15),
+                                     QPointF(ex - wx * .15, ey - wy * .15))))
+
         for i in range(count):
-            t = (i + rng.uniform(-.30, .30)) / max(1, count - 1)
-            t = max(.02, min(.98, t))
+            t = (i + rng.uniform(-.35, .35)) / max(1, count - 1)
+            t = max(.015, min(.985, t))
             cx = ax + ux * length * t
             cy = ay + uy * length * t
-            for _ in range(rng.randint(2, 4)):
-                offset = rng.uniform(-2.4, 2.4)
-                lean = rng.uniform(-3.8, 3.8)
-                gh = rng.uniform(3.0, 7.0)
-                px, py = cx + ux * offset, cy + uy * offset
-                p.drawLine(QPointF(px, py),
-                           QPointF(px + nx * outward_sign * gh + ux * lean,
-                                   py + ny * outward_sign * gh + uy * lean))
+            for _ in range(rng.randint(1, 2)):
+                rod_leaf(cx + ux * rng.uniform(-1.5, 1.5),
+                         cy + uy * rng.uniform(-1.5, 1.5),
+                         rng.uniform(3.0, 6.5), rng.uniform(1.0, 1.8),
+                         rng.choice(rod_colors))
+            if rng.random() < .22:
+                rod_leaf(cx, cy, rng.uniform(5.0, 10.0), .8, rod_colors[2])
 
     def _draw_pole_hint(self, p):
         cur = self.cursor_logical()
