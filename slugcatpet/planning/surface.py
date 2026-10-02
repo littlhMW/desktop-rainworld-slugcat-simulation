@@ -554,7 +554,7 @@ class SurfaceGraph(NavGraph):
                     arc = get_backflip_arc(stats, rmd, bool(rh))
                 else:
                     arc = get_arc(stats, rh, rmd)
-                if _arc_hits_solids(arc, rlx, a.y - arc.takeoff_h):
+                if _arc_hits_solids(arc, rlx, launch_y):
                     continue
                 kind, hold, md, land_x, _ly, ticks, launch_x = r
                 if not landing_safe(land_x, b.lo, b.hi):
