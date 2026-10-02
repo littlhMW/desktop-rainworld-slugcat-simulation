@@ -1398,7 +1398,7 @@ class BehaviorFSM:
         self._dodge_left -= 1
         tx = self._dodge_target_x
         if self._dodge_left <= 0 or tx is None or abs(b.chunk1.x - tx) <= SHOT_DODGE_DONE_R:
-            b.stop_walk()
+            self._move_stop()
             self._dodge_from = None
             self._dodge_dir = 0
             self._dodge_target_x = None
@@ -1406,7 +1406,8 @@ class BehaviorFSM:
             self._transition("IdleStand")
             return
         b.set_posture(True)
-        b.walk_to(tx)
+        if not self._move(tx, facing=self._dodge_dir):
+            self._dodge_left = 0
 
     def _act_dragged_pre(self, ctx):
         self.grab.tick()
