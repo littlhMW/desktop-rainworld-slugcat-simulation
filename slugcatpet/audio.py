@@ -15,7 +15,7 @@ from PySide6.QtCore import QUrl
 from PySide6.QtMultimedia import QSoundEffect, QAudioOutput, QMediaPlayer
 
 from ._paths import log_error
-from .waa import game_resource, prepare_cue
+from .waa import cached_cue, game_resource, prepare_cue
 
 WORKSHOP_ID = "3257541402"
 _VARIANT_PREFIX = {
@@ -70,7 +70,10 @@ class MeowManager:
         # The easter egg is enabled by default; users can opt out in Settings.
         self.waa_enabled = bool(params.get("waa_enabled", True))
         self.params.pop("waa_audio_path", None)
-        self.waa_path: Path | None = None
+        # Reuse a complete user-local extraction immediately.  This avoids a
+        # second Unity parse on startup and keeps the feature working while
+        # Steam/Rain World is closed.
+        self.waa_path: Path | None = cached_cue()
         self._waa_source: Path | None = None
         self._waa_checked = False
         self._waa_preparing = False

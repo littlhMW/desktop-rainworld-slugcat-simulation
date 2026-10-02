@@ -2101,8 +2101,15 @@ class ItemInteractionMixin:
 
     def _draw_lizards(self, p):
         ts = self._ts
+        # Storm + rising water is the worst case for a transparent desktop
+        # window: every lizard's decorative scale is a set of rotated atlas
+        # blits, while the water and rain layers already force a full repaint.
+        # Keep full detail for ordinary scenes; in a crowded flooded storm
+        # draw the same body/limb/head silhouette without scale sprites.
+        lite = bool(self.rain.active and self.water_surface is not None
+                    and len(self.lizards) > 8)
         for lz in self.lizards:
-            draw_lizard(p, self.atlas, lz, ts)
+            draw_lizard(p, self.atlas, lz, ts, detail=not lite)
 
     def _lizard_hint_object(self):
         """放置预览用的一次性蜥蜴（不参与物理，品种跟随下一次放置）。"""

@@ -228,8 +228,15 @@ def _blit(p, atlas, frame, tint, x, y, rot, sx, sy, ax, ay, key=HEAD_KEY,
     p.restore()
 
 
-def draw_lizard(p, atlas, lz, ts: float) -> None:
-    """绘制一只蜥蜴：躯干带 → 四肢 → 头。"""
+def draw_lizard(p, atlas, lz, ts: float, detail: bool = True) -> None:
+    """绘制一只蜥蜴：躯干带 → 四肢 → 头。
+
+    ``detail=False`` keeps the body, limbs, head and tongue but omits the
+    decorative scale sprites.  Large storms can otherwise make a transparent
+    desktop window spend most of its frame in dozens of rotated atlas blits;
+    the reduced pass preserves the readable silhouette while water/rain is
+    moving and many lizards are present.
+    """
     ts = clampf(ts, 0.0, 1.0)
     # 头绘制点 = 挂在第 0 节躯干前方的软体末端（原版 head.ConnectToPoint(chunk0)）
     hpx = lerp(lz.head_lx, lz.head_x, ts)
@@ -291,10 +298,12 @@ def draw_lizard(p, atlas, lz, ts: float) -> None:
     for i in list(range(0, n_leg, 2)) + list(range(1, n_leg, 2)):
         _draw_leg(p, atlas, lz, i, ts)
     # 原版挂载序：BehindHead 花纹夹在躯干与头之间，InFront 花纹压在头之上
-    _draw_cosmetics(p, atlas, lz, spine, rads, ts, _cos.Z_BEHIND_HEAD)
+    if detail:
+        _draw_cosmetics(p, atlas, lz, spine, rads, ts, _cos.Z_BEHIND_HEAD)
     _draw_head(p, atlas, lz, hx, hy, s0x, s0y, rot, jaw, head_color(lz, ts), ts)
     _draw_tongue(p, lz)                       # 舌头压在头上层（原版 drawPositions 之后）
-    _draw_cosmetics(p, atlas, lz, spine, rads, ts, _cos.Z_FRONT)
+    if detail:
+        _draw_cosmetics(p, atlas, lz, spine, rads, ts, _cos.Z_FRONT)
     p.restore()
 
 

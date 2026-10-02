@@ -20,14 +20,46 @@ def game_resource() -> Path | None:
     return source if source.is_file() else None
 
 
+def cached_cue() -> Path | None:
+    """Return a complete user-local cue without touching the game install.
+
+    This is deliberately independent of ``game_resource`` so a packaged app
+    can keep using a cue prepared by an earlier run when Steam is closed or
+    the game is temporarily unavailable.
+    """
+    dest = user_dir() / "cache" / "waa_su_7.wav"
+    if not dest.is_file():
+        return None
+    try:
+        with wave.open(str(dest), "rb") as wav:
+            if wav.getnframes() / wav.getframerate() < 60:
+                return None
+    except (OSError, EOFError, ZeroDivisionError, wave.Error):
+        return None
+    return dest
+
+
 def _valid_cache(dest: Path, source: Path) -> bool:
     gain_tag = dest.with_suffix(dest.suffix + ".gain3")
-    if (not dest.is_file() or not gain_tag.is_file()
-            or dest.stat().st_mtime_ns < source.stat().st_mtime_ns):
+    # Older builds wrote the WAV before the ``.gain3`` marker was added.  A
+    # complete cached SU_7 is still perfectly usable (playback applies the
+    # requested gain), and forcing UnityPy to parse resources.assets again
+    # made packaged builds fail with ``UnityPy.resources``/FileNotFoundError.
+    # Validate the audio itself first; the marker is only metadata now.
+    if (not dest.is_file() or dest.stat().st_mtime_ns < source.stat().st_mtime_ns):
         return False
     try:
         with wave.open(str(dest), "rb") as wav:
-            return wav.getnframes() / wav.getframerate() >= 60
+            valid = wav.getnframes() / wav.getframerate() >= 60
+        if valid and not gain_tag.exists():
+            # Best effort migration.  Never make a playable cache depend on
+            # this sidecar being writable (read-only user profiles are valid).
+            try:
+                gain_tag.write_text("legacy SU_7 cache; playback gain=3.0\n",
+                                    encoding="ascii")
+            except OSError:
+                pass
+        return valid
     except (OSError, EOFError, ZeroDivisionError, wave.Error):
         return False
 

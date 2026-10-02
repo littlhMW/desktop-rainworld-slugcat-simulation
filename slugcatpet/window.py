@@ -669,7 +669,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
     # ── 帧循环 ──
     _PHYS_DT = 1.0 / 40.0
-    _MAX_TICKS = 4             # 防时间螺旋
+    _MAX_TICKS = 4             # 普通场景防时间螺旋
     _MAX_DT = 0.1
     _INT_FAST = 25           # ms
     # 暴雨绘制层是固定屏幕空间的整窗重绘；限制它到约 30 FPS，避免高 DPI
@@ -875,11 +875,17 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # GUI 与物理在同一线程；高水位全屏混合或大量实体使一帧超过预算时，
         # 必须丢弃过期的物理时间。旧实现只限制每帧 tick 数，却无限保留欠账，
         # 停雨后便会连续补跑旧 tick，看起来像整个世界突然快进。
-        self._phys_acc = min(self._phys_acc + dt,
-                             self._MAX_TICKS * self._PHYS_DT)
+        # Weather and water force a full-window repaint.  If a frame briefly
+        # overruns (especially with a crowded lizard scene), catching up four
+        # physics ticks in the next frame makes the GUI queue stay saturated
+        # and was perceived as a freeze followed by a speed burst on cancel.
+        # Keep a smaller bounded debt while those effects are active; normal
+        # scenes retain the original four-tick catch-up budget.
+        max_ticks = 2 if (self.rain.active or self.water_surface is not None) else self._MAX_TICKS
+        self._phys_acc = min(self._phys_acc + dt, max_ticks * self._PHYS_DT)
         phys_dt = self._PHYS_DT
         ticks = 0
-        while self._phys_acc >= phys_dt and ticks < self._MAX_TICKS:
+        while self._phys_acc >= phys_dt and ticks < max_ticks:
             self._phys_acc -= phys_dt
             ticks += 1
             self._do_tick()
