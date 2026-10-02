@@ -1,7 +1,7 @@
 """控制 HUD：受控猫键盘输入窗，失焦暂停。"""
 from __future__ import annotations
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QLayout
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QPushButton, QLayout
+from PySide6.QtCore import Qt, QEvent, QTimer
 from PySide6.QtGui import QGuiApplication
 
 from ..i18n import t
@@ -36,6 +36,15 @@ class ControlHud(QWidget):
         self._paused = False
         self._drag = None
         self._keymap = load_keymap()
+        # The scene window receives mouse pick/throw clicks while a cat is
+        # controlled.  On Windows that activation can move keyboard focus away
+        # from this small tool window, which used to make movement silently
+        # stop until the HUD was clicked again.  Keep a QApplication-level
+        # key filter for the lifetime of the session so movement keys remain
+        # live while the scene has focus (Escape still exits from anywhere).
+        self._app = QApplication.instance()
+        if self._app is not None:
+            self._app.installEventFilter(self)
 
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint
                             | Qt.WindowType.WindowStaysOnTopHint
@@ -117,6 +126,31 @@ class ControlHud(QWidget):
         if not getattr(self.pet, "controlled", False) or self.pet not in self._window.pets:
             self._window.stop_control()
 
+    def eventFilter(self, watched, event):
+        """Capture control keys even when a scene click moved focus to PetWindow.
+
+        ``ControlHud`` is a separate tool window.  A click on the transparent
+        scene activates the main window, so relying only on ``keyPressEvent``
+        leaves the cat with an apparently dead controller.  The filter is
+        scoped to the active control session and consumes only keyboard events;
+        all mouse/window events continue through Qt unchanged.
+        """
+        if (getattr(self.pet, "controlled", False)
+                and event.type() in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease)):
+            if event.isAutoRepeat():
+                return True
+            key = int(event.key())
+            if event.type() == QEvent.Type.KeyPress:
+                if event.key() == Qt.Key.Key_Escape:
+                    self._window.stop_control()
+                    return True
+                self._held.add(key)
+            else:
+                self._held.discard(key)
+            self._set_paused(False)
+            return True
+        return super().eventFilter(watched, event)
+
     def _set_paused(self, paused: bool):
         if paused == self._paused:
             return
@@ -176,3 +210,16 @@ class ControlHud(QWidget):
     def mouseReleaseEvent(self, ev):
         self._drag = None
         ev.accept()
+
+    def closeEvent(self, ev):
+        # The HUD is recreated for each session.  Remove the application
+        # filter before Qt destroys it, otherwise a deferred key event could
+        # target a stale controller during the next session.
+        if self._app is not None:
+            try:
+                self._app.removeEventFilter(self)
+            except RuntimeError:
+                pass
+        self._held.clear()
+        self._mouse_pick = self._mouse_throw = False
+        super().closeEvent(ev)
