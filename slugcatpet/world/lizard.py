@@ -852,7 +852,10 @@ BREEDS = (
                 bite_damage=0.18, bite_damage_chance=0.65, bite_chance=0.31,
                 attempt_bite_radius=80.0, toughness=0.7, stun_toughness=0.7,
                 taming_difficulty=2.0, danger=0.8, visual_radius=1400.0,
+                # LizardBreeds.cs:995-999 (ZoopLizard): long warm-up ambush
+                # tongue, not an always-on attack.
                 body_mass=0.9, tongue=True, tongue_range=440.0,
+                tongue_chance=0.30, tongue_warmup=140, tongue_segments=10,
                 sat=0.55, hue_var=0.02, light_var=0.05),
     LizardBreed("eel", "鳗鱼蜥", "Eel lizard", 0.42, 0.40, (2, 2, 2, 2, 2),
                 size=0.95, head_size=1.0, base_speed=3.75, tail_segs=16,
