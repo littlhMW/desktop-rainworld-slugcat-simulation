@@ -67,7 +67,8 @@ class MeowManager:
         self._playing: list[QSoundEffect] = []
         self._event_cd: dict[str, int] = {}
         # From the user's game install only; the generated cue stays in user_dir.
-        self.waa_enabled = bool(params.get("waa_enabled", False))
+        # The easter egg is enabled by default; users can opt out in Settings.
+        self.waa_enabled = bool(params.get("waa_enabled", True))
         self.params.pop("waa_audio_path", None)
         self.waa_path: Path | None = None
         self._waa_source: Path | None = None
@@ -101,7 +102,7 @@ class MeowManager:
         for effect in self._playing:
             effect.setVolume(self.volume / 100.0)
         if self._waa_output is not None:
-            self._waa_output.setVolume(self.volume / 100.0)
+            self._waa_output.setVolume(min(1.0, self.volume / 100.0 * 3.0))
 
     @property
     def waa_eligible(self) -> bool:
@@ -193,7 +194,9 @@ class MeowManager:
             return False
         if self._waa_player is None:
             self._waa_output = QAudioOutput()
-            self._waa_output.setVolume(self.volume / 100.0)
+            # SU_7 is mastered considerably quieter than the short meow clips.
+            # Apply the requested 3x gain while keeping Qt's output ceiling.
+            self._waa_output.setVolume(min(1.0, self.volume / 100.0 * 3.0))
             self._waa_player = QMediaPlayer()
             self._waa_player.setAudioOutput(self._waa_output)
         source = QUrl.fromLocalFile(str(self.waa_path))
@@ -275,6 +278,11 @@ class MeowManager:
         self._waa_mode = bool(self.enabled and self.waa_enabled
                               and self._waa_only_survivor(pets)
                               and (self._waa_preparing or self.waa_eligible))
+        # Expose the active Survivor state to the lizard perception pass.
+        # Items runs after audio each frame, so this flag is consumed in the
+        # same frame by lizard perception and only lasts while SU_7 plays.
+        for pet in pets:
+            setattr(pet, "_waa_active", False)
         if not self._waa_mode and self._waa_player is not None and self._waa_player.playbackState() != QMediaPlayer.PlaybackState.StoppedState:
             self._stop_waa()
         elif not self._waa_mode:
@@ -304,7 +312,14 @@ class MeowManager:
                         self._waa_cooldown = 800
                         gfx = getattr(pet, "gfx", None)
                         if gfx is not None:
-                            gfx.meow_t = 18
+                            gfx.meow_t = 6
+            # Keep the vocal pose and call arcs alive while SU_7 is playing.
+            if (self._waa_player is not None
+                    and self._waa_player.playbackState() != QMediaPlayer.PlaybackState.StoppedState):
+                gfx = getattr(pet, "gfx", None)
+                if gfx is not None and not getattr(gfx, "dead", False):
+                    gfx.meow_t = max(getattr(gfx, "meow_t", 0), 6)
+                setattr(pet, "_waa_active", True)
             return
         if not self.enabled or not self.available:
             return

@@ -184,8 +184,8 @@ _STR = {
     "settings_meow_volume_val": {"zh": "{n}%", "en": "{n}%"},
     "settings_waa_enable": {"zh": "waa ~", "en": "waa ~"},
     "settings_waa_tip": {
-        "zh": "仅有求生者时生效。遇到威胁时完整播放从本机《雨世界》提取的 SU_7，替代猫叫。",
-        "en": "Only for Survivor alone. A threat plays the complete SU_7 clip from your local Rain World installation instead of a meow."},
+        "zh": "蛞蝓猫将发出强大而具有魄力的叫声威慑敌人。",
+        "en": "The slugcat emits a powerful, commanding call to intimidate enemies."},
     "settings_waa_missing": {"zh": "未找到本机《雨世界》游戏资源。", "en": "Local Rain World game resources were not found."},
     "settings_waa_idle": {"zh": "勾选后从本机游戏准备音轨。", "en": "Enable to prepare audio from your local game."},
     "settings_waa_preparing": {"zh": "正在从本机游戏准备音轨…", "en": "Preparing audio from your local game..."},

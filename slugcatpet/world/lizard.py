@@ -2130,6 +2130,14 @@ class Lizard(CombatTarget):
                 w /= CROUCH_TARGET_MULT
             if _cat_camo(obj):
                 w /= CAMO_TARGET_MULT
+            if _cat_waa(obj) and not dead:
+                # A Survivor broadcasting waa is treated as a dangerous
+                # pressure state: lizards give it space instead of hunting it.
+                # The normal cat observation is retained for memory, while a
+                # stronger threat observation makes Flee win in decide().
+                thrs.append(self._observe(obj, ox, oy, "threat",
+                                          max(2.0, w), dead, fainted,
+                                          "crawl" if crawl else "stand"))
             cats.append(self._observe(obj, ox, oy, "cat", w, dead, fainted,
                                       "crawl" if crawl else "stand"))
         for obj, w in prey:
@@ -5200,6 +5208,12 @@ def _cat_crouching(obj) -> bool:
 def _cat_camo(obj) -> bool:
     """猫是否隐身中（守望者伪装：半透明 → 蜥蜴很难盯上）。"""
     return getattr(getattr(obj, "gfx", None), "camo", 0.0) > 0.5
+
+
+def _cat_waa(obj) -> bool:
+    """Whether the Survivor's waa cue is currently active."""
+    return bool(getattr(obj, "_waa_active", False)
+                and getattr(obj, "variant", "") == "survivor")
 
 
 def _cat_offering_food(obj) -> bool:
