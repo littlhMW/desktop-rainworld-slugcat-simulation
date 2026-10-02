@@ -521,7 +521,8 @@ class LizardBreed:
                  "light_dev_k",
                  "hide_eyes", "toughness", "stun_toughness", "bite_chance",
                  "attempt_bite_radius", "taming_difficulty", "head_shield_angle",
-                 "danger", "visual_radius", "tongue", "tongue_range", "body_mass",
+                 "danger", "visual_radius", "tongue", "tongue_range", "tongue_chance",
+                 "tongue_warmup", "tongue_segments", "body_mass",
                  "flips_from_rock", "bite_damage_chance", "bite_dominance",
                  "bite_delay", "bite_in_front", "bite_homing_speed",
                  "lounge_distance", "lounge_speed",
@@ -552,7 +553,8 @@ class LizardBreed:
                  lounge_distance=150.0, lounge_speed=1.0,
                  attempt_bite_radius=80.0, taming_difficulty=1.0,
                  head_shield_angle=100.0, danger=0.45, visual_radius=900.0,
-                 tongue=False, tongue_range=0.0, body_mass=2.1,
+                 tongue=False, tongue_range=0.0, tongue_chance=0.0,
+                 tongue_warmup=8, tongue_segments=7, body_mass=2.1,
                  bite_dominance=0.5,
                  flips_from_rock=True,
                  step_length=0.5, lift_feet=0.3, feet_down=0.5, limb_speed=5.0,
@@ -614,6 +616,12 @@ class LizardBreed:
         self.visual_radius = visual_radius
         self.tongue = tongue
         self.tongue_range = tongue_range
+        # LizardBreeds.cs:184-192 / LizardAI.cs:1242-1244.  A tongue is not
+        # an automatic bite replacement: the AI rolls tongueChance and the
+        # graphics warm up for tongueWarmUp ticks before the lash leaves.
+        self.tongue_chance = float(tongue_chance)
+        self.tongue_warmup = int(tongue_warmup)
+        self.tongue_segments = int(tongue_segments)
         self.body_mass = body_mass
         self.bite_dominance = bite_dominance      # 原版 biteDominance：同族嘶咬时的支配度
         self.flips_from_rock = flips_from_rock   # 原版红蜥不吃石头转身
@@ -752,7 +760,10 @@ BREEDS = (
                 bite_damage=0.7, bite_damage_chance=0.2, bite_chance=0.4, attempt_bite_radius=90.0,
                 toughness=0.5, stun_toughness=0.5, taming_difficulty=1.1,
                 danger=0.35, visual_radius=950.0, body_mass=1.4,
-                tongue=True, tongue_range=140.0, hue_var=0.08,
+                # LizardBreeds.cs:286-290: Blue tongueChance=0.25,
+                # tongueWarmUp=10, tongueSegments=5.
+                tongue=True, tongue_range=140.0, tongue_chance=0.25,
+                tongue_warmup=10, tongue_segments=5, hue_var=0.08,
                 step_length=0.4, lift_feet=0.0, feet_down=0.0, limb_speed=6.0,
                 limb_quickness=0.6, leg_pair_disp=0.0, walk_bob=0.4,
                 lounge_tendency=0.01),
@@ -764,7 +775,10 @@ BREEDS = (
                 toughness=0.8, stun_toughness=0.8, taming_difficulty=3.0,
                 danger=0.4, visual_radius=900.0, body_mass=1.7, hue_var=0.05),
     LizardBreed("white", "白蜥", "White lizard", 0.0, 1.0, (0, 0, 0, 0, 3),
-                pale_random=True,
+                # LizardBreeds.cs:465-470: standardColor is pure white.  White
+                # camouflage is applied by LizardGraphics at runtime; it is not
+                # a pastel spawn-color variation.
+                pale_random=False,
                 size=1.00, base_speed=3.8, tail_segs=5, tail_len_fac=1.2,
                 jaw_open_angle=110.0, jaw_lower_fac=0.5, neck_stiffness=0.05,
                 body_stiffness=0.15, tail_col_start=0.1, tail_col_exp=1.2,
@@ -772,7 +786,8 @@ BREEDS = (
                 toughness=0.9, stun_toughness=0.9, taming_difficulty=3.0,
                 danger=0.5, visual_radius=1300.0, body_mass=2.1,
                 sat=0.0, plain_color=(255, 255, 255),
-                tongue=True, tongue_range=440.0,
+                tongue=True, tongue_range=440.0, tongue_chance=0.10,
+                tongue_warmup=80, tongue_segments=10,
                 step_length=0.6, lift_feet=0.2, feet_down=0.05, limb_speed=8.0,
                 limb_quickness=0.8, smooth_legs=False, leg_pair_disp=0.0,
                 walk_bob=0.8),
@@ -782,7 +797,8 @@ BREEDS = (
                 bite_damage=4.0, bite_damage_chance=1.0, bite_chance=1.0, attempt_bite_radius=120.0,
                 toughness=3.0, stun_toughness=3.0, taming_difficulty=7.0,
                 danger=0.8, visual_radius=2300.0, body_mass=3.1,
-                tongue=True, tongue_range=350.0, flips_from_rock=False,
+                tongue=True, tongue_range=350.0, tongue_chance=0.10,
+                tongue_warmup=8, tongue_segments=10, flips_from_rock=False,
                 hue_var=0.02, spikes=(0, 0, 0.7),
                 step_length=0.8, lift_feet=0.3, limb_speed=9.0, limb_quickness=0.8,
                 walk_bob=3.0),
@@ -800,7 +816,9 @@ BREEDS = (
                 bite_chance=1.0 / 3.0, attempt_bite_radius=70.0,
                 toughness=1.0, stun_toughness=1.0, taming_difficulty=3.5,
                 head_shield_angle=70.0, danger=0.4, visual_radius=960.0, body_mass=2.1,
-                tongue=True, tongue_range=150.0, hue_var=0.15, light_dev_k=0.2,
+                tongue=True, tongue_range=150.0, tongue_chance=1.0 / 3.0,
+                tongue_warmup=8, tongue_segments=7,
+                hue_var=0.15, light_dev_k=0.2,
                 smooth_legs=False),
     LizardBreed("cyan", "青蜥", "Cyan lizard", 0.49, 0.50, (0, 0, 0, 0, 0),
                 size=0.65, base_speed=3.0, tail_segs=5, tail_len_fac=1.44, limb_size=1.0,
@@ -808,7 +826,8 @@ BREEDS = (
                 bite_damage=1.0, bite_damage_chance=0.25, bite_chance=0.5, attempt_bite_radius=80.0,
                 toughness=0.35, stun_toughness=50.0, taming_difficulty=1.0,
                 head_shield_angle=70.0, danger=0.25, visual_radius=990.0, body_mass=0.8,
-                tongue=True, tongue_range=160.0, hue_var=0.04,
+                tongue=True, tongue_range=160.0, tongue_chance=1.0 / 3.0,
+                tongue_warmup=8, tongue_segments=7, hue_var=0.04,
                 step_length=0.4, lift_feet=0.0, feet_down=0.0, limb_speed=6.0,
                 limb_quickness=0.6, leg_pair_disp=0.0, walk_bob=2.0,
                 lounge_tendency=1.0 / 30.0),
@@ -1070,7 +1089,8 @@ class Lizard(CombatTarget):
                  "_body_imp_x", "_body_imp_y", "_jaw_rec_x", "_jaw_rec_y",
                  "_atk_phase", "_atk_t", "_atk_dir", "wiggle",
                  "_wiggle_ph", "_desp", "_anim_rng",
-                 "tongue_speed", "_wall_turn_left", "_wall_dir_prev",
+                 "tongue_speed", "tongue_warmup_left", "black_salamander",
+                 "_wall_turn_left", "_wall_dir_prev",
                  "held_by_hand", "water_y", "room_gravity", "_contact_floor",
                  "dead", "spacing", "spikes", "cosmetics", "cosmetic_pts", "like", "tamed", "friend_id",
                  "climb_x", "climb_dir", "climb_surfaces", "hauler",
@@ -1308,6 +1328,12 @@ class Lizard(CombatTarget):
         self._jaw_rec_x = 0.0
         self._jaw_rec_y = 0.0
         self.tongue_speed = TONGUE_SPEED      # 本次射舌的出手速度（按距离插值）
+        self.tongue_warmup_left = 0
+        # LizardGraphics.cs:433-437: region dependent in game, one third in
+        # the standalone/default room.  Keep this per individual so two
+        # salamanders can legitimately have different body/eye palettes.
+        self.black_salamander = bool(self.breed.key == "salamander"
+                                     and self.rng.random() < (1.0 / 3.0))
         self._wall_turn_left = 0              # 墙上换向的摆体剩余帧
         self._wall_dir_prev = None            # 上一帧的爬行方向（换向检测）
         # Attack 动作序列（文档 §9.3 / §10.3）：Prepare → Lunge → Bite → Recover，
@@ -3236,7 +3262,12 @@ class Lizard(CombatTarget):
                 self._start_bite()
         elif (self.target_obj is not None and self._tongue_ready()
                 and d <= self.breed.tongue_range
-                and not _cat_offering_food(self.target_obj)):
+                and not _cat_offering_food(self.target_obj)
+                # LizardAI.cs:1242-1244: tongueChance is rolled for each
+                # aggressive opportunity; without this gate every eligible
+                # lizard lashes on the first frame and never resembles the
+                # species-specific ambush behavior.
+                and self.rng.random() < self.breed.tongue_chance):
             # 咬不着、但舌头够得到：原版 ShootTongue（白蜥那根 440px 的长舌）
             self._shoot_tongue(self.target_obj)
         elif self._contact_floor and self.hop_cd <= 0 and (self.y - self.target[1]) > 34.0:
@@ -4022,7 +4053,11 @@ class Lizard(CombatTarget):
         # 原版 LizardTongue.LashOut（LizardTongue.cs:519）第一件事就是方向闸：
         # 体前轴（chunks[1]→chunks[0]）与「头→目标」的点积 ≤ 0.3 直接 return，
         # 舌头根本不出来。旧实现没这道闸，背后的目标也照射（「背后长舌头」）。
-        ax, ay = self.x - self.seg[0].x, self.y - self.seg[0].y
+        # LizardTongue.cs:519 uses bodyChunks[1]→bodyChunks[0].  In this
+        # port seg[0] is the driven chunk at (self.x, self.y), so using it
+        # produces a zero vector and silently disables the forward-angle
+        # check.  seg[1] is the actual rear chunk.
+        ax, ay = self.seg[0].x - self.seg[1].x, self.seg[0].y - self.seg[1].y
         ad = math.hypot(ax, ay)
         if ad > 1e-6 and (ax * dx + ay * dy) / (ad * d) <= TONGUE_DOT_MIN:
             return False
@@ -4037,7 +4072,12 @@ class Lizard(CombatTarget):
         self.tongue_prey = o
         self.tongue_grab = None
         self.tongue_t = 0
-        self.tongue_state = "out"
+        # LizardBreeds.cs:288-290 / LizardTongue.cs:519: the tongue has a
+        # visible warm-up before the lash starts, especially pronounced on a
+        # white lizard (80 ticks).  Keeping this state also gives the head and
+        # jaw animation a chance to lead the rope instead of popping it out.
+        self.tongue_warmup_left = max(0, int(self.breed.tongue_warmup))
+        self.tongue_state = "warmup" if self.tongue_warmup_left > 0 else "out"
         self.tongue_cd = int(TONGUE_CD)
         self.jaw = max(self.jaw, TONGUE_JAW)
         self.wiggle = min(1.0, self.wiggle + WIGGLE_BUMP)
@@ -4051,6 +4091,7 @@ class Lizard(CombatTarget):
 
     def _tongue_reset(self) -> None:
         self.tongue_state = None
+        self.tongue_warmup_left = 0
         self.tongue_len = 0.0
         self.tongue_prey = None
         self.tongue_grab = None
@@ -4100,6 +4141,13 @@ class Lizard(CombatTarget):
         mx, my = self._mouth_point()
         dx, dy = self.tongue_dir
         st = self.tongue_state
+        if st == "warmup":
+            self.tongue_warmup_left -= 1
+            self.jaw = max(self.jaw, TONGUE_JAW)
+            if self.tongue_warmup_left > 0:
+                return
+            self.tongue_state = "out"
+            st = "out"
         # 舌外伸期间的拖拽（原版 LizardTongue.Update 262-280）：只要舌头还在外面，
         # 每 tick chunks[0].vel += DirVec(c0→tip)*4、chunks[1].vel -= 同向*4。
         # 所以「舌头拽着重物」时蜥蝎自己会被拉过去、「甩出去」时身体被反推 ——
@@ -5253,6 +5301,15 @@ def _obj_pos(src):
     if (isinstance(px, (int, float)) and not isinstance(px, bool)
             and isinstance(py, (int, float)) and not isinstance(py, bool)):
         return float(px), float(py)
+    # Cats are PetUnit instances: their world position lives in body.chunk0,
+    # not on PetUnit.x/y.  The observation has coordinates, but _lunge stores
+    # the underlying PetUnit as target_obj.  Without this fallback
+    # _shoot_tongue immediately returns False for every slugcat.
+    chunk = getattr(getattr(src, "body", None), "chunk0", None)
+    if chunk is not None:
+        px, py = getattr(chunk, "x", None), getattr(chunk, "y", None)
+        if isinstance(px, (int, float)) and isinstance(py, (int, float)):
+            return float(px), float(py)
     return None, None
 
 

@@ -83,7 +83,16 @@ def body_color(lz):
     原版不往体色里掺品种色（亮色只出现在头、尾梢、刺上）。旧版掺了 BODY_TINT，
     于是「深色区域」被染成了深绿/深粉；按反编译改成纯黑。
     """
-    rgb = lz.body_rgb or lz.breed.body_rgb      # 白蜥随机色版：整只走个体色
+    b = lz.breed
+    if b.key == "salamander":
+        # LizardGraphics.cs:215-225 (SalamanderColor) and :433-437
+        # (blackSalamander roll).  The old port used one fixed gray-white
+        # swatch for every salamander, losing the black-salamander variant.
+        rgb = (_mix(BLACK_RGB, lz.color, 0.10)
+               if getattr(lz, "black_salamander", False)
+               else _mix((230, 230, 242), lz.color, 0.06))
+    else:
+        rgb = lz.body_rgb or lz.breed.body_rgb
     # 白蜥：整只统一用「周边局部采样」平滑出的迷彩色，再按呼吸在白色 ↔ 它之间换
     camo = getattr(lz, "camo_color", None)
     if camo is not None and getattr(lz, "camo_mix", 0.0) > 0.0:
@@ -99,6 +108,22 @@ def head_color(lz, ts: float):
     白蜥／蝾螈／黑蜥在原版是恒定色分支（发光、雪盖等），宠物里直接取品种定色。
     """
     b = lz.breed
+    if b.key == "salamander":
+        # LizardGraphics.cs:315-329: both HeadColor1/2 use SalamanderColor.
+        return (_mix(BLACK_RGB, lz.color, 0.10)
+                if getattr(lz, "black_salamander", False)
+                else _mix((230, 230, 242), lz.color, 0.06))
+    if b.key == "white":
+        # LizardGraphics.cs:315-355: HeadColor1 = white, HeadColor2 =
+        # palette.blackColor.  The old generic path made both phases white,
+        # so the head never showed the characteristic white/black pulse.
+        ph = lerp(lz.last_blink, lz.blink, ts)
+        a = 1.0 - (0.5 + 0.5 * math.sin(ph * math.tau)) ** (1.5 + HEAD_FLICKER_EXC * 1.5)
+        rgb = _mix((255, 255, 255), BLACK_RGB, a)
+        camo = getattr(lz, "camo_color", None)
+        if camo is not None and getattr(lz, "camo_mix", 0.0) > 0.0:
+            rgb = _mix(rgb, camo, lz.camo_mix)
+        return rgb
     base = b.head_rgb if b.head_rgb is not None else lz.color
     # 白蜥潜伏时头也跟着变成采到的背景色（原版 camo 连头一起隐形；只有眼 / 齿 /
     # 口腔内侧保持原色 —— 那几片在 _draw_head 里单独用 BLACK_RGB）
@@ -322,7 +347,9 @@ def _draw_body(p, lz, spine, rads):
     # 描边（不会画出每一圈的内部接缝）。
     chunk_path = _chunked_path(spine, rads)
     path = chunk_path.simplified()
-    if lz.body_rgb is not None:           # 白蜥：纯色，无渐变无描边
+    if lz.breed.key in ("white", "salamander") or lz.body_rgb is not None:
+        # LizardGraphics.cs:2129-2140: both white and salamander use one
+        # DynamicBodyColor throughout the body and tail.
         p.setBrush(QColor(*rgb))
         p.drawPath(chunk_path)
         p.setBrush(Qt.BrushStyle.NoBrush)
@@ -342,7 +369,10 @@ def _draw_body(p, lz, spine, rads):
     p.setBrush(grad)
     p.drawPath(chunk_path)
 
-    if lz.tail_edge is not None and lz.tail_amt > 0.0:
+    # LizardGraphics.cs:2137-2140: Salamander BodyColor is SalamanderColor
+    # for every f along the tail; it never receives the normal tailColor
+    # gradient used by pink/green/etc.
+    if lz.breed.key != "salamander" and lz.tail_edge is not None and lz.tail_amt > 0.0:
         n_tail = sum(1 for s in lz.seg if s.tail)
         if n_tail:
             idx = len(spine) - n_tail
@@ -594,5 +624,8 @@ def _draw_head(p, atlas, lz, hx, hy, s0x, s0y, rot, jaw, color, ts=1.0):
               teeth_rgb if idx == 2 else head_rgb,
               hx + n3x * up_off, hy + n3y * up_off, up_rot, sx, sc, 0.5, ay)
     if not b.hide_eyes:
-        _blit(p, atlas, "LizardEyes%d.%d" % (row, hg[4]), BLACK_RGB,
+        eye_rgb = (lz.color if b.key == "salamander"
+                   and getattr(lz, "black_salamander", False) else BLACK_RGB)
+        # LizardGraphics.cs:2165-2169: black salamander eyes take effectColor.
+        _blit(p, atlas, "LizardEyes%d.%d" % (row, hg[4]), eye_rgb,
               hx + n3x * up_off, hy + n3y * up_off, up_rot, sx, sc, 0.5, eyes_ay)
