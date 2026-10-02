@@ -267,30 +267,32 @@ class Shelter:
         # 走廊层：最下面那一条。**只有门那一侧**在这一层留空（就是
         # 门洞），另一侧是一整面墙。原版的“四面墙 + 1 个小缺口”就是这个意思：
         # 猫只能从门那一侧走进去，不能从背面越过屋子。
-        self.corridor_top = self.ground_y - self.tunnel_h_px
+        self.corridor_top = self.center_y - self.tunnel_h_px * 0.5
+        corridor_bottom = self.corridor_top + self.tunnel_h_px
         # 四面墙：左 / 右 / 顶 / 底。非门侧一直落到地面，门侧到走廊层为止。
         if self.door_side == "right":
             self.left_wall = (self.x, self.y, self.x + wall, self.ground_y)
             self.right_wall = (self.x + self.w - wall, self.y, self.x + self.w,
                                self.corridor_top)
+            self.lower_wall = (self.x + self.w - wall, corridor_bottom,
+                               self.x + self.w, self.ground_y)
             self.outer_wall = self.right_wall
             self.entrance = (self.x + self.w - wall, self.corridor_top,
-                             self.x + self.w, self.ground_y)
+                             self.x + self.w, corridor_bottom)
         else:
             self.left_wall = (self.x, self.y, self.x + wall, self.corridor_top)
+            self.lower_wall = (self.x, corridor_bottom,
+                               self.x + wall, self.ground_y)
             self.right_wall = (self.x + self.w - wall, self.y, self.x + self.w,
                                self.ground_y)
             self.outer_wall = self.left_wall
             self.entrance = (self.x, self.corridor_top,
-                             self.x + wall, self.ground_y)
+                             self.x + wall, corridor_bottom)
         self.roof = (self.x, self.y, self.x + self.w, self.y + wall)
         # 底墙（地板）：贴底边那一条，**入口那一列留空**
         # —— 猫 / 物件只能从入口进出，跟上面三面墙同一套碰撞。
         fy0 = self.ground_y - wall
-        if self.door_side == "right":
-            self.floor = (self.x, fy0, self.x + self.w - wall, self.ground_y)
-        else:
-            self.floor = (self.x + wall, fy0, self.x + self.w, self.ground_y)
+        self.floor = (self.x, fy0, self.x + self.w, self.ground_y)
         # 内腔 = 四面墙以内。原来的 chamber / tunnel / 内墙分隔层都去掉了：
         # 庇护所就是「一个矩形 + 四面墙 + 一个门洞」，里面不再切小房间。
         self.interior = (self.x + wall, self.y + wall,
@@ -342,7 +344,8 @@ class Shelter:
         那一列留缺口。
         """
         out = []
-        for r in (self.left_wall, self.right_wall, self.roof, self.floor):
+        for r in (self.left_wall, self.right_wall, self.lower_wall,
+                  self.roof, self.floor):
             if r not in out:
                 out.append(r)
         return out

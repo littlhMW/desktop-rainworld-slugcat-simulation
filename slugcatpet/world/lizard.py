@@ -2089,6 +2089,10 @@ class Lizard(CombatTarget):
         """
         if not self._scanned:
             return True
+        # 旧存档超出 AI 时间片预算时，有些个体会隔数帧才轮到自己。
+        # 再次轮到时必须刷新过期观察，避免追赶早已离开的目标。
+        if int(tick) - self._tick > PERCEIVE_EVERY:
+            return True
         return (int(tick) + self.id) % PERCEIVE_EVERY == 0
 
     def perceive(self, WL, HL, targets=(), prey=(), threats=(), others=(), pack=(),
@@ -4096,17 +4100,19 @@ class Lizard(CombatTarget):
                     self.seg[1].vx -= (tdx / tl) * k
                     self.seg[1].vy -= (tdy / tl) * k
         if st == "out":
+            from ..core import chunkphys
             self.tongue_len += self.tongue_speed
             tip = (mx + dx * self.tongue_len, my + dy * self.tongue_len)
             # 原版舌尖逐 tick 扫掠地形；撞到实体墙后停在最后一个空气点，
             # 进入 StuckInTerrain，而不是穿墙继续追目标（LizardTongue.cs:370-440）。
             prev = self.tongue_tip
             hit = None
+            solids = chunkphys.cat_solids()
             for i in range(1, 9):
                 q = (prev[0] + (tip[0] - prev[0]) * i / 8.0,
                      prev[1] + (tip[1] - prev[1]) * i / 8.0)
                 if any(a0 <= q[0] <= a1 and b0 <= q[1] <= b1
-                       for a0, b0, a1, b1 in chunkphys.cat_solids()):
+                       for a0, b0, a1, b1 in solids):
                     hit = i
                     break
             if hit is not None:

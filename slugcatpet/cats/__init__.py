@@ -16,7 +16,7 @@ from .watcher import WATCHER_DEF
 
 DEFAULT_VARIANT = "saint"
 
-# 幼崽（Slugpup）和旧存档的 inv 变体不在「添加蛞蛓猫」选单中。
+# 幼崽（Slugpup）走生物生成；怪猫仍可由角色选择加入。
 PUP_VARIANT = "slugpup"
 
 # 已实装种族（食性/食条/数值全部按反编译；wip=True 的只是外观差异待后续）
@@ -30,8 +30,6 @@ REGISTRY: dict[str, CatDef] = {
     "spearmaster": SPEARMASTER_DEF,
     "saint": SAINT_DEF,
     "watcher": WATCHER_DEF,
-    # Internal/legacy variant retained for saved pets; it is filtered from
-    # pickable_variants() and therefore does not appear in the chooser.
     "inv": INV_DEF,
     "slugpup": SLUGPUP_DEF,
 }
@@ -39,7 +37,7 @@ REGISTRY: dict[str, CatDef] = {
 
 def pickable_variants() -> tuple:
     """「添加蛞蛓猫」列表里可选的种族（幼崽走生物生成）。"""
-    return tuple(k for k in REGISTRY if k not in (PUP_VARIANT, "inv"))
+    return tuple(k for k in REGISTRY if k != PUP_VARIANT)
 
 
 def display_order(pets) -> list:

@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import random
 
-from PySide6.QtCore import Qt, QPointF, QRectF, QRect
+from PySide6.QtCore import Qt, QPoint, QPointF, QRectF, QRect
 from PySide6.QtGui import (
-    QColor, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QRadialGradient, QRegion
+    QColor, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QRadialGradient,
+    QRegion, QPixmap
 )
 
 from ..world.rain import FIRST_DROP_FLASH
@@ -53,7 +54,14 @@ def make_rain_patterns(seed=0x5A17):
                 p.drawLine(QPointF(x, y), QPointF(x + slant, y + ln))
         finally:
             p.end()
-        out.append(img)
+        # Keep the storm sheet as a GPU/Qt tiled pixmap.  Drawing each 256/512
+        # tile in a Python loop becomes a visible stall on 4K transparent windows.
+        pm = QPixmap.fromImage(img)
+        if k == 1:
+            pm = pm.scaled(_PATTERN * 2, _PATTERN * 2,
+                           Qt.AspectRatioMode.IgnoreAspectRatio,
+                           Qt.TransformationMode.FastTransformation)
+        out.append(pm)
     return tuple(out)
 
 
@@ -127,18 +135,18 @@ def draw_rain_under(p, rain, shelters, WL, HL, shake=(0.0, 0.0)):
         if pats and density > 0.01:
             off = float(getattr(rain, "tile_off", 0.0))
             for k, img in enumerate(pats):
-                scale = _PATTERN * (1.0 if k == 0 else 2.0)
+                scale = float(img.width())
                 ox = ((off * (0.26 + 0.16 * k)) % scale) - scale
                 oy = ((off * (0.75 + 0.25 * k)) % scale) - scale
                 alpha = min(0.42, 0.10 + density * (0.20 if k == 0 else 0.27))
                 p.setOpacity(alpha)
-                x = ox
-                while x < WL + SCREEN_BLEED:
-                    y = oy
-                    while y < HL + _BOTTOM_BLEED:
-                        p.drawImage(QRectF(x, y, scale, scale), img)
-                        y += scale
-                    x += scale
+                # QPainter's tiled path performs the same repeat in C++ and
+                # avoids dozens of Python-side drawImage calls per frame.
+                rect = QRectF(-SCREEN_BLEED, -SCREEN_BLEED,
+                              WL + SCREEN_BLEED * 2.0,
+                              HL + _BOTTOM_BLEED + SCREEN_BLEED)
+                p.drawTiledPixmap(rect, img,
+                                  QPointF(rect.x() - ox, rect.y() - oy))
         p.setOpacity(1.0)
     finally:
         p.restore()

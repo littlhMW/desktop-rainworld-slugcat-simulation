@@ -52,6 +52,10 @@ from ..rendering.pixelmode import aa_hint, pen_width
 
 
 CORPSE_OUT_MARGIN = 14.0     # 尸体整个离开窗口这么多＝被扔出屏幕，直接清除
+# 蜥蜴的感知、关系和遮挡判定会随个体数近似平方增长。限制场上总数，
+# 同时让自然生成只补到一个可控的活体数，避免误开高频生成后拖垮主循环。
+LIZARD_MAX_ACTIVE = 12
+LIZARD_MAX_TOTAL = 24
 ERASE_PICK_PAD = 6.0         # 删除模式命中放宽（与拖拽的 GRAB_PAD 同量级）
 LAMP_PICK_R = 12.0           # 灯笼按灯泡心算命中半径
 PUP_PICK_R = 14.0            # 猫崽在删除模式下的命中半径（约成年的一半）
@@ -388,7 +392,7 @@ def _dist_to_path(pts, x, y):
 
 
 class ItemInteractionMixin:
-    # 个数上限已全部取消，can_place_* 恒真（保留接口供 UI 调用）
+    # 大多数实体仍允许自由放置；蜥蜴单独设上限，避免 AI 的 O(n²) 关系扫描失控。
     _FRUIT_GRAB_PAD = 7.0
     _FRUIT_FLING_CAP = 14.0
     _STONE_GRAB_PAD = 7.0
@@ -934,20 +938,27 @@ class ItemInteractionMixin:
         frames never make the wall flicker.
         """
         w, h = max(1.0, x1 - x0), max(1.0, y1 - y0)
-        notch_depth = max(1.5, min(6.0, min(w, h) * 0.10))
+        # The reference room tiles have a very small softened corner.  Keep
+        # the radius below a pixel-art tile's scale so collision remains the
+        # same axis-aligned rectangle while the silhouette stops looking like
+        # a sharp UI box.
+        corner = max(2.0, min(5.0, min(w, h) * 0.14))
+        notch_depth = max(1.0, min(2.8, min(w, h) * 0.055))
         path = QPainterPath()
-        path.moveTo(x0, y0)
+        path.moveTo(x0 + corner, y0)
 
         # Each side gets zero to two chips.  The edge helper accepts both
         # directions, so the bottom and left sides trace back correctly.
         def edge(ax, ay, bx, by, nx, ny):
             dx, dy = bx - ax, by - ay
             span = math.hypot(dx, dy)
-            count = rng.randint(0, min(2, max(0, int(span / 75.0))))
-            chips = ([rng.uniform(.20, .70)] if count == 1 else
-                     [rng.uniform(.18, .34), rng.uniform(.58, .74)] if count == 2 else [])
+            count = rng.randint(0, min(3, max(0, int(span / 58.0))))
+            chips = ([rng.uniform(.22, .72)] if count == 1 else
+                     [rng.uniform(.16, .34), rng.uniform(.60, .82)] if count == 2 else
+                     [rng.uniform(.13, .24), rng.uniform(.43, .57), rng.uniform(.76, .87)]
+                     if count == 3 else [])
             for t in chips:
-                width = min(9.0, span * .08)
+                width = min(6.0, span * .08)
                 sx, sy = ax + dx * t, ay + dy * t
                 path.lineTo(sx, sy)
                 path.lineTo(sx + dx / span * width * .35 + nx * notch_depth,
@@ -957,10 +968,14 @@ class ItemInteractionMixin:
                 path.lineTo(sx + dx / span * width, sy + dy / span * width)
             path.lineTo(bx, by)
 
-        edge(x0, y0, x1, y0, 0, 1)
-        edge(x1, y0, x1, y1, -1, 0)
-        edge(x1, y1, x0, y1, 0, -1)
-        edge(x0, y1, x0, y0, 1, 0)
+        edge(x0 + corner, y0, x1 - corner, y0, 0, 1)
+        path.quadTo(x1, y0, x1, y0 + corner)
+        edge(x1, y0 + corner, x1, y1 - corner, -1, 0)
+        path.quadTo(x1, y1, x1 - corner, y1)
+        edge(x1 - corner, y1, x0 + corner, y1, 0, -1)
+        path.quadTo(x0, y1, x0, y1 - corner)
+        edge(x0, y1 - corner, x0, y0 + corner, 1, 0)
+        path.quadTo(x0, y0, x0 + corner, y0)
         path.closeSubpath()
         return path
 
@@ -971,33 +986,49 @@ class ItemInteractionMixin:
         # stays visually pure black and only catches the eye at close range.
         p.save()
         p.setClipPath(shape)
-        wear_pen = QPen(QColor(44, 44, 44, 170), pen_width(max(0.7, min(1.4, w / 180.0))))
+        wear_pen = QPen(QColor(74, 74, 74, 125), pen_width(max(0.65, min(1.25, w / 190.0))))
         wear_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(wear_pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
-        count = max(2, min(10, int((w * h) / 4200.0)))
+        count = max(2, min(9, int((w * h) / 5000.0)))
         for _ in range(count):
             sx = x0 + rng.uniform(.10, .90) * w
             sy = y0 + rng.uniform(.12, .88) * h
-            p.drawLine(QPointF(sx, sy), QPointF(sx + rng.uniform(-5.0, 5.0),
-                                                sy + rng.uniform(-2.0, 2.0)))
+            # Tiny broken scratches / pits: two connected strokes read like
+            # weathered pixel stone without turning the block into a noisy
+            # grey texture.
+            ex = sx + rng.uniform(-5.0, 5.0)
+            ey = sy + rng.uniform(-2.5, 2.5)
+            p.drawLine(QPointF(sx, sy), QPointF(ex, ey))
+            if rng.random() < .45:
+                p.drawLine(QPointF(ex, ey), QPointF(ex + rng.uniform(-2.0, 2.0),
+                                                    ey + rng.uniform(-1.5, 1.5)))
         p.restore()
 
         # Grass silhouettes grow out of the block's upper edge, with an
         # occasional blade underneath.  Black keeps them one silhouette with
         # the wall, as in the reference tile.
-        grass = QPen(QColor(0, 0, 0), pen_width(max(0.8, min(1.5, w / 150.0))))
+        grass = QPen(QColor(0, 0, 0), pen_width(max(0.9, min(1.3, w / 150.0))))
         grass.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(grass)
-        blades = max(2, min(18, int(w / 22.0)))
-        for i in range(blades):
-            gx = x0 + (i + .5) * w / blades + rng.uniform(-w / (blades * 4.0),
-                                                            w / (blades * 4.0))
-            gh = rng.uniform(3.0, min(12.0, max(4.0, h * .20)))
-            lean = rng.uniform(-3.5, 3.5)
-            p.drawLine(QPointF(gx, y0 + 1.0), QPointF(gx + lean, y0 - gh))
-            if rng.random() < .42:
-                p.drawLine(QPointF(gx, y1 - 1.0), QPointF(gx - lean, y1 + gh * .65))
+        # Grow in a few uneven clumps instead of an evenly spaced picket
+        # fence.  This matches the tiny tufts on the reference tile and keeps
+        # the silhouette quiet at normal desktop scale.
+        clumps = max(2, min(8, int(w / 32.0) + rng.randint(0, 1)))
+        for _ in range(clumps):
+            base = x0 + rng.uniform(.08, .92) * w
+            blades = rng.randint(3, 5)
+            for j in range(blades):
+                gx = base + rng.uniform(-3.5, 3.5)
+                gh = rng.uniform(2.5, min(7.0, max(3.5, h * .13)))
+                lean = rng.uniform(-4.5, 4.5)
+                p.drawLine(QPointF(gx, y0 + 1.0), QPointF(gx + lean, y0 - gh))
+            if rng.random() < .22:
+                # An occasional underside blade gives large blocks the same
+                # worn, overgrown edge as the supplied reference.
+                gx = base + rng.uniform(-4.0, 4.0)
+                p.drawLine(QPointF(gx, y1 - 1.0), QPointF(gx + rng.uniform(-3, 3),
+                                                           y1 + rng.uniform(3, 7)))
 
     def _draw_walls(self, p):
         """手绘墙块：纯黑实心，边缘有稳定缺洼、磨损与少量杂草。"""
@@ -1016,7 +1047,6 @@ class ItemInteractionMixin:
 
     def _draw_wall_hint(self, p):
         """放墙预览：和庇护所一样拖出实心矩形（松手就落成同尺寸的墙块）。"""
-        from PySide6.QtCore import QRectF
         rc = self._wall_drag_rect()
         if rc is None:
             return
@@ -1027,7 +1057,11 @@ class ItemInteractionMixin:
         p.setOpacity(0.55)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(*WALL_COLOR))
-        p.drawRect(QRectF(x0, y0, x1 - x0, y1 - y0))
+        # Preview the same softened/chipped silhouette that will be committed
+        # on release, rather than switching to a sharp temporary rectangle.
+        seed = hash((round(x0, 2), round(y0, 2), round(x1, 2), round(y1, 2)))
+        shape = self._wall_shape(x0, y0, x1, y1, random.Random(seed))
+        p.drawPath(shape)
         p.restore()
 
     def clear_walls(self):
@@ -1052,12 +1086,55 @@ class ItemInteractionMixin:
         p.restore()
 
     def _draw_pole_rod(self, p, ax, ay, bx, by, rad):
-        """单层均一色杆体，无描边。"""
+        """纯黑圆角杆体，带极少量稳定磨损和一小撮杂草。
+
+        The rod's collision remains a single line.  The extra marks are drawn
+        as a separate cosmetic pass so they cannot affect hit testing or pole
+        climbing.
+        """
         core = QPen(QColor(*POLE_COLOR))
         core.setWidthF(pen_width(rad * 2.0))
-        core.setCapStyle(Qt.PenCapStyle.FlatCap)
+        core.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(core)
         p.drawLine(QPointF(ax, ay), QPointF(bx, by))
+
+        length = math.hypot(bx - ax, by - ay)
+        if length < 42.0:
+            return
+        seed = hash((round(ax, 1), round(ay, 1), round(bx, 1), round(by, 1)))
+        rng = random.Random(seed)
+        ux, uy = (bx - ax) / length, (by - ay) / length
+        nx, ny = -uy, ux
+
+        # Fine charcoal nicks break the machine-perfect line while retaining
+        # a pure-black main silhouette.
+        wear = QPen(QColor(70, 70, 70, 120), pen_width(0.7))
+        wear.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(wear)
+        for _ in range(min(3, max(1, int(length / 120.0)))):
+            t = rng.uniform(.16, .86)
+            cx, cy = ax + ux * length * t, ay + uy * length * t
+            span = rng.uniform(1.5, 3.2)
+            p.drawLine(QPointF(cx - nx * span, cy - ny * span),
+                       QPointF(cx + nx * span, cy + ny * span))
+
+        # One small tuft per long rod, positioned away from endpoints so
+        # crossing rods remain readable.  It is cosmetic only.
+        if length >= 90.0:
+            t = rng.uniform(.18, .82)
+            cx, cy = ax + ux * length * t, ay + uy * length * t
+            grass = QPen(QColor(0, 0, 0), pen_width(0.8))
+            grass.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(grass)
+            outward = -1.0 if abs(uy) < .5 else rng.choice((-1.0, 1.0))
+            for _ in range(rng.randint(3, 4)):
+                offset = rng.uniform(-2.0, 2.0)
+                lean = rng.uniform(-3.0, 3.0)
+                gh = rng.uniform(3.0, 6.5)
+                px, py = cx + ux * offset, cy + uy * offset
+                p.drawLine(QPointF(px, py),
+                           QPointF(px + nx * outward * gh + ux * lean,
+                                   py + ny * outward * gh + uy * lean))
 
     def _draw_pole_hint(self, p):
         cur = self.cursor_logical()
@@ -1647,7 +1724,7 @@ class ItemInteractionMixin:
 
     # ── 蜥蜴 ──
     def can_place_lizard(self) -> bool:
-        return True
+        return len(getattr(self, "lizards", ())) < LIZARD_MAX_TOTAL
 
     def place_lizard(self, lx, ly, breed=None):
         """放下一只蜥蜴；品种按 spawn_weight 加权随机（不再按次序轮换）。
@@ -1789,6 +1866,19 @@ class ItemInteractionMixin:
         surfaces = terrain.climb_surfaces()
         live = [lz for lz in self.lizards
                 if not lz.dead and lz.state == ItemState.FREE]
+        # 旧存档可能有超过新上限的蜥蜴；不删用户实体。只给 AI 设置
+        # 每帧预算，按整组轮转，使每只活蜥都能获得时间片；物理照常全量推进。
+        if len(live) > LIZARD_MAX_ACTIVE:
+            start = (int(tick) * LIZARD_MAX_ACTIVE) % len(live)
+            ai_live = [live[(start + i) % len(live)]
+                       for i in range(LIZARD_MAX_ACTIVE)]
+        else:
+            ai_live = live
+        # 尸体与鼠标拎起的个体仍需推进链体物理，但没有可执行的 AI 行为。
+        # 被放下后下一 tick 强制重扫，避免复用抓起前的旧目标快照。
+        for lz in self.lizards:
+            if lz.dead or lz.state != ItemState.FREE:
+                lz._scanned = False
         # 猎物归属快照（文档 §37）：同一 tick 内归属不会变，建一张 {猎物 id → 认领者}
         # 表全场共用，代替「每只蜥蜴 × 每个候选 × 所有同伴」跑 owns()。
         claims = {}
@@ -1799,7 +1889,7 @@ class ItemInteractionMixin:
         # ① 感知：所有蜥蜴看同一份世界快照。**扫描按 id 错峰降频**（文档 §37 AI
         #    时间片）：平均每 PERCEIVE_EVERY tick 重建一次观察，其余 tick 复用上次
         #    结果；地形 / 遮挡 / 同伴 / 归属这些便宜字段仍然逐 tick 刷新。
-        for lz in self.lizards:
+        for lz in ai_live:
             lz._claims = claims
             scan = lz.should_scan(tick)
             if scan:
@@ -1811,23 +1901,26 @@ class ItemInteractionMixin:
                         lizards=live, blockers=blockers,
                         surfaces=surfaces, terrain=terrain, tick=tick, scan=scan)
         # ② 决策；黄蜥在这一步之后广播猎物情报，同伴按自己的序号去包夹
-        for lz in self.lizards:
+        for lz in ai_live:
             lz.decide(self._WL, self._HL)
-        alerts = [a for a in (lz.offer_alert() for lz in self.lizards)
+        alerts = [a for a in (lz.offer_alert() for lz in ai_live)
                   if a is not None]
         for a in alerts:
-            for lz in self.lizards:
+            relayed = a.decayed(tick)
+            for lz in ai_live:
                 if lz.id != a.leader:
-                    lz.absorb_alert(a.decayed(tick))
+                    lz.absorb_alert(relayed)
         # ③ 执行：这时才真正改世界
+        ai_ids = {id(lz) for lz in ai_live}
         for lz in self.lizards:
-            lz.act(self._WL, self._HL, cursor=cur)
+            if id(lz) in ai_ids:
+                lz.act(self._WL, self._HL, cursor=cur)
             lz.step_physics(self._WL, self._HL, cursor=cur)
             self._lizard_bite(lz, tick)
             # 蜥蜴的猎物也上认领板（Lizard.intent）：全场只有一份「谁在追什么」
             obj_i, kind_i = lz.intent()
             board_for(self).register_actor(lz, obj_i, kind_i)
-        for lz in self.lizards:
+        for lz in ai_live:
             lz.camo_tick(self, tick)          # 白蜥迷彩：低频采背后背景色
         self._cull_flung_corpses()
         self.lizards = [lz for lz in self.lizards if lz.state != ItemState.GONE]

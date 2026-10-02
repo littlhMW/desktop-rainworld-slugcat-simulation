@@ -11,6 +11,7 @@ WAVE_SPEED_C = 1.0
 DAMPING = 0.99
 HEIGHT_CLAMP = 40.0
 TRIANGLE_WIDTH = 20.0     # 默认点间距
+MAX_RIPPLE_RINGS = 24     # 防止密集生物/雨滴把涟漪列表无限堆积
 
 
 class _RippleRing:
@@ -151,6 +152,11 @@ class WaterSurface:
     def ripple_ring(self, x: float, rad: float = 5.0, speed: float = 17.0,
                     width: float = 70.0, life_time: float = 20.0, intensity: float = 1.0) -> None:
         """加一个从 x 扩散的涟漪环。"""
+        # 入水、暴雨和第一滴冲击都会创建涟漪；大量生物同时入水时，
+        # 无上限列表会令每个物理 tick 和绘制都线性膨胀。旧环已接近淡出，
+        # 只保留有限个最新环即可维持视觉效果。
+        if len(self._rings) >= MAX_RIPPLE_RINGS:
+            self._rings.pop(0)
         self._rings.append(_RippleRing(x, rad, speed, width, life_time, intensity))
 
     def _step_rings(self):

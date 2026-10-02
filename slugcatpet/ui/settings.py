@@ -3,7 +3,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                                QCheckBox, QRadioButton, QButtonGroup, QFrame, QDialog,
                                QGridLayout, QSpinBox, QSlider)
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 from ..cats import REGISTRY, display_order, pickable_variants
 from ..i18n import t
@@ -315,12 +315,25 @@ class SettingsWindow(QWidget):
     def _section_meow(self, v):
         """Optional Push To Meow playback and AI-driven probability controls."""
         v.addWidget(self._header(t("settings_meow_section")))
+        self._waa_status_label = None
         audio = getattr(self._window, "meows", None)
         chk = QCheckBox(t("settings_meow_enable"))
         chk.setChecked(bool(getattr(audio, "enabled", False)))
         chk.setToolTip(t("settings_meow_tip"))
         chk.toggled.connect(self._on_meow_toggled)
-        v.addWidget(chk)
+        pets = list(getattr(self._window, "pets", ()))
+        only_survivor = (len(pets) == 1
+                         and getattr(pets[0], "variant", "") == "survivor")
+        enable_row = QHBoxLayout()
+        enable_row.addWidget(chk)
+        if only_survivor:
+            waa = QCheckBox(t("settings_waa_enable"))
+            waa.setChecked(bool(getattr(audio, "waa_enabled", False)))
+            waa.setToolTip(t("settings_waa_tip"))
+            waa.setEnabled(bool(getattr(audio, "waa_supported", False)))
+            waa.toggled.connect(self._on_waa_toggled)
+            enable_row.addWidget(waa)
+        v.addLayout(enable_row)
         status = QLabel(t("settings_meow_ready") if getattr(audio, "available", False)
                         else t("settings_meow_missing"))
         status.setObjectName("dim")
@@ -341,6 +354,31 @@ class SettingsWindow(QWidget):
         row.addWidget(label)
         v.addLayout(row)
         self._meow_slider = sld
+        if only_survivor:
+            self._waa_status_label = QLabel(t("settings_waa_" + audio.waa_status))
+            self._waa_status_label.setObjectName("dim")
+            self._waa_status_label.setWordWrap(True)
+            self._waa_status_label.setToolTip(audio.waa_detail)
+            v.addWidget(self._waa_status_label)
+            if audio.waa_status == "preparing":
+                QTimer.singleShot(500, self._refresh_waa_status)
+
+    def _refresh_waa_status(self):
+        audio = getattr(self._window, "meows", None)
+        label = getattr(self, "_waa_status_label", None)
+        if audio is None or label is None or not self.isVisible():
+            return
+        label.setText(t("settings_waa_" + audio.waa_status))
+        label.setToolTip(audio.waa_detail)
+        if audio.waa_status == "preparing":
+            QTimer.singleShot(500, self._refresh_waa_status)
+
+    def _on_waa_toggled(self, checked):
+        audio = getattr(self._window, "meows", None)
+        if audio is not None:
+            audio.set_waa_enabled(checked)
+            self._refresh_waa_status()
+            self._write_state()
 
     def _on_meow_toggled(self, checked):
         self._window.set_meows_enabled(checked)

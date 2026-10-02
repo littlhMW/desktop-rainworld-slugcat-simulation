@@ -1,27 +1,8 @@
 # -*- coding: utf-8 -*-
-"""左下角固定 HUD：雨眠计时器（雨循环）。
+"""左下角雨循环计时器：业力环、雨点和食物圈。
 
-布局照参考图（298×82 设计稿）来，几何全部用「参考单位」写下，绘制前统一乘
-``_layout_scale()``：
-
-  左 · 主圆环：环 + 等级符号是同一张 45×45 精灵（``ui`` 图集的 ``smallKarma*``，
-  与猫状态面板同一套业力图标）。等级 = 已完成的雨循环次数，1..10 夹紧。
-  环外一圈 17 个小圆点 = 当前阶段剩余时间：实心=剩余、空心=已消耗，从右上角
-  （约 1:30）起顺时针排，随时间推移从起点开始变空心。
-
-    征兆期与平静期在视觉上合并成同一个「平静期」环（整圈 = 整个专注期）；
-    暴雨期（集合段 + 雨眠段）单独一个环，一路走到雨停。
-    只有征兆期那一圈会动 —— 而且是柔和呼吸式的明暗，不是硬闪。
-
-  右 · 饥饿条：一排圆圈，竖线左侧是雨眠所需格数、右侧是总上限减去雨眠上限的格数；
-  实心格 = 当前饱食度，最后一格按 ``food_quarter`` 画 1/4 扇形。固定只显示第一只猫。
-  饥饿条正下方是倒计时数字（``MM:SS``，分钟补零），和一圈圆点读同一个剩余时间。
-
-数据全部来自 ``StormCycle.hud_info()``；这一层只负责画，不推进任何逻辑
-（Starvation 不接 ``food_eat()``）。绘制坐标是屏幕（逻辑）坐标，不跟 ``window._shake`` 晃。
-
-这一层不参与像素化滤镜：像素模式下由 ``window.paintEvent`` 在低分辨率缓冲放大**之后**
-再调它，层级最高，且圆点/描边用抗锯齿画，保持清晰。
+雨点数量和消失顺序参照 RainMeter.cs；绘制只读取 StormCycle.hud_info()。
+矩形背景和图形外缘的黑色微光缓存/分层绘制，不参与世界的像素化滤镜。
 """
 
 from __future__ import annotations
@@ -29,67 +10,70 @@ from __future__ import annotations
 import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPen, QRadialGradient
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
 
 from ..i18n import t
 
-HUD_W = 168.0        # 固定宽高：脏矩形要能在不算文字尺寸的前提下稳定取值
-HUD_H = 48.0
+HUD_W = 220.0        # 参考图的横向矩形；只包住计时器本体并留一小段右侧余量
+HUD_H = 55.0
 HUD_MARGIN = 10.0
 _LINE_H = 15.0
 _PAD = 3.0           # 面板内边距（逻辑像素）
 
-# ── 参考图几何（直接量参考图得到的像素坐标，见 work/scratch/w109meas.py）──
-#  主圆环：45×45（正好是 ui 图集 smallKarma* 精灵的整张大小，环宽 4）
-#  一圈 17 个圆点：拟合圆心 (36.2, 40.7)、半径 31.0；实心点 d≈4、空心点 d≈6.6
-#  饥饿条：第一格圆心 x=89、圆心距 30、外径 23（描边 2）、实心圆 d=11
-REF_X0 = 3.2             # 内容左边界（最左那个圆点的左沿）
-REF_Y0 = 7.7             # 内容上边界（最上那个圆点的上沿）
-REF_W = 292.5            # 内容宽（主圆环 + 示例的 7 格饥饿条）
-REF_H = 66.0             # 内容高
-RING_CX = 36.2           # 主圆环中心 x
-RING_CY = 40.7           # 主圆环中心 y
-RING_R = 31.0            # 一圈圆点所在半径
-DOTS = 17                # 一圈圆点个数
-DOT_R = 2.0              # 剩余的实心圆点半径
-DOT_HOLLOW_R = 3.0       # 已消耗的空心圆点半径
-DOT_PEN = 1.1            # 空心圆点描边宽
-KARMA_REF = 45.0         # karma 精灵边长（精灵里环外径就是 45，1:1 画回参考图尺寸）
-PIP_X0 = 89.0            # 第一格圆心 x
-PIP_PITCH = 30.0         # 格中心距
-PIP_D = 21.0             # 格椭圆盒直径（+2px 描边 = 参考图量到的 23 墨迹）
+# ── 参考图比例缩到 220×58 逻辑像素；圆点数量/顺序另按 RainMeter.cs ──
+REF_X0 = 3.0             # 内容左边界（最左那个圆点的左沿）
+REF_Y0 = 4.0             # 内容上边界（最上那个圆点的上沿）
+REF_W = 205.0            # 内容宽（主圆环 + 示例的 7 格饥饿条）
+REF_H = 50.0             # 内容高
+RING_CX = 27.0           # 主圆环中心 x
+RING_CY = 29.0           # 主圆环中心 y
+RING_R = 19.0            # 一圈圆点所在半径
+DOTS = 17                # 无效时的设计稿兜底；实际数量按 RainMeter.cs 计算
+DOT_R = 1.2              # 剩余的实心圆点半径
+KARMA_REF = 29.0         # karma 精灵边长
+PIP_X0 = 58.0            # 第一格圆心 x
+PIP_PITCH = 18.0         # 格中心距
+PIP_D = 12.0             # 格椭圆盒直径
 PIP_RING = 2.0           # 外圈描边宽
-PIP_CORE = 11.0          # 实心圆直径（外径的一半）
-PIP_CY = 41.0            # 格圆心 y
-DIV_EXTRA = 15.0         # 分隔线额外占宽
-DIV_H = 33.0             # 分隔线高（比圆圈高一截，和参考图一致）
-TIME_FONT = 14.0         # 倒计时字号（参考单位，≈ 格直径的 0.64，和参考图一致）
+PIP_CORE = 6.0           # 实心圆直径
+PIP_CY = 29.0            # 格圆心 y
+DIV_EXTRA = 8.0          # 分隔线额外占宽
+DIV_H = 22.0             # 分隔线高（比圆圈高一截）
+TIME_FONT = 14.0         # 保留数据接口；参考图不显示数字
 TIME_CY = 62.6           # 倒计时文字中心 y：饥饿条正下方
 TIME_TRACK = 1.0         # 字距（参考单位）
-DOT_START_DEG = -45.0   # 小圆点起点：右上角 1:30 方向，顺时针排
+DOT_START_DEG = -90.0   # RainMeter.cs:189：i=0 从正上方起，末颗落在右上
 BLINK_TICKS = 28         # 征兆期「呼吸」的半周期（40 tick/s → 0.7s 呼气，整次呼吸 1.4s）
 BLINK_DIM = 0.25         # 呼吸最暗那一档的透明度（是变暗，不是熄灭）
 KARMA_MIN = 1
 KARMA_MAX = 10           # 最低 1 级、最高 10 级
 
-_INK = QColor(238, 232, 214)
+_INK = QColor(245, 245, 245)
+_BACKDROP = None
 
 
 def _draw_backdrop(p, x0: float, y0: float) -> None:
-    """黑色柔光底：中心可读，四周用很宽的渐变融入桌面。"""
-    rx, ry = HUD_W * 0.5 + 50.0, HUD_H * 0.5 + 25.0
-    gradient = QRadialGradient(QPointF(0.0, 0.0), 1.0)
-    gradient.setColorAt(0.0, QColor(0, 0, 0, 175))
-    gradient.setColorAt(0.30, QColor(0, 0, 0, 170))
-    gradient.setColorAt(0.72, QColor(0, 0, 0, 86))
-    gradient.setColorAt(1.0, QColor(0, 0, 0, 0))
-    p.save()
-    p.translate(x0 + HUD_W * 0.5, y0 + HUD_H * 0.5)
-    p.scale(rx, ry)
-    p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(gradient)
-    p.drawEllipse(QPointF(0.0, 0.0), 1.0, 1.0)
-    p.restore()
+    """按矩形的圆角距离生成 8px 柔边，缓存后每帧只贴一次图。"""
+    global _BACKDROP
+    if _BACKDROP is None:
+        pad = 6
+        w, h = int(HUD_W) + pad * 2, int(HUD_H) + pad * 2
+        im = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
+        cx, cy = w * 0.5, h * 0.5
+        # 以矩形为基准的圆角 SDF；外侧只留窄窄的柔边，避免椭圆黑雾。
+        rx, ry, rad = HUD_W * 0.5 - 4.0, HUD_H * 0.5 - 4.0, 3.5
+        for y in range(h):
+            for x in range(w):
+                dx, dy = abs(x + 0.5 - cx) - rx, abs(y + 0.5 - cy) - ry
+                dist = math.hypot(max(dx, 0.0), max(dy, 0.0)) + min(max(dx, dy), 0.0) - rad
+                t = max(0.0, min(1.0, (4.5 - dist) / 7.0))
+                t = t * t * (3.0 - 2.0 * t)
+                u = x / float(w)
+                right_fade = (1.0 if u <= 0.38 else
+                              max(0.0, (1.0 - u) / 0.62) ** 1.8)
+                im.setPixel(x, y, int(190.0 * t * right_fade) << 24)
+        _BACKDROP = im
+    p.drawImage(QPointF(x0 - 6.0, y0 - 6.0), _BACKDROP)
 
 # 能画汉字的字体族（有其一才用中文文案）
 _CJK_FAMS = ("Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "SimSun",
@@ -112,8 +96,17 @@ def karma_frame(level: int) -> str:
     return ("smallKarma%d" % k) if k <= 4 else ("smallKarma%d-9" % k)
 
 
+def ring_count(info) -> int:
+    """RainMeter.cs:52-60：每 1200 tick 一颗，最多 30 颗。"""
+    try:
+        total = float((info or {}).get("ring_total") or 0.0)
+    except (TypeError, ValueError):
+        total = 0.0
+    return max(1, min(30, int(total / 1200.0))) if total > 0 else DOTS
+
+
 def ring_lit(info) -> int:
-    """主圆环外一圈里还剩几个实心的（0..DOTS）。"""
+    """RainMeter.cs:169-183：从末颗开始消失，第一颗最后消失。"""
     try:
         total = float((info or {}).get("ring_total") or 0.0)
         remain = float((info or {}).get("ring_remain") or 0.0)
@@ -122,11 +115,8 @@ def ring_lit(info) -> int:
     if total <= 0.0:
         return 0
     remain = max(0.0, min(total, remain))
-    progress = 1.0 - remain / total
-    if (info or {}).get("mode") == "storm":
-        return max(0, min(DOTS, int(math.ceil(progress * DOTS - 1e-6))))
-    consumed = max(0, min(DOTS, int(math.floor(progress * DOTS + 1e-6))))
-    return DOTS - consumed
+    count = ring_count(info)
+    return max(0, min(count, int(math.ceil(remain / total * count - 1e-9))))
 
 
 def pip_geometry(info):
@@ -204,33 +194,20 @@ def ring_opacity(info) -> float:
 
 
 def _draw_ring(p, info) -> None:
-    """主圆环外一圈小圆点：实心=剩余、空心=已消耗。
-
-    从右上角（约 1:30）起顺时针排；随时间推移从起点那一颗开始变空心。
-    征兆期这一圈整体柔和呼吸（见 ``ring_opacity``）。
-    """
+    """RainMeter.cs:189：正上方起逆时针排，末颗从右上开始消失。"""
     lit = ring_lit(info)
-    step = 360.0 / float(DOTS)
-    hollow_from = DOTS - lit
-    storm_mode = (info or {}).get("mode") == "storm"
-    hollow_pen = QPen(_INK)
-    hollow_pen.setWidthF(DOT_PEN)
+    count = ring_count(info)
+    step = 360.0 / float(count)
     p.save()
     _op = ring_opacity(info)
     if _op < 1.0:
         p.setOpacity(_op)        # 征兆期：整圈一起柔和呼吸
-    for i in range(DOTS):
-        a = math.radians(DOT_START_DEG + i * step)   # y 向下 = 顺时针
+    for i in range(lit):
+        a = math.radians(DOT_START_DEG - i * step)
         c = QPointF(RING_CX + RING_R * math.cos(a), RING_CY + RING_R * math.sin(a))
-        solid = (i < lit) if storm_mode else (i >= hollow_from)
-        if solid:
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(_INK)
-            p.drawEllipse(c, DOT_R, DOT_R)
-        else:
-            p.setPen(hollow_pen)
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawEllipse(c, DOT_HOLLOW_R, DOT_HOLLOW_R)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(_INK)
+        p.drawEllipse(c, DOT_R, DOT_R)
     p.restore()
 
 
@@ -375,8 +352,24 @@ def draw_storm_hud(p, win) -> None:
     p.translate(x0 + _PAD, y0 + (HUD_H - REF_H * s) * 0.5)
     p.scale(s, s)
     p.translate(-REF_X0, -REF_Y0)        # 参考坐标 -> 内容左上角
+    # 参考图中的白色计时器有一圈很轻的黑色外发光；先画一层扩大后的
+    # 黑色轮廓，再画正常内容。它只包住图形本身，不会变成整块椭圆阴影。
+    n, hib, pitch, d, xpip, div_x = pip_geometry(info)
+    p.save()
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    for width, opacity in ((3.5, 0.10), (2.2, 0.18)):
+        p.setOpacity(opacity)
+        glow_pen = QPen(QColor(0, 0, 0))
+        glow_pen.setWidthF(width)
+        p.setPen(glow_pen)
+        p.drawEllipse(QPointF(RING_CX, RING_CY), KARMA_REF * 0.5 + 0.5, KARMA_REF * 0.5 + 0.5)
+        for i in range(n):
+            cx = _pip_cx(i, hib, pitch, xpip)
+            p.drawEllipse(QPointF(cx, PIP_CY), d * 0.5, d * 0.5)
+        if div_x is not None:
+            p.drawLine(QPointF(div_x, PIP_CY - DIV_H * 0.5), QPointF(div_x, PIP_CY + DIV_H * 0.5))
+    p.restore()
     _draw_ring(p, info)
     _draw_karma(p, win, info)
     _draw_pips(p, info)
-    _draw_countdown(p, info)
     p.restore()

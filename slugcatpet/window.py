@@ -26,7 +26,7 @@ from .core.water import WaterSurface
 from .world.effects import EffectsMixin
 from .audio import MeowManager
 from .sfx import SoundManager
-from .world.items import ItemInteractionMixin
+from .world.items import ItemInteractionMixin, LIZARD_MAX_ACTIVE
 from .world.enums import ItemState
 from .world.rain import RainSystem
 from .world.shelter import Shelter, shelter_from_dict, template_of
@@ -872,7 +872,11 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
     def _advance(self, dt):
         """dt 累加器推进物理，存插值因子。"""
         self._t += dt
-        self._phys_acc += dt
+        # GUI 与物理在同一线程；高水位全屏混合或大量实体使一帧超过预算时，
+        # 必须丢弃过期的物理时间。旧实现只限制每帧 tick 数，却无限保留欠账，
+        # 停雨后便会连续补跑旧 tick，看起来像整个世界突然快进。
+        self._phys_acc = min(self._phys_acc + dt,
+                             self._MAX_TICKS * self._PHYS_DT)
         phys_dt = self._PHYS_DT
         ticks = 0
         while self._phys_acc >= phys_dt and ticks < self._MAX_TICKS:
@@ -1302,6 +1306,14 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             return
         self._spawn_timer = self._spawn_period_ticks()
         key = random.choice(sorted(self._spawn_kinds))
+        # 蜥蜴感知需要两两比较关系和遮挡，自动生成达到活体上限后等待
+        # 个体死亡/离场再补，避免设置成高频时把主循环拖入 O(n²) 爆炸。
+        if key == "lizard":
+            active = sum(1 for lz in self.lizards
+                         if not getattr(lz, "dead", False)
+                         and getattr(lz, "state", ItemState.FREE) == ItemState.FREE)
+            if active >= LIZARD_MAX_ACTIVE:
+                return
         fn = getattr(self, "place_" + key, None)
         if fn is None:                       # 旧的存档里留了已删掉的类型
             self._spawn_kinds.discard(key)
