@@ -59,7 +59,15 @@ class StormCycle:
     def __init__(self, enabled=False, focus_minutes=None, warning_minutes=None,
                  sleep_minutes=None):
         self.enabled = bool(enabled)
-        self.manual = False          # 环境面板手动触发，直到用户切换环境才结束
+        self.manual = False          # 环境面板手动覆盖层，直到用户切换环境才结束
+        # 手动暴雨与自动雨循环各自维护状态，避免手动放雨覆盖自动计时器。
+        self._manual_phase = GATHER
+        self._manual_phase_t = 0
+        self._manual_settle_t = 0
+        self._manual_rain_drive = 0.0
+        self._manual_pressure = 0.0
+        self._auto_rain_drive = 0.0
+        self._auto_pressure = 0.0
         self.focus_minutes = float(focus_minutes if focus_minutes is not None
                                    else tuning.STORM_FOCUS_MINUTES)
         self.warning_minutes = float(warning_minutes if warning_minutes is not None
@@ -106,7 +114,8 @@ class StormCycle:
 
         手动触发的暴雨不管 enabled，须由环境面板显式关闭。
         """
-        return (self.enabled or self.manual) and self.phase in (GATHER, SLEEP)
+        return ((self.enabled and self.phase in (GATHER, SLEEP))
+                or self.manual)
 
     @property
     def remaining(self):
@@ -128,6 +137,13 @@ class StormCycle:
         self.settle_t = 0
         self.rain_drive = 0.0
         self.pressure = 0.0
+        self._auto_rain_drive = 0.0
+        self._auto_pressure = 0.0
+        self._manual_phase = GATHER
+        self._manual_phase_t = 0
+        self._manual_settle_t = 0
+        self._manual_rain_drive = 0.0
+        self._manual_pressure = 0.0
         self._storm_dead_ids.clear()
         self._storm_penalty_applied = False
         self._storm_watch_ready = False
@@ -138,14 +154,15 @@ class StormCycle:
 
         暴雨保持到环境面板切换为其它选项；雨循环开关仍独立存在。
         """
-        if self.manual and self.phase in (GATHER, SLEEP):
+        if self.manual:
             return False
         self.manual = True
-        self.phase = GATHER
-        self.phase_t = 0
-        self.settle_t = 0
-        self.pressure = 1.0
-        self.rain_drive = max(self.rain_drive, 1.0 / self.rise_ticks)
+        self._manual_phase = GATHER
+        self._manual_phase_t = 0
+        self._manual_settle_t = 0
+        self._manual_pressure = 1.0
+        self._manual_rain_drive = max(self._manual_rain_drive,
+                                      1.0 / self.rise_ticks)
         self.cycle_id += 1          # 新一轮雨：window 会据此复位 first_drop_done
         self._storm_dead_ids.clear()
         self._storm_penalty_applied = False
@@ -158,10 +175,11 @@ class StormCycle:
         if not self.manual:
             return False
         self.manual = False
-        self.phase = FOCUS
-        self.phase_t = 0
-        self.settle_t = 0
-        self.pressure = 0.0
+        self._manual_phase = GATHER
+        self._manual_phase_t = 0
+        self._manual_settle_t = 0
+        self._manual_pressure = 0.0
+        self._manual_rain_drive = 0.0
         self._storm_dead_ids.clear()
         self._storm_penalty_applied = False
         self._storm_watch_ready = False
@@ -191,7 +209,12 @@ class StormCycle:
     # ── 推进 ──
     def step(self, pets, shelters):
         shelters = [sh for sh in (shelters or ()) if sh is not None]
-        if not (self.enabled or self.manual):
+        # The legacy helpers operate on public values.  Seed them with the
+        # automatic layer, run that state machine, then merge the manual layer
+        # below; this keeps phase/phase_t untouched by a manual storm.
+        self.rain_drive = self._auto_rain_drive
+        self.pressure = self._auto_pressure
+        if not self.enabled and not self.manual:
             # 关掉：雨收回、门打开，但相位不前进。
             # 没有庇护所不再冻结相位 —— 雨照跑，只是没门可关、没安全区可躲。
             self.pressure = 0.0
@@ -199,13 +222,53 @@ class StormCycle:
             for sh in shelters:
                 if sh.door_state in (CLOSED, CLOSING):
                     sh.start_opening()
-            return
-        if self.phase == FOCUS:
-            self._step_focus(shelters)
-        elif self.phase == GATHER:
-            self._step_gather(pets, shelters)
+        elif self.enabled:
+            if self.phase == FOCUS:
+                self._step_focus(shelters)
+            elif self.phase == GATHER:
+                self._step_gather(pets, shelters)
+            else:
+                self._step_sleep(shelters)
+        self._auto_rain_drive = max(0.0, min(1.0, self.rain_drive))
+        self._auto_pressure = max(0.0, min(1.0, self.pressure))
+
+        if self.manual:
+            self._step_manual(pets, shelters)
         else:
-            self._step_sleep(shelters)
+            self._manual_pressure = 0.0
+            self._manual_rain_drive = 0.0
+        self.pressure = max(self._auto_pressure, self._manual_pressure)
+        self.rain_drive = max(self._auto_rain_drive, self._manual_rain_drive)
+
+    def _step_manual(self, pets, shelters):
+        """Advance the persistent manual storm overlay without changing phase."""
+        self._manual_pressure = 1.0
+        self._manual_rain_drive = min(
+            1.0, self._manual_rain_drive + 1.0 / self.rise_ticks)
+        self._manual_phase_t += 1
+        if self._manual_phase == SLEEP:
+            for sh in shelters:
+                if sh.door_state == OPENING:
+                    sh.start_closing()
+            return
+        if not shelters:
+            if self._manual_rain_drive >= 1.0:
+                self._manual_phase = SLEEP
+            return
+        if all(sh.door_closed for sh in shelters):
+            self._manual_settle_t += 1
+            if self._manual_settle_t >= self.settle_ticks:
+                self._manual_phase = SLEEP
+                self._manual_phase_t = 0
+                self._manual_settle_t = 0
+            return
+        self._manual_settle_t = 0
+        if any(sh.door_state == CLOSING for sh in shelters):
+            return
+        if (self._manual_phase_t >= self.gather_timeout
+                or _all_inside(pets, shelters)):
+            for sh in shelters:
+                sh.start_closing()
 
     def _step_focus(self, shelters):
         self.phase_t += 1
@@ -256,17 +319,7 @@ class StormCycle:
                 sh.start_closing()
 
     def _step_sleep(self, shelters):
-        # 手动环境效果不是雨循环的定时暴雨：一直维持峰值，直到用户切换环境。
-        # phase_t 仍推进，便于存档恢复和诊断；HUD 本来就不展示手动倒计时。
         self.phase_t += 1
-        if self.manual:
-            self.pressure = 1.0
-            self.rain_drive = min(1.0, self.rain_drive + 1.0 / self.rise_ticks)
-            for sh in shelters:
-                if sh.door_state == OPENING:
-                    sh.start_closing()
-            return
-
         self.pressure = 1.0
         remain = self.sleep_ticks - self.phase_t
         if remain <= self.fade_ticks:
@@ -302,9 +355,10 @@ class StormCycle:
 
         环境面板手动放的那场仍然不给倒计时。
         """
-        if not self.enabled and not self.manual:
-            return None
-        if self.manual and self.phase in (GATHER, SLEEP):
+        # The timer belongs to the automatic cycle.  A manual storm can cover
+        # the world while this countdown remains visible and keeps its own
+        # phase/remaining time.
+        if not self.enabled:
             return None
         warn = self.warning_ticks
         if self.phase == FOCUS:
@@ -348,12 +402,17 @@ class StormCycle:
                                    if first is not None else 0),
                 "starvation": (need + 3) // 4,
                 "hungry": need > 0,
-                "storm": self.phase in (GATHER, SLEEP)}
+                "storm": self.active}
 
     # ── 存档 ──
     def to_dict(self):
         return {"enabled": bool(self.enabled), "manual": bool(self.manual),
                 "phase": self.phase, "phase_t": int(self.phase_t),
+                "auto_phase": self.phase, "auto_phase_t": int(self.phase_t),
+                "manual_phase": self._manual_phase,
+                "manual_phase_t": int(self._manual_phase_t),
+                "manual_rain_drive": float(self._manual_rain_drive),
+                "auto_rain_drive": float(self._auto_rain_drive),
                 "cycles_done": int(self.cycles_done),
                 "settle_t": int(self.settle_t),
                 "rain_drive": float(self.rain_drive),
@@ -366,25 +425,47 @@ class StormCycle:
             return
         self.enabled = bool(d.get("enabled", self.enabled))
         self.manual = bool(d.get("manual", False))
-        if d.get("phase") in (FOCUS, GATHER, SLEEP):
-            self.phase = d["phase"]
+        raw_phase = d.get("phase")
+        if raw_phase in (FOCUS, GATHER, SLEEP):
+            self.phase = raw_phase
+        # New saves carry the automatic phase explicitly.  Old saves stored
+        # the manual phase in this slot; restore those to a neutral focus
+        # phase so enabling the cycle does not jump into a phantom storm.
+        auto_phase = d.get("auto_phase")
+        if auto_phase in (FOCUS, GATHER, SLEEP):
+            self.phase = auto_phase
+        elif self.manual and raw_phase in (GATHER, SLEEP):
+            self.phase = FOCUS
         try:
             self.cycles_done = max(0, int(d.get("cycles_done", self.cycles_done)))
         except Exception:
             pass
         try:
-            self.phase_t = max(0, int(d.get("phase_t", 0)))
+            phase_t_key = "auto_phase_t" if "auto_phase_t" in d else "phase_t"
+            self.phase_t = max(0, int(d.get(phase_t_key, 0)))
             self.settle_t = max(0, int(d.get("settle_t", 0)))
-            self.rain_drive = max(0.0, min(1.0, float(d.get("rain_drive", 0.0))))
+            saved_drive = float(d.get("rain_drive", 0.0))
+            self._auto_rain_drive = max(0.0, min(1.0, float(
+                d.get("auto_rain_drive", saved_drive if not self.manual else 0.0))))
+            self._auto_pressure = 0.0
+            self.rain_drive = self._auto_rain_drive
         except Exception:
             pass
         if self.manual:
-            # 旧版可能在 manual=true 时存成 FOCUS；恢复时维持手动暴雨。
-            # GATHER 仍沿用其强度爬升，SLEEP 则不受旧存档 fade 值影响。
-            if self.phase == FOCUS:
-                self.phase = SLEEP
-            self.pressure = 1.0
-            if self.phase == SLEEP:
-                self.rain_drive = 1.0
+            old_manual_phase = raw_phase if raw_phase in (GATHER, SLEEP) else GATHER
+            mp = d.get("manual_phase", old_manual_phase)
+            self._manual_phase = mp if mp in (GATHER, SLEEP) else GATHER
+            self._manual_phase_t = max(0, int(d.get("manual_phase_t", 0)))
+            self._manual_rain_drive = max(1.0 / self.rise_ticks,
+                                          min(1.0, float(d.get(
+                                              "manual_rain_drive", 1.0))))
+            self._manual_pressure = 1.0
+            self.pressure = max(self._auto_pressure, self._manual_pressure)
+            self.rain_drive = max(self._auto_rain_drive, self._manual_rain_drive)
+        else:
+            self._manual_phase = GATHER
+            self._manual_phase_t = 0
+            self._manual_rain_drive = 0.0
+            self._manual_pressure = 0.0
         self.set_durations(d.get("focus_minutes"), d.get("warning_minutes"),
                            d.get("sleep_minutes"))
