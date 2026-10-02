@@ -140,6 +140,26 @@ _STR = {
                               "en": "Could not add {variant}: {why}"},
     "settings_remove_confirm": {"zh": "确定移除 {name}？", "en": "Remove {name}?"},
     "settings_env_section":  {"zh": "环境效果", "en": "Environment"},
+    "settings_mouse_section": {"zh": "鼠标权限", "en": "Mouse permissions"},
+    "settings_mouse_interaction": {"zh": "允许蛞蝓猫与鼠标互动",
+                                    "en": "Allow slugcats to interact with the cursor"},
+    "settings_mouse_interaction_tip": {
+        "zh": "允许抓取、击落、攀爬、攻击或舔舐鼠标。",
+        "en": "Allows grabbing, knocking down, climbing, attacking or licking the cursor."},
+    "settings_mouse_attention": {"zh": "允许蛞蝓猫注意鼠标",
+                                  "en": "Allow slugcats to notice the cursor"},
+    "settings_mouse_attention_tip": {
+        "zh": "允许看向和追逐鼠标；关闭后 AI 不会把鼠标作为目标。",
+        "en": "Allows looking at and chasing the cursor; off removes it from AI goals."},
+    "settings_mouse_passthrough": {"zh": "允许鼠标穿透桌宠窗口",
+                                    "en": "Allow the cursor to pass through the pet window"},
+    "settings_mouse_passthrough_tip": {
+        "zh": "开启后空白区域点击会传给桌面；关闭后窗口区域始终接收鼠标。",
+        "en": "When enabled, blank areas pass clicks to the desktop; off keeps the window interactive."},
+    "settings_pause_world": {"zh": "暂停世界", "en": "Pause world"},
+    "settings_pause_world_tip": {
+        "zh": "暂停 AI、物理、环境和雨循环；设置与状态面板仍可查看。",
+        "en": "Pause AI, physics, environment and rain cycles while keeping the UI visible."},
     "settings_env_none":     {"zh": "无", "en": "None"},
     "settings_snow":         {"zh": "暴风雪", "en": "Blizzard"},
     "settings_zerog":        {"zh": "无重力", "en": "Zero gravity"},
@@ -320,8 +340,6 @@ _STR = {
     "tray_settings": {"zh": "设置", "en": "Settings"},
     "tray_hud":     {"zh": "显示/隐藏状态面板 (Ctrl+Alt+H)", "en": "Show/Hide status panel (Ctrl+Alt+H)"},
     "tray_quit":    {"zh": "退出程序", "en": "Quit program"},
-    "tray_abort":   {"zh": "中止光标劫持 (Ctrl+Alt+Q)", "en": "Abort cursor hijack (Ctrl+Alt+Q)"},
-    "tray_hijack":  {"zh": "允许劫持光标", "en": "Allow cursor hijack"},
     "tray_started": {"zh": "已启动。被超度的光标按 Ctrl+Alt+Q 解除；Ctrl+Alt+X 退出程序。",
                      "en": "Launched. Press Ctrl+Alt+Q to release a salvaged cursor; Ctrl+Alt+X to quit the program."},
 

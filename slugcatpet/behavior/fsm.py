@@ -1030,6 +1030,12 @@ class BehaviorFSM:
 
     def update(self, cursor):
         self.cursor = cursor
+        cursor_interaction = bool(getattr(
+            self.win, "cursor_cat_interaction_allowed",
+            getattr(self.win, "cursor_hijack_allowed", True)))
+        if not cursor_interaction and self.state == "CursorLick":
+            self._break_active_controllers()
+            self._transition("IdleStand")
         for fn in self._ext_tickers:
             fn()
         self._squid_lift_tick()      # 叼着活蝉乌贼：扑翅托举 + 水平拖拽（原版 LiftPlayerPower）
@@ -1049,6 +1055,8 @@ class BehaviorFSM:
         self._prev_zerog = z
 
         # ── 决策：唯一入口。保命 → 该做的事（见 behavior/action.py）──
+        # The action context receives the attention target; individual cursor
+        # interaction gates decide whether it may be touched or used.
         ctx = ActionContext(self, cursor)
         self._storm_lockdown(ctx)
         self.actions.tick()
@@ -1810,7 +1818,8 @@ class BehaviorFSM:
         self._lick_dwell_need = _lerpmap(self.body.temper, -1.0, 1.0,
                                          LICK_DWELL * 1.5, LICK_DWELL * 0.5)
     def _act_cursorlick_gate(self, ctx):
-        return ("CursorLick" in self._ext_states
+        return (getattr(self.win, "cursor_cat_interaction_allowed", True)
+                and "CursorLick" in self._ext_states
                 and self.state == "IdleStand" and not self.grab.active and not self._exhausted
                 and not self._zerog()
                 and self._relick_cooldown <= 0 and self._dwell >= self._lick_dwell_need
@@ -2875,6 +2884,8 @@ class BehaviorFSM:
         throwDir、不翻滚），只是飞行途中穿过光标就挂上去；甩鼠标（光标一 tick
         位移超过阈值）会把它甩下来，之后照常自由落体（见 items._step_cursor_pin）。
         """
+        if not getattr(self.win, "cursor_cat_interaction_allowed", True):
+            return False
         b = self.body
         if (b.carried_spear is None and b.back_spear is not None
                 and not self._no_spear()):
@@ -4062,6 +4073,8 @@ class BehaviorFSM:
 
     def _cursor_point_ok(self) -> bool:
         """鼠标得在猫附近停够久才允许指它；拖着别的猫时门槛降低。"""
+        if not getattr(self.win, "cursor_cat_interaction_allowed", True):
+            return False
         need = float(tuning.CURSOR_POINT_DWELL)
         if self._peer_dragged():
             need *= tuning.DRAGGED_PEER_POINT_FAC
@@ -4121,7 +4134,8 @@ class BehaviorFSM:
     def _postthrow_point(self, cursor):
         """投掷后仍举着手瞄着鼠标（原版 40px 内松手），只是「指向」不是指指点点。"""
         self.gfx.face_special = False
-        if cursor is None:
+        if (cursor is None
+                or not getattr(self.win, "cursor_cat_interaction_allowed", True)):
             self._clear_hands()
             return
         d = math.hypot(cursor[0] - self.body.chunk0.x, cursor[1] - self.body.chunk0.y)
@@ -5236,7 +5250,10 @@ class BehaviorFSM:
         ctx.skip_from(self.actions.keys(BAND_NEED))
     def _storm_phase(self):
         st = getattr(self.win, "storm", None)
-        return getattr(st, "phase", "focus") if st is not None else "focus"
+        if st is None:
+            return "focus"
+        fn = getattr(st, "behavior_phase", None)
+        return fn() if fn is not None else getattr(st, "phase", "focus")
 
     def _storm_shelter(self):
         """离自己最近的那间庇护所（现在只有一间，多间时自动选近的）。"""
@@ -7084,6 +7101,10 @@ class BehaviorFSM:
 
     def _st_chasecursor(self, cursor, disturbed):
         b = self.body
+        if cursor is None:
+            self._cursor_plan_end()
+            self._transition("IdleStand")
+            return
         if self.grab.active:
             self._cursor_plan_end()
             self._clear_hands()

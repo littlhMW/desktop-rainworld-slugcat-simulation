@@ -117,6 +117,12 @@ class StormCycle:
         return ((self.enabled and self.phase in (GATHER, SLEEP))
                 or self.manual)
 
+    def behavior_phase(self):
+        """返回 AI 使用的有效相位；手动暴雨覆盖行为，不改自动计时器。"""
+        if self.manual:
+            return self._manual_phase
+        return self.phase
+
     @property
     def remaining(self):
         return max(0, self.focus_ticks - self.phase_t) if self.phase == FOCUS else 0
@@ -214,14 +220,14 @@ class StormCycle:
         # below; this keeps phase/phase_t untouched by a manual storm.
         self.rain_drive = self._auto_rain_drive
         self.pressure = self._auto_pressure
-        if not self.enabled and not self.manual:
-            # 关掉：雨收回、门打开，但相位不前进。
-            # 没有庇护所不再冻结相位 —— 雨照跑，只是没门可关、没安全区可躲。
+        if not self.enabled:
+            # 自动循环关闭时只收回自动层；手动覆盖层仍独立运行。
             self.pressure = 0.0
             self.rain_drive = max(0.0, self.rain_drive - 1.0 / self.fade_ticks)
-            for sh in shelters:
-                if sh.door_state in (CLOSED, CLOSING):
-                    sh.start_opening()
+            if not self.manual:
+                for sh in shelters:
+                    if sh.door_state in (CLOSED, CLOSING):
+                        sh.start_opening()
         elif self.enabled:
             if self.phase == FOCUS:
                 self._step_focus(shelters)

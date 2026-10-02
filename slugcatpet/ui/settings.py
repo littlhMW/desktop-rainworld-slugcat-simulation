@@ -94,6 +94,8 @@ class SettingsWindow(QWidget):
         left.addStretch(1)
         self._section_env(right)
         right.addWidget(self._divider())
+        self._section_mouse(right)
+        right.addWidget(self._divider())
         self._section_storm(right)
         right.addWidget(self._divider())
         self._section_ai(right)
@@ -278,6 +280,31 @@ class SettingsWindow(QWidget):
         btn = QPushButton(t("settings_storm_apply"))
         btn.clicked.connect(self._on_storm_apply)
         v.addWidget(btn)
+
+    def _section_mouse(self, v):
+        """独立控制鼠标交互、AI 注意和窗口穿透。"""
+        v.addWidget(self._header(t("settings_mouse_section")))
+        w = self._window
+        interaction = QCheckBox(t("settings_mouse_interaction"))
+        interaction.setChecked(bool(getattr(w, "cursor_cat_interaction_allowed", True)))
+        interaction.setToolTip(t("settings_mouse_interaction_tip"))
+        interaction.toggled.connect(w.set_cursor_cat_interaction_allowed)
+        v.addWidget(interaction)
+        attention = QCheckBox(t("settings_mouse_attention"))
+        attention.setChecked(bool(getattr(w, "cursor_cat_attention_allowed", True)))
+        attention.setToolTip(t("settings_mouse_attention_tip"))
+        attention.toggled.connect(w.set_cursor_cat_attention_allowed)
+        v.addWidget(attention)
+        passthrough = QCheckBox(t("settings_mouse_passthrough"))
+        passthrough.setChecked(bool(getattr(w, "cursor_passthrough_allowed", True)))
+        passthrough.setToolTip(t("settings_mouse_passthrough_tip"))
+        passthrough.toggled.connect(w.set_cursor_passthrough_allowed)
+        v.addWidget(passthrough)
+        pause = QCheckBox(t("settings_pause_world"))
+        pause.setChecked(bool(getattr(w, "world_paused", False)))
+        pause.setToolTip(t("settings_pause_world_tip"))
+        pause.toggled.connect(w.set_world_paused)
+        v.addWidget(pause)
 
     def _on_storm_toggled(self, checked):
         self._window.set_storm_enabled(checked)

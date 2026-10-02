@@ -21,10 +21,9 @@ class EffectsMixin:
 
     def start_cursor_hijack(self, logical_x, logical_y, lock_ticks=None,
                             restore_on_land=False):
-        # Programmatic pointer locks are a passthrough concern.  Cat
-        # interaction/attention can be disabled independently without
-        # breaking Saint/Rivulet cursor effects that do not involve AI input.
-        if not getattr(self, "cursor_passthrough_allowed",
+        # A cat may lock the OS cursor only when direct cursor interaction is
+        # enabled.  Attention and window pass-through remain independent.
+        if not getattr(self, "cursor_cat_interaction_allowed",
                        getattr(self, "cursor_hijack_allowed", True)):
             return None
         from ..platform.cursorfx import CursorHijack, release_others
@@ -39,7 +38,7 @@ class EffectsMixin:
             restore_on_land=restore_on_land, **kw)
 
     def start_cursor_hold(self, logical_x, logical_y, max_ticks):
-        if not getattr(self, "cursor_passthrough_allowed",
+        if not getattr(self, "cursor_cat_interaction_allowed",
                        getattr(self, "cursor_hijack_allowed", True)):
             return None
         from ..platform.cursorfx import CursorHijack, release_others
@@ -99,7 +98,7 @@ class EffectsMixin:
                                 if b.update(surf.level_at(b.x), self._bubble_rng)]
 
         if (self.cursor_hijack is not None
-                and not getattr(self, "cursor_passthrough_allowed",
+                and not getattr(self, "cursor_cat_interaction_allowed",
                                 getattr(self, "cursor_hijack_allowed", True))):
             self.cursor_hijack.release()
             self.cursor_hijack = None
