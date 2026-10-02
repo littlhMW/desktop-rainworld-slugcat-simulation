@@ -285,14 +285,13 @@ class PetUnit:
             b.stop_walk()
             b.crawl_want = False
             b.pole_move = 0
-            if b.animation in ("Flip", "Roll", "BellySlide", "CrawlTurn"):
-                b.animation = None
-                b._flip_spin = 0
-            if b.on_floor():
-                b.standing = True
             b.sleeping = False
             g.sleeping = False
-            g.look_at = None
+            # Waa blocks only fresh locomotion intent.  Keep the normal body
+            # integrator untouched so dragging, gravity, collisions, water,
+            # and external impulses still move the cat.  The audio manager
+            # supplies the living green lizard's head position each frame.
+            g.look_at = getattr(self, "_waa_look_at", None)
         if self.controlled and not waa_lock:
             # FSM 冻结期同步晕态
             g.stunned = b.stun > 0

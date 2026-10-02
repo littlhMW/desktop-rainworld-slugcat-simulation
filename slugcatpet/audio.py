@@ -241,6 +241,27 @@ class MeowManager:
         return False
 
     @staticmethod
+    def _waa_lizard_focus(pet):
+        """Return the unique green lizard's current head position.
+
+        The focus is exposed to ``PetUnit.step`` as a look target.  It is a
+        visual intent only: it never writes body coordinates or participates
+        in movement physics, so dragging the cat and external impulses remain
+        fully effective during the call.
+        """
+        lizard = MeowManager._waa_green_lizard(pet)
+        if lizard is None:
+            return None
+        x = getattr(lizard, "head_x", None)
+        y = getattr(lizard, "head_y", None)
+        if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+            x = getattr(lizard, "x", None)
+            y = getattr(lizard, "y", None)
+        if not isinstance(x, (int, float)) or not isinstance(y, (int, float)):
+            return None
+        return float(x), float(y)
+
+    @staticmethod
     def _pet_in_threat(pet) -> bool:
         beh = getattr(pet, "behavior", None)
         if beh is None:
@@ -366,6 +387,7 @@ class MeowManager:
         # same frame by lizard perception and only lasts while SU_7 plays.
         for pet in pets:
             setattr(pet, "_waa_active", False)
+            setattr(pet, "_waa_look_at", None)
             gfx = getattr(pet, "gfx", None)
             if gfx is not None:
                 gfx.waa_active = False
@@ -415,6 +437,7 @@ class MeowManager:
                     gfx.meow_t = max(getattr(gfx, "meow_t", 0), 6)
                     gfx.waa_time = waa_time
                     gfx.waa_active = True
+                setattr(pet, "_waa_look_at", self._waa_lizard_focus(pet))
                 setattr(pet, "_waa_active", True)
             return
         if not self.enabled or not self.available:
