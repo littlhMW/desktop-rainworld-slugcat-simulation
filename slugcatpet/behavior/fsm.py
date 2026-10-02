@@ -3147,6 +3147,12 @@ class BehaviorFSM:
         if self.grab.active:
             self._transition("Dragged")
             return
+        # FaceThreat can interrupt a pole action on the same tick.  If the
+        # controller was released after the state transition, the body may still
+        # carry the on_pole flag for one frame; release it here so RouteExecutor
+        # does not return GIVEUP forever while FleeLizard waits out its timeout.
+        if getattr(b, "on_pole", False):
+            self._pole_release()
         lz = self._flee_from
         alive = lz is not None and getattr(lz, "state", None) == ItemState.FREE
         if (not alive) or self.timer >= FLEE_MAX_TICKS or self._safe_from(lz):
