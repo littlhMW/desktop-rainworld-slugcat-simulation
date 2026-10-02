@@ -26,15 +26,41 @@ def _free_launch_hit(arc, gx, gy, launch_y, xmin, xmax, radius):
 
 
 def _arc_hits_solids(arc, launch_x, launch_y, radius=None):
-    """检查完整跳弧是否穿过统一实心地形。"""
+    """检查完整跳弧是否穿过统一实心地形。
+
+    ``arc.points`` 是离散轨迹采样；只检查采样点会漏掉采样点之间的墙。
+    这里额外扫每一小段线段，和物理层共用 ``cat_solids`` 的 AABB 口径。
+    """
     r = float(radius if radius is not None else chunkphys.RAD0)
-    for px, py in arc.points:
+    pts = tuple(arc.points or ())
+    if not pts:
+        return False
+
+    def hit(x, y, rect):
+        x0, y0, x1, y1 = rect
+        x0, x1 = sorted((float(x0), float(x1)))
+        y0, y1 = sorted((float(y0), float(y1)))
+        return not (x + r <= x0 or x - r >= x1
+                    or y + r <= y0 or y - r >= y1)
+
+    for i, (px, py) in enumerate(pts):
         x = launch_x + px
         y = launch_y + py
-        for x0, y0, x1, y1 in chunkphys.cat_solids():
-            if x + r <= x0 or x - r >= x1 or y + r <= y0 or y - r >= y1:
-                continue
+        if any(hit(x, y, rect) for rect in chunkphys.cat_solids()):
             return True
+        if i == 0:
+            continue
+        ppx, ppy = pts[i - 1]
+        x0 = launch_x + ppx
+        y0 = launch_y + ppy
+        n = max(1, int(math.ceil(math.hypot(x - x0, y - y0)
+                                / max(1.0, r * 0.75))))
+        for k in range(1, n):
+            t = k / float(n)
+            sx = x0 + (x - x0) * t
+            sy = y0 + (y - y0) * t
+            if any(hit(sx, sy, rect) for rect in chunkphys.cat_solids()):
+                return True
     return False
 
 

@@ -21,6 +21,8 @@ def _walk_crosses_solid(x0, x1, foot_y, body_h=None):
     step = float(getattr(tuning, "WALK_STEP_UP", 8.0))
     r = max(1.0, float(getattr(chunkphys, "RAD1", 8.0)))
     for x0s, y0s, x1s, y1s in chunkphys.cat_solids():
+        x0s, x1s = sorted((float(x0s), float(x1s)))
+        y0s, y1s = sorted((float(y0s), float(y1s)))
         if x1s <= x0s or y1s <= y0s:
             continue
         if x1s <= lo or x0s >= hi:

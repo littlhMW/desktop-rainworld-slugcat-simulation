@@ -41,6 +41,11 @@ class PoleClimber(PoleController):
         self._cross_roll = None      # 本次经过交点的换杆掷骰结果（离开交点重置）
         # 刚从横杆换过来时先离开交点，否则会在交点被反复换回去（卡死）
         self._cross_armed = (start != "climb")
+        # 竖杆和横杆一样需要一个明确的「停住」相：旧实现只会持续向上
+        # 写入速度，低体力或目标完成时也要等到杆顶才收势，表现为一直爬、
+        # 无法向下。hold 会钉住身体但不锁死控制器，随后可 request_descend。
+        self.stop_requested = False
+        self._hold_ticks = 0
         if start == "climb" and pole is not None:
             self._grab()          # 交叉杆从横杆直接转竖杆，不重走 approach
 
@@ -75,6 +80,10 @@ class PoleClimber(PoleController):
             return False
 
         if self.phase == "climb":
+            if want_dismount and self.timer > 12:
+                # 体力见底时允许在任意高度主动下杆，而不是先爬到顶再掉落。
+                self._begin_descend()
+                return False
             self._drive_climb()
             hp = None if self.no_handoff else self._cross_hpole()
             if hp is None:
@@ -99,6 +108,13 @@ class PoleClimber(PoleController):
         if self.phase == "descend":
             return self._drive_descend()
 
+        if self.phase == "hold":
+            if want_dismount:
+                self._begin_descend()
+                return False
+            self._drive_hold()
+            return False
+
         return False
 
     def _grab(self):
@@ -117,6 +133,7 @@ class PoleClimber(PoleController):
     def _drive_climb(self):
         b = self.body
         c0, c1 = b.chunk0, b.chunk1
+        b.pole_move = 1
         tx = self.pole.x + b.facing * SIDE_OFF
         c0.vx = 0.0
         c0.x = (c0.x + tx) / 2.0
@@ -125,6 +142,43 @@ class PoleClimber(PoleController):
         c0.vy += -1.0 * b.stats.pole_fac    # 爬升推进×种族因子，抗重力项不缩放
         c0.vy += -(1.0 + GRAV)
         c1.vy += (1.0 - GRAV)
+        if self.stop_requested:
+            self._begin_hold()
+
+    def request_stop(self):
+        """停在当前高度，播放竖杆静止姿态（供 AI 目标完成时调用）。"""
+        self.stop_requested = True
+
+    def request_descend(self):
+        """在当前高度转入下杆；不瞬移、不把猫锁在杆上。"""
+        self.stop_requested = True
+        if self.phase in ("climb", "hold", "tip"):
+            self._begin_descend()
+
+    def _begin_hold(self):
+        b = self.body
+        c0, c1 = b.chunk0, b.chunk1
+        self.phase = "hold"
+        self.stop_requested = False
+        self._hold_ticks = 0
+        b.animation = "ClimbOnBeam"
+        b.pole_move = 0
+        # 与杆保持原版抓杆姿势，停住时双 chunk 必须由杆控制，不能让重力
+        # 在下一帧把猫从杆上拉开。
+        c0.pinned = c1.pinned = True
+        c0.vx = c0.vy = c1.vx = c1.vy = 0.0
+
+    def _drive_hold(self):
+        b = self.body
+        c0, c1 = b.chunk0, b.chunk1
+        self._hold_ticks += 1
+        b.pole_move = 0
+        b.animation = "ClimbOnBeam"
+        tx = self.pole.x + b.facing * SIDE_OFF
+        c0.pinned = c1.pinned = True
+        c0.x = (c0.x + tx) * 0.5
+        c1.x = (c1.x * 7.0 + tx) / 8.0
+        c0.vx = c0.vy = c1.vx = c1.vy = 0.0
 
     def _enter_tip(self):
         b = self.body
@@ -278,6 +332,8 @@ class PoleClimber(PoleController):
     def _drive_descend(self):
         b = self.body
         c0, c1 = b.chunk0, b.chunk1
+        b.pole_move = -1
+        b.animation = "ClimbOnBeam"
         tx = self.pole.x + b.facing * SIDE_OFF
         c0.vx = 0.0
         c0.x = (c0.x + tx) / 2.0
@@ -350,5 +406,6 @@ class PoleClimber(PoleController):
         self.gfx.hand_aim["l"] = None
         self.gfx.hand_aim["r"] = None
         self.gfx.disbalance = 0.0
+        self.body.pole_move = 0
 
     # release() 走 PoleController：解钉 / 清动画 / 收手是两种杆子共通的那一段

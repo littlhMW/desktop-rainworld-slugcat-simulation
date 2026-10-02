@@ -433,7 +433,14 @@ class SlugcatGraphics(GraphicsDrawMixin):
                 elif self.anim_frame < 10:
                     self.anim_frame += 1
             elif anim in ("ClimbOnBeam", "GetUpOnBeam"):
-                self.anim_frame = (self.anim_frame + 1) % 20
+                # 竖杆也有和 HangFromBeam 一样的停杆姿态。pole_move=0
+                # 时收回到中性帧，避免 AI 已经停住但四肢仍循环爬行。
+                if getattr(b, "pole_move", 0):
+                    self.anim_frame = (self.anim_frame + 1) % 20
+                elif self.anim_frame > 10:
+                    self.anim_frame -= 1
+                elif self.anim_frame < 10:
+                    self.anim_frame += 1
             elif anim == "StandOnBeam":
                 self.anim_frame = ((self.anim_frame + 1) % 7
                                    if abs(c1.vx) > 0.5 else 0)
