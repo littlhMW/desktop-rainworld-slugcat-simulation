@@ -837,7 +837,7 @@ class SlugcatBody(CombatTarget):
         if self._input_provider is not None:
             # 晕/死改推零包，防晕醒瞬间吃到晕期边沿
             pkg = self._input_provider()
-            if self.stun > 0 or self.dead:
+            if self.stun > 0 or self.dead or getattr(self, "_waa_movement_lock", False):
                 from ..control.input import InputPackage
                 pkg = InputPackage()
             if pkg is not None:
@@ -1375,7 +1375,7 @@ class SlugcatBody(CombatTarget):
         self._breath_update()
 
     def _movement_update(self):
-        if self._ctrl_on:
+        if self._ctrl_on and not getattr(self, "_waa_movement_lock", False):
             # 控制态覆盖口，惰性 import 防环导
             from ..control.moves import ctrl_movement_update
             return ctrl_movement_update(self)

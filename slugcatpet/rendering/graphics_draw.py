@@ -602,6 +602,12 @@ class GraphicsDrawMixin:
 
         if self.dead:
             element = self._face_dead_frame
+        elif self.waa_active:
+            # The scripted SU_7 eye state takes precedence over sleep,
+            # special expressions and ordinary random blinking.
+            frames = blink_frames if self._waa_eye_closed else face_frames
+            idx = 4 if self._waa_crawl else int(clampf(self._face_angle_index(), 0, 8))
+            element = frames[min(idx, len(frames) - 1)]
         elif self.face_override == "stun":
             # 借晕眩脸演「使劲」；种族可用 face_press 换成自己的常态表情（圣徒不借）
             element = (self._face_press_frames[0] if self._face_press_frames

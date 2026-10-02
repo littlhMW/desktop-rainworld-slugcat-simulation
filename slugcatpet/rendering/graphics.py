@@ -452,9 +452,9 @@ class SlugcatGraphics(GraphicsDrawMixin):
             self.head.vy -= 0.25 + 0.25 * pulse
             self.draw0[1] -= 0.35 + 0.25 * pulse
         self._update_blink()
-        if self.waa_active and self._waa_eye_closed and not self.dead:
-            # FaceBlink 的中间帧是闭眼；每帧顶住，避免随机眨眼覆盖时间轴。
-            self.blink = max(self.blink, 5)
+        if self.waa_active and not self.dead:
+            # Force the timeline's eye state, including its open intervals.
+            self.blink = 5 if self._waa_eye_closed else 0
 
         self.last_look_dir = self.look_dir
         self._update_look()
@@ -476,7 +476,7 @@ class SlugcatGraphics(GraphicsDrawMixin):
         ty = self.draw0[1] + (self.draw1[1] - self.draw0[1]) * HEAD_TARGET_LERP
         ddx, ddy = self.draw0[0] - self.draw1[0], self.draw0[1] - self.draw1[1]
         dd = math.hypot(ddx, ddy) or 1.0
-        if b.bodyMode == "Crawl":
+        if b.bodyMode == "Crawl" or self._waa_crawl:
             tx += ddx / dd * HEAD_PRELEAD * 2.5
             ty += ddy / dd * HEAD_PRELEAD
         else:
@@ -594,17 +594,18 @@ class SlugcatGraphics(GraphicsDrawMixin):
             self._waa_eye_closed, self._waa_head_bias = True, -18.0
 
         # A small deterministic shake runs for the complete clip.  It is
-        # visual-only because PetUnit freezes the physical body separately.
+        # visual-only; physical motion continues under the movement lock.
         phase = t * 15.0
         self.draw0[0] += math.sin(phase) * 0.75
         self.draw0[1] += math.cos(phase * 1.17) * 0.55
         self.draw1[0] += math.sin(phase * 0.83 + 1.2) * 0.45
         self.draw1[1] += math.cos(phase * 1.09 + 0.5) * 0.35
         if self._waa_crawl:
-            self.draw0[1] -= 3.0
-            self.draw1[1] -= 7.0
-            self.draw0[0] += self.body.facing * 1.5
+            self.draw0[0] += self.body.facing * 11.0
+            self.draw0[1] += 9.0
+            self.draw1[1] += 1.0
             self.head_frame_override = 7
+
     def _update_blink(self):
         if self.dead:
             self.blink = 0
