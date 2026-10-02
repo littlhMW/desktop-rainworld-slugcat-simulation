@@ -79,7 +79,7 @@ def _backdrop_bounds(info, scale: float):
         right = max(right, last + pip_pad)
         top = min(top, PIP_CY - pip_pad)
         bottom = max(bottom, PIP_CY + pip_pad)
-    cx, _cy, _cw, ch = countdown_box(info)
+    cx, cy, _cw, ch = countdown_box(info)
     left = min(left, cx - 1.0)
     # countdown_box reserves a wide alignment area, but only the short MM:SS
     # glyph run is visible; do not let that invisible reserve widen the panel.
