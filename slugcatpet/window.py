@@ -593,6 +593,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self.cursor_hijack_allowed = bool(allowed)
         if not allowed:
             self.stop_cursor_hijack()
+            self._storm_hud_drag = None
             for pet in self.pets:
                 if pet.behavior is not None and pet.behavior.grab.active:
                     pet.behavior.on_release()
@@ -1246,6 +1247,11 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
         for pet in self.pets:
             pet.step(cur, cycle_prog)
+
+        # One shared edge detector supplies walk, landing and hurt cues for
+        # every slugcat variant.  It reads post-physics state so dragging and
+        # external impacts are audible without adding work to each FSM.
+        self.sfx.observe_pets(self.pets)
 
         self.meows.tick(self.pets)
 
