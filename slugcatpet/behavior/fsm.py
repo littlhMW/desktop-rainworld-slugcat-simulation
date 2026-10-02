@@ -8167,7 +8167,10 @@ class BehaviorFSM:
             if rip is not None:
                 rd = math.hypot(rip.x - b.chunk1.x, rip.y - b.chunk1.y)
                 if rd > reach * 0.8:      # 走到真的够得到再停（不然停在手够不到的地方）
-                    self._move(rip.x)
+                    if not self._move(rip.x):
+                        # A stale owner from a previous action must not leave the
+                        # fight state parked beside an unreachable spear.
+                        self._fight_end()
                     return
                 self._move_stop()
                 side = b.pick_hand("spear")
@@ -8195,7 +8198,8 @@ class BehaviorFSM:
             if o is not None:
                 od = math.hypot(o.x - b.chunk1.x, o.y - b.chunk1.y)
                 if od > reach * 0.8:
-                    self._move(o.x)
+                    if not self._move(o.x):
+                        self._fight_end()
                     return
                 self._move_stop()
                 side = b.pick_hand("spear")
