@@ -952,19 +952,25 @@ class ItemInteractionMixin:
         def edge(ax, ay, bx, by, nx, ny):
             dx, dy = bx - ax, by - ay
             span = math.hypot(dx, dy)
-            count = rng.randint(0, min(3, max(0, int(span / 58.0))))
-            chips = ([rng.uniform(.22, .72)] if count == 1 else
-                     [rng.uniform(.16, .34), rng.uniform(.60, .82)] if count == 2 else
-                     [rng.uniform(.13, .24), rng.uniform(.43, .57), rng.uniform(.76, .87)]
-                     if count == 3 else [])
+            # Rain World terrain is made from imperfect tiles rather than a
+            # perfectly straight UI rectangle.  Use several small, shallow
+            # kinks per edge (the old 0-3 chips left most walls looking
+            # machine-cut).  Keep a little margin at corners so the softened
+            # radius remains readable.
+            count = min(18, max(1, int(span / 24.0)))
+            lo, hi = 0.10, 0.90
+            chips = sorted(rng.uniform(lo, hi) for _ in range(count))
             for t in chips:
-                width = min(6.0, span * .08)
+                width = min(7.0, max(2.0, span * .06))
+                # Vary depth per chip to produce a hand-cut, noisy outline
+                # instead of repeating identical saw teeth.
+                depth = notch_depth * rng.uniform(.45, 1.25)
                 sx, sy = ax + dx * t, ay + dy * t
                 path.lineTo(sx, sy)
-                path.lineTo(sx + dx / span * width * .35 + nx * notch_depth,
-                            sy + dy / span * width * .35 + ny * notch_depth)
-                path.lineTo(sx + dx / span * width * .70 + nx * notch_depth * .75,
-                            sy + dy / span * width * .70 + ny * notch_depth * .75)
+                path.lineTo(sx + dx / span * width * .28 + nx * depth,
+                            sy + dy / span * width * .28 + ny * depth)
+                path.lineTo(sx + dx / span * width * .63 + nx * depth * .72,
+                            sy + dy / span * width * .63 + ny * depth * .72)
                 path.lineTo(sx + dx / span * width, sy + dy / span * width)
             path.lineTo(bx, by)
 
@@ -1005,30 +1011,45 @@ class ItemInteractionMixin:
                                                     ey + rng.uniform(-1.5, 1.5)))
         p.restore()
 
-        # Grass silhouettes grow out of the block's upper edge, with an
-        # occasional blade underneath.  Black keeps them one silhouette with
-        # the wall, as in the reference tile.
+        # Grass silhouettes grow densely from every exposed edge.  The
+        # reference tiles are heavily overgrown; a few top clumps read as
+        # sparse decoration at desktop scale, so distribute small tufts along
+        # the complete perimeter while keeping all blades black.
         grass = QPen(QColor(0, 0, 0), pen_width(max(0.9, min(1.3, w / 150.0))))
         grass.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(grass)
-        # Grow in a few uneven clumps instead of an evenly spaced picket
-        # fence.  This matches the tiny tufts on the reference tile and keeps
-        # the silhouette quiet at normal desktop scale.
-        clumps = max(2, min(8, int(w / 32.0) + rng.randint(0, 1)))
-        for _ in range(clumps):
-            base = x0 + rng.uniform(.08, .92) * w
-            blades = rng.randint(3, 5)
-            for j in range(blades):
-                gx = base + rng.uniform(-3.5, 3.5)
-                gh = rng.uniform(2.5, min(7.0, max(3.5, h * .13)))
+        max_h = min(8.5, max(4.0, min(w, h) * .16))
+
+        def tuft(base_x, base_y, nx, ny, tangent_x, tangent_y):
+            # A compact tuft contains 2-4 blades.  Bases are jittered along
+            # the edge so neighboring tufts overlap into a near-continuous
+            # overgrown silhouette rather than isolated pickets.
+            for _ in range(rng.randint(2, 4)):
+                along = rng.uniform(-3.5, 3.5)
+                bx = base_x + tangent_x * along
+                by = base_y + tangent_y * along
+                gh = rng.uniform(3.0, max_h)
                 lean = rng.uniform(-4.5, 4.5)
-                p.drawLine(QPointF(gx, y0 + 1.0), QPointF(gx + lean, y0 - gh))
-            if rng.random() < .22:
-                # An occasional underside blade gives large blocks the same
-                # worn, overgrown edge as the supplied reference.
-                gx = base + rng.uniform(-4.0, 4.0)
-                p.drawLine(QPointF(gx, y1 - 1.0), QPointF(gx + rng.uniform(-3, 3),
-                                                           y1 + rng.uniform(3, 7)))
+                p.drawLine(QPointF(bx, by), QPointF(
+                    bx + nx * gh + tangent_x * lean,
+                    by + ny * gh + tangent_y * lean))
+
+        # One tuft about every 12-18 px along each side.  Use a hard cap to
+        # prevent a very large dragged wall from producing unbounded draw
+        # calls, while still making normal blocks visibly full of grass.
+        for side_len, spacing, start, tangent, normal in (
+            (w, 14.0, (x0, y0), (1.0, 0.0), (0.0, -1.0)),
+            (w, 14.0, (x0, y1), (1.0, 0.0), (0.0, 1.0)),
+            (h, 14.0, (x0, y0), (0.0, 1.0), (-1.0, 0.0)),
+            (h, 14.0, (x1, y0), (0.0, 1.0), (1.0, 0.0)),
+        ):
+            count = min(64, max(2, int(side_len / spacing) + 1))
+            for i in range(count):
+                t = (i + rng.uniform(-.28, .28)) / max(1, count - 1)
+                t = max(0.02, min(.98, t))
+                bx = start[0] + tangent[0] * side_len * t
+                by = start[1] + tangent[1] * side_len * t
+                tuft(bx, by, normal[0], normal[1], tangent[0], tangent[1])
 
     def _draw_walls(self, p):
         """手绘墙块：纯黑实心，边缘有稳定缺洼、磨损与少量杂草。"""
@@ -1099,7 +1120,7 @@ class ItemInteractionMixin:
         p.drawLine(QPointF(ax, ay), QPointF(bx, by))
 
         length = math.hypot(bx - ax, by - ay)
-        if length < 42.0:
+        if length < 8.0:
             return
         seed = hash((round(ax, 1), round(ay, 1), round(bx, 1), round(by, 1)))
         rng = random.Random(seed)
@@ -1111,30 +1132,35 @@ class ItemInteractionMixin:
         wear = QPen(QColor(70, 70, 70, 120), pen_width(0.7))
         wear.setCapStyle(Qt.PenCapStyle.RoundCap)
         p.setPen(wear)
-        for _ in range(min(3, max(1, int(length / 120.0)))):
+        for _ in range(min(12, max(1, int(length / 55.0)))):
             t = rng.uniform(.16, .86)
             cx, cy = ax + ux * length * t, ay + uy * length * t
             span = rng.uniform(1.5, 3.2)
             p.drawLine(QPointF(cx - nx * span, cy - ny * span),
                        QPointF(cx + nx * span, cy + ny * span))
 
-        # One small tuft per long rod, positioned away from endpoints so
-        # crossing rods remain readable.  It is cosmetic only.
-        if length >= 90.0:
-            t = rng.uniform(.18, .82)
-            cx, cy = ax + ux * length * t, ay + uy * length * t
-            grass = QPen(QColor(0, 0, 0), pen_width(0.8))
-            grass.setCapStyle(Qt.PenCapStyle.RoundCap)
-            p.setPen(grass)
-            outward = -1.0 if abs(uy) < .5 else rng.choice((-1.0, 1.0))
-            for _ in range(rng.randint(3, 4)):
-                offset = rng.uniform(-2.0, 2.0)
-                lean = rng.uniform(-3.0, 3.0)
-                gh = rng.uniform(3.0, 6.5)
+        # Dense tufts run along the full rod.  Original implementation placed
+        # a single tuft on long rods, which disappeared at normal scale.  A
+        # tuft every ~14 px gives the desired overgrown silhouette while the
+        # cap keeps pathological dragged rods inexpensive to paint.
+        grass = QPen(QColor(0, 0, 0), pen_width(0.8))
+        grass.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(grass)
+        count = min(96, max(2, int(length / 14.0) + 1))
+        outward_sign = -1.0 if abs(uy) < .5 else rng.choice((-1.0, 1.0))
+        for i in range(count):
+            t = (i + rng.uniform(-.30, .30)) / max(1, count - 1)
+            t = max(.02, min(.98, t))
+            cx = ax + ux * length * t
+            cy = ay + uy * length * t
+            for _ in range(rng.randint(2, 4)):
+                offset = rng.uniform(-2.4, 2.4)
+                lean = rng.uniform(-3.8, 3.8)
+                gh = rng.uniform(3.0, 7.0)
                 px, py = cx + ux * offset, cy + uy * offset
                 p.drawLine(QPointF(px, py),
-                           QPointF(px + nx * outward * gh + ux * lean,
-                                   py + ny * outward * gh + uy * lean))
+                           QPointF(px + nx * outward_sign * gh + ux * lean,
+                                   py + ny * outward_sign * gh + uy * lean))
 
     def _draw_pole_hint(self, p):
         cur = self.cursor_logical()
