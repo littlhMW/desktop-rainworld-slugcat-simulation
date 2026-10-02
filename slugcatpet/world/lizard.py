@@ -2062,7 +2062,15 @@ class Lizard(CombatTarget):
             self.seg[2].vy += WALL_LEAN * lean
         self.chain_dir = 1.0 if self.climb_side >= 0 else -1.0
         top, bot = self.climb_top, self.climb_bot
-        if bot is not None and self.y > bot:
+        # Lizard.cs:2190-2204（followingConnection 离开 Climb tile）
+        # 到达爬面顶部时必须结束 Climb 连接，交回普通地面/空中积分；旧代码
+        # 只处理 bot，向上爬会一直把头推进墙体，随后在墙边抖动或穿出屏幕。
+        if top is not None and self.climb_dir > 0 and self.y < top:
+            self.y = max(float(top), r)
+            self.vy = 0.0
+            self._contact_floor = False
+            self._climb_release()
+        elif bot is not None and self.y > bot:
             self.y = min(bot, floor)              # 爬到底 / 线到头：站住并脱墙
             self.vy = 0.0
             self._contact_floor = True
