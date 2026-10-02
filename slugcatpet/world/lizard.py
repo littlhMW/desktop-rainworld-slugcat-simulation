@@ -4942,6 +4942,15 @@ class Lizard(CombatTarget):
         不动，身体自己走过去），只有换步 / 地形消失才解除。
         """
         b = self.breed
+        # LizardGraphics.cs:1154-1202 counts each Limb.gripCounter while the
+        # creature is on a Climb/Wall tile.  The normal ground IK below asks
+        # for a horizontal floor, so leaving it active during a vertical
+        # climb made the legs dangle at the old floor and the body appear to
+        # slide up a pole.  Keep the four limbs attached to the same vertical
+        # surface and give alternating limbs a small climbing gait.
+        if self.climb_x is not None and self.climb_attached:
+            self._step_climb_legs()
+            return
         joint = self._leg_joint()
         hunt = b.limb_speed
         quick = b.limb_quickness
@@ -5203,6 +5212,55 @@ class Lizard(CombatTarget):
                 lg.plant_dx = lg.plant_dy = 0.0
         self.depth_in = clampf(num8, -1.0, 1.0)
         self._step_bob(grip)
+
+    def _step_climb_legs(self) -> None:
+        """Attach limbs to a vertical wall/pole/background surface.
+
+        This is the desktop equivalent of LizardLimb.FindGrip on a Climb tile
+        (LizardGraphics.cs:1154-1202): no floor support is consulted while a
+        limb is gripping the vertical surface.  ``climb_side`` is the outside
+        normal for a solid wall; poles/background surfaces are centred.
+        """
+        joint = self._leg_joint()
+        top = self.climb_top
+        bot = self.climb_bot
+        span = (float(top), float(bot)) if top is not None and bot is not None else None
+        wall = self.climb_kind == "wall"
+        wall_x = (float(self.climb_x)
+                  + (self.climb_side * (self.head_rad + LINE_COLLIDE_PAD)
+                     if wall else 0.0))
+        # ``walk_phase`` advances in the body stepper.  Offset front/rear
+        # pairs in opposite phases so three visible contact points remain on
+        # the surface when the lizard changes direction.
+        for i, lg in enumerate(self.legs):
+            pi = lg.pair if lg.pair < len(self.seg) else len(self.seg) - 1
+            hip = self.seg[pi]
+            side = -1.0 if (i % 2 == 0) else 1.0
+            phase = self.walk_phase * 0.12 + i * math.pi * 0.5
+            along = math.sin(phase) * joint * 0.32 + side * joint * 0.16
+            want_y = hip.y + along
+            if span is not None:
+                want_y = clampf(want_y, span[0] + 4.0, span[1] - 4.0)
+            # Keep a little spring instead of teleporting the feet when the
+            # wall climb reverses direction.
+            lg.vx = (wall_x - lg.x) * 0.45
+            lg.vy = (want_y - lg.y) * 0.45
+            lg.x += lg.vx
+            lg.y += lg.vy
+            lg.vx *= 0.55
+            lg.vy *= 0.55
+            lg.planted = True
+            lg.reaching = False
+            lg.airborne = False
+            lg.grip = LEG_GRIP_DELAY
+            lg.snap = True
+            lg.plant_dx = lg.x - hip.x
+            lg.plant_dy = lg.y - hip.y
+            lg.flip = lerp(lg.flip, 1.0 if self.climb_side < 0 else -1.0, 0.2)
+        self.depth_in = -1.0 if self.climb_side < 0 else 1.0
+        nfront = sum(1 for lg in self.legs if not lg.back)
+        nhind = len(self.legs) - nfront
+        self._step_bob([nfront, 0, nhind, 0])
 
     def _leg_min_support(self) -> int:
         """支撑相至少保留几只脚（四足 = 2，两腿品种 = 1）。"""
