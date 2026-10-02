@@ -692,6 +692,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
     # 下雨线/遮罩把 UI 线程占满。物理累加器仍独立按 40 Hz 推进，不改变 AI、
     # 碰撞或存档时间尺度。
     _INT_WEATHER = 34
+    _INT_WEATHER_CROWDED = 50
     _INT_SLOW = 66
     _MOTION_STILL = 1.2
     MAX_FRUITS = 3
@@ -858,7 +859,14 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # cap only paint scheduling near 30 FPS; _advance() still catches up
         # physics at _PHYS_DT=1/40 and _MAX_TICKS remains the spiral guard.
         weather_only = bool(self.rain.active and not dragging and not grabbing)
-        want_iv = self._INT_WEATHER if weather_only else (self._INT_FAST if active else self._INT_SLOW)
+        # Full-window storm compositing is the most expensive paint path.  A
+        # crowded scene gets a lower paint cadence while physics keeps its
+        # fixed 40 Hz accumulator, so input and AI timing do not change.
+        crowded_weather = (weather_only and
+                           (len(self.lizards) > 12 or len(self.pets) > 8 or
+                            self.water_surface is not None))
+        weather_iv = self._INT_WEATHER_CROWDED if crowded_weather else self._INT_WEATHER
+        want_iv = weather_iv if weather_only else (self._INT_FAST if active else self._INT_SLOW)
         if self.anim.interval() != want_iv:
             # Precise 保平滑，Coarse 省功耗
             self.anim.stop()

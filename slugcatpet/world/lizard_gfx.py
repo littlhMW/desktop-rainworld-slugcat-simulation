@@ -253,7 +253,8 @@ def _blit(p, atlas, frame, tint, x, y, rot, sx, sy, ax, ay, key=HEAD_KEY,
     p.restore()
 
 
-def draw_lizard(p, atlas, lz, ts: float, detail: bool = True) -> None:
+def draw_lizard(p, atlas, lz, ts: float, detail: bool = True,
+                fast: bool = False) -> None:
     """绘制一只蜥蜴：躯干带 → 四肢 → 头。
 
     ``detail=False`` keeps the body, limbs, head and tongue but omits the
@@ -317,7 +318,7 @@ def draw_lizard(p, atlas, lz, ts: float, detail: bool = True) -> None:
     aa_hint(p)
     p.setPen(Qt.PenStyle.NoPen)
 
-    _draw_body(p, lz, spine, rads)
+    _draw_body(p, lz, spine, rads, fast=fast)
     # 远侧腿（偶数号）先画，再画近侧腿（奇数号）；四足时即 (0,2,1,3)
     n_leg = len(lz.legs)
     for i in list(range(0, n_leg, 2)) + list(range(1, n_leg, 2)):
@@ -332,7 +333,7 @@ def draw_lizard(p, atlas, lz, ts: float, detail: bool = True) -> None:
     p.restore()
 
 
-def _draw_body(p, lz, spine, rads):
+def _draw_body(p, lz, spine, rads, fast=False):
     """躯干+尾：单条带，垂向渐变受光，尾梢按游戏曲线染尾色。
 
     白蜥（``body_rgb`` 有值的个体色/迷彩品种）不叠受光阴影：原版这一类整只是
@@ -345,7 +346,33 @@ def _draw_body(p, lz, spine, rads):
     # 外轮廓又被平滑回一根软管，节点之间的横向错位只在色块内部看得见，边界上
     # 照样抹平。simplified() 把重叠的截面多边形并成一条外轮廓：保角，且能一笔
     # 描边（不会画出每一圈的内部接缝）。
-    chunk_path = _chunked_path(spine, rads)
+    # ``simplified()`` is useful for the normal outline and tail clip, but it
+    # is one of the most expensive operations in a crowded storm.  The fast
+    # silhouette deliberately keeps the same chunk geometry and skips the
+    # outline/gradient polish; its fill is visually equivalent at desktop
+    # scale and avoids a quadratic path simplification for every lizard.
+    chunk_path = _chunked_path(spine, rads, segs=10 if fast else 14)
+    if fast:
+        if lz.breed.key in ("white", "salamander") or lz.body_rgb is not None:
+            p.setBrush(QColor(*rgb))
+        else:
+            x0, y0 = spine[0]
+            x1, y1 = spine[-1]
+            dx, dy = x1 - x0, y1 - y0
+            length = math.hypot(dx, dy) or 1.0
+            nx, ny = -dy / length, dx / length
+            span = max(rads) * 2.2
+            grad = QLinearGradient(
+                QPointF((x0 + x1) * 0.5 + nx * span,
+                        (y0 + y1) * 0.5 + ny * span),
+                QPointF((x0 + x1) * 0.5 - nx * span,
+                        (y0 + y1) * 0.5 - ny * span))
+            grad.setColorAt(0.0, QColor(*_shade(rgb, BODY_TOP_K)))
+            grad.setColorAt(1.0, QColor(*_shade(rgb, BODY_BOT_K)))
+            p.setBrush(grad)
+        p.drawPath(chunk_path)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        return
     path = chunk_path.simplified()
     if lz.breed.key in ("white", "salamander") or lz.body_rgb is not None:
         # LizardGraphics.cs:2129-2140: both white and salamander use one

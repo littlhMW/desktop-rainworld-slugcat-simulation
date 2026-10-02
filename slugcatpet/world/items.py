@@ -2178,10 +2178,15 @@ class ItemInteractionMixin:
         # blits, while the water and rain layers already force a full repaint.
         # Keep full detail for ordinary scenes; in a crowded flooded storm
         # draw the same body/limb/head silhouette without scale sprites.
-        lite = bool(self.rain.active and self.water_surface is not None
-                    and len(self.lizards) > 8)
+        crowded = len(self.lizards) > 12
+        lite = bool(crowded and (self.rain.active or self.water_surface is not None))
+        # Once the scene is genuinely crowded, preserving a readable body
+        # silhouette is more useful than drawing every scale at full detail.
+        # This is only a render-path decision; AI, physics and hit geometry
+        # continue to use the full lizard state.
+        fast_body = bool(lite or len(self.lizards) > 20)
         for lz in self.lizards:
-            draw_lizard(p, self.atlas, lz, ts, detail=not lite)
+            draw_lizard(p, self.atlas, lz, ts, detail=not lite, fast=fast_body)
 
     def _lizard_hint_object(self):
         """放置预览用的一次性蜥蜴（不参与物理，品种跟随下一次放置）。"""
