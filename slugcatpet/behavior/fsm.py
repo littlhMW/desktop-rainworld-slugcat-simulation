@@ -6916,9 +6916,15 @@ class BehaviorFSM:
             self._transition("IdleStand")
             return
         if abs(tx - b.chunk1.x) > WALK_STOP_EPS:
-            b.walk_to(tx)
+            # CoverAlly used to write walk_to directly, bypassing the per-state
+            # movement owner.  A stale owner could then leave the cat frozen behind
+            # its ally while FaceThreat kept re-entering the same cover action.
+            if not self._move(tx, facing=1 if tx >= b.chunk1.x else -1):
+                self._wants_break("CoverAlly")
+                self._transition("IdleStand")
+                return
         else:
-            b.stop_walk()
+            self._move_stop()
         b.facing = 1 if th.x >= b.chunk0.x else -1      # 面朝威胁，随时能跑
         self.gfx.look_at = (th.x, th.y)
 
