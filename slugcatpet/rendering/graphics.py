@@ -248,6 +248,11 @@ class SlugcatGraphics(GraphicsDrawMixin):
         self.stunned = False           # 晕脸 + 头帧0耷拉
         self.grabbed = False            # 被鼠标抓住/甩动时闭眼
         self.meow_t = 0                 # 猫叫时的短促抬头/挣扎动画
+        self.waa_active = False         # SU_7 专用长叫动作
+        self.waa_time = 0.0             # 播放进度（秒）
+        self._waa_crawl = False
+        self._waa_head_bias = 0.0
+        self._waa_eye_closed = False
         self.face_override = None      # 表情覆写：借一族现成表情演别的状态（复活按压借晕眩脸）
         self.blink = 0
         self._blink_rng = _Rng(12345)
@@ -440,12 +445,16 @@ class SlugcatGraphics(GraphicsDrawMixin):
             self.anim_frame = 0
 
         self._apply_drawpos_offsets()
+        self._apply_waa_pose()
         if self.meow_t > 0 and not self.dead:
             # Push To Meow 的叫声反馈：抬头、身体轻摆；眼睛保持睁开。
             pulse = math.sin(self.meow_t * 0.8) * 0.7
             self.head.vy -= 0.25 + 0.25 * pulse
             self.draw0[1] -= 0.35 + 0.25 * pulse
         self._update_blink()
+        if self.waa_active and self._waa_eye_closed and not self.dead:
+            # FaceBlink 的中间帧是闭眼；每帧顶住，避免随机眨眼覆盖时间轴。
+            self.blink = max(self.blink, 5)
 
         self.last_look_dir = self.look_dir
         self._update_look()
@@ -559,6 +568,43 @@ class SlugcatGraphics(GraphicsDrawMixin):
                 self.head.vy -= sc * 1.0                  # y↓ 取反
                 self.draw0[1] -= sc * 2.5
 
+    def _apply_waa_pose(self):
+        """SU_7 长叫的分段姿态与全程细颤抖。"""
+        self._waa_crawl = False
+        self._waa_head_bias = 0.0
+        self._waa_eye_closed = False
+        if not self.waa_active or self.dead:
+            return
+        t = max(0.0, float(self.waa_time))
+        # 0-5 open/normal, 5-6 closed/up, 6-11 open/down,
+        # 11-16 closed/down, 16-31 open/crawl, 31-39 open/normal,
+        # 39-42 closed/up, 42-45 open/normal, 45-48 closed/up,
+        # 48-55 open/normal.
+        if 5.0 <= t < 6.0:
+            self._waa_eye_closed, self._waa_head_bias = True, -18.0
+        elif 6.0 <= t < 11.0:
+            self._waa_head_bias = 16.0
+        elif 11.0 <= t < 16.0:
+            self._waa_eye_closed, self._waa_head_bias = True, 16.0
+        elif 16.0 <= t < 31.0:
+            self._waa_crawl = True
+        elif 39.0 <= t < 42.0:
+            self._waa_eye_closed, self._waa_head_bias = True, -18.0
+        elif 45.0 <= t < 48.0:
+            self._waa_eye_closed, self._waa_head_bias = True, -18.0
+
+        # A small deterministic shake runs for the complete clip.  It is
+        # visual-only because PetUnit freezes the physical body separately.
+        phase = t * 15.0
+        self.draw0[0] += math.sin(phase) * 0.75
+        self.draw0[1] += math.cos(phase * 1.17) * 0.55
+        self.draw1[0] += math.sin(phase * 0.83 + 1.2) * 0.45
+        self.draw1[1] += math.cos(phase * 1.09 + 0.5) * 0.35
+        if self._waa_crawl:
+            self.draw0[1] -= 3.0
+            self.draw1[1] -= 7.0
+            self.draw0[0] += self.body.facing * 1.5
+            self.head_frame_override = 7
     def _update_blink(self):
         if self.dead:
             self.blink = 0
@@ -654,7 +700,7 @@ class SlugcatGraphics(GraphicsDrawMixin):
             self.face_angle = head_ang
             self.face_scale_x = -1.0 if head_ang < 0 else 1.0
             look_x = look_y = 0.0
-        elif b.bodyMode == "Crawl":
+        elif b.bodyMode == "Crawl" or self._waa_crawl:
             self.head_frame_override = 7
             self.head_angle = head_ang
             self.face_angle = 0.0
@@ -689,6 +735,13 @@ class SlugcatGraphics(GraphicsDrawMixin):
             r = math.radians(self.head_angle)
             self.face_offset = (self.face_offset[0] + math.sin(r) * 4.0,
                                 self.face_offset[1] - math.cos(r) * 4.0)
+        if self.waa_active and self._waa_head_bias:
+            # Apply the timed head direction after the ordinary look/face
+            # solver so the Waa timeline wins without changing AI intent.
+            self.head_angle += self._waa_head_bias
+            self.face_angle += self._waa_head_bias * 0.55
+            self.face_offset = (self.face_offset[0],
+                                self.face_offset[1] + self._waa_head_bias * 0.12)
 
     def _update_legs(self):
         """腿部弹性骨推进。"""
@@ -754,7 +807,15 @@ class SlugcatGraphics(GraphicsDrawMixin):
             return
 
 
-        if c1.on_floor:
+        if self._waa_crawl:
+            tx = c1.x + self.legs_dir[0] * 8.0
+            ty = c1.y + 5.0
+            self.legs.connect_to_point(tx, ty, 0.0, 0.0,
+                                       connect_rad=0.0, elastic=LEGS_ELASTIC,
+                                       adapt_retain=LEGS_ADAPT_RETAIN,
+                                       exaggerate=LEGS_EXAGGERATE)
+            self.legs_dir[1] += 1.0
+        elif c1.on_floor:
             tx = c1.x + self.legs_dir[0] * 8.0
             ty = c1.y - 1.0
             self.legs.connect_to_point(tx, ty, c1.vx, LEGS_HOST_Y,
@@ -801,7 +862,7 @@ class SlugcatGraphics(GraphicsDrawMixin):
                 anim = getattr(b, "animation", None)
                 if b.bodyMode == "ClimbingOnBeam" and anim in BEAM_LIMB_ANIMS:
                     aim, speed, quickness = self._beam_hand_target(idx, anim, spine_ang)
-                elif b.bodyMode == "Crawl":
+                elif b.bodyMode == "Crawl" or self._waa_crawl:
                     if self.sleep_curl > 0.0:
                         pass    # 睡觉手缩回贴肩，勿伸向腹部目标
                     else:
@@ -948,6 +1009,8 @@ class SlugcatGraphics(GraphicsDrawMixin):
     def _head_frame_index(self):
         """HeadB 帧号单一真值源：sleep > dead > Crawl > Stand&&moving > ZeroG > 角度基线。"""
         b = self.body
+        if self.head_frame_override is not None:
+            return int(self.head_frame_override)
         if self.sleep_curl > 0.0:
             return int(clampf(int(_lerp(7.0, 4.0, self.sleep_curl)), 0, 8))
         if self.dead or self.stunned:

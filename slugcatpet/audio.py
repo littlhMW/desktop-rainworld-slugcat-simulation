@@ -83,6 +83,7 @@ class MeowManager:
         self._waa_cooldown = 0
         self._waa_threat_latched = False
         self._waa_mode = False
+        self._waa_elapsed = 0.0
         if self.waa_enabled:
             self.prepare_waa()
 
@@ -190,6 +191,7 @@ class MeowManager:
             self._waa_player.setSource(QUrl())
         self._waa_threat_latched = False
         self._waa_mode = False
+        self._waa_elapsed = 0.0
 
     def _play_waa(self) -> bool:
         if (not self.waa_eligible or self._waa_player is not None
@@ -207,6 +209,7 @@ class MeowManager:
             self._waa_player.setSource(source)
         self._waa_player.setPosition(0)
         self._waa_player.play()
+        self._waa_elapsed = 0.0
         return True
 
     def _prefix(self, pet) -> str:
@@ -286,6 +289,9 @@ class MeowManager:
         # same frame by lizard perception and only lasts while SU_7 plays.
         for pet in pets:
             setattr(pet, "_waa_active", False)
+            gfx = getattr(pet, "gfx", None)
+            if gfx is not None:
+                gfx.waa_active = False
         if not self._waa_mode and self._waa_player is not None and self._waa_player.playbackState() != QMediaPlayer.PlaybackState.StoppedState:
             self._stop_waa()
         elif not self._waa_mode:
@@ -319,9 +325,17 @@ class MeowManager:
             # Keep the vocal pose and call arcs alive while SU_7 is playing.
             if (self._waa_player is not None
                     and self._waa_player.playbackState() != QMediaPlayer.PlaybackState.StoppedState):
+                self._waa_elapsed += 1.0 / 40.0
+                try:
+                    pos_s = max(0.0, float(self._waa_player.position()) / 1000.0)
+                except (AttributeError, TypeError, ValueError):
+                    pos_s = 0.0
+                waa_time = max(self._waa_elapsed, pos_s)
                 gfx = getattr(pet, "gfx", None)
                 if gfx is not None and not getattr(gfx, "dead", False):
                     gfx.meow_t = max(getattr(gfx, "meow_t", 0), 6)
+                    gfx.waa_time = waa_time
+                    gfx.waa_active = True
                 setattr(pet, "_waa_active", True)
             return
         if not self.enabled or not self.available:
