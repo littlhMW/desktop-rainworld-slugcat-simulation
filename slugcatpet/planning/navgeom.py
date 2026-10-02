@@ -257,7 +257,8 @@ class NavGeometry:
     """
 
     __slots__ = ("win", "WL", "HL", "surfaces", "obstacles", "grid",
-                 "surf_grid", "sig", "version", "_by_sid")
+                 "surf_grid", "sig", "version", "_by_sid",
+                 "_floors_cache", "_verticals_cache", "_climb_cache")
 
     def __init__(self, win, WL, HL):
         self.win = win
@@ -268,6 +269,12 @@ class NavGeometry:
         self.grid = SpatialGrid()
         self.surf_grid = SpatialGrid()
         self._by_sid = {}
+        # Geometry is immutable between nav stamp changes.  Floor/support
+        # queries are called once per body chunk every tick, so cache the
+        # capability-filtered surface views instead of rebuilding tuples.
+        self._floors_cache = {}
+        self._verticals_cache = {}
+        self._climb_cache = {}
         self.sig = ()
         self.version = int(getattr(win, "_nav_version", 0) or 0)
 
@@ -426,6 +433,11 @@ class NavGeometry:
 
     def floors(self, caps=None):
         """这位 agent 能站的**水平面**（可站 + 能力过滤）。"""
+        key = (None if caps is None else
+               (caps.key() if hasattr(caps, "key") else id(caps)))
+        hit = self._floors_cache.get(key)
+        if hit is not None:
+            return hit
         allow_shelter = True if caps is None else bool(
             getattr(caps, "can_enter_shelter", True))
         allow_hpole = True if caps is None else bool(
@@ -439,10 +451,17 @@ class NavGeometry:
             if s.kind == SHELTER_FLOOR and not allow_shelter and not s.door:
                 continue
             out.append(s)
-        return tuple(out)
+        out = tuple(out)
+        self._floors_cache[key] = out
+        return out
 
     def verticals(self, caps=None):
         """这位 agent 能攀爬的**竖直线**（能力过滤后）。"""
+        key = (None if caps is None else
+               (caps.key() if hasattr(caps, "key") else id(caps)))
+        hit = self._verticals_cache.get(key)
+        if hit is not None:
+            return hit
         out = []
         for s in self.surfaces:
             if s.axis != "v":
@@ -450,11 +469,21 @@ class NavGeometry:
             if caps is not None and not caps.allows_climb(s.climb):
                 continue
             out.append(s)
-        return tuple(out)
+        out = tuple(out)
+        self._verticals_cache[key] = out
+        return out
 
     def climb_surfaces(self, caps=None):
         """元组视图：(x, top, bot, kind)，kind ∈ {pole, wall, background}。"""
-        return tuple((s.x, s.top, s.bot, s.climb) for s in self.verticals(caps))
+        key = (None if caps is None else
+               (caps.key() if hasattr(caps, "key") else id(caps)))
+        hit = self._climb_cache.get(key)
+        if hit is not None:
+            return hit
+        out = tuple((s.x, s.top, s.bot, s.climb)
+                    for s in self.verticals(caps))
+        self._climb_cache[key] = out
+        return out
 
     # ── 旧元组视图（terrain.py 的历史调用方还在用）──
     def walk_floors(self, caps=None):
@@ -537,7 +566,14 @@ def _nav_stamp(win):
         n_solid = len(chunkphys.solids() or ())
     except Exception:
         n_plat = n_solid = -1
-    return (getattr(win, "_pole_tick", None),
+    # ``_pole_tick`` advances every frame for input bookkeeping.  It only
+    # invalidates geometry while the optional virtual mouse pole exists; real
+    # poles are static and their creation/removal already bumps geometry_version.
+    # Avoiding a full NavGeometry rebuild on every idle frame keeps terrain
+    # queries cheap when many lizards are active.
+    pole_tick = (getattr(win, "_pole_tick", None)
+                 if getattr(win, "_mouse_pole", None) is not None else None)
+    return (pole_tick,
             int(getattr(win, "geometry_version", 0) or 0),
             int(getattr(win, "world_version", 0) or 0),
             n_plat, n_solid,
