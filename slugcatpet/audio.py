@@ -164,21 +164,81 @@ class MeowManager:
         return len(pets or ()) == 1 and getattr(pets[0], "variant", "") == "survivor"
 
     @staticmethod
-    def _waa_single_green_lizard(pet) -> bool:
-        """彩蛋只对场上唯一一只存活的绿蜥生效。"""
+    def _waa_lizard_is_free(lizard) -> bool:
+        """Return whether a lizard is available to threaten the Survivor.
+
+        ``ItemState`` in this project is a set of lower-case string constants
+        (``ItemState.FREE == "free"``), while a few test/compatibility callers
+        use a real Enum whose name is ``FREE``.  The previous check compared
+        the latter spelling only and therefore filtered out *every* normal
+        lizard from the waa candidate list.
+        """
+        state = getattr(lizard, "state", None)
+        value = getattr(state, "value", None)
+        name = getattr(state, "name", None)
+        token = value if value is not None else name if name is not None else state
+        return str(token).rsplit(".", 1)[-1].lower() == "free"
+
+    @staticmethod
+    def _waa_green_lizard(pet):
+        """Find the only live, free green lizard, or return ``None``.
+
+        Keeping the object lookup beside the predicate avoids subtle drift
+        between the candidate check and the actual trigger check.
+        """
         window = getattr(pet, "window", None)
         lizards = getattr(window, "lizards", ()) if window is not None else ()
         active = []
         for lizard in lizards or ():
             if getattr(lizard, "dead", False):
                 continue
-            state = getattr(lizard, "state", None)
-            if getattr(state, "name", str(state)) != "FREE":
+            if not MeowManager._waa_lizard_is_free(lizard):
                 continue
             active.append(lizard)
         if len(active) != 1:
+            return None
+        lizard = active[0]
+        return lizard if getattr(getattr(lizard, "breed", None), "key", "") == "green" else None
+
+    @staticmethod
+    def _waa_single_green_lizard(pet) -> bool:
+        """彩蛋只对场上唯一一只存活的绿蜥生效。"""
+        return MeowManager._waa_green_lizard(pet) is not None
+
+    @staticmethod
+    def _waa_green_lizard_threat(pet) -> bool:
+        """Whether the unique green lizard has selected this Survivor.
+
+        The shared ThreatField is intentionally kept as the broad fallback in
+        ``_pet_in_threat``.  This supplements it with the lizard's own target
+        tracker so a valid threat is not missed during a field refresh or when
+        the lizard is already in a hunt/attack stage.
+        """
+        lizard = MeowManager._waa_green_lizard(pet)
+        if lizard is None:
             return False
-        return getattr(getattr(active[0], "breed", None), "key", "") == "green"
+        for attr in ("target_obj", "threat_obj", "stage_obj"):
+            obj = getattr(lizard, attr, None)
+            if obj is pet:
+                return True
+            # stage_obj is an Observation in the normal AI; target_obj and
+            # threat_obj can also be wrapped by compatibility shims.
+            if getattr(obj, "obj", None) is pet:
+                return True
+        prey = getattr(lizard, "prey", None)
+        for attr in ("target_obj", "obj", "carry_obj"):
+            if getattr(prey, attr, None) is pet:
+                return True
+        obs = getattr(lizard, "obs", None)
+        if isinstance(obs, dict):
+            # ``cats`` contains every visible cat, including one the lizard
+            # is merely ignoring.  Only the explicit threat observations are
+            # evidence here; the selected target fields above cover hunting.
+            for key in ("threats",):
+                for row in obs.get(key, ()) or ():
+                    if getattr(row, "obj", None) is pet and not getattr(row, "dead", False):
+                        return True
+        return False
 
     @staticmethod
     def _pet_in_threat(pet) -> bool:
@@ -329,7 +389,8 @@ class MeowManager:
                 self._waa_threat_latched = False
                 return
             threatened = (self._waa_single_green_lizard(pet)
-                          and self._pet_in_threat(pet))
+                          and (self._pet_in_threat(pet)
+                               or self._waa_green_lizard_threat(pet)))
             if not threatened:
                 self._waa_threat_latched = False
             if threatened and not self._waa_threat_latched and self._waa_cooldown <= 0:
