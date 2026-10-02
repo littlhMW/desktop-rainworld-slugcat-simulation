@@ -424,10 +424,25 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self.rain = RainSystem(self._WL, self._HL)
         self.rain.patterns = rain_draw.make_rain_patterns()
         self.shelters = []
-        self.storm = StormCycle(enabled=bool(self._params.get("storm_enabled", False)))
         _st = self._params.get("storm")
+        # ``storm_enabled`` is the live setting written by the Settings panel.
+        # Older saves only carried ``storm.enabled`` inside the phase snapshot,
+        # while some intermediate builds wrote both fields at different times.
+        # Resolve that migration once here so a stale snapshot cannot hide the
+        # HUD after restart; an explicit top-level setting remains authoritative.
+        _saved_storm_enabled = (_st.get("enabled") if isinstance(_st, dict)
+                                and "enabled" in _st else None)
+        _storm_enabled = (bool(self._params["storm_enabled"])
+                          if "storm_enabled" in self._params
+                          else bool(_saved_storm_enabled))
+        self.storm = StormCycle(enabled=_storm_enabled)
         if isinstance(_st, dict):
             self.storm.from_dict(_st)
+            # ``from_dict`` also supports standalone old snapshots.  When the
+            # current setting exists, keep it as the source of truth after the
+            # phase data is restored.
+            if "storm_enabled" in self._params:
+                self.storm.enabled = _storm_enabled
         self.storm_pressure = 0.0        # 雨前焦虑 0~1（只有闲暇行为读它）
         self.storm_active = False        # 暴雨进行中（StormSeekShelter 的闸）
         self._storm_cycle_seen = 0       # StormCycle.cycle_id 的哨兵：变了就复位第一滴重雨
