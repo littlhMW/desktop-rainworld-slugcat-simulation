@@ -411,6 +411,7 @@ class StormCycle:
                 "auto_phase": self.phase, "auto_phase_t": int(self.phase_t),
                 "manual_phase": self._manual_phase,
                 "manual_phase_t": int(self._manual_phase_t),
+                "manual_settle_t": int(self._manual_settle_t),
                 "manual_rain_drive": float(self._manual_rain_drive),
                 "auto_rain_drive": float(self._auto_rain_drive),
                 "cycles_done": int(self.cycles_done),
@@ -456,6 +457,7 @@ class StormCycle:
             mp = d.get("manual_phase", old_manual_phase)
             self._manual_phase = mp if mp in (GATHER, SLEEP) else GATHER
             self._manual_phase_t = max(0, int(d.get("manual_phase_t", 0)))
+            self._manual_settle_t = max(0, int(d.get("manual_settle_t", 0)))
             self._manual_rain_drive = max(1.0 / self.rise_ticks,
                                           min(1.0, float(d.get(
                                               "manual_rain_drive", 1.0))))
@@ -465,6 +467,7 @@ class StormCycle:
         else:
             self._manual_phase = GATHER
             self._manual_phase_t = 0
+            self._manual_settle_t = 0
             self._manual_rain_drive = 0.0
             self._manual_pressure = 0.0
         self.set_durations(d.get("focus_minutes"), d.get("warning_minutes"),
