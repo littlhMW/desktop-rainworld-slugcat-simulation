@@ -445,6 +445,13 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._fx_active = False
         self.follow_cursor = True
         self.pets = []
+        # ``BehaviorFSM`` asks for the same edible aggregate several times during
+        # one physics tick (look, fetch, zero-g search).  Keep one snapshot while
+        # the backing lists are unchanged; the length/id signature also refreshes
+        # immediately when an entity list is replaced by a cull or clear action.
+        self._edibles_cache_key = None
+        self._edibles_cache = None
+        self._fetchables_cache = {}
         # 共享世界层（文档 §二 的数据流）：危险 / 拥挤各更新一份，所有猫共用。
         # 场是「世界的」，上下文是「每只猫的」——所以这里放世界，NavContext 放猫。
         self.threat_field = ThreatField(self)
@@ -771,12 +778,24 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         （溪流）没有拾荒者也会专门去把珍珠叼起来拿着，所以要一起列出来。
         业力花同理：只有还没吃出花条的猫（want_karma）才会把它列进目标。
         """
+        base = self.edibles()
+        key = (self._edibles_cache_key,
+               id(self.pearls), len(self.pearls),
+               id(self.karmaflowers), len(self.karmaflowers),
+               bool(self.scavengers), pearl_like > 1.0, bool(want_karma))
+        cached = self._fetchables_cache.get(key)
+        if cached is not None:
+            return cached
         if self.pearls and (self.scavengers or pearl_like > 1.0):
-            out = [*self.edibles(), *self.pearls]
+            out = [*base, *self.pearls]
         else:
-            out = list(self.edibles())
+            out = list(base)
         if want_karma and self.karmaflowers:
             out = [*self.karmaflowers, *out]
+        # Keep only the latest small family of variants; old keys are invalidated
+        # on list changes and should not grow across a long-running desktop session.
+        self._fetchables_cache.clear()
+        self._fetchables_cache[key] = out
         return out
 
     def karma_targets(self):
@@ -785,8 +804,13 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
     def edibles(self):
         """可食物体聚合（果+爆米花种子+黏菌+蝙蝠+蝉乌贼+面条蝇）。"""
-        return [*self.fruits, *self.seeds, *self.slimemolds, *self.batflies,
-                *self.squidcadas, *self.needleworms]
+        lists = (self.fruits, self.seeds, self.slimemolds, self.batflies,
+                 self.squidcadas, self.needleworms)
+        key = tuple((id(items), len(items)) for items in lists)
+        if key != self._edibles_cache_key:
+            self._edibles_cache_key = key
+            self._edibles_cache = [obj for items in lists for obj in items]
+        return self._edibles_cache
 
     def junk_corpses(self):
         """无用且不能吃的尸体（清场目标）：死蜥蜴等。
