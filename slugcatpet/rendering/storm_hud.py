@@ -20,27 +20,33 @@ HUD_MARGIN = 10.0
 _LINE_H = 15.0
 _PAD = 3.0           # 面板内边距（逻辑像素）
 
-# ── 参考图比例缩到 220×58 逻辑像素；圆点数量/顺序另按 RainMeter.cs ──
+# ── 参考图比例缩到 220×76 逻辑像素；圆点数量/顺序另按 RainMeter.cs ──
+#
+# The reference HUD is wider and taller around the karma mark than the first
+# implementation.  Keep the panel size stable (it is also the drag hit box),
+# and tune the contents here so a 2x desktop scale produces the same relative
+# geometry as Rain World's RainMeter: a large karma mark, a broad halo of
+# dots, then six food circles at roughly 40 px pitch.
 REF_X0 = 3.0             # 内容左边界（最左那个圆点的左沿）
 REF_Y0 = 4.0             # 内容上边界（最上那个圆点的上沿）
 REF_W = 205.0            # 内容宽（主圆环 + 示例的 7 格饥饿条）
 REF_H = 70.0             # 内容高
 RING_CX = 27.0           # 主圆环中心 x
 RING_CY = 29.0           # 主圆环中心 y
-RING_R = 19.0            # 一圈圆点所在半径
+RING_R = 26.0            # 一圈圆点所在半径（参考图约 52 px @ 2x）
 DOTS = 17                # 无效时的设计稿兜底；实际数量按 RainMeter.cs 计算
-DOT_R = 1.2              # 剩余的实心圆点半径
-KARMA_REF = 29.0         # karma 精灵边长
-PIP_X0 = 58.0            # 第一格圆心 x
-PIP_PITCH = 18.0         # 格中心距
-PIP_D = 12.0             # 格椭圆盒直径
-PIP_RING = 2.0           # 外圈描边宽
-PIP_CORE = 6.0           # 实心圆直径
+DOT_R = 1.15             # 剩余的实心圆点半径
+KARMA_REF = 34.0         # karma 精灵边长（参考图中心环约 68 px @ 2x）
+PIP_X0 = 68.0            # 第一格圆心 x（与主环留出约 82 px @ 2x）
+PIP_PITCH = 21.0         # 格中心距（参考图约 42 px @ 2x）
+PIP_D = 15.0             # 格椭圆盒直径（参考图约 30 px @ 2x）
+PIP_RING = 1.8           # 外圈描边宽
+PIP_CORE = 7.0           # 实心圆直径
 PIP_CY = 29.0            # 格圆心 y
 DIV_EXTRA = 8.0          # 分隔线额外占宽
 DIV_H = 22.0             # 分隔线高（比圆圈高一截）
-TIME_FONT = 14.0         # 饥饿条下方显示剩余时间
-TIME_CY = 62.6           # 倒计时文字中心 y：饥饿条正下方
+TIME_FONT = 8.0          # 饥饿条下方显示剩余时间（参考图的紧凑字号）
+TIME_CY = 45.0           # 倒计时文字中心 y：首格正下方，不能压到面板底边
 TIME_TRACK = 1.0         # 字距（参考单位）
 DOT_START_DEG = -90.0   # RainMeter.cs:189：i=0 从正上方起，末颗落在右上
 BLINK_TICKS = 28         # 征兆期「呼吸」的半周期（40 tick/s → 0.7s 呼气，整次呼吸 1.4s）
