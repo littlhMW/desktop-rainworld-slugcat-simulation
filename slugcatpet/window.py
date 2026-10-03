@@ -989,26 +989,22 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                             self.water_surface is not None))
         weather_iv = self._INT_WEATHER_CROWDED if crowded_weather else self._INT_WEATHER
         want_iv = weather_iv if weather_only else (self._INT_FAST if active else self._INT_SLOW)
-        # Painting is the expensive side of a crowded scene; physics remains
-        # on its fixed 40 Hz accumulator above. Avoid queuing a fresh full
-        # repaint every 25 ms when many lizards or water are moving.
-        # A handful of cats is already enough to make a full QPainter pass
-        # expensive (each sprite has a tail/hand overlay).  Keep physics at
-        # the fixed 40 Hz above, but cap paint scheduling to a conservative
-        # cadence once three or more cats are present.  This avoids the common
-        # multi-cat case saturating the GUI thread while preserving responsive
-        # drag input.
-        # A transparent, layered Windows window pays a composition cost for
-        # every repaint that is much higher than the off-screen QPainter cost.
-        # Three animated cats are already enough to saturate that compositor
-        # when we repaint at the 25 ms interaction cadence.  Keep physics on
-        # the fixed 40 Hz accumulator above, but give the GUI a larger frame
-        # budget for ordinary crowded scenes.  Direct drag/grab remains fast
-        # so interaction does not feel latched.
-        crowded_scene = (len(self.lizards) > 12 or len(self.pets) >= 3
-                         or self.water_surface is not None)
-        if crowded_scene and not dragging and not grabbing:
-            want_iv = max(want_iv, 60)
+        # Keep cat animation at the normal 40 FPS cadence.  A previous
+        # optimization raised this interval to 60 ms for three cats, which
+        # made their motion visibly stutter even though physics still ran at
+        # 40 Hz.  Heavy environment layers may still use their own slower
+        # weather interval above, but ordinary multi-cat scenes stay smooth.
+        if (len(self.lizards) > 12 or self.water_surface is not None) \
+                and not dragging and not grabbing:
+            want_iv = max(want_iv, 40)
+        elif (self.pets and not active and not self.rain.active
+              and self.water_surface is None and not dragging and not grabbing):
+            # A transparent desktop pet is normally not the active window;
+            # the old idle fallback then dropped to 66 ms (15 FPS), making
+            # even a calm cat look like it was animating in slow motion.
+            # Keep an idle pose at 25 FPS without waking the full interaction
+            # cadence used during movement or dragging.
+            want_iv = min(want_iv, 40)
         if self.anim.interval() != want_iv:
             # Precise 保平滑，Coarse 省功耗
             self.anim.stop()
