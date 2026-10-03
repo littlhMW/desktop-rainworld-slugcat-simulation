@@ -93,7 +93,10 @@ def _backdrop_bounds(info, scale: float):
     # after the backdrop is painted.
     tx = _PAD - REF_X0 * scale
     ty = (HUD_H - REF_H * scale) * 0.5 - REF_Y0 * scale
-    margin = 3.0
+    # The sprite/label antialias fringe extends a few pixels beyond the
+    # nominal geometry.  Keep the backdrop just outside that fringe so the
+    # white timer never visibly outruns its black plate.
+    margin = 6.0
     return (tx + scale * left - margin,
             ty + scale * top - margin,
             tx + scale * right + margin,
@@ -118,9 +121,17 @@ def _draw_backdrop(p, x0: float, y0: float, info, scale: float) -> None:
                 dx = abs(xx + 0.5 - cx) - (rx - rad)
                 dy = abs(yy + 0.5 - cy) - (ry - rad)
                 dist = math.hypot(max(dx, 0.0), max(dy, 0.0)) + min(max(dx, dy), 0.0) - rad
-                t = max(0.0, min(1.0, (4.5 - dist) / 7.0))
-                t = t * t * (3.0 - 2.0 * t)
-                im.setPixel(xx, yy, int(175.0 * t) << 24)
+                edge = max(0.0, min(1.0, (4.5 - dist) / 7.0))
+                edge = edge * edge * (3.0 - 2.0 * edge)
+                # Rain World's meter plate is a horizontal shadow: the left
+                # side stays readable while the right side dissolves into the
+                # desktop.  The previous radial-only mask left a hard black
+                # end and made the visible timer appear larger than its plate.
+                fx = (xx + 0.5 - pad) / max(1.0, rw)
+                fade = 1.0 - max(0.0, min(1.0, (fx - 0.70) / 0.30))
+                fade = fade * fade * (3.0 - 2.0 * fade)
+                alpha = 175.0 * edge * fade
+                im.setPixel(xx, yy, int(alpha) << 24)
         _BACKDROP_CACHE[key] = im
     p.drawImage(QPointF(x0 + bounds[0] - pad, y0 + bounds[1] - pad), im)
 
@@ -461,4 +472,13 @@ def draw_storm_hud(p, win) -> None:
     _draw_karma(p, win, info)
     _draw_pips(p, info)
     _draw_countdown(p, info)
+    # A small, high-contrast grip makes the proportional resize affordance
+    # discoverable.  It lives inside the transparent HUD hit rectangle, so it
+    # remains usable even when the right side of the backdrop fades out.
+    p.save()
+    p.setPen(QPen(QColor(245, 245, 245, 165), 1.0))
+    gx, gy = HUD_W - 10.0, HUD_H - 9.0
+    for off in (0.0, 3.0, 6.0):
+        p.drawLine(QPointF(gx + off, gy + 6.0), QPointF(gx + 6.0, gy + off))
+    p.restore()
     p.restore()

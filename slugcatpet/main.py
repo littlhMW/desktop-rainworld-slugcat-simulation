@@ -179,6 +179,9 @@ def main():
         params["hud_x"] = hud.x()
         params["hud_y"] = hud.y()
         params["storm_hud_scale"] = float(getattr(pet, "_storm_hud_scale", 1.0))
+        hud_pos = getattr(pet, "_storm_hud_pos", None)
+        if hud_pos is not None:
+            params["storm_hud_pos"] = [float(hud_pos[0]), float(hud_pos[1])]
 
         def _cat(p):
             b = p.body

@@ -499,7 +499,11 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._ts = 1.0                  # 0..1 插值因子
         self._hwnd = 0
         self._passthrough = None        # None 强制首次同步
-        self._storm_hud_pos = None      # None＝左下默认；拖动计时器后为逻辑坐标
+        saved_hud_pos = self._params.get("storm_hud_pos")
+        if isinstance(saved_hud_pos, (list, tuple)) and len(saved_hud_pos) == 2:
+            self._storm_hud_pos = (float(saved_hud_pos[0]), float(saved_hud_pos[1]))
+        else:
+            self._storm_hud_pos = None      # 左下默认；拖动后为逻辑坐标
         self._storm_hud_drag = None     # (dx, dy) 鼠标相对计时器左上角偏移
         self._storm_hud_scale = max(0.55, min(2.5, float(self._params.get("storm_hud_scale", 1.0) or 1.0)))
         self._storm_hud_resize = None   # (start_x, start_y, start_scale, anchor_x, anchor_y)
@@ -2459,12 +2463,14 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self.update()
 
     def _storm_hud_resize_hit(self, pos):
-        """Small lower-right grip; resizing always keeps the 220:76 ratio."""
+        """Visible lower-right grip; resizing always keeps the 220:76 ratio."""
         if pos is None or not storm_hud.visible(self):
             return False
         x0, y0, x1, y1 = storm_hud.hud_rect(self)
-        return (x1 - 16.0 <= float(pos[0]) <= x1 + 4.0
-                and y1 - 16.0 <= float(pos[1]) <= y1 + 4.0)
+        # Include a generous corner target because the HUD is intentionally
+        # translucent and the grip itself is only a few pixels wide.
+        return (x1 - 28.0 <= float(pos[0]) <= x1 + 8.0
+                and y1 - 28.0 <= float(pos[1]) <= y1 + 8.0)
 
     def _storm_hud_resize_to(self, pos):
         if self._storm_hud_resize is None or pos is None:
