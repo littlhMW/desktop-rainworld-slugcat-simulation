@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""CatPersonality：每种族的原创性格行为层，与 SlugStats 生理层并列。"""
+"""连续性格模型。
+
+Rain World 的 Slugpup 个体性格可以看成六条 0..1 的轴：同情心、勇气、
+活力、焦虑性、攻击性和强势性。项目早期使用了 activity/bravery/kindness
+等分散字段；这些字段仍保留作兼容层，但新代码应优先读取 :meth:`trait`。
+"""
 from __future__ import annotations
 
 import random
@@ -10,64 +15,160 @@ DIET_OMNIVORE = "omnivore"
 DIET_CARNIVORE = "carnivore"
 DIET_VEGETARIAN = "vegetarian"
 DIET_SPECIAL = "special"
-DIET_GOURMAND = "gourmand"     # 美食家/怪猫：杂食广谱，尸体半格
+DIET_GOURMAND = "gourmand"
+
+_TRAITS = ("compassion", "courage", "vitality", "anxiety", "aggression", "dominance")
+_TRAIT_ALIASES = {"sympathy": "compassion", "energy": "vitality",
+                  "nervousness": "anxiety"}
+
+def _clamp(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    return max(lo, min(hi, float(v)))
 
 
 @dataclass(frozen=True)
 class CatPersonality:
-    """一种族性格：连续轴 + diet 枚举 + toy_pref 乘子，中性=0.5/1.0。"""
+    """族群/个体性格。
+
+    六个 canonical trait 均为 0..1。设为 ``None`` 时从旧兼容字段推导，这使
+    存档和已有种族定义无需迁移；只要显式传入任一 canonical trait，就会将
+    直接别名（activity、bravery、kindness、temper）同步到 canonical 数值。
+    """
+    # canonical Slugpup traits
+    compassion: float | None = None  # 同情心：更愿意救援/照料生物
+    courage: float | None = None     # 勇气：降低焦虑、提高战斗意愿
+    vitality: float | None = None    # 活力：玩耍、拾取、活动频率
+    anxiety: float | None = None     # 焦虑性：靠近玩家、逃脱和危险物偏好
+    aggression: float | None = None  # 攻击性：武器/攻击倾向
+    dominance: float | None = None   # 强势性：持有物品、争抢、保持距离
+
+    # 旧字段（公共 API，保留以兼容存档、FSM 和种族原型）
     activity: float = 0.5
-    stamina: float = 1.0           # EN_DRAIN÷stamina，低反而更快累
+    stamina: float = 1.0
     cold_gain_fac: float = 1.0
     sociability: float = 0.5
-    swim_zeal: float = 0.5         # ≤0.5 视为中性
-    temper: float = 0.5            # 0 温顺 ↔ 1 暴躁（玩东西会不会甩出去、多远迎战）
-    crawl_like: float = 0.5        # 0 讨厌趴着 ↔ 1 爱匍匐（低的宁死也不趴）
-    bravery: float = 0.5           # 0 怯懦 ↔ 1 勇敢（恐惧时敢迎战、敢拔敌人身上的矛）
-    kindness: float = 0.5          # 0 自私 ↔ 1 善良（恐惧时先救同伴）
-    point_like: float = 0.5        # 0 不爱指指点点 ↔ 1 爱指（性格好的猫少指）
-    hurry: float = 0.5             # 0 不急 ↔ 1 赶时间（被挡时先跳走，回头再指）
-    wake_like: float = 0.5         # 0 不吵人 ↔ 1 爱把睡着的同伴摇醒
-    patience: float = 0.5          # 0 急躁 ↔ 1 有耐心（等不到就换目标 / 堵塞时先等还是先动手）
-    risk_tolerance: float = 0.5    # 0 怕冒险 ↔ 1 敢冒险（路线打分里「宁可绕路也别跳」的轴）
-    apologize: bool = True         # 误伤同伴会不会认错（False=理直气壮，永不道歉）
-    spear_like: float = 1.0        # 用矛意愿乘子（0=不肯碰矛）
-    pearl_like: float = 1.0        # 对珍珠的偏爱乘子（>1 会专门去拣来拿着）
-    tongue_curiosity: float = 0.5   # 0 不爱用舌头 ↔ 1 爱用（圣徒的舌钩/逗弄/吊顶共用这一轴）
-    play_style: str = "sit"        # 玩耍姿态：sit 原地 / hop 边走边跳 / crawl 匍匐着玩
+    swim_zeal: float = 0.5
+    temper: float = 0.5
+    crawl_like: float = 0.5
+    bravery: float = 0.5
+    kindness: float = 0.5
+    point_like: float = 0.5
+    hurry: float = 0.5
+    wake_like: float = 0.5
+    patience: float = 0.5
+    risk_tolerance: float = 0.5
+    apologize: bool = True
+    spear_like: float = 1.0
+    pearl_like: float = 1.0
+    tongue_curiosity: float = 0.5
+    play_style: str = "sit"
     diet: str = DIET_OMNIVORE
-    toy_pref: dict = field(default_factory=dict)   # 空=全 1
+    toy_pref: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        # 旧种族定义只填写旧字段时，先由旧轴得到 canonical 值。
+        # canonical 字段默认是 None；只有明确传入任一 canonical 轴时才把
+        # 结果同步回旧字段，避免 ``replace(DEFAULT_PERSONALITY, activity=...)``
+        # 被误判为新 API。
+        # ``DEFAULT_PERSONALITY`` is immutable and therefore its resolved 0.5
+        # values are copied by dataclasses.replace. Treat neutral canonical
+        # values as unspecified so old role definitions can still override
+        # activity/bravery/kindness/temper.
+        def _new_axis(name: str) -> bool:
+            value = getattr(self, name, None)
+            return value is not None and abs(float(value) - 0.5) > 1e-9
+
+        explicit = any(_new_axis(a) for a in _TRAITS)
+        comp = _clamp(self.compassion if _new_axis("compassion") else self.kindness)
+        cour = _clamp(self.courage if _new_axis("courage") else self.bravery)
+        vital = _clamp(self.vitality if _new_axis("vitality") else self.activity)
+        aggr = _clamp(self.aggression if _new_axis("aggression") else self.temper)
+        anx_default = 0.5 + 0.5 * vital - 0.5 * cour
+        anx = _clamp(self.anxiety if _new_axis("anxiety") else anx_default)
+        dom_default = (cour + vital + aggr) / 3.0
+        dom = _clamp(self.dominance if _new_axis("dominance") else dom_default)
+        # 无论是旧种族定义还是新 API，实例上的六个 canonical 字段都保持
+        # 具体的 0..1 数值，便于 UI、调试和存档直接读取。
+        for name, value in (("compassion", comp), ("courage", cour),
+                            ("vitality", vital), ("anxiety", anx),
+                            ("aggression", aggr), ("dominance", dom)):
+            object.__setattr__(self, name, value)
+        # 显式使用新 API 时，让旧 FSM 读取到相同的核心轴；旧原型仍保持
+        # 自己的 point_like/patience 等细化值，不被过度覆盖。
+        if explicit:
+            object.__setattr__(self, "activity", vital)
+            object.__setattr__(self, "bravery", cour)
+            object.__setattr__(self, "kindness", comp)
+            object.__setattr__(self, "temper", aggr)
+            object.__setattr__(self, "sociability", _clamp(0.35 + 0.65 * comp))
+            object.__setattr__(self, "risk_tolerance", _clamp(0.25 * cour + 0.75 * (1.0 - anx)))
+            object.__setattr__(self, "hurry", _clamp(0.25 + 0.75 * dom))
+            object.__setattr__(self, "wake_like", _clamp(0.25 + 0.75 * vital))
+            object.__setattr__(self, "patience", _clamp(1.0 - anx))
+
+    def trait(self, name: str, default: float = 0.5) -> float:
+        """返回任一 canonical 性格轴，保证结果处于 0..1。"""
+        name = _TRAIT_ALIASES.get(name, name)
+        if name not in _TRAITS:
+            raise ValueError(f"unknown personality trait: {name}")
+        value = getattr(self, name, None)
+        if value is not None:
+            return _clamp(value)
+        legacy = {
+            "compassion": self.kindness,
+            "courage": self.bravery,
+            "vitality": self.activity,
+            "anxiety": 0.5 + 0.5 * self.activity - 0.5 * self.bravery,
+            "aggression": self.temper,
+            "dominance": (self.bravery + self.activity + self.temper) / 3.0,
+        }
+        return _clamp(legacy.get(name, default))
+
+    @property
+    def traits(self) -> dict[str, float]:
+        """适合 UI/调试/存档的六轴快照。"""
+        return {name: self.trait(name) for name in _TRAITS}
+
+    def with_traits(self, **traits) -> "CatPersonality":
+        """返回一份修改后的性格；输入轴会被夹到 0..1。"""
+        traits = {_TRAIT_ALIASES.get(k, k): v for k, v in traits.items()}
+        bad = set(traits) - set(_TRAITS)
+        if bad:
+            raise ValueError("unknown personality traits: " + ", ".join(sorted(bad)))
+        return replace(self, **{k: _clamp(v) for k, v in traits.items()})
 
 
 DEFAULT_PERSONALITY = CatPersonality()
 
-# 个体偏移幅度：同种族每只猫在原型基线上小幅偏移（原版 AbstractCreature.personality
-# 的 IndividualVariation：同一物种里也不是一个模子刻出来的）。只列行为轴 ——
-# diet / play_style / apologize / spear_like / pearl_like 这类离散或资源轴不参与。
+# 六轴个体变异。旧细化字段仍做小幅变异，作为动作层的次级偏好。
 INDIV_SIGMA = {
-    "activity": 0.10, "sociability": 0.12, "temper": 0.10, "bravery": 0.12,
-    "kindness": 0.12, "patience": 0.12, "risk_tolerance": 0.12,
-    "crawl_like": 0.08, "point_like": 0.10, "hurry": 0.10, "wake_like": 0.10,
-    "swim_zeal": 0.10, "tongue_curiosity": 0.10,
+    "compassion": 0.12, "courage": 0.12, "vitality": 0.10,
+    "anxiety": 0.12, "aggression": 0.10, "dominance": 0.12,
+    "crawl_like": 0.08, "point_like": 0.10, "tongue_curiosity": 0.10,
+    "swim_zeal": 0.10,
 }
 
 
 def individualize(pers: CatPersonality, seed: int,
                   sigma: dict | None = None) -> CatPersonality:
-    """原型基线上加个体偏移：同种族的猫不再完全一样（原版 IndividualVariation）。
-
-    偏移用固定种子取材，夹在 ±0.5 内再落回 0..1，所以：
-    - 同一个 seed 永远得到同一只猫（同种子可复现）；
-    - 不会把「讨厌匍匐」的猫偏移成「热爱匍匐」（幅度只有 σ 量级）。
-    """
+    """从原型生成稳定的个体性格（同一 seed 可复现）。"""
     table = INDIV_SIGMA if sigma is None else sigma
     rng = random.Random(int(seed) & 0x7FFFFFFF)
     out = {}
     for ax, sig in table.items():
-        base = getattr(pers, ax, None)
+        base = pers.trait(ax) if ax in _TRAITS else getattr(pers, ax, None)
         if not isinstance(base, (int, float)):
             continue
-        d = rng.gauss(0.0, sig)
-        d = -0.5 if d < -0.5 else (0.5 if d > 0.5 else d)
-        out[ax] = min(1.0, max(0.0, float(base) + d))
+        d = max(-0.5, min(0.5, rng.gauss(0.0, sig)))
+        # Canonical traits 必须严格是 0..1；兼容轴也继续沿用旧的夹取行为。
+        if ax in _TRAITS or ax in {"activity", "sociability", "temper", "bravery",
+                                   "kindness", "crawl_like", "point_like", "hurry",
+                                   "wake_like", "patience", "risk_tolerance", "swim_zeal",
+                                   "tongue_curiosity"}:
+            out[ax] = _clamp(base + d)
+        else:
+            out[ax] = base + d
     return replace(pers, **out) if out else pers
+
+
+__all__ = ["CatPersonality", "DEFAULT_PERSONALITY", "individualize", "DIET_OMNIVORE",
+           "DIET_CARNIVORE", "DIET_VEGETARIAN", "DIET_SPECIAL", "DIET_GOURMAND"]

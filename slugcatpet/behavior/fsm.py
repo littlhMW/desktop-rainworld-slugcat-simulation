@@ -2222,11 +2222,20 @@ class BehaviorFSM:
                     break
         shover = None
         blocker = None
+        myy = self.body.chunk1.y
         for o in getattr(self.win, "pets", ()):
             if o is self.win:
                 continue
             ob = getattr(o, "body", None)
             if ob is None or not ob.on_floor():      # 悬空猫不参与挡路判定
+                continue
+            # ``on_floor`` 只说明各自脚下有支撑，并不代表两只猫处在同一
+            # 高度。旧版只看 x，会把上下窗口/墙边的猫当成横向挡路者，
+            # 触发无意义的跳跃。以两只身体半径加一个小余量作垂直重叠。
+            oy = getattr(ob.chunk1, "y", myy)
+            rr = (float(getattr(self.body.chunk1, "rad", 8.0))
+                  + float(getattr(ob.chunk1, "rad", 8.0)) + 10.0)
+            if abs(oy - myy) > max(24.0, rr * 1.5):
                 continue
             if shover is None and blocks_path(myx, ob.chunk1.x, ob.walk_target_x,
                                               tuning.SHOVE_CONTACT_DIST):
@@ -2273,19 +2282,18 @@ class BehaviorFSM:
             return True
         elif (blocker is not None and self._can_ground_blockreact()
               and self.state != "FleeLizard"     # 正被威胁追：跳过威胁优先，别抢跳
+              and self._jump_tries <= 0          # 一次挡路事件只跳一回；失败后推开
               and self._blocked_ticks >= tuning.BLOCKED_JUMP_TICKS
               and self._jump_over_cd <= 0):
-            # 有威胁时不再「性格不好就先骂」：无论性格都先跳过阻挡者自己让步（用户规格）
-            if (not self._threat_present() and self._scold_now(
-                    blocker, tuning.BLOCKED_POINT_FIRST_MAX
-                    * (1.3 - 0.6 * self._hurry()))):
-                self._blocked_ticks = 0        # 性格不好：懒得跳，先指着骂
-            else:                              # 默认先跳，跳不过再推/指
-                self.body.request_jump("stand", hold_ticks=tuning.JUMP_OVER_HOLD)
-                self._jump_tries += 1
-                self._blocked_ticks = 0
-                self._jump_over_cd = tuning.JUMP_OVER_COOLDOWN
-                return True
+            # 同伴挡路时移动优先于社交抗议。旧版这里会按 temper/point_like
+            # 先进入 ScoldBlocker，导致性格较强硬的猫在狭窄地形里一直指着
+            # 同伴而不越过。先跳一次；若物理碰撞仍未解除，下面的推/指流程
+            # 再接手，仍保留社交表现但不阻塞寻路。
+            self.body.request_jump("stand", hold_ticks=tuning.JUMP_OVER_HOLD)
+            self._jump_tries += 1
+            self._blocked_ticks = 0
+            self._jump_over_cd = tuning.JUMP_OVER_COOLDOWN
+            return True
         elif (blocker is not None and self._can_ground_blockreact() and self._jump_tries > 0
               and self._blocked_ticks >= tuning.BLOCKED_PUSH_TICKS
               and self._jump_over_cd <= 0):

@@ -689,10 +689,12 @@ SHOVE_YIELD_TICKS  = 40
 SHOVE_CLEAR_PAD    = 28.0
 MAKEWAY_TIMEOUT    = 200
 
-# 顶人方兜底跳越
-BLOCKED_JUMP_TICKS = 100
+# 顶人方兜底跳越。猫贴到同伴后只等待一个短暂的身体挤压窗口，
+# 然后优先从对方头上越过；旧值 100（约 2.5 秒）会让一群猫长时间
+# 原地互顶，尤其在同伴正在取物/救援时很明显。
+BLOCKED_JUMP_TICKS = 32
 JUMP_OVER_HOLD     = 6
-JUMP_OVER_COOLDOWN = 80
+JUMP_OVER_COOLDOWN = 54
 BLOCK_GRACE_TICKS  = 30        # 短暂丢失阻挡（跳起的那几帧/擦身）不清零，超过这么久才算真的不再被挡
 
 # 挡路升级：跳不过去 → 上手推对方，再回头指指点点
