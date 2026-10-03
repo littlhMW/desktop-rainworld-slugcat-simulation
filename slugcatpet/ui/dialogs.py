@@ -8,20 +8,20 @@ from PySide6.QtGui import QGuiApplication
 # 壳级 QSS：防父窗样式渗透
 _CARD_QSS = (
     "#cardShell{background:transparent;}"
-    "#cardRoot{background:#0b0d10;border-radius:2px;border:1px solid #eef1f4;}"
+    "#cardRoot{background:rgba(14,18,24,244);border-radius:14px;border:1px solid rgba(239,243,248,92);}"
     "#cardTitle{color:#eef1f4;font-size:15px;font-weight:600;background:transparent;}"
     "#cardText{color:#eef1f4;font-size:13px;background:transparent;}"
     "QLabel{background:transparent;}"
-    "QPushButton{font-size:12px;padding:6px 14px;border-radius:8px;}"
-    "#btnPrimary{background:#eef1f4;color:#0b0d10;font-weight:600;border:none;}"
-    "#btnPrimary:hover{background:#d2d8de;}"
-    "#btnGhost{background:#0b0d10;color:#eef1f4;border:1px solid #eef1f4;}"
-    "#btnGhost:hover{background:#252a30;}"
-    "#btnDanger{background:#0b0d10;color:#eef1f4;font-weight:600;border:1px solid #eef1f4;}"
-    "#btnDanger:hover{background:#343b43;}"
+    "QPushButton{font-size:12px;padding:6px 14px;border-radius:9px;}"
+    "#btnPrimary{background:rgba(245,248,252,230);color:#0b0d10;font-weight:600;border:none;}"
+    "#btnPrimary:hover{background:rgba(255,255,255,255);}"
+    "#btnGhost{background:rgba(255,255,255,12);color:#eef1f4;border:1px solid rgba(239,243,248,84);}"
+    "#btnGhost:hover{background:rgba(255,255,255,30);border-color:rgba(245,248,252,155);}"
+    "#btnDanger{background:rgba(255,255,255,12);color:#eef1f4;font-weight:600;border:1px solid rgba(239,243,248,84);}"
+    "#btnDanger:hover{background:rgba(60,68,80,210);border-color:rgba(245,248,252,155);}"
     "QRadioButton{color:#eef1f4;font-size:12px;spacing:8px;background:transparent;}"
     "QRadioButton::indicator{width:13px;height:13px;border-radius:7px;"
-    "border:1px solid #eef1f4;background:#0b0d10;}"
+    "border:1px solid #eef1f4;background:rgba(8,11,15,150);}"
     "QRadioButton::indicator:checked{background:#eef1f4;border-color:#eef1f4;}")
 
 _BTN_KIND = {"primary": "btnPrimary", "ghost": "btnGhost", "danger": "btnDanger"}

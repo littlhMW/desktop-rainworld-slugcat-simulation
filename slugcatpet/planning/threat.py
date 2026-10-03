@@ -99,13 +99,17 @@ def _lizard_strength(lz) -> float:
 class ThreatField:
     """整张「哪里危险」的表：世界一份，每 tick 采一次，本 tick 所有猫共用。"""
 
-    __slots__ = ("win", "threats", "tick", "geom")
+    __slots__ = ("win", "threats", "tick", "geom", "_edge_cache")
 
     def __init__(self, win=None):
         self.win = win
         self.threats = []
         self.tick = 0
         self.geom = None
+        # Edge costs are shared by every cat's route query during one field
+        # snapshot.  Keeping this tiny per-tick cache avoids sampling every
+        # threat along the same graph edge once per cat.
+        self._edge_cache = {}
 
     # ── 采集 ──
     def update(self, win=None, geom=None):
@@ -119,6 +123,7 @@ class ThreatField:
             self.win = win
         w = self.win
         self.tick += 1
+        self._edge_cache.clear()
         if geom is not None:
             self.geom = geom
         elif w is not None:
@@ -270,6 +275,9 @@ class ThreatField:
         所以竖边（杆 / 墙）采更多点（文档 §edge_cost）。
         同一根杆上已有威胁：加一笔软惩罚，不禁止（走投无路时仍可沿杆逃）。
         """
+        cached = self._edge_cache.get(id(edge))
+        if cached is not None:
+            return cached
         from .navgraph import edge_points, edge_pole, sample_points
         pts = edge_points(edge, context)
         if not pts:
@@ -285,6 +293,7 @@ class ThreatField:
         cost = danger * tuning.THREAT_EDGE_SCALE
         if pole is not None and any(same_terrain(t.pole, pole) for t in self.threats):
             cost += tuning.THREAT_POLE_EDGE_PENALTY
+        self._edge_cache[id(edge)] = cost
         return cost
 
 

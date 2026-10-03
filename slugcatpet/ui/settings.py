@@ -18,26 +18,31 @@ _VARIANTS = pickable_variants()
 _CHECK = (resource_dir() / "icons" / "check.svg").as_posix()   # 缺 QtSvg 时退化为高亮块
 
 _QSS = (
-    "QWidget{background:#0b0d10;color:#eef1f4;font-size:12px;}"
+    "QWidget#settingsRoot{background:rgba(14,18,24,238);color:#eef1f4;font-size:12px;"
+    "border:1px solid rgba(239,243,248,72);border-radius:14px;}"
+    "QWidget#settingsBody,QWidget#settingsColumn{background:transparent;}"
     "QLabel{color:#eef1f4;background:transparent;}"
-    "#secHeader{color:#eef1f4;font-size:13px;font-weight:bold;}"
-    "#dim{color:#aeb6bf;}"
-    "QPushButton{color:#eef1f4;background:#0b0d10;border:1px solid #eef1f4;"
-    "border-radius:2px;padding:4px 12px;}"
-    "QPushButton:enabled:hover{background:#252a30;}"
-    "QPushButton:disabled{color:#737d87;background:#15191e;border-color:#59636d;}"
-    "QCheckBox{color:#eef1f4;spacing:6px;}"
+    "QFrame{background:transparent;}"
+    "#secHeader{color:#f3f6f9;font-size:13px;font-weight:bold;}"
+    "#dim{color:rgba(220,228,237,158);background:transparent;}"
+    "QPushButton{color:#eef1f4;background:rgba(255,255,255,12);border:1px solid rgba(233,240,247,74);"
+    "border-radius:8px;padding:4px 12px;}"
+    "QPushButton:enabled:hover{background:rgba(255,255,255,30);border-color:rgba(245,248,252,150);}"
+    "QPushButton:enabled:pressed{background:rgba(245,248,252,224);color:#11151a;}"
+    "QPushButton:disabled{color:rgba(191,200,211,110);background:rgba(255,255,255,6);border-color:rgba(180,190,202,35);}"
+    "QCheckBox{color:#eef1f4;spacing:6px;background:transparent;}"
     "QCheckBox::indicator{width:14px;height:14px;border:1px solid #aeb6bf;"
-    "border-radius:2px;background:#0b0d10;}"
-    "QCheckBox::indicator:hover{border-color:#eef1f4;}"
+    "border-radius:4px;background:rgba(8,11,15,150);}"
+    "QCheckBox::indicator:hover{border-color:#eef1f4;background:rgba(255,255,255,18);}"
     "QCheckBox::indicator:checked{background:#eef1f4;border-color:#eef1f4;}"
-    "QSpinBox,QDoubleSpinBox,QComboBox{background:#0b0d10;color:#eef1f4;"
-    "border:1px solid #59636d;border-radius:2px;padding:2px 4px;}"
-    "QSpinBox:focus,QDoubleSpinBox:focus,QComboBox:focus{border-color:#aeb6bf;}"
-    "QRadioButton{color:#eef1f4;spacing:8px;}"
+    "QSpinBox,QDoubleSpinBox,QComboBox{background:rgba(8,11,15,150);color:#eef1f4;"
+    "border:1px solid rgba(220,228,237,78);border-radius:6px;padding:2px 4px;}"
+    "QSpinBox:hover,QDoubleSpinBox:hover,QComboBox:hover{border-color:rgba(245,248,252,145);}"
+    "QSpinBox:focus,QDoubleSpinBox:focus,QComboBox:focus{border-color:#eef1f4;background:rgba(8,11,15,205);}"
+    "QRadioButton{color:#eef1f4;spacing:8px;background:transparent;}"
     "QRadioButton::indicator{width:16px;height:16px;border-radius:8px;"
-    "border:1px solid #eef1f4;background:#0b0d10;}"
-    "QRadioButton::indicator:hover{border-color:#eef1f4;}"
+    "border:1px solid #eef1f4;background:rgba(8,11,15,150);}"
+    "QRadioButton::indicator:hover{border-color:#eef1f4;background:rgba(255,255,255,18);}"
     f"QRadioButton::indicator:checked{{border:2px solid #eef1f4;background:#eef1f4;"
     f"image:url({_CHECK});}}")
 
@@ -56,6 +61,9 @@ class SettingsWindow(QWidget):
         self._write_state = write_state
         window._settings_panel = self    # 供 window 反向同步世界态
         self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint)
+        self.setObjectName("settingsRoot")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setWindowTitle(t("settings_title"))
         self.setStyleSheet(_QSS)
         self.setMinimumWidth(520)          # 两列：矮一点、宽一点
@@ -87,6 +95,7 @@ class SettingsWindow(QWidget):
             self._body.setParent(None)
             self._body.deleteLater()
         self._body = QWidget()
+        self._body.setObjectName("settingsBody")
         cols = QHBoxLayout(self._body)
         cols.setContentsMargins(0, 0, 0, 0)
         cols.setSpacing(20)
@@ -126,7 +135,7 @@ class SettingsWindow(QWidget):
     def _divider():
         f = QFrame()
         f.setFixedHeight(1)
-        f.setStyleSheet("background:#eef1f4;border:none;")
+        f.setStyleSheet("background:rgba(235,241,248,46);border:none;")
         return f
 
     def _section_cats(self, v):

@@ -745,6 +745,10 @@ class TabBar(QWidget):
 
     def _build(self):
         self._panel = QWidget(self)
+        # The side bar is a translucent glass surface.  Keep the parent window
+        # transparent so only the rounded panel is painted (and the desktop
+        # remains visible around it).
+        self._panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         lay = QVBoxLayout(self._panel)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(7)
@@ -867,18 +871,18 @@ class TabBar(QWidget):
         btn(t("btn_open_settings"), True, self._open_settings)
         btn(t("btn_quit_app"), True, self._quit)
         self._panel.setStyleSheet(
-            "QWidget#qt_tabbar_panel{background:#101318;border:1px solid #d8dde3;border-radius:8px;}"
-            "QLabel#sideTitle{color:#f4f6f8;font-size:13px;font-weight:600;padding:0 2px;}"
-            "QLabel#sideSubtitle{color:#929aa4;font-size:10px;padding:0 2px;}"
-            "QLabel#sectionLabel{color:#aeb6c0;font-size:10px;font-weight:600;padding:1px 2px 0;}"
-            "QPushButton#iconButton{color:#f0f2f4;background:#171b21;border:1px solid #3c444e;border-radius:6px;}"
-            "QPushButton#iconButton:enabled:hover{background:#2a313a;border-color:#edf0f2;}"
-            "QPushButton#iconButton:enabled:pressed{background:#eef1f4;color:#11151a;}"
-            "QPushButton#textButton{color:#eef1f4;background:#171b21;border:1px solid #4b535e;"
-            "border-radius:6px;font-size:11px;padding:2px 8px;text-align:left;}"
-            "QPushButton#textButton:enabled:hover{background:#2a313a;border-color:#edf0f2;}"
-            "QPushButton#textButton:enabled:pressed{background:#eef1f4;color:#11151a;}"
-            "QPushButton:disabled{color:#737d87;background:#15191e;border-color:#59636d;}")
+            "QWidget#qt_tabbar_panel{background:rgba(13,16,22,232);border:1px solid rgba(239,243,248,78);border-radius:14px;}"
+            "QLabel#sideTitle{color:#f5f7fa;font-size:13px;font-weight:600;padding:0 2px;background:transparent;}"
+            "QLabel#sideSubtitle{color:rgba(218,225,234,164);font-size:10px;padding:0 2px;background:transparent;}"
+            "QLabel#sectionLabel{color:rgba(226,232,240,190);font-size:10px;font-weight:600;padding:1px 2px 0;background:transparent;}"
+            "QPushButton#iconButton{color:#f0f2f4;background:rgba(255,255,255,12);border:1px solid rgba(232,239,247,50);border-radius:9px;}"
+            "QPushButton#iconButton:enabled:hover{background:rgba(255,255,255,29);border-color:rgba(245,248,252,145);}"
+            "QPushButton#iconButton:enabled:pressed{background:rgba(245,248,252,224);color:#11151a;border-color:rgba(255,255,255,235);}"
+            "QPushButton#textButton{color:#eef1f4;background:rgba(255,255,255,13);border:1px solid rgba(232,239,247,62);"
+            "border-radius:8px;font-size:11px;padding:2px 8px;text-align:left;}"
+            "QPushButton#textButton:enabled:hover{background:rgba(255,255,255,30);border-color:rgba(245,248,252,150);}"
+            "QPushButton#textButton:enabled:pressed{background:rgba(245,248,252,224);color:#11151a;}"
+            "QPushButton:disabled{color:rgba(191,200,211,110);background:rgba(255,255,255,6);border-color:rgba(180,190,202,35);}")
         self._panel.setObjectName("qt_tabbar_panel")
 
         # eventFilter 区分拖动/点击
@@ -888,9 +892,9 @@ class TabBar(QWidget):
         self._arrow_press = None
         self._arrow_moved = False
         self._arrow.setStyleSheet(
-            "QPushButton{color:#eef1f4;background:#101318;border:1px solid #d8dde3;"
-            "border-top-left-radius:8px;border-bottom-left-radius:8px;font-size:20px;}"
-            "QPushButton:hover{background:#2a313a;}")
+            "QPushButton{color:#eef1f4;background:rgba(13,16,22,205);border:1px solid rgba(239,243,248,78);"
+            "border-top-left-radius:12px;border-bottom-left-radius:12px;font-size:20px;}"
+            "QPushButton:hover{background:rgba(39,45,55,222);border-color:rgba(245,248,252,145);}")
 
         # toast 需顶层窗口，防裁切
         self._toast_lbl = QLabel("", None)
@@ -899,7 +903,7 @@ class TabBar(QWidget):
                                        | Qt.WindowType.ToolTip)
         self._toast_lbl.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self._toast_lbl.setStyleSheet(
-            "QLabel{color:#eef1f4;background:#0b0d10;border:1px solid #eef1f4;border-radius:2px;padding:5px 9px;font-size:12px;}")
+            "QLabel{color:#eef1f4;background:rgba(13,16,22,236);border:1px solid rgba(239,243,248,92);border-radius:9px;padding:5px 9px;font-size:12px;}")
         self._toast_lbl.hide()
         self._toast_timer = QTimer(self)
         self._toast_timer.setSingleShot(True)
@@ -921,7 +925,7 @@ class TabBar(QWidget):
     def _divider():
         f = QFrame()
         f.setFixedHeight(1)
-        f.setStyleSheet("background:#eef1f4;border:none;")
+        f.setStyleSheet("background:rgba(235,241,248,46);border:none;")
         return f
 
     def _expanded_h(self):

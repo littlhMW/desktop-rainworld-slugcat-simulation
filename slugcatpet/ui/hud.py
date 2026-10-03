@@ -12,15 +12,15 @@ from .hudrow import PetRow
 REFRESH_MS = 200
 
 _PANEL_QSS = (
-    "#hudPanel{background:#0b0d10;border-radius:2px;border:1px solid #eef1f4;}"
+    "#hudPanel{background:rgba(13,17,23,228);border-radius:14px;border:1px solid rgba(239,243,248,78);}"
     "QLabel{color:#eef1f4;font-size:12px;}"
     "#hudName{color:#d2d8de;font-size:12px;}"
     "#hudVal{color:#eef1f4;font-size:11px;}"
     "#hudRowName{color:#eef1f4;font-size:13px;font-weight:bold;}"
     "#hudTitle{color:#aeb6bf;font-size:11px;}"
-    "#hudClose{color:#eef1f4;background:transparent;border:none;font-size:13px;"
-    "font-weight:bold;padding:0 4px;}"
-    "#hudClose:hover{color:#0b0d10;background:#eef1f4;border-radius:2px;}")
+    "#hudClose{color:#eef1f4;background:rgba(255,255,255,10);border:1px solid rgba(239,243,248,48);font-size:13px;"
+    "font-weight:bold;padding:0 4px;border-radius:6px;}"
+    "#hudClose:hover{color:#11151a;background:rgba(245,248,252,224);border-color:rgba(255,255,255,225);}")
 
 
 class _ResizeGrip(QSizeGrip):
@@ -195,7 +195,7 @@ class HudPanel(QWidget):
     def _divider():
         f = QFrame()
         f.setFixedHeight(1)
-        f.setStyleSheet("background:#eef1f4;border:none;")
+        f.setStyleSheet("background:rgba(235,241,248,46);border:none;")
         return f
 
     def rebuild_rows(self):

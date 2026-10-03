@@ -13,12 +13,13 @@ WATCH_MS = 200
 BOTTOM_MARGIN = 24
 
 _PANEL_QSS = (
-    "#ctrlPanel{background:#0b0d10;border-radius:2px;border:1px solid #eef1f4;}"
+    "#ctrlPanel{background:rgba(13,17,23,230);border-radius:14px;border:1px solid rgba(239,243,248,78);}"
     "#ctrlTitle{color:#eef1f4;font-size:13px;font-weight:bold;}"
     "#ctrlKeys{color:#eef1f4;font-size:11px;}"
-    "QPushButton{background:#0b0d10;color:#eef1f4;border:1px solid #eef1f4;"
-    "border-radius:2px;font-size:12px;padding:5px 12px;}"
-    "QPushButton:hover{background:#252a30;}")
+    "QPushButton{background:rgba(255,255,255,12);color:#eef1f4;border:1px solid rgba(239,243,248,74);"
+    "border-radius:8px;font-size:12px;padding:5px 12px;}"
+    "QPushButton:hover{background:rgba(255,255,255,30);border-color:rgba(245,248,252,150);}"
+    "QPushButton:pressed{background:rgba(245,248,252,224);color:#11151a;}")
 
 _PAUSED_QSS = "color:#eef1f4;font-weight:bold;"
 

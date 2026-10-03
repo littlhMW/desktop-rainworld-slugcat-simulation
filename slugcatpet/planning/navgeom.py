@@ -573,9 +573,14 @@ def _nav_stamp(win):
     # queries cheap when many lizards are active.
     pole_tick = (getattr(win, "_pole_tick", None)
                  if getattr(win, "_mouse_pole", None) is not None else None)
+    # ``world_version`` deliberately does not participate here.  It is a
+    # gameplay/object-state counter (items moving, rain and creature state),
+    # and changes every physics tick in busy scenes.  Navigation geometry is
+    # invalidated by ``geometry_version`` and the cheap collection-size checks
+    # below; including world_version rebuilt the full capsule grid once per
+    # tick for every crowded scene, even though no terrain had changed.
     return (pole_tick,
             int(getattr(win, "geometry_version", 0) or 0),
-            int(getattr(win, "world_version", 0) or 0),
             n_plat, n_solid,
             len(getattr(win, "poles", ()) or ()),
             len(getattr(win, "wall_surfaces", ()) or ()),
