@@ -150,14 +150,34 @@ def virtual_dens(WL: float, HL: float, stand_h: float):
     return (Den(DEN_MARGIN, y, -1), Den(WL - DEN_MARGIN, y, +1))
 
 
-def choose_den(WL: float, HL: float, stand_h: float, prey_x: float) -> Den:
-    """挑一个巢穴：离猎物更近的那一侧。
+def choose_den(WL: float, HL: float, stand_h: float, prey_x: float,
+               shelter_x: float | None = None) -> Den:
+    """挑一个巢穴：有庇护所时优先选择更远的一侧。
 
     只在**开始搬运**的时候调一次 —— 原版 ReturnPrey 抓到猎物就定下 den，
     之后一路走到底；不能走到屏幕中间又换成另一侧（那会让搬运来回抽风）。
+
+    ``shelter_x`` 是窗口里唯一庇护所的中心 x。庇护所是猫的安全点，
+    蜥蜴巢穴固定放在更远的一侧；两侧等距时才用猎物距离打破平局。
     """
     left, right = virtual_dens(WL, HL, stand_h)
-    return left if abs(prey_x - left.x) <= abs(prey_x - right.x) else right
+    dl = abs(prey_x - left.x)
+    dr = abs(prey_x - right.x)
+    if shelter_x is None:
+        return left if dl <= dr else right
+    try:
+        sx = max(0.0, min(float(WL), float(shelter_x)))
+    except (TypeError, ValueError):
+        return left if dl <= dr else right
+    # 安全方向是硬偏好：无论猎物在哪一侧，巢穴都远离庇护所。
+    # 屏幕正中时两侧等距，再沿用原版“离猎物近的一侧”。
+    sl = abs(sx - left.x)
+    sr = abs(sx - right.x)
+    if sl > sr:
+        return left
+    if sr > sl:
+        return right
+    return left if dl <= dr else right
 
 
 # ══ 感知 ══

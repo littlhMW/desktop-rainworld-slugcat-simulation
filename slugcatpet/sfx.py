@@ -21,6 +21,10 @@ class SoundManager:
         self._cat_cd = {}
         self._playing = []
         self._loops = {}
+        # Sound edge events can fire for several cats in one physics tick.
+        # Resolving the same local/external WAV with Path.is_file() on every
+        # event causes avoidable filesystem work (especially on Windows).
+        self._path_cache = {}
 
     def set_enabled(self, value: bool) -> None:
         self.enabled = bool(value)
@@ -49,14 +53,20 @@ class SoundManager:
         stem = str(name)
         if stem.lower().endswith(".wav"):
             stem = stem[:-4]
+        cached = self._path_cache.get(stem)
+        if cached is not None or stem in self._path_cache:
+            return cached
         local = self.root / (stem + ".wav")
         if local.is_file():
+            self._path_cache[stem] = local
             return local
         external = self._game_audio_root()
         if external is not None:
             p = external / (stem + ".wav")
             if p.is_file():
+                self._path_cache[stem] = p
                 return p
+        self._path_cache[stem] = None
         return None
 
     def _play_candidates(self, names, gain=1.0):

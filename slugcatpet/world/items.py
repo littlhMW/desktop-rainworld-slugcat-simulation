@@ -1965,6 +1965,17 @@ class ItemInteractionMixin:
         # 地形查询：这一帧一份，全场蜥蜴共用（地面 / 墙 / 竖杆 / 横杆 / 背景墙）
         terrain = self.terrain = TerrainQuery(self)
         surfaces = terrain.climb_surfaces()
+        # 蜥蜴把唯一庇护所当作回巢风险参考：优先把猎物带向远离庇护所
+        # 的虚拟巢穴。字段每帧注入，避免把窗口对象耦合进 Lizard。
+        shelter_x = None
+        shelters = getattr(self, "shelters", None) or ()
+        if shelters:
+            try:
+                shelter_x = float(shelters[0].center_x)
+            except (AttributeError, TypeError, ValueError):
+                shelter_x = None
+        for lz in self.lizards:
+            lz.shelter_x = shelter_x
         live = [lz for lz in self.lizards
                 if not lz.dead and lz.state == ItemState.FREE]
         # 旧存档可能有超过新上限的蜥蜴；不删用户实体。只给 AI 设置

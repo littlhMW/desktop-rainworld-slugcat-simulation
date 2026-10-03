@@ -1380,6 +1380,7 @@ class SurfaceRoute:
         self.pet = pet
         self._cache = {}
         self._cache_key = None
+        self._cache_dynamic_tick = None
         self._graph = None            # 锚点图缓存（平台/杆没变就不重建）
         self._gkey = None
         self._ctx = None              # 本猫的 NavContext（世界层每 tick 换内容）
@@ -1525,13 +1526,31 @@ class SurfaceRoute:
         win = getattr(pet, "window", None)
         threat = getattr(win, "threat_field", None)
         traffic = getattr(win, "traffic_field", None)
-        dynamic_v = (getattr(threat, "tick", None),
-                     getattr(traffic, "tick", None))
-        ck = (nav_v, dynamic_v, round(hy, 1), round(body.chunk1.x, 1),
-              round(gx, 1), round(gy, 1))
-        if ck != self._cache_key:
+        dynamic_v = (getattr(threat, "tick", 0) or 0,
+                     getattr(traffic, "tick", 0) or 0)
+        # Dynamic edge costs are sampled from shared world fields, but a route
+        # does not need to be rebuilt for every 25 ms physics tick while the
+        # cat and target remain in the same place.  Reuse the last result for
+        # a couple of ticks (50 ms at 40 Hz); emergency escape routes still
+        # bypass this method and are planned immediately.  This removes the
+        # worst N-cats × Dijkstra burst without making normal movement feel
+        # stale when a threat or another cat moves.
+        static_ck = (nav_v, round(hy, 1), round(body.chunk1.x, 1),
+                     round(gx, 1), round(gy, 1))
+        if static_ck == self._cache_key and self._cache:
+            prev_tick = self._cache_dynamic_tick
+            cur_tick = max(dynamic_v)
+            if prev_tick is not None and 0 <= cur_tick - prev_tick <= 2:
+                if "r" in self._cache:
+                    return self._cache["r"]
+            # The shared danger/traffic fields changed enough that the old
+            # route must be replanned.  Do not fall through to the hit below
+            # with a stale result (the old code accidentally did exactly that).
+            self._cache.pop("r", None)
+        if static_ck != self._cache_key:
             self._cache = {}
-            self._cache_key = ck
+            self._cache_key = static_ck
+        self._cache_dynamic_tick = max(dynamic_v)
         hit = self._cache.get("r")
         if hit is not None:
             return hit                      # 同一几何同一起点同一目标只解一次

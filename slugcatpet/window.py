@@ -594,13 +594,18 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         rows = self._params.get("shelters")
         if not isinstance(rows, list):
             return
+        # 世界规则只有一个庇护所。旧版本曾把列表中所有条目恢复出来，
+        # 于是旧存档会在同一场景里留下多间庇护所；只恢复第一个有效条目，
+        # 兼容旧档的同时把状态归一化。
         out = []
         for d in rows:
             sh = shelter_from_dict(d, self._WL, ground_y=self._HL)
             if sh is not None:
                 out.append(sh)
+                break
         self.shelters = out
-        self._shelter_seed = len(out)
+        self._shelter_seed = (max(0, int(out[0].seed) + 1)
+                              if out else 0)
 
     # ── 单猫兼容别名 ──
     @property
@@ -959,7 +964,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # Painting is the expensive side of a crowded scene; physics remains
         # on its fixed 40 Hz accumulator above. Avoid queuing a fresh full
         # repaint every 25 ms when many lizards or water are moving.
-        crowded_scene = (len(self.lizards) > 12 or len(self.pets) > 8
+        # A handful of cats is already enough to make a full QPainter pass
+        # expensive (each sprite has a tail/hand overlay).  Keep physics at
+        # the fixed 40 Hz above, but cap paint scheduling to 25 FPS once the
+        # scene has four or more cats.  This avoids the common five-cat case
+        # saturating the GUI thread while preserving responsive drag input.
+        crowded_scene = (len(self.lizards) > 12 or len(self.pets) > 3
                          or self.water_surface is not None)
         if crowded_scene and not dragging and not grabbing:
             want_iv = max(want_iv, 40)
@@ -2963,7 +2973,9 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
     def storm_state(self):
         """存档用：庇护所 + 雨循环相位（退出时写进 params）。"""
-        return {"shelters": [sh.to_dict() for sh in self.shelters],
+        # 最后一层兼容保险：即使旧插件/测试直接往列表里追加，也只把唯一
+        # 庇护所写回存档，避免下一次启动重新恢复多个安全点。
+        return {"shelters": [sh.to_dict() for sh in self.shelters[:1]],
                 "storm": self.storm.to_dict()}
 
     def clear_shelters(self):
@@ -3080,7 +3092,14 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             door_ticks = tuning.STORM_DOOR_TICKS
         sh = Shelter(x, y, w, h, None, self._WL, seed=self._shelter_seed,
                      door_ticks=int(door_ticks), template=tpl)
-        self.shelters.append(sh)
+        # 庇护所是全局唯一的安全点；重新放置时替换旧位置，避免导航、暴雨
+        # 判定和绘制同时维护多份互相冲突的安全区。
+        for old in self.shelters:
+            try:
+                old.start_opening()
+            except Exception:
+                pass
+        self.shelters = [sh]
         self._shelter_seed += 1
         self.world_version += 1
         self._refresh_shelter_solids()

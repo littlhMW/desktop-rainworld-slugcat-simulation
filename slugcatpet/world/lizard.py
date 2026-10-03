@@ -1117,6 +1117,7 @@ class Lizard(CombatTarget):
                  "_seed_prev",
                  "climb_kind", "climb_attached", "climb_side",
                  "climb_top", "climb_bot", "caps", "terrain", "_ground",
+                 "shelter_x",
                  "_stuck", "_pack_point", "_pack_point_tick",
                  "_claims", "_scanned", "_scan_tick",
                  "_cursor_until", "_cursor_retry",
@@ -1307,6 +1308,8 @@ class Lizard(CombatTarget):
             climb_reach=CLIMB_WALK_R)
         self.terrain = None           # 这一帧的世界地形查询（items 每 tick 换一份）
         self._ground = float(y)       # 这一 tick 脚下踩的那一层（屏幕地板 / 窗台 / 横杆）
+        # 唯一庇护所的中心 x，由窗口每 tick 注入；None 表示场上未放庇护所。
+        self.shelter_x = None
         # 清场认领：哪只猫认领了这具尸体（尸体搬运只允许一只猫执行）
         self.hauler = None
 
@@ -3378,7 +3381,8 @@ class Lizard(CombatTarget):
         self.carry_body = body
         stand = self.body_rad * HEAD_STAND_FAC
         self.carry_den = choose_den(WL if WL else self.x * 2.0,
-                                    HL if HL is not None else self.y, stand, ox)
+                                    HL if HL is not None else self.y, stand, ox,
+                                    self.shelter_x)
         self.carry_corner = self.carry_den.side
         self.prey.claim(obj, self._tick, fainted=True)   # 我叼住的猎物归我
         self.bite_event = None
@@ -3472,7 +3476,8 @@ class Lizard(CombatTarget):
                 return False
             self.prey.refresh(self._tick)
             if self.carry_den is None:
-                self.carry_den = choose_den(WL, HL, stand, o.x)
+                self.carry_den = choose_den(WL, HL, stand, o.x,
+                                            self.shelter_x)
                 self.carry_corner = self.carry_den.side
             den = self.carry_den
             if abs(den.x - self.x) <= CARRY_DEN_ARRIVE_R:

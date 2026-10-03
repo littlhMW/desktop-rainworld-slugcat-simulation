@@ -237,6 +237,10 @@ def _fsm_mount(fsm):
     fsm._camo_shake = 0.0
     fsm._watcher_float = None
     fsm._watcher_float_cd = 180
+    # A higher-priority action can leave WatcherFloat through the common FSM
+    # transition path without calling its break callback.  Keep a one-tick
+    # hand-off flag so that path cannot leave hover/camo/FX ownership behind.
+    fsm._watcher_float_abort_pending = False
 
     def camo_tick():
         g, b = fsm.gfx, fsm.body
@@ -315,9 +319,29 @@ def _fsm_mount(fsm):
         wf = getattr(fsm, "_watcher_float", None)
         if fsm._watcher_float_cd > 0:
             fsm._watcher_float_cd -= 1
+        # WatcherFloat is an external state whose controller normally owns the
+        # body.  If another action changed state directly, release the stale
+        # controller before it can keep writing velocities or camo values.
+        if fsm.state != "WatcherFloat":
+            if wf is not None:
+                wf.abort()
+                fsm._watcher_float = None
+            fsm._watcher_float_abort_pending = False
+            return
+        if fsm._watcher_float_abort_pending:
+            fsm._watcher_float_abort_pending = False
+            if wf is not None:
+                wf.abort()
+                fsm._watcher_float = None
+            # A break callback may be invoked without a following transition
+            # (for example during external cleanup).  Restore interaction and
+            # give the normal FSM a safe state on the next tick.
+            fsm._transition("Airborne" if not fsm.body.on_floor() else "IdleStand")
+            return
         if wf is None:
-            # 浮游只从 ticker 起手，动作仲裁仍记录在统一注册表里。
-            fsm.actions.try_action("WatcherFloat", fsm.act_ctx())
+            # A missing controller while still in this state is stale state,
+            # not a fresh action opportunity (the gate requires IdleStand).
+            fsm._transition("Airborne" if not fsm.body.on_floor() else "IdleStand")
             return
         if wf.tick():
             wf.finish()
@@ -331,6 +355,7 @@ def _fsm_mount(fsm):
         if wf is not None:
             wf.abort()
         fsm._watcher_float = None
+        fsm._watcher_float_abort_pending = True
 
     fsm.register_state("WatcherFloat", enter=lambda: None,
                        tick=lambda cursor, disturbed: None,
