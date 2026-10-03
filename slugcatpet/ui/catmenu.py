@@ -6,12 +6,12 @@ from ..cats import REGISTRY
 from ..i18n import t
 
 _MENU_QSS = (
-    "QMenu{background:#000;border:1px solid #fff;border-radius:2px;"
-    "color:#fff;font-size:12px;padding:4px;}"
+    "QMenu{background:#0b0d10;border:1px solid #eef1f4;border-radius:2px;"
+    "color:#eef1f4;font-size:12px;padding:4px;}"
     "QMenu::item{padding:5px 18px;border-radius:4px;}"
-    "QMenu::item:selected{background:#333;}"
-    "QMenu::item:disabled{color:#777;}"
-    "QMenu::separator{height:1px;background:#fff;margin:4px 6px;}")
+    "QMenu::item:selected{background:#343b43;}"
+    "QMenu::item:disabled{color:#737d87;}"
+    "QMenu::separator{height:1px;background:#eef1f4;margin:4px 6px;}")
 
 
 def variant_label(variant: str) -> str:

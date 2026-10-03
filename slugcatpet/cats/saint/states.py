@@ -79,7 +79,13 @@ def _mount_climb(fsm):
             b.swim_target = None
         done = fsm.climb.update()
         if fsm.climb.giveup:
+            # A shelter boundary can make every tongue shot attach a few
+            # pixels from the mouth.  TongueClimber correctly gives up after
+            # bounded retries; add a short FSM-level backoff so the mood and
+            # water emergency arbiters cannot recreate it immediately.
+            fsm._tongue_retry_cd = max(getattr(fsm, "_tongue_retry_cd", 0), 240)
             fsm._break_tongue()
+            fsm.climb = None
             fsm._transition("IdleStand")
         elif done:
             fsm._transition("CeilingHang")

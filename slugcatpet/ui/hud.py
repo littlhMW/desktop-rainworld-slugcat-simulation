@@ -12,15 +12,15 @@ from .hudrow import PetRow
 REFRESH_MS = 200
 
 _PANEL_QSS = (
-    "#hudPanel{background:#000;border-radius:2px;border:1px solid #fff;}"
-    "QLabel{color:#fff;font-size:12px;}"
-    "#hudName{color:#ddd;font-size:12px;}"
-    "#hudVal{color:#fff;font-size:11px;}"
-    "#hudRowName{color:#fff;font-size:13px;font-weight:bold;}"
-    "#hudTitle{color:#ccc;font-size:11px;}"
-    "#hudClose{color:#fff;background:transparent;border:none;font-size:13px;"
+    "#hudPanel{background:#0b0d10;border-radius:2px;border:1px solid #eef1f4;}"
+    "QLabel{color:#eef1f4;font-size:12px;}"
+    "#hudName{color:#d2d8de;font-size:12px;}"
+    "#hudVal{color:#eef1f4;font-size:11px;}"
+    "#hudRowName{color:#eef1f4;font-size:13px;font-weight:bold;}"
+    "#hudTitle{color:#aeb6bf;font-size:11px;}"
+    "#hudClose{color:#eef1f4;background:transparent;border:none;font-size:13px;"
     "font-weight:bold;padding:0 4px;}"
-    "#hudClose:hover{color:#000;background:#fff;border-radius:2px;}")
+    "#hudClose:hover{color:#0b0d10;background:#eef1f4;border-radius:2px;}")
 
 
 class _ResizeGrip(QSizeGrip):
@@ -121,7 +121,7 @@ class HudPanel(QWidget):
             "QScrollArea{background:transparent;border:none;}"
             "QScrollArea > QWidget > QWidget{background:transparent;}"
             "QScrollBar:vertical{background:transparent;width:8px;margin:0;}"
-            "QScrollBar::handle:vertical{background:#fff;"
+            "QScrollBar::handle:vertical{background:#eef1f4;"
             "border-radius:4px;min-height:24px;}"
             "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
             "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}")
@@ -195,7 +195,7 @@ class HudPanel(QWidget):
     def _divider():
         f = QFrame()
         f.setFixedHeight(1)
-        f.setStyleSheet("background:#fff;border:none;")
+        f.setStyleSheet("background:#eef1f4;border:none;")
         return f
 
     def rebuild_rows(self):

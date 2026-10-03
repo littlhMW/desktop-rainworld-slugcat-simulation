@@ -126,15 +126,24 @@ def main():
     # Individual panels may add geometry-specific rules, but no panel falls back
     # to the old green/olive palette.
     app.setStyleSheet(
-        "QDialog,QMenu,QToolTip{background:#000;color:#fff;}"
-        "QToolTip{background:#000;color:#fff;border:1px solid #fff;}"
-        "QMenu{background:#000;color:#fff;border:1px solid #fff;}"
-        "QMenu::item:selected{background:#333;}"
-        "QPushButton,QCheckBox,QRadioButton{color:#fff;}"
-        "QPushButton{background:#000;border:1px solid #fff;border-radius:2px;}"
-        "QPushButton:hover{background:#222;}"
-        "QSlider::groove:horizontal{background:#222;height:2px;}"
-        "QSlider::handle:horizontal{background:#fff;border:1px solid #fff;width:10px;margin:-4px 0;}")
+        "QDialog,QMenu,QToolTip{background:#0b0d10;color:#eef1f4;}"
+        "QToolTip{background:#0b0d10;color:#eef1f4;border:1px solid #eef1f4;}"
+        "QMenu{background:#0b0d10;color:#eef1f4;border:1px solid #eef1f4;}"
+        "QMenu::item:selected{background:#343b43;}"
+        "QPushButton,QCheckBox,QRadioButton{color:#eef1f4;}"
+        "QPushButton{background:#0b0d10;border:1px solid #eef1f4;border-radius:2px;}"
+        "QPushButton:hover{background:#252a30;}"
+        "QCheckBox::indicator{width:14px;height:14px;border:1px solid #aeb6bf;"
+        "border-radius:2px;background:#0b0d10;}"
+        "QCheckBox::indicator:hover{border-color:#eef1f4;}"
+        "QCheckBox::indicator:checked{background:#eef1f4;border-color:#eef1f4;}"
+        "QLineEdit,QSpinBox,QDoubleSpinBox,QComboBox{background:#0b0d10;"
+        "color:#eef1f4;border:1px solid #59636d;border-radius:2px;padding:2px 4px;}"
+        "QLineEdit:focus,QSpinBox:focus,QDoubleSpinBox:focus,QComboBox:focus{"
+        "border-color:#aeb6bf;}"
+        "QSlider::groove:horizontal{background:#252a30;height:3px;}"
+        "QSlider::handle:horizontal{background:#eef1f4;border:1px solid #aeb6bf;"
+        "width:10px;margin:-4px 0;}")
     app.setWindowIcon(_tray_icon())
     app.setQuitOnLastWindowClosed(False)
 

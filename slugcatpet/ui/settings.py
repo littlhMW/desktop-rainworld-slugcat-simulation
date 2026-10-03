@@ -18,20 +18,27 @@ _VARIANTS = pickable_variants()
 _CHECK = (resource_dir() / "icons" / "check.svg").as_posix()   # 缺 QtSvg 时退化为高亮块
 
 _QSS = (
-    "QWidget{background:#000;color:#fff;font-size:12px;}"
-    "QLabel{color:#fff;background:transparent;}"
-    "#secHeader{color:#fff;font-size:13px;font-weight:bold;}"
-    "#dim{color:#ccc;}"
-    "QPushButton{color:#fff;background:#000;border:1px solid #fff;"
+    "QWidget{background:#0b0d10;color:#eef1f4;font-size:12px;}"
+    "QLabel{color:#eef1f4;background:transparent;}"
+    "#secHeader{color:#eef1f4;font-size:13px;font-weight:bold;}"
+    "#dim{color:#aeb6bf;}"
+    "QPushButton{color:#eef1f4;background:#0b0d10;border:1px solid #eef1f4;"
     "border-radius:2px;padding:4px 12px;}"
-    "QPushButton:enabled:hover{background:#222;}"
-    "QPushButton:disabled{color:#777;background:#111;border-color:#555;}"
-    "QCheckBox{color:#fff;}"
-    "QRadioButton{color:#fff;spacing:8px;}"
+    "QPushButton:enabled:hover{background:#252a30;}"
+    "QPushButton:disabled{color:#737d87;background:#15191e;border-color:#59636d;}"
+    "QCheckBox{color:#eef1f4;spacing:6px;}"
+    "QCheckBox::indicator{width:14px;height:14px;border:1px solid #aeb6bf;"
+    "border-radius:2px;background:#0b0d10;}"
+    "QCheckBox::indicator:hover{border-color:#eef1f4;}"
+    "QCheckBox::indicator:checked{background:#eef1f4;border-color:#eef1f4;}"
+    "QSpinBox,QDoubleSpinBox,QComboBox{background:#0b0d10;color:#eef1f4;"
+    "border:1px solid #59636d;border-radius:2px;padding:2px 4px;}"
+    "QSpinBox:focus,QDoubleSpinBox:focus,QComboBox:focus{border-color:#aeb6bf;}"
+    "QRadioButton{color:#eef1f4;spacing:8px;}"
     "QRadioButton::indicator{width:16px;height:16px;border-radius:8px;"
-    "border:1px solid #fff;background:#000;}"
-    "QRadioButton::indicator:hover{border-color:#fff;}"
-    f"QRadioButton::indicator:checked{{border:2px solid #fff;background:#fff;"
+    "border:1px solid #eef1f4;background:#0b0d10;}"
+    "QRadioButton::indicator:hover{border-color:#eef1f4;}"
+    f"QRadioButton::indicator:checked{{border:2px solid #eef1f4;background:#eef1f4;"
     f"image:url({_CHECK});}}")
 
 
@@ -119,7 +126,7 @@ class SettingsWindow(QWidget):
     def _divider():
         f = QFrame()
         f.setFixedHeight(1)
-        f.setStyleSheet("background:#fff;border:none;")
+        f.setStyleSheet("background:#eef1f4;border:none;")
         return f
 
     def _section_cats(self, v):

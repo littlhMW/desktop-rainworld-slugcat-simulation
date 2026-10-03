@@ -13,14 +13,14 @@ WATCH_MS = 200
 BOTTOM_MARGIN = 24
 
 _PANEL_QSS = (
-    "#ctrlPanel{background:#000;border-radius:2px;border:1px solid #fff;}"
-    "#ctrlTitle{color:#fff;font-size:13px;font-weight:bold;}"
-    "#ctrlKeys{color:#fff;font-size:11px;}"
-    "QPushButton{background:#000;color:#fff;border:1px solid #fff;"
+    "#ctrlPanel{background:#0b0d10;border-radius:2px;border:1px solid #eef1f4;}"
+    "#ctrlTitle{color:#eef1f4;font-size:13px;font-weight:bold;}"
+    "#ctrlKeys{color:#eef1f4;font-size:11px;}"
+    "QPushButton{background:#0b0d10;color:#eef1f4;border:1px solid #eef1f4;"
     "border-radius:2px;font-size:12px;padding:5px 12px;}"
-    "QPushButton:hover{background:#222;}")
+    "QPushButton:hover{background:#252a30;}")
 
-_PAUSED_QSS = "color:#fff;font-weight:bold;"
+_PAUSED_QSS = "color:#eef1f4;font-weight:bold;"
 
 
 class ControlHud(QWidget):

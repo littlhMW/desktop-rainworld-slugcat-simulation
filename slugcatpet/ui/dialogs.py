@@ -8,21 +8,21 @@ from PySide6.QtGui import QGuiApplication
 # 壳级 QSS：防父窗样式渗透
 _CARD_QSS = (
     "#cardShell{background:transparent;}"
-    "#cardRoot{background:#000;border-radius:2px;border:1px solid #fff;}"
-    "#cardTitle{color:#fff;font-size:15px;font-weight:600;background:transparent;}"
-    "#cardText{color:#fff;font-size:13px;background:transparent;}"
+    "#cardRoot{background:#0b0d10;border-radius:2px;border:1px solid #eef1f4;}"
+    "#cardTitle{color:#eef1f4;font-size:15px;font-weight:600;background:transparent;}"
+    "#cardText{color:#eef1f4;font-size:13px;background:transparent;}"
     "QLabel{background:transparent;}"
     "QPushButton{font-size:12px;padding:6px 14px;border-radius:8px;}"
-    "#btnPrimary{background:#fff;color:#000;font-weight:600;border:none;}"
-    "#btnPrimary:hover{background:#ddd;}"
-    "#btnGhost{background:#000;color:#fff;border:1px solid #fff;}"
-    "#btnGhost:hover{background:#222;}"
-    "#btnDanger{background:#000;color:#fff;font-weight:600;border:1px solid #fff;}"
-    "#btnDanger:hover{background:#333;}"
-    "QRadioButton{color:#fff;font-size:12px;spacing:8px;background:transparent;}"
+    "#btnPrimary{background:#eef1f4;color:#0b0d10;font-weight:600;border:none;}"
+    "#btnPrimary:hover{background:#d2d8de;}"
+    "#btnGhost{background:#0b0d10;color:#eef1f4;border:1px solid #eef1f4;}"
+    "#btnGhost:hover{background:#252a30;}"
+    "#btnDanger{background:#0b0d10;color:#eef1f4;font-weight:600;border:1px solid #eef1f4;}"
+    "#btnDanger:hover{background:#343b43;}"
+    "QRadioButton{color:#eef1f4;font-size:12px;spacing:8px;background:transparent;}"
     "QRadioButton::indicator{width:13px;height:13px;border-radius:7px;"
-    "border:1px solid #fff;background:#000;}"
-    "QRadioButton::indicator:checked{background:#fff;border-color:#fff;}")
+    "border:1px solid #eef1f4;background:#0b0d10;}"
+    "QRadioButton::indicator:checked{background:#eef1f4;border-color:#eef1f4;}")
 
 _BTN_KIND = {"primary": "btnPrimary", "ghost": "btnGhost", "danger": "btnDanger"}
 

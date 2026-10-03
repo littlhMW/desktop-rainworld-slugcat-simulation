@@ -93,18 +93,18 @@ class SetupPanel(QWidget):
         col.addWidget(self._btns)
 
         self._card.setStyleSheet(
-            "#setupCard{background:#000;border-radius:2px;"
-            "border:1px solid #fff;}"
-            "#setupTitle{color:#fff;font-size:17px;font-weight:600;}"
-            "#setupStatus{color:#fff;font-size:13px;}"
-            "#setupHint{color:#ccc;font-size:11px;}"
-            "#setupBar{background:#111;border:none;border-radius:3px;}"
-            "#setupBar::chunk{background:#fff;border-radius:3px;}"
+            "#setupCard{background:#0b0d10;border-radius:2px;"
+            "border:1px solid #eef1f4;}"
+            "#setupTitle{color:#eef1f4;font-size:17px;font-weight:600;}"
+            "#setupStatus{color:#eef1f4;font-size:13px;}"
+            "#setupHint{color:#aeb6bf;font-size:11px;}"
+            "#setupBar{background:#15191e;border:none;border-radius:3px;}"
+            "#setupBar::chunk{background:#eef1f4;border-radius:3px;}"
             "QPushButton{font-size:12px;padding:6px 14px;border-radius:8px;}"
-            "#btnPrimary{background:#fff;color:#000;font-weight:600;border:none;}"
-            "#btnPrimary:hover{background:#ddd;}"
-            "#btnGhost{background:#000;color:#fff;border:1px solid #fff;}"
-            "#btnGhost:hover{background:#222;}")
+            "#btnPrimary{background:#eef1f4;color:#0b0d10;font-weight:600;border:none;}"
+            "#btnPrimary:hover{background:#d2d8de;}"
+            "#btnGhost{background:#0b0d10;color:#eef1f4;border:1px solid #eef1f4;}"
+            "#btnGhost:hover{background:#252a30;}")
 
     def _place(self):
         self._card.setFixedWidth(380)

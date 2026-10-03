@@ -675,6 +675,9 @@ class BehaviorFSM:
         self._storm_goal_obj = None        # 状态面板「目标是什么」用
         self._storm_cd = 0                 # 够不到庇护所时的重试冷却
         self._shelter_sleep_left = 0       # 雨循环睡眠剩余 tick
+        # 圣徒舌头在庇护所边界可能只能粘到贴脸墙面；失败后短暂封锁
+        # 再次吐舌，避免 RelocateToWall → TongueClimb → giveup 的热循环。
+        self._tongue_retry_cd = 0
 
         # 独占状态挂载槽：CatDef.fsm_mount 按 caps 注册
         self._ext_states = {}
@@ -1499,9 +1502,11 @@ class BehaviorFSM:
             self._transition("IdleStand")
 
     def _act_waterurgent_pre(self, ctx):
-        pass
+        if self._tongue_retry_cd > 0:
+            self._tongue_retry_cd -= 1
     def _act_waterurgent_gate(self, ctx):
         return (self._water_urgent() and not self.grab.active and not self._zerog()
+                and self._tongue_retry_cd <= 0
                 and self.state not in _WATER_BLOCKED)
     def _act_waterurgent(self, ctx):
             self._break_active_controllers()
@@ -2061,6 +2066,7 @@ class BehaviorFSM:
         """避水强制上吊顶判据。"""
         return ("RelocateToWall" in self._ext_states
                 and self.win.tongue is not None
+                and not self._in_shelter()
                 and self.water_threat() > 0.5
                 and self.body.energy >= tuning.CEIL_WATER_ENERGY_GATE)
 
@@ -2078,6 +2084,12 @@ class BehaviorFSM:
         def gate(ctx):
             c = self.mood.candidates.get(name)
             if c is None:
+                return False
+            # Failed Saint tongue climbs are environmental failures (usually a
+            # shelter wall right beside the mouth), not a reason to retry every
+            # idle tick.  Keep ordinary moods available during the cooldown.
+            if (name in ("ceiling_play", "ceiling_hang")
+                    and self._tongue_retry_cd > 0):
                 return False
             return bool(c.gate(self._mood_ctx_v) and c.freshness >= c.start)
         return gate
@@ -2161,7 +2173,8 @@ class BehaviorFSM:
                           cold=self.body.cold,
                           has_warm_lamp=self._warm_lamp_available(),
                           has_hpole=self._has_hpole_available(),
-                          can_ceiling_play="RelocateToWall" in self._ext_states,
+                          can_ceiling_play=("RelocateToWall" in self._ext_states
+                                            and not self._in_shelter()),
                           can_ceil_hang=self._can_ceil_cling(),
                           submerged=self.body.swimming,
                           near_wall=self._near_wall(),
@@ -3623,6 +3636,7 @@ class BehaviorFSM:
         return (ws is not None
                 and "RelocateToWall" in self._ext_states
                 and self.win.tongue is not None
+                and not self._in_shelter()
                 and self._water_escape_cd <= 0
                 and self.body.energy >= tuning.SWIM_ESCAPE_ENERGY)
 
@@ -5885,6 +5899,22 @@ class BehaviorFSM:
         舌头物理，与本判定无关；这里恒 False 表示没有猫用爪子扒住顶边。
         """
         return False
+
+    def _in_shelter(self) -> bool:
+        """Whether the body is already inside a shelter interior.
+
+        A Saint in a shelter must not select the wall/ceiling tongue route:
+        the screen-edge ray can hit the nearby inner wall at face distance and
+        repeatedly attach without gaining height.
+        """
+        shelter_of = getattr(self.win, "shelter_of", None)
+        if shelter_of is None:
+            return False
+        b = self.body
+        try:
+            return shelter_of(b.chunk1.x, b.chunk1.y) is not None
+        except (AttributeError, TypeError):
+            return False
 
     def _peer_near(self) -> bool:
         c1 = self.body.chunk1

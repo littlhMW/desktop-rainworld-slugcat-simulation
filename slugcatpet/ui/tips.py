@@ -23,7 +23,7 @@ class HoverTip(QObject):
         self._lbl.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self._lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._lbl.setStyleSheet(
-            "QLabel{color:#fff;background:#000;border:1px solid #fff;border-radius:2px;"
+            "QLabel{color:#eef1f4;background:#0b0d10;border:1px solid #eef1f4;border-radius:2px;"
             "padding:5px 9px;font-size:12px;}")
         self._lbl.hide()
         self._timer = QTimer(self)
