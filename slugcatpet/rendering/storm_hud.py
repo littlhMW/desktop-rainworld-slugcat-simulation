@@ -389,11 +389,8 @@ def hud_lines(info) -> list:
     return out
 
 
-def hud_rect(win):
-    """HUD 在逻辑坐标里的包围盒 (x0, y0, x1, y1)。
-
-    默认贴屏幕左边缘与任务栏上沿；用户拖动后使用窗口保存的临时位置。
-    """
+def hud_origin_rect(win):
+    """Return the full design frame used as the HUD's drawing origin."""
     hl = float(getattr(win, "_HL", 0.0) or 0.0)
     pos = getattr(win, "_storm_hud_pos", None)
     scale = max(0.55, min(2.5, float(getattr(win, "_storm_hud_scale", 1.0) or 1.0)))
@@ -403,6 +400,28 @@ def hud_rect(win):
         return (x0, y1 - height, x0 + width, y1)
     x0, y0 = float(pos[0]), float(pos[1])
     return (x0, y0, x0 + width, y0 + height)
+
+
+def hud_rect(win):
+    """Visible black plate bounds in logical screen coordinates.
+
+    The old function returned the transparent 220x76 design frame.  That made
+    mouse hit testing and the resize grip extend below/right of the actual
+    black plate.  Keep the design frame private and expose the painted bounds
+    to input/dirty-rectangle callers instead.
+    """
+    ox0, oy0, _ox1, _oy1 = hud_origin_rect(win)
+    try:
+        info = win.storm.hud_info(getattr(win, "pets", ()))
+    except Exception:
+        info = None
+    if not info:
+        return (ox0, oy0, ox0, oy0)
+    us = hud_scale(win)
+    ds = _layout_scale()
+    bx0, by0, bx1, by1 = _backdrop_bounds(info, ds)
+    return (ox0 + bx0 * us, oy0 + by0 * us,
+            ox0 + bx1 * us, oy0 + by1 * us)
 
 
 def hud_scale(win) -> float:
@@ -430,7 +449,7 @@ def draw_storm_hud(p, win) -> None:
         return
     if not info:
         return
-    x0, y0, _, _ = hud_rect(win)
+    x0, y0, _, _ = hud_origin_rect(win)
     user_scale = hud_scale(win)
     s = _layout_scale()
     p.save()
@@ -444,6 +463,20 @@ def draw_storm_hud(p, win) -> None:
     p.translate(x0, y0)
     p.scale(user_scale, user_scale)
     _draw_backdrop(p, 0.0, 0.0, info, s)
+    # The grip belongs to the painted plate, not to the transparent design
+    # frame.  It is shown only while the cursor is over its hit area.
+    try:
+        hover = bool(win._storm_hud_resize_hit(win.cursor_logical()))
+    except Exception:
+        hover = False
+    if hover:
+        bx0, by0, bx1, by1 = _backdrop_bounds(info, s)
+        p.save()
+        p.setPen(QPen(QColor(245, 245, 245, 185), 1.0))
+        gx, gy = bx1 - 16.0, by1 - 13.0
+        for off in (0.0, 3.0, 6.0):
+            p.drawLine(QPointF(gx + off, gy + 6.0), QPointF(gx + 6.0, gy + off))
+        p.restore()
     # 参考图是硬边像素画：贴图放大用最近邻
     p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
     # 不参与像素化滤镜：圆点/描边开抗锯齿，保持清晰
@@ -472,13 +505,4 @@ def draw_storm_hud(p, win) -> None:
     _draw_karma(p, win, info)
     _draw_pips(p, info)
     _draw_countdown(p, info)
-    # A small, high-contrast grip makes the proportional resize affordance
-    # discoverable.  It lives inside the transparent HUD hit rectangle, so it
-    # remains usable even when the right side of the backdrop fades out.
-    p.save()
-    p.setPen(QPen(QColor(245, 245, 245, 165), 1.0))
-    gx, gy = HUD_W - 10.0, HUD_H - 9.0
-    for off in (0.0, 3.0, 6.0):
-        p.drawLine(QPointF(gx + off, gy + 6.0), QPointF(gx + 6.0, gy + off))
-    p.restore()
     p.restore()

@@ -2453,8 +2453,20 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if self._storm_hud_drag is None or pos is None:
             return
         ox, oy = self._storm_hud_drag
+        # The drag offset is measured from the visible plate, while the
+        # renderer stores the design-frame origin.  Convert back using the
+        # same bounds that are used for hit testing.
         x = float(pos[0]) - ox
         y = float(pos[1]) - oy
+        try:
+            info = self.storm.hud_info(self.pets)
+            ds = storm_hud._layout_scale()
+            bx0, by0, _bx1, _by1 = storm_hud._backdrop_bounds(info, ds)
+            us = storm_hud.hud_scale(self)
+            x -= bx0 * us
+            y -= by0 * us
+        except Exception:
+            pass
         hw, hh = storm_hud.hud_size(self)
         x = max(0.0, min(max(0.0, self._WL - hw), x))
         y = max(0.0, min(max(0.0, self._HL - hh), y))
@@ -2468,9 +2480,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             return False
         x0, y0, x1, y1 = storm_hud.hud_rect(self)
         # Include a generous corner target because the HUD is intentionally
-        # translucent and the grip itself is only a few pixels wide.
-        return (x1 - 28.0 <= float(pos[0]) <= x1 + 8.0
-                and y1 - 28.0 <= float(pos[1]) <= y1 + 8.0)
+        # translucent and the grip itself is only a few pixels wide.  This is
+        # tied to the visible plate, so the hit box cannot float below it.
+        return (x1 - 24.0 <= float(pos[0]) <= x1 + 5.0
+                and y1 - 24.0 <= float(pos[1]) <= y1 + 5.0)
 
     def _storm_hud_resize_to(self, pos):
         if self._storm_hud_resize is None or pos is None:
@@ -2493,7 +2506,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         pos = self.to_logical(e.position().x(), e.position().y())
         if (e.button() == Qt.MouseButton.LeftButton
                 and self._storm_hud_resize_hit(pos)):
-            x0, y0, _x1, _y1 = storm_hud.hud_rect(self)
+            x0, y0, _x1, _y1 = storm_hud.hud_origin_rect(self)
             self._storm_hud_resize = (pos[0], pos[1], storm_hud.hud_scale(self),
                                       x0, y0)
             self._storm_hud_drag = None
