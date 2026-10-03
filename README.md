@@ -24,6 +24,24 @@
 
 ## 安装与运行
 
+### Windows 小白安装（推荐发行版）
+
+1. 在 GitHub Release 页面下载 `RainWorldSlugcatSimulation-win64.zip`。
+2. 右键 ZIP →“全部解压缩”，解压到一个新文件夹（不要直接在压缩包里双击）。
+3. 打开解压后的 `RainWorldSlugcatSimulation` 文件夹，双击
+   `RainWorldSlugcatSimulation.exe`。
+4. 第一次启动时，在程序提示中选择你电脑上的《Rain World》游戏文件夹；该文件夹里应能看到
+   `RainWorld.exe` 和 `RainWorld_Data`。
+5. 等待首次导入完成，再重新启动程序即可。
+
+发行版不会把 Rain World 图集、游戏音效或 Workshop 音频放进程序本体。首次运行时，程序只从你自己的本机安装中提取运行所需图集到
+`%USERPROFILE%\\.slugcatpet\\assets`；猫叫和 `waa` 音轨也只读取本机已经安装的 Push To Meow / Rain World 文件。
+因此，把 ZIP 复制给别人不会把你的游戏素材一起发出去。
+
+如果 Windows 弹出“Windows 已保护你的电脑”，点击“更多信息”→“仍要运行”；这是未购买代码签名证书的个人程序常见提示。
+
+### 从源码运行
+
 ```powershell
 pip install -e .
 desktop-rainworld-slugcat-simulation
@@ -114,6 +132,23 @@ To build the Windows executable `RainWorldSlugcatSimulation.exe`:
 ```
 
 The exact output location depends on the build script.
+
+### Windows release install (beginner friendly)
+
+1. Download `RainWorldSlugcatSimulation-win64.zip` from the GitHub Release page.
+2. Right-click the ZIP and choose **Extract All** into a new folder. Do not run the EXE from inside the ZIP.
+3. Open the extracted `RainWorldSlugcatSimulation` folder and double-click
+   `RainWorldSlugcatSimulation.exe`.
+4. On first launch, choose your local Rain World folder. It must contain
+   `RainWorld.exe` and `RainWorld_Data`.
+5. Wait for the first import to finish, then restart the program.
+
+The release executable does not bundle Rain World atlases, game audio, or Workshop audio.
+It extracts the required atlases from the user's own installation into
+`%USERPROFILE%\\.slugcatpet\\assets`; meow and `waa` audio are also resolved from local
+Rain World / Push To Meow files. Sharing the ZIP therefore does not share your game files.
+
+If Windows shows “Windows protected your PC”, click **More info** → **Run anyway**.
 
 ## Basic Controls
 

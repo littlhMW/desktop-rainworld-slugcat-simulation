@@ -11,7 +11,11 @@ class SoundManager:
         self.params = params
         self.enabled = bool(params.get("sfx_enabled", True))
         self.volume = max(0, min(100, int(params.get("sfx_volume", 55))))
-        self.root = Path(__file__).with_name("resources") / "audio"
+        # Release builds deliberately do not bundle Rain World/project audio.
+        # All sound lookup is resolved against the user's local Rain World
+        # installation below; this keeps the executable redistributable without
+        # shipping game or Workshop media.
+        self.root = None
         # Rain World keeps the original action samples in the user's local
         # install.  Resolve that directory at runtime so the executable does
         # not redistribute game audio while still restoring the complete
@@ -83,10 +87,6 @@ class SoundManager:
         cached = self._path_cache.get(stem)
         if cached is not None or stem in self._path_cache:
             return cached
-        local = self.root / (stem + ".wav")
-        if local.is_file():
-            self._path_cache[stem] = local
-            return local
         external = self._game_audio_root()
         if external is not None:
             p = external / (stem + ".wav")
