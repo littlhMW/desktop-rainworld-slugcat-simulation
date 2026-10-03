@@ -958,7 +958,13 @@ class SurfaceGraph(NavGraph):
         stats = pet.cat.stats
         off = takeoff_c0_h(stats)
         rise_max, dx_max = _envelope(stats)
-        kinds = ("floor", "deck", "pole_h", "pole_tip")
+        # The shelter interior is a real landing surface.  With the centered
+        # doorway its floor is separated from the outside floor by the lower
+        # door jamb, so a cat must jump through the opening before dropping
+        # onto the interior.  Omitting ``shelter`` here made the graph contain
+        # the room but no edge into it; StormSeekShelter then treated every
+        # shelter as unreachable and the cat waited outside until drowning.
+        kinds = ("floor", "deck", "pole_h", "pole_tip", "shelter")
         span_pad = dx_max + 4.0 * tuning.PLAN_WALK_X_PAD
         # 空间粗筛（文档 §22/§36）：候选面按 x 排好，只在自己的横向窗口里取 ——
         # 旧实现是节点两两比（40 块平台就是 2000+ 次 land_sweep 级别的判定）。

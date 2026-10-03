@@ -358,12 +358,26 @@ class Shelter:
         return out
 
     def cat_solid_rects(self):
-        """蛞蝓猫用的实心墙体 —— 与生物 / 物品完全一致（没有暴雨放行开关）。
+        """蛞蝓猫用的实心墙体。
 
-        猫从「走廊层」缺口走进屋（两侧都通），走廊层以上四面墙完全实心，
-        门完全关上时入口那一格也变实心。
+        The visual doorway is centred vertically, but a slugcat cannot reach
+        that opening from the ground with the normal jump envelope (the
+        opening is about 2--3 body heights above the floor).  Rain World's
+        shelter corridor is a floor-level shortcut, so keep a hidden cat
+        tunnel through the lower jamb while the door is open or closing.  The
+        tunnel is only for slugcat collision/navigation; objects and lizards
+        still use the centred physical doorway.  Once the door is fully
+        closed, restore the jamb so cats cannot walk back through it.
         """
-        return self.solid_rects()
+        out = list(self.wall_rects())
+        if self.door_state != CLOSED:
+            try:
+                out.remove(self.lower_wall)
+            except ValueError:
+                pass
+        if self.door_state == CLOSED:
+            out.append(self.entrance)
+        return out
 
     # ── 导航层查询（planning/surface.py 与走带切分用；只读几何） ──
     def interior_floor_y(self):
@@ -546,14 +560,34 @@ def shelter_from_dict(d, WL, ground_y=None):
     """从存档建回（旧档缺字段一律有默认值）。"""
     if not isinstance(d, dict):
         return None
-    h = float(d.get("h", 80.0))
+    # Older saves could contain a rectangle extending below the current
+    # desktop floor (or past the screen edge).  Such a shelter still rendered,
+    # but its entry goal was outside the reachable navigation graph, so every
+    # cat silently gave up when rain started.  Normalize the persisted
+    # rectangle before constructing its geometry.
+    try:
+        w = float(d.get("w", 140.0))
+        h = float(d.get("h", 80.0))
+    except (TypeError, ValueError):
+        return None
+    w = max(Shelter.MIN_W, min(Shelter.MAX_W, w))
+    h = max(Shelter.MIN_H, min(Shelter.MAX_H, h))
+    if WL > 0.0:
+        w = min(w, max(Shelter.MIN_W, float(WL)))
+    if ground_y is not None and float(ground_y) > 0.0:
+        h = min(h, max(Shelter.MIN_H, float(ground_y)))
     y = d.get("y")
     if y is None:
         # 更老的档只有 ground_y（底边贴桌面地面）
         y = float(d.get("ground_y", ground_y if ground_y is not None else 0.0)) - h
     try:
-        sh = Shelter(float(d.get("x", 0.0)), float(y),
-                     float(d.get("w", 140.0)), h,
+        x = float(d.get("x", 0.0))
+        y = float(y)
+        if WL > 0.0:
+            x = max(0.0, min(x, max(0.0, float(WL) - w)))
+        if ground_y is not None and float(ground_y) > 0.0:
+            y = max(0.0, min(y, max(0.0, float(ground_y) - h)))
+        sh = Shelter(x, y, w, h,
                      None, WL, seed=int(d.get("seed", 0) or 0),
                      door_ticks=int(d.get("door_ticks", 0) or 0),
                      template=d.get("template") if isinstance(d.get("template"), str) else None)

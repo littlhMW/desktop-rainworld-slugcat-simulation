@@ -5467,7 +5467,12 @@ class BehaviorFSM:
         sh = self._storm_shelter()
         if sh is not None and sh.contains(self.body.chunk1.x, self.body.chunk1.y):
             return                    # 已经进屋：等门关上就睡，不再压别的事
-        ctx.skip_from(self.actions.keys(BAND_NEED))
+        # Keep the storm actions themselves eligible.  The previous blanket
+        # skip also removed StormSeekShelter/StormSleep from the need band,
+        # so every cat stayed in its old idle/food state as soon as rain began.
+        # All ordinary needs yield; only the two shelter transitions remain.
+        ctx.skip_from(k for k in self.actions.keys(BAND_NEED)
+                      if k not in ("StormSeekShelter", "StormSleep"))
     def _storm_phase(self):
         st = getattr(self.win, "storm", None)
         if st is None:
@@ -5500,12 +5505,22 @@ class BehaviorFSM:
         if sh is None:
             return
         self._storm_goal_obj = sh
-        g = sh.interior_goal(tuning.SHELTER_ENTRY_RADIUS)
-        if not self.planner.stay_candidates(g):
-            self.planner.on_giveup(g)      # 够不到就登记冷却，别每 tick 重规划
-            self._storm_cd = tuning.STORM_RETRY_TICKS
-            return
-        self._storm_exec = PlanExecutor(self.win, self.planner, g, mode=MODE_STAY)
+        # Aim for the entry-side floor first.  ``interior_goal`` is deliberately
+        # deeper inside the room for the final safety check, but using it as the
+        # first navigation target can put the goal behind the closed-door wall
+        # (or below the visible canvas for a low, floating shelter).
+        g = sh.entry_goal(tuning.SHELTER_ENTRY_RADIUS)
+        # Do not preflight only direct ``stay`` abilities here.  A shelter is
+        # often behind a wall/door, so the valid solution is the planner's
+        # multi-surface route fallback (walk → jump/pole → enter).  The old
+        # preflight rejected that route before PlanExecutor could consider it,
+        # leaving the cat in IdleStand throughout the rain.
+        # Shelter entry is a movement goal.  MODE_STAY only asks for abilities
+        # that can already hold position at the target, which excludes the
+        # jumps/walks needed to cross the room and made every cat give up on
+        # the first tick.  Use the normal touch/movement candidate set; the
+        # state handler still performs the final in-shelter check.
+        self._storm_exec = PlanExecutor(self.win, self.planner, g, mode=MODE_TOUCH)
 
     def _storm_break(self):
         if self._storm_exec is not None:
@@ -5526,22 +5541,45 @@ class BehaviorFSM:
             self._transition("Dragged")
             return
         self.gfx.look_at = (sh.center_x, sh.center_y)
-        gx, gy = sh.interior_goal(tuning.SHELTER_ENTRY_RADIUS).pos()
+        gx, gy = sh.entry_goal(tuning.SHELTER_ENTRY_RADIUS).pos()
         if sh.contains(b.chunk1.x, b.chunk1.y) and math.hypot(
                 b.chunk1.x - gx, b.chunk1.y - gy) <= tuning.SHELTER_ENTRY_RADIUS:
             self._storm_break()
             self._transition("IdleStand")
             return
         if self._storm_exec is None:
-            self._storm_break()
-            self._storm_cd = tuning.STORM_RETRY_TICKS
-            self._transition("IdleStand" if b.on_floor() else "Airborne")
+            # A route can be temporarily unavailable while another cat is
+            # occupying the entry, while a pole/door geometry update is being
+            # applied, or while this cat is still settling on the floor.  Do
+            # not abandon the shelter state in that window: a short direct
+            # walk keeps the cat moving toward the entry and the normal plan
+            # is retried on the next few ticks.  The old immediate transition
+            # to IdleStand made a failed first plan look like the cat had
+            # ignored the storm for the remainder of the gather phase.
+            if self._storm_cd <= 0:
+                self._storm_enter()
+                if self._storm_exec is not None:
+                    return
+            self._storm_cd = min(self._storm_cd or tuning.STORM_RETRY_TICKS, 20)
+            if b.on_floor():
+                face = 1 if gx > b.chunk1.x else -1
+                b.walk_to(gx, facing=face)
+            elif not getattr(b, "took_off", lambda: False)():
+                self._transition("Airborne")
             return
         status = self._storm_exec.update()
         if status == GIVEUP:
             self._storm_break()
-            self._storm_cd = tuning.STORM_RETRY_TICKS
-            self._transition("IdleStand" if b.on_floor() else "Airborne")
+            # Keep StormSeekShelter alive for a bounded retry instead of
+            # handing control back to idle arbitration.  This is especially
+            # important for Monk and other low-jump variants whose first
+            # direct candidate may be rejected by a crowded doorway.
+            self._storm_cd = min(tuning.STORM_RETRY_TICKS, 20)
+            if b.on_floor():
+                face = 1 if gx > b.chunk1.x else -1
+                b.walk_to(gx, facing=face)
+            elif not getattr(b, "took_off", lambda: False)():
+                self._transition("Airborne")
 
     def _shelter_sleep_enter(self):
         """雨循环睡眠：固定时长；不扣食物、不加业力、不掷睡眠长度。"""

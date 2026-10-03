@@ -115,6 +115,8 @@ class PetRow(QFrame):
         self._drag_from = None
         self._start_tl = None
         self._moved = False
+        self._name_text = None
+        self._karma_text = None
         self._build()
         self.refresh()
 
@@ -189,7 +191,10 @@ class PetRow(QFrame):
         # Keep the action and final intention in one compact, predictable line.
         # The arrow is shorter than repeating “目标：” on every row while still
         # making the two parts visually distinct.
-        self.name.setText(f"{label}  ·  {doing}" + (f"  → {goal.strip()}" if goal else ""))
+        name_text = f"{label}  ·  {doing}" + (f"  → {goal.strip()}" if goal else "")
+        if name_text != self._name_text:
+            self.name.setText(name_text)
+            self._name_text = name_text
         body = self.pet.body
 
         k = int(body.karma)
@@ -200,7 +205,10 @@ class PetRow(QFrame):
                 self.karma_icon.setPixmap(pm)
                 self._karma_frame = frame
         kmax = int(getattr(body, "karma_max", tuning.KARMA_MAX))   # 随种族不同
-        self.karma_val.setText(f"{k + 1}/{kmax + 1}")
+        karma_text = f"{k + 1}/{kmax + 1}"
+        if karma_text != self._karma_text:
+            self.karma_val.setText(karma_text)
+            self._karma_text = karma_text
 
         self.stam_bar.set_ratio(max(0.0, min(1.0, float(body.energy))))
         self.food_pips.set_filled(max(0, min(body.food_max, int(body.food))),

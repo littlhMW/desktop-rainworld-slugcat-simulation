@@ -15,6 +15,33 @@ SETTLE_MAX = 40      # 驻停等待上限，超时按当前状态起跳
 # 预留走位残差，防"规划说行/临跳说不行"死循环
 PLAN_HIT_RADIUS = tuning.GRAB_REACH - tuning.PLAN_JUMP_TAKEOFF_EPS
 
+# Geometry is replaced wholesale by ``chunkphys.set_solids`` whenever a
+# shelter/wall changes.  Keep the normalized form between the many arc tests
+# made by one or more cats; this removes a large amount of repeated float
+# conversion while retaining immediate invalidation on terrain changes.
+_SOLIDS_CACHE_KEY = None
+_SOLIDS_CACHE = ()
+_SOLIDS_CACHE_RAW = None
+
+
+def _cat_solids_snapshot():
+    global _SOLIDS_CACHE_KEY, _SOLIDS_CACHE, _SOLIDS_CACHE_RAW
+    raw = chunkphys.cat_solids()
+    key = (id(raw), len(raw))
+    # Keep the source list referenced so Python cannot recycle its id between
+    # terrain replacements.  ``set_solids`` swaps in a fresh list, which is
+    # the authoritative invalidation event for navigation geometry.
+    if raw is not _SOLIDS_CACHE_RAW or key != _SOLIDS_CACHE_KEY:
+        _SOLIDS_CACHE_RAW = raw
+        _SOLIDS_CACHE_KEY = key
+        _SOLIDS_CACHE = tuple(
+            (min(float(a0), float(a1)), min(float(b0), float(b1)),
+             max(float(a0), float(a1)), max(float(b0), float(b1)))
+            for a0, b0, a1, b1 in raw
+            if float(a1) > float(a0) and float(b1) > float(b0)
+        )
+    return _SOLIDS_CACHE
+
 
 def _free_launch_hit(arc, gx, gy, launch_y, xmin, xmax, radius):
     """定 launch_y、自由 launch_x∈[xmin,xmax]：找弧上某点命中 (gx,gy) 的 (launch_x, tick)；无则 None。"""
@@ -36,17 +63,26 @@ def _arc_hits_solids(arc, launch_x, launch_y, radius=None):
     if not pts:
         return False
 
+    # ``cat_solids()`` is a mutable world list, but it is stable for the
+    # duration of one reach query.  The old code fetched it and re-normalized
+    # every rectangle for every sample of the arc (and once again for every
+    # interpolated segment).  A single jump plan tests several arcs, so this
+    # turned a small shelter into a surprisingly hot O(samples*solids) loop.
+    # Snapshot and normalize once per query; callers already invalidate their
+    # plans when the terrain geometry changes.
+    solids = _cat_solids_snapshot()
+    if not solids:
+        return False
+
     def hit(x, y, rect):
         x0, y0, x1, y1 = rect
-        x0, x1 = sorted((float(x0), float(x1)))
-        y0, y1 = sorted((float(y0), float(y1)))
         return not (x + r <= x0 or x - r >= x1
                     or y + r <= y0 or y - r >= y1)
 
     for i, (px, py) in enumerate(pts):
         x = launch_x + px
         y = launch_y + py
-        if any(hit(x, y, rect) for rect in chunkphys.cat_solids()):
+        if any(hit(x, y, rect) for rect in solids):
             return True
         if i == 0:
             continue
@@ -59,7 +95,7 @@ def _arc_hits_solids(arc, launch_x, launch_y, radius=None):
             t = k / float(n)
             sx = x0 + (x - x0) * t
             sy = y0 + (y - y0) * t
-            if any(hit(sx, sy, rect) for rect in chunkphys.cat_solids()):
+            if any(hit(sx, sy, rect) for rect in solids):
                 return True
     return False
 

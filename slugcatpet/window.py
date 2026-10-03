@@ -488,6 +488,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._all_dead_t = 0        # 全员死亡守灵计时
         self._reincarnate_cleanup_pending = False   # 转生：全体复活那一瞬才清场
         self._build_pets()
+        self._sync_render_quality()
         self._restore_world()
         self._restore_shelters()
 
@@ -514,6 +515,21 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self.anim.setInterval(self._INT_FAST)
         self.anim.timeout.connect(self._tick)
         self.anim.start()
+
+    def _sync_render_quality(self):
+        """Tune purely visual subdivision work for crowded scenes.
+
+        Tail Catmull-Rom smoothing is the hottest per-cat paint path on the
+        transparent window.  Two subdivisions preserve the rounded silhouette
+        while cutting the generated path points roughly in half once three or
+        more cats are present.  Physics and tail simulation remain unchanged.
+        """
+        crowded = len(getattr(self, "pets", ())) >= 3
+        subdiv = 2 if crowded else 4
+        for pet in getattr(self, "pets", ()):
+            gfx = getattr(pet, "gfx", None)
+            if gfx is not None and getattr(gfx, "tail_smooth_subdiv", None) != subdiv:
+                gfx.tail_smooth_subdiv = subdiv
 
     # ── 构建：多宠 ──
     def _build_pets(self):
@@ -601,6 +617,18 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         for d in rows:
             sh = shelter_from_dict(d, self._WL, ground_y=self._HL)
             if sh is not None:
+                # Older saves may contain a rectangle partly below the
+                # desktop floor.  Preserve its size where possible, but keep
+                # the interior floor on a reachable logical surface before
+                # rebuilding navigation geometry.
+                sh.w = max(Shelter.MIN_W, min(float(sh.w), float(self._WL)))
+                sh.h = max(Shelter.MIN_H, min(float(sh.h), float(self._HL)))
+                sh.x = max(0.0, min(float(sh.x), max(0.0, self._WL - sh.w)))
+                sh.y = max(0.0, min(float(sh.y), max(0.0, self._HL - sh.h)))
+                sh.ground_y = sh.y + sh.h
+                sh.center_x = sh.x + sh.w * 0.5
+                sh.center_y = sh.y + sh.h * 0.5
+                sh._layout()
                 out.append(sh)
                 break
         self.shelters = out
@@ -966,13 +994,21 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # repaint every 25 ms when many lizards or water are moving.
         # A handful of cats is already enough to make a full QPainter pass
         # expensive (each sprite has a tail/hand overlay).  Keep physics at
-        # the fixed 40 Hz above, but cap paint scheduling to 25 FPS once the
-        # scene has four or more cats.  This avoids the common five-cat case
-        # saturating the GUI thread while preserving responsive drag input.
-        crowded_scene = (len(self.lizards) > 12 or len(self.pets) > 3
+        # the fixed 40 Hz above, but cap paint scheduling to a conservative
+        # cadence once three or more cats are present.  This avoids the common
+        # multi-cat case saturating the GUI thread while preserving responsive
+        # drag input.
+        # A transparent, layered Windows window pays a composition cost for
+        # every repaint that is much higher than the off-screen QPainter cost.
+        # Three animated cats are already enough to saturate that compositor
+        # when we repaint at the 25 ms interaction cadence.  Keep physics on
+        # the fixed 40 Hz accumulator above, but give the GUI a larger frame
+        # budget for ordinary crowded scenes.  Direct drag/grab remains fast
+        # so interaction does not feel latched.
+        crowded_scene = (len(self.lizards) > 12 or len(self.pets) >= 3
                          or self.water_surface is not None)
         if crowded_scene and not dragging and not grabbing:
-            want_iv = max(want_iv, 40)
+            want_iv = max(want_iv, 60)
         if self.anim.interval() != want_iv:
             # Precise 保平滑，Coarse 省功耗
             self.anim.stop()
@@ -1960,6 +1996,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         """持有物原地转 free —— 果子 / 石头 / 两手各一支的矛 / 背上的矛全都算。"""
         pet.body.drop_all()
     def _after_pets_changed(self):
+        self._sync_render_quality()
         hud = self._hud
         if hud is not None and hasattr(hud, "rebuild_rows"):
             hud.rebuild_rows()
@@ -3090,6 +3127,15 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             h = max(Shelter.MIN_H, float(w) * float(ah) / float(aw))
         if door_ticks is None:
             door_ticks = tuning.STORM_DOOR_TICKS
+        # A shelter extending below the desktop floor creates an interior goal
+        # below the reachable world plane.  The planner correctly rejects
+        # that target, which used to leave every cat idling outside in rain.
+        # Keep the requested size, but clamp the rectangle fully inside the
+        # logical canvas so its floor is always a reachable surface.
+        w = max(Shelter.MIN_W, min(float(w), float(self._WL)))
+        h = max(Shelter.MIN_H, min(float(h), float(self._HL)))
+        x = max(0.0, min(float(x), max(0.0, self._WL - w)))
+        y = max(0.0, min(float(y), max(0.0, self._HL - h)))
         sh = Shelter(x, y, w, h, None, self._WL, seed=self._shelter_seed,
                      door_ticks=int(door_ticks), template=tpl)
         # 庇护所是全局唯一的安全点；重新放置时替换旧位置，避免导航、暴雨

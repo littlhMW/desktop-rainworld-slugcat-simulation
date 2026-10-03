@@ -9,7 +9,10 @@ from ..i18n import t
 from ..cats import display_order
 from .hudrow import PetRow
 
-REFRESH_MS = 200
+# The world runs independently at 40 Hz; status text and meters do not need
+# that cadence.  A 350 ms refresh avoids repeatedly rebuilding Qt text/layout
+# while keeping the panel responsive to meaningful state changes.
+REFRESH_MS = 350
 
 _PANEL_QSS = (
     "#hudPanel{background:rgba(13,17,23,228);border-radius:14px;border:1px solid rgba(239,243,248,78);}"
