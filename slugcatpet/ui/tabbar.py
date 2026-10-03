@@ -18,11 +18,13 @@ _SAINT = get_cat_def("saint")
 _HEAD_ATLAS, _HEAD_FAM = _SAINT.frames["head"]
 _FACE_ATLAS, _FACE_FAM = _SAINT.frames["face"]
 
-COLLAPSED_W, COLLAPSED_H = 24, 48
-EXPANDED_W = 120
+COLLAPSED_W, COLLAPSED_H = 30, 58
+# 展开面板留出四列图标和清晰的分组间距；窄而高的三列布局会把工具
+# 挤成一团，也让底部按钮看起来像是同一组。宽度只影响侧栏，不改变功能。
+EXPANDED_W = 176
 EXPANDED_H = 250                       # 仅估值，实际走 _expanded_h()
 SLIDE_MS = 150
-# 图标盘配色（贴合面板绿橄榄调）
+# 侧栏视觉：黑白主体，灰阶只用于层次和状态。
 _ICON_GREY = QColor(192, 199, 183)
 _ICON_GREY_DARK = QColor(78, 84, 74)
 _ICON_GREY_LIGHT = QColor(150, 158, 142)
@@ -744,52 +746,114 @@ class TabBar(QWidget):
     def _build(self):
         self._panel = QWidget(self)
         lay = QVBoxLayout(self._panel)
-        lay.setContentsMargins(6, 6, 6, 6)
-        lay.setSpacing(4)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(7)
         self._panel_lay = lay     # 供 _expanded_h 读内容高度
 
-        # 图标盘：3 列网格
+        title = QLabel("桌面雨世界")
+        title.setObjectName("sideTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(title)
+        subtitle = QLabel("蛞蝓猫模拟  ·  工具")
+        subtitle.setObjectName("sideSubtitle")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(subtitle)
+        lay.addWidget(self._divider())
+
+        def section(text):
+            label = QLabel(text)
+            label.setObjectName("sectionLabel")
+            lay.addWidget(label)
+            return label
+
+        # 图标盘：四列网格，按地形、实体和工具分组。
+        section("地形")
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(4)
-        for c in range(3):
+        grid.setHorizontalSpacing(5)
+        grid.setVerticalSpacing(5)
+        for c in range(4):
             grid.setColumnStretch(c, 1)
         dpr = QGuiApplication.primaryScreen().devicePixelRatio()
         atlas = getattr(self.pet, "atlas", None)
-        place_items = [("pole", t("tip_pole"), self._place_pole),
-                       ("wall", t("tip_wall"), self._place_wall),
-                       ("fruit", t("tip_fruit"), self._place_fruit),
-                       ("stone", t("tip_stone"), self._place_stone),
-                       ("lamp", t("tip_lamp"), self._place_lamp),
-                       ("slimemold", t("tip_slimemold"), self._place_slimemold),
-                       ("batfly", t("tip_batfly"), self._place_batfly),
-                       ("lizard", t("tip_lizard"), self._place_lizard),
-                       ("squidcada", t("tip_squidcada"), self._place_squidcada),
-                       ("needleworm", t("tip_needleworm"), self._place_needleworm),
-                       ("pearl", t("tip_pearl"), self._place_pearl),
-                       ("spear", t("tip_spear"), self._place_spear),
-                       ("slugpup", t("tip_slugpup"), self._place_slugpup),
-                       ("seedcob", t("tip_seedcob"), self._place_seedcob),
-                       ("karmaflower", t("tip_karmaflower"), self._place_karmaflower),
-                       ("shelter", t("tip_shelter"), self._place_shelter),
-                       ("erase", t("tip_erase"), self._erase_mode),
-                       ("clear", t("tip_clear"), self._clear_all)]
-        for i, (kind, tip, cb) in enumerate(place_items):
+        terrain_items = [("pole", t("tip_pole"), self._place_pole),
+                         ("wall", t("tip_wall"), self._place_wall),
+                         ("shelter", t("tip_shelter"), self._place_shelter)]
+        for i, (kind, tip, cb) in enumerate(terrain_items):
             ib = QPushButton()
             ib.setIcon(QIcon(_make_place_icon(kind, 22, dpr, atlas)))
             ib.setIconSize(QSize(22, 22))
-            ib.setFixedHeight(32)
+            ib.setFixedSize(34, 34)
+            ib.setObjectName("iconButton")
             install_tip(ib, tip)
             ib.setCursor(Qt.CursorShape.PointingHandCursor)
             ib.clicked.connect(cb)
-            grid.addWidget(ib, i // 3, i % 3)
+            grid.addWidget(ib, i // 4, i % 4)
         grid_host = QWidget()
         grid_host.setLayout(grid)
         lay.addWidget(grid_host)
+
+        section("生物与物品")
+        grid2 = QGridLayout()
+        grid2.setContentsMargins(0, 0, 0, 0)
+        grid2.setHorizontalSpacing(5)
+        grid2.setVerticalSpacing(5)
+        for c in range(4):
+            grid2.setColumnStretch(c, 1)
+        item_items = [("fruit", t("tip_fruit"), self._place_fruit),
+                      ("stone", t("tip_stone"), self._place_stone),
+                      ("lamp", t("tip_lamp"), self._place_lamp),
+                      ("slimemold", t("tip_slimemold"), self._place_slimemold),
+                      ("batfly", t("tip_batfly"), self._place_batfly),
+                      ("lizard", t("tip_lizard"), self._place_lizard),
+                      ("squidcada", t("tip_squidcada"), self._place_squidcada),
+                      ("needleworm", t("tip_needleworm"), self._place_needleworm),
+                      ("pearl", t("tip_pearl"), self._place_pearl),
+                      ("spear", t("tip_spear"), self._place_spear),
+                      ("slugpup", t("tip_slugpup"), self._place_slugpup),
+                      ("seedcob", t("tip_seedcob"), self._place_seedcob),
+                      ("karmaflower", t("tip_karmaflower"), self._place_karmaflower)]
+        for i, (kind, tip, cb) in enumerate(item_items):
+            ib = QPushButton()
+            ib.setIcon(QIcon(_make_place_icon(kind, 22, dpr, atlas)))
+            ib.setIconSize(QSize(22, 22))
+            ib.setFixedSize(34, 34)
+            ib.setObjectName("iconButton")
+            install_tip(ib, tip)
+            ib.setCursor(Qt.CursorShape.PointingHandCursor)
+            ib.clicked.connect(cb)
+            grid2.addWidget(ib, i // 4, i % 4)
+        item_host = QWidget()
+        item_host.setLayout(grid2)
+        lay.addWidget(item_host)
         lay.addWidget(self._divider())
+
+        section("工具")
+        grid3 = QGridLayout()
+        grid3.setContentsMargins(0, 0, 0, 0)
+        grid3.setHorizontalSpacing(5)
+        grid3.setVerticalSpacing(5)
+        for c in range(4):
+            grid3.setColumnStretch(c, 1)
+        for i, (kind, tip, cb) in enumerate(
+                [("erase", t("tip_erase"), self._erase_mode),
+                 ("clear", t("tip_clear"), self._clear_all)]):
+            ib = QPushButton()
+            ib.setIcon(QIcon(_make_place_icon(kind, 22, dpr, atlas)))
+            ib.setIconSize(QSize(22, 22))
+            ib.setFixedSize(34, 34)
+            ib.setObjectName("iconButton")
+            install_tip(ib, tip)
+            ib.setCursor(Qt.CursorShape.PointingHandCursor)
+            ib.clicked.connect(cb)
+            grid3.addWidget(ib, 0, i)
+        tool_host = QWidget()
+        tool_host.setLayout(grid3)
+        lay.addWidget(tool_host)
 
         def btn(text, enabled, cb, tip=None):
             b = QPushButton(text)
+            b.setObjectName("textButton")
             b.setEnabled(enabled)
             if tip:
                 install_tip(b, tip)
@@ -803,11 +867,19 @@ class TabBar(QWidget):
         btn(t("btn_open_settings"), True, self._open_settings)
         btn(t("btn_quit_app"), True, self._quit)
         self._panel.setStyleSheet(
-            "QWidget{background:#0b0d10;border-radius:2px;border:1px solid #eef1f4;}"
-            "QPushButton{color:#eef1f4;background:#0b0d10;border:1px solid #eef1f4;"
-            "border-radius:2px;font-size:12px;}"
-            "QPushButton:enabled:hover{background:#252a30;}"
+            "QWidget#qt_tabbar_panel{background:#101318;border:1px solid #d8dde3;border-radius:8px;}"
+            "QLabel#sideTitle{color:#f4f6f8;font-size:13px;font-weight:600;padding:0 2px;}"
+            "QLabel#sideSubtitle{color:#929aa4;font-size:10px;padding:0 2px;}"
+            "QLabel#sectionLabel{color:#aeb6c0;font-size:10px;font-weight:600;padding:1px 2px 0;}"
+            "QPushButton#iconButton{color:#f0f2f4;background:#171b21;border:1px solid #3c444e;border-radius:6px;}"
+            "QPushButton#iconButton:enabled:hover{background:#2a313a;border-color:#edf0f2;}"
+            "QPushButton#iconButton:enabled:pressed{background:#eef1f4;color:#11151a;}"
+            "QPushButton#textButton{color:#eef1f4;background:#171b21;border:1px solid #4b535e;"
+            "border-radius:6px;font-size:11px;padding:2px 8px;text-align:left;}"
+            "QPushButton#textButton:enabled:hover{background:#2a313a;border-color:#edf0f2;}"
+            "QPushButton#textButton:enabled:pressed{background:#eef1f4;color:#11151a;}"
             "QPushButton:disabled{color:#737d87;background:#15191e;border-color:#59636d;}")
+        self._panel.setObjectName("qt_tabbar_panel")
 
         # eventFilter 区分拖动/点击
         self._arrow = QPushButton("‹", self)
@@ -816,9 +888,9 @@ class TabBar(QWidget):
         self._arrow_press = None
         self._arrow_moved = False
         self._arrow.setStyleSheet(
-            "QPushButton{color:#eef1f4;background:#0b0d10;"
-            "border:none;border-top-left-radius:2px;border-bottom-left-radius:2px;font-size:18px;}"
-            "QPushButton:hover{background:#252a30;}")
+            "QPushButton{color:#eef1f4;background:#101318;border:1px solid #d8dde3;"
+            "border-top-left-radius:8px;border-bottom-left-radius:8px;font-size:20px;}"
+            "QPushButton:hover{background:#2a313a;}")
 
         # toast 需顶层窗口，防裁切
         self._toast_lbl = QLabel("", None)
@@ -986,6 +1058,7 @@ class TabBar(QWidget):
 
     def _place_slugpup(self):
         self.pet.enter_place_slugpup_mode()
+        self._collapse()
 
     def _place_seedcob(self):
         self.pet.enter_place_seedcob_mode()

@@ -66,6 +66,13 @@ class MeowManager:
         self._cooldowns: dict[str, int] = {}
         self._playing: list[QSoundEffect] = []
         self._event_cd: dict[str, int] = {}
+        # Ambient calls are deliberately serialized.  A group of cats should
+        # sound like individuals taking turns, rather than a chorus created by
+        # the per-cat probability checks in the same physics tick.
+        self._ambient_cd = 0
+        # Contextual calls (grab, shake, waa) get a short priority window so an
+        # ambient call cannot start immediately on top of them.
+        self._special_lock = 0
         # From the user's game install only; the generated cue stays in user_dir.
         # The easter egg is enabled by default; users can opt out in Settings.
         self.waa_enabled = bool(params.get("waa_enabled", True))
@@ -332,10 +339,39 @@ class MeowManager:
         body = getattr(pet, "body", None)
         hungry = float(getattr(body, "food", 1.0)) <= 0.25
         danger = any(k in state.lower() for k in ("flee", "fight", "threat", "panic", "hurt"))
+        # Do not make a sleeping, stunned or otherwise locked cat vocalize by
+        # accident.  This is only a gate for ambient calls; explicit event
+        # calls still use ``event`` and retain their original priority.
+        state_l = state.lower()
+        if any(k in state_l for k in ("sleep", "shelter", "stun", "dead", "grab", "drown")):
+            return 0.0, danger or hungry
         speed = abs(float(getattr(body, "vx", 0.0))) + abs(float(getattr(body, "vy", 0.0)))
         # Probability per 40 Hz tick.  Distress is audible sooner; idle cats
         # remain occasional enough that a group does not become a chorus.
         chance = 1.0 / (180.0 if danger else 900.0 if hungry else 2400.0)
+        # Slugpup's six-axis personality also gives the adult roster a small,
+        # stable vocal tendency.  Vitality and sociability make ordinary calls
+        # more likely; anxiety adds occasional reassurance calls.  Read both
+        # the new canonical traits and the legacy fields so old saved pets keep
+        # the same behavior.
+        pers = getattr(beh, "pers", None) or getattr(pet, "personality", None)
+        def axis(name: str, legacy: str, default: float = 0.5) -> float:
+            if pers is None:
+                return default
+            fn = getattr(pers, "trait", None)
+            try:
+                if callable(fn):
+                    return max(0.0, min(1.0, float(fn(name))))
+            except (TypeError, ValueError):
+                pass
+            try:
+                return max(0.0, min(1.0, float(getattr(pers, legacy))))
+            except (TypeError, ValueError, AttributeError):
+                return default
+        vocal_fac = (0.55 + 0.80 * axis("vitality", "activity")
+                     + 0.35 * axis("sociability", "sociability")
+                     + 0.20 * axis("anxiety", "anxiety"))
+        chance *= max(0.35, min(1.85, vocal_fac))
         if speed > 8.0:
             chance *= 0.55
         return chance, danger or hungry
@@ -376,6 +412,10 @@ class MeowManager:
         if (beh is None or (dead_fn() if callable(dead_fn) else getattr(beh, "dead", False))
                 or getattr(getattr(pet, "body", None), "dead", False)):
             return
+        # An explicit event is always allowed to speak, but reserves a short
+        # ambient-call window so the normal random pass cannot immediately
+        # overlap the contextual call.
+        self._special_lock = max(self._special_lock, 36)
         # Waa~ 仅在 SU_7 真正在播放时替代普通猫叫。候选模式本身还包括
         # 音轨准备中、没有绿蜥或尚未遇到威胁的时间，不能把普通叫声一起吞掉。
         if (self._waa_mode and self._waa_playing()
@@ -415,6 +455,10 @@ class MeowManager:
             self._event_cd[key] -= 1
             if self._event_cd[key] <= 0:
                 del self._event_cd[key]
+        if self._ambient_cd > 0:
+            self._ambient_cd -= 1
+        if self._special_lock > 0:
+            self._special_lock -= 1
         if self._waa_cooldown > 0:
             self._waa_cooldown -= 1
         waa_playing = False
@@ -462,7 +506,7 @@ class MeowManager:
                 return
         if not self.enabled or not self.available:
             return
-        if len(self._playing) >= 3:
+        if len(self._playing) >= 3 or self._ambient_cd > 0 or self._special_lock > 0:
             return
         for pet in pets:
             key = str(getattr(pet, "id", id(pet)))
@@ -478,5 +522,9 @@ class MeowManager:
             chance, urgent = self._context(pet)
             if self._rng.random() >= chance:
                 continue
-            self._play(pet, long_call=urgent or self._rng.random() < 0.35)
-            self._cooldowns[key] = self._rng.randint(180, 420)
+            if self._play(pet, long_call=urgent or self._rng.random() < 0.35):
+                # Keep a short world-level gap in addition to the per-cat
+                # cooldown.  It is long enough to preserve clarity while
+                # still allowing several calls during a normal idle period.
+                self._ambient_cd = self._rng.randint(45, 120)
+                self._cooldowns[key] = self._rng.randint(180, 420)
