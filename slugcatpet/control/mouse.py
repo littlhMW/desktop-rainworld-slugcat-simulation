@@ -108,6 +108,14 @@ class GrabController:
             k = TETHER_VEL_CAP / sp
             c.vx *= k
             c.vy *= k
+        # A pinned chunk can be placed directly inside a shelter wall while it
+        # follows the cursor. Resolve that release edge before unpinning so the
+        # next physics tick does not inject a large correction impulse.
+        try:
+            from ..core.chunkphys import cat_solids, depenetrate_circle
+            depenetrate_circle(c, cat_solids())
+        except Exception:
+            pass
         c.pinned = False
         self.chunk = None
         self.point = None

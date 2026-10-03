@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""世界状态存档：退出 / 定时保存西瓜猫之外的全部环境实体（物品 + 生物 + 杆/灯）。
+"""世界状态存档：退出 / 定时保存蛞蝓猫之外的全部环境实体（物品 + 生物 + 杆/墙/灯）。
 
 反编译里每个实体都是可序列化的（SaveState），桌宠这边取同样的做法：
 每一类实体一张「构造器 + 可恢复字段」表，序列化只存这些字段，恢复 = 用构造器建一个新实体 +
@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import math
 import sys
 
 from .world.batfly import BatFly
@@ -84,7 +85,7 @@ _TABLE = (
 def snapshot(win) -> dict:
     """把窗口里的全部环境实体序列化成 JSON 可存的 dict。"""
     out = {"v": SCHEMA, "kinds": {}, "hand": {}, "spawns": [], "lamp": None,
-           "poles": []}
+           "poles": [], "walls": []}
     idx = {}                       # id(obj) -> (kind, index)
     for kind, attr, _ctor, fields in _TABLE:
         rows = []
@@ -165,6 +166,22 @@ def snapshot(win) -> dict:
         except Exception:
             pass
     out["poles"] = poles
+
+    # 手绘墙块属于世界几何的一部分，不能只留在窗口运行时状态里。
+    # 旧版本的 snapshot 忽略了 ``extra_walls``，导致退出/自动保存后读档
+    # 墙体全部消失。保存为普通数字数组，避免把 Qt 类型或可变 tuple 写进 JSON。
+    walls = []
+    for row in getattr(win, "extra_walls", ()) or ():
+        try:
+            if len(row) != 4:
+                continue
+            vals = tuple(float(v) for v in row)
+            if (all(math.isfinite(v) for v in vals)
+                    and vals[2] > vals[0] and vals[3] > vals[1]):
+                walls.append(list(vals))
+        except (TypeError, ValueError, OverflowError):
+            continue
+    out["walls"] = walls
     return out
 
 
@@ -262,6 +279,26 @@ def restore(win, data) -> int:
             except Exception as e:
                 log_error("restore pole failed: %r" % (e,))
         win.poles = keep
+
+    # 手绘墙块：与庇护所一样属于持久化世界几何。允许旧存档没有该字段，
+    # 但新存档中的空数组必须清空运行时残留，保证读档结果与保存内容一致。
+    wall_rows = data.get("walls")
+    if isinstance(wall_rows, list):
+        walls = []
+        for row in wall_rows:
+            try:
+                if len(row) != 4:
+                    continue
+                vals = tuple(float(v) for v in row)
+                if (all(math.isfinite(v) for v in vals)
+                        and vals[2] > vals[0] and vals[3] > vals[1]):
+                    walls.append(vals)
+            except (TypeError, ValueError, OverflowError):
+                continue
+        win.extra_walls = walls
+        refresh = getattr(win, "_refresh_shelter_solids", None)
+        if refresh is not None:
+            refresh()
     # 钉住的矛＝一截杆（存档不重复存，按矛重建，不然读档后那截杆没了、矛也不能爬）
     for sp in getattr(win, "spears", ()) or ():
         if getattr(sp, "pinned", False) and getattr(sp, "pole", None) is None:

@@ -892,6 +892,12 @@ class SlugcatBody(CombatTarget):
         # 控制态滚/滑期连接距=10
         rest = 10.0 if (self._ctrl_on and self._ctrl_roll_direction != 0) else self.conn_rest
         solve_conn(self.chunk0, self.chunk1, rest, ctype=self.conn_type)
+        # Constraint correction can inject velocity after BodyChunk.update()
+        # (especially when a pinned chunk is dragged deep into a shelter
+        # wall).  Cap once more in the same tick so the correction cannot
+        # bypass MAX_CHUNK_SPEED and cause a large impulse/jitter cascade.
+        self.chunk0._cap_speed()
+        self.chunk1._cap_speed()
         self.chunk0.clamp_inside(self.W, self._floor_h)
         self.chunk1.clamp_inside(self.W, self._floor_h)
         self._gait_update()
@@ -910,6 +916,8 @@ class SlugcatBody(CombatTarget):
                      impact=self.impact_cb, room_gravity=self.room_gravity, water_y=wy,
                      buoyancy=self.stats.buoyancy, water_friction=WATER_FRICTION)
         solve_conn(self.chunk0, self.chunk1, self.conn_rest, ctype="Normal")
+        self.chunk0._cap_speed()
+        self.chunk1._cap_speed()
         self.chunk0.clamp_inside(self.W, self.H)
         self.chunk1.clamp_inside(self.W, self.H)
         self._breath_update()

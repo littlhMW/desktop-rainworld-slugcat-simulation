@@ -419,6 +419,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self.water_surface = None
 
         self._shake = [0.0, 0.0]
+        # A dragged body can expose both chunks to the same shelter wall in
+        # adjacent solver passes.  Keep edge-triggered impact reactions cheap:
+        # one physical landing may still shake the scene, but it must not
+        # re-enter the stun/audio/noise path several times in the same burst.
+        self._impact_stun_cd = {}
+        self._impact_noise_cd = {}
 
         # 雨循环 + 庇护所（默认关闭；设置里开，且至少有一间庇护所才走相位）
         self.rain = RainSystem(self._WL, self._HL)
@@ -1398,6 +1404,23 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._storm_hud_info_cache = None
         self._pole_tick += 1
         self._plat_tick -= 1
+        # Impact guards are intentionally short (a fraction of a second at
+        # 40 Hz) so a later, genuine landing still produces its normal cue.
+        for table in (self._impact_stun_cd, self._impact_noise_cd):
+            for key in tuple(table):
+                left = table[key] - 1
+                if left > 0:
+                    table[key] = left
+                else:
+                    table.pop(key, None)
+            # Pets are normally few, but natural respawn/removal can otherwise
+            # leave id() keys behind forever.  Only build the live-id set when
+            # the guard has grown unusually large so the common path stays O(1).
+            if len(table) > 128:
+                live = {id(p) for p in self.pets}
+                for key in tuple(table):
+                    if key not in live:
+                        table.pop(key, None)
         if self._plat_tick <= 0:
             self._plat_tick = PLATFORM_REFRESH_TICKS
             self._refresh_platforms()
@@ -1760,7 +1783,11 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if beh is not None:
             try:
                 beh.apply_stun(ticks, drop_items=True, rage=False, crawl=True)
-                self.sfx.play("stun", 0.85)
+                # ``_do_tick`` runs SoundManager.observe_pets immediately
+                # after all pets step; its stun edge emits the cue once for
+                # every variant.  Playing here as well used to create two
+                # QSoundEffects for one landing, which was especially costly
+                # while a dragged cat bounced against a shelter wall.
                 return
             except Exception:
                 pass
@@ -1777,14 +1804,24 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._shake[0] = clampf(self._shake[0] + ix, -SHAKE_MAX, SHAKE_MAX)
         self._shake[1] = clampf(self._shake[1] + iy, -SHAKE_MAX, SHAKE_MAX)
         down = float(direction[1]) if isinstance(direction, (tuple, list)) else 0.0
-        if pet is not None and down > 0.0 and float(speed) >= FALL_STUN_SPEED:
+        pet_key = id(pet) if pet is not None else None
+        if (pet is not None and down > 0.0
+                and float(speed) >= FALL_STUN_SPEED
+                and pet_key not in self._impact_stun_cd):
             self._fall_stun(pet, float(speed))
+            # Both body chunks can contact one shelter face while the cat is
+            # being released.  Do not reapply Stunned or allocate another
+            # QSoundEffect until the release impulse has settled.
+            self._impact_stun_cd[pet_key] = 10
         # 原版 NoiseTracker / ReactToNoise（LizardAI.cs:1741）：撞击地形的响声会引来蜥蜴
-        if strength > 0.0 and self.lizards:
+        if (strength > 0.0 and self.lizards
+                and (pet_key is None or pet_key not in self._impact_noise_cd)):
             x, y = getattr(chunk, "x", None), getattr(chunk, "y", None)
             if x is not None and y is not None:
                 for lz in self.lizards:
                     lz.hear_noise(x, y)
+                if pet_key is not None:
+                    self._impact_noise_cd[pet_key] = 3
 
     def _cold_update_world(self):
         """暴风雪三角计时推进，返回 cycle_prog。"""

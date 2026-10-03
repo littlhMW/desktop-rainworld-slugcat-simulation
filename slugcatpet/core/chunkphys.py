@@ -287,6 +287,63 @@ def cat_solids() -> list:
     return CAT_SOLIDS
 
 
+def depenetrate_circle(obj, table=None, passes: int = 4) -> bool:
+    """推开被外部拖拽直接塞进实心墙的圆点。
+
+    拖拽中的 chunk 是 kinematic，正常 ``_solid_blocks`` 不会介入；松手后
+    如果圆心仍在庇护所墙体里，下一 tick 会同时触发多面修正和约束冲量，
+    形成甩飞/抖动级联。释放边沿先做一次最小轴推出，保持正常碰撞流程，
+    但不给物理层留下深度嵌入的初始状态。
+    """
+    if table is None:
+        table = CAT_SOLIDS
+    if not table:
+        return False
+    r = max(1.0, float(getattr(obj, "rad", 1.0)))
+    moved = False
+    for _ in range(max(1, int(passes))):
+        hit = False
+        for x0, y0, x1, y1 in table:
+            if x1 <= x0 or y1 <= y0:
+                continue
+            if obj.x + r <= x0 or obj.x - r >= x1:
+                continue
+            if obj.y + r <= y0 or obj.y - r >= y1:
+                continue
+            left = (obj.x + r) - x0
+            right = x1 - (obj.x - r)
+            top = (obj.y + r) - y0
+            bottom = y1 - (obj.y - r)
+            _depth, axis = min((left, "left"), (right, "right"),
+                               (top, "top"), (bottom, "bottom"))
+            if axis == "left":
+                obj.x = x0 - r
+                if getattr(obj, "vx", 0.0) > 0.0:
+                    obj.vx = 0.0
+            elif axis == "right":
+                obj.x = x1 + r
+                if getattr(obj, "vx", 0.0) < 0.0:
+                    obj.vx = 0.0
+            elif axis == "top":
+                obj.y = y0 - r
+                if getattr(obj, "vy", 0.0) > 0.0:
+                    obj.vy = 0.0
+            else:
+                obj.y = y1 + r
+                if getattr(obj, "vy", 0.0) < 0.0:
+                    obj.vy = 0.0
+            moved = hit = True
+        if not hit:
+            break
+    if moved:
+        # Do not let the next swept-collision pass interpret the release as a
+        # teleport across the wall.  The retained velocity still produces the
+        # ordinary throw impulse after this snapshot.
+        obj.last_x = obj.x
+        obj.last_y = obj.y
+    return moved
+
+
 def support_under(x: float, y: float, default: float) -> float:
     """x 处、y 之下最近的可站表面：屏幕底 / 窗台 / 墙壁条顶面。
 

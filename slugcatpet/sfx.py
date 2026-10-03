@@ -21,10 +21,24 @@ class SoundManager:
         self._cat_cd = {}
         self._playing = []
         self._loops = {}
+        # Reusing QSoundEffect instances is important on Windows: constructing
+        # one and assigning its source can synchronously touch the WAV decoder.
+        # A fast drag/release sequence can otherwise create several effects in
+        # one GUI tick and make the window appear to hang on a shelter impact.
+        # Keep a tiny per-file pool so overlapping cues still work without
+        # allocating an effect for every collision.
+        self._effect_pool = {}
+        self._effect_pool_limit = 3
         # Sound edge events can fire for several cats in one physics tick.
         # Resolving the same local/external WAV with Path.is_file() on every
         # event causes avoidable filesystem work (especially on Windows).
         self._path_cache = {}
+        # Prime the local impact cue while the window is being constructed.
+        # QSoundEffect.setSource() can synchronously initialize the Windows
+        # decoder; doing that on the first shelter landing is visible as a
+        # one-frame hitch during a drag/release.
+        if self.enabled:
+            self._prime_path(self._path("stun"))
 
     def set_enabled(self, value: bool) -> None:
         self.enabled = bool(value)
@@ -35,7 +49,8 @@ class SoundManager:
     def set_volume(self, value: int) -> None:
         self.volume = max(0, min(100, int(value)))
         self.params["sfx_volume"] = self.volume
-        for effect in (*self._playing, *self._loops.values()):
+        pooled = [e for pool in self._effect_pool.values() for e in pool]
+        for effect in (*self._playing, *pooled, *self._loops.values()):
             effect.setVolume(self.volume / 100.0)
 
     def _game_audio_root(self):
@@ -48,6 +63,18 @@ class SoundManager:
             except Exception:
                 self._game_root = False
         return self._game_root if self._game_root and self._game_root.is_dir() else None
+
+    def _prime_path(self, path):
+        if path is None:
+            return
+        key = str(path)
+        pool = self._effect_pool.setdefault(key, [])
+        if pool:
+            return
+        effect = QSoundEffect()
+        effect.setSource(QUrl.fromLocalFile(key))
+        effect.setLoopCount(1)
+        pool.append(effect)
 
     def _path(self, name):
         stem = str(name)
@@ -77,12 +104,29 @@ class SoundManager:
         if not paths:
             return False
         path = random.choice(paths)
-        effect = QSoundEffect()
-        effect.setSource(QUrl.fromLocalFile(str(path)))
-        effect.setLoopCount(1)
+        return self._play_path(path, gain)
+
+    def _play_path(self, path, gain=1.0):
+        """Play a cached short effect, allowing a small amount of overlap.
+
+        ``QSoundEffect`` is deliberately kept alive in ``_effect_pool``.  On
+        Windows, creating it in the impact callback is expensive enough to
+        block the Qt event loop for a visible frame.  When all pool slots are
+        still playing we drop this cue; the physics event has already been
+        handled and a missing duplicate thud is preferable to a hitch.
+        """
+        key = str(path)
+        pool = self._effect_pool.setdefault(key, [])
+        effect = next((e for e in pool if not e.isPlaying()), None)
+        if effect is None:
+            if len(pool) >= self._effect_pool_limit:
+                return False
+            effect = QSoundEffect()
+            effect.setSource(QUrl.fromLocalFile(key))
+            effect.setLoopCount(1)
+            pool.append(effect)
         effect.setVolume(max(0.0, min(1.0, self.volume / 100.0 * gain)))
         effect.play()
-        self._playing.append(effect)
         return True
 
     def play(self, name, gain=1.0) -> None:
@@ -91,12 +135,7 @@ class SoundManager:
         path = self._path(name)
         if path is None:
             return
-        effect = QSoundEffect()
-        effect.setSource(QUrl.fromLocalFile(str(path)))
-        effect.setLoopCount(1)
-        effect.setVolume(max(0.0, min(1.0, self.volume / 100.0 * gain)))
-        effect.play()
-        self._playing.append(effect)
+        self._play_path(path, gain)
 
     def loop(self, name, level) -> None:
         level = max(0.0, min(1.0, float(level)))
@@ -123,7 +162,8 @@ class SoundManager:
         self._playing = [e for e in self._playing if e.isPlaying()]
 
     def stop_all(self) -> None:
-        for effect in (*self._playing, *self._loops.values()):
+        pooled = [e for pool in self._effect_pool.values() for e in pool]
+        for effect in (*self._playing, *pooled, *self._loops.values()):
             effect.stop()
         self._playing.clear()
         self._loops.clear()
