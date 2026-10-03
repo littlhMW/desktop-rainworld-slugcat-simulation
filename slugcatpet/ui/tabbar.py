@@ -803,11 +803,11 @@ class TabBar(QWidget):
         btn(t("btn_open_settings"), True, self._open_settings)
         btn(t("btn_quit_app"), True, self._quit)
         self._panel.setStyleSheet(
-            "QWidget{background:rgba(30,34,40,235);border-radius:8px;}"
-            "QPushButton{color:#e8f5d8;background:rgba(60,70,55,255);border:1px solid #4a5a3a;"
-            "border-radius:5px;font-size:12px;}"
-            "QPushButton:enabled:hover{background:rgba(80,100,70,255);}"
-            "QPushButton:disabled{color:#777;background:rgba(45,48,52,255);}")
+            "QWidget{background:#000;border-radius:2px;border:1px solid #fff;}"
+            "QPushButton{color:#fff;background:#000;border:1px solid #fff;"
+            "border-radius:2px;font-size:12px;}"
+            "QPushButton:enabled:hover{background:#222;}"
+            "QPushButton:disabled{color:#777;background:#111;border-color:#555;}")
 
         # eventFilter 区分拖动/点击
         self._arrow = QPushButton("‹", self)
@@ -816,9 +816,9 @@ class TabBar(QWidget):
         self._arrow_press = None
         self._arrow_moved = False
         self._arrow.setStyleSheet(
-            "QPushButton{color:#cfe8b8;background:rgba(40,46,40,180);"
-            "border:none;border-top-left-radius:8px;border-bottom-left-radius:8px;font-size:18px;}"
-            "QPushButton:hover{background:rgba(60,72,55,255);}")
+            "QPushButton{color:#fff;background:#000;"
+            "border:none;border-top-left-radius:2px;border-bottom-left-radius:2px;font-size:18px;}"
+            "QPushButton:hover{background:#222;}")
 
         # toast 需顶层窗口，防裁切
         self._toast_lbl = QLabel("", None)
@@ -827,7 +827,7 @@ class TabBar(QWidget):
                                        | Qt.WindowType.ToolTip)
         self._toast_lbl.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self._toast_lbl.setStyleSheet(
-            "QLabel{color:#fff;background:rgba(20,22,26,235);border-radius:6px;padding:5px 9px;font-size:12px;}")
+            "QLabel{color:#fff;background:#000;border:1px solid #fff;border-radius:2px;padding:5px 9px;font-size:12px;}")
         self._toast_lbl.hide()
         self._toast_timer = QTimer(self)
         self._toast_timer.setSingleShot(True)
@@ -849,7 +849,7 @@ class TabBar(QWidget):
     def _divider():
         f = QFrame()
         f.setFixedHeight(1)
-        f.setStyleSheet("background:rgba(120,150,100,90);border:none;")
+        f.setStyleSheet("background:#fff;border:none;")
         return f
 
     def _expanded_h(self):

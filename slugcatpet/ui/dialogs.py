@@ -8,21 +8,21 @@ from PySide6.QtGui import QGuiApplication
 # 壳级 QSS：防父窗样式渗透
 _CARD_QSS = (
     "#cardShell{background:transparent;}"
-    "#cardRoot{background:rgba(28,32,38,238);border-radius:14px;border:1px solid #4a5a3a;}"
-    "#cardTitle{color:#cfe8b8;font-size:15px;font-weight:600;background:transparent;}"
-    "#cardText{color:#e8f5d8;font-size:13px;background:transparent;}"
+    "#cardRoot{background:#000;border-radius:2px;border:1px solid #fff;}"
+    "#cardTitle{color:#fff;font-size:15px;font-weight:600;background:transparent;}"
+    "#cardText{color:#fff;font-size:13px;background:transparent;}"
     "QLabel{background:transparent;}"
     "QPushButton{font-size:12px;padding:6px 14px;border-radius:8px;}"
-    "#btnPrimary{background:#6aa34a;color:#0f1a08;font-weight:600;border:none;}"
-    "#btnPrimary:hover{background:#7cb45a;}"
-    "#btnGhost{background:transparent;color:#9fc080;border:1px solid #4a5a3a;}"
-    "#btnGhost:hover{background:rgba(120,150,100,40);}"
-    "#btnDanger{background:#8c3b3b;color:#f5ded8;font-weight:600;border:none;}"
-    "#btnDanger:hover{background:#a34848;}"
-    "QRadioButton{color:#e8f5d8;font-size:12px;spacing:8px;background:transparent;}"
+    "#btnPrimary{background:#fff;color:#000;font-weight:600;border:none;}"
+    "#btnPrimary:hover{background:#ddd;}"
+    "#btnGhost{background:#000;color:#fff;border:1px solid #fff;}"
+    "#btnGhost:hover{background:#222;}"
+    "#btnDanger{background:#000;color:#fff;font-weight:600;border:1px solid #fff;}"
+    "#btnDanger:hover{background:#333;}"
+    "QRadioButton{color:#fff;font-size:12px;spacing:8px;background:transparent;}"
     "QRadioButton::indicator{width:13px;height:13px;border-radius:7px;"
-    "border:1px solid #4a5a3a;background:#2d3428;}"
-    "QRadioButton::indicator:checked{background:#7cb45a;border-color:#7cb45a;}")
+    "border:1px solid #fff;background:#000;}"
+    "QRadioButton::indicator:checked{background:#fff;border-color:#fff;}")
 
 _BTN_KIND = {"primary": "btnPrimary", "ghost": "btnGhost", "danger": "btnDanger"}
 

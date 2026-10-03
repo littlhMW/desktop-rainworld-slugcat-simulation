@@ -501,6 +501,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._passthrough = None        # None 强制首次同步
         self._storm_hud_pos = None      # None＝左下默认；拖动计时器后为逻辑坐标
         self._storm_hud_drag = None     # (dx, dy) 鼠标相对计时器左上角偏移
+        self._storm_hud_scale = max(0.55, min(2.5, float(self._params.get("storm_hud_scale", 1.0) or 1.0)))
+        self._storm_hud_resize = None   # (start_x, start_y, start_scale, anchor_x, anchor_y)
 
         self.anim = QTimer(self)
         self.anim.setTimerType(Qt.TimerType.PreciseTimer)
@@ -2449,14 +2451,47 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         ox, oy = self._storm_hud_drag
         x = float(pos[0]) - ox
         y = float(pos[1]) - oy
-        x = max(0.0, min(max(0.0, self._WL - storm_hud.HUD_W), x))
-        y = max(0.0, min(max(0.0, self._HL - storm_hud.HUD_H), y))
+        hw, hh = storm_hud.hud_size(self)
+        x = max(0.0, min(max(0.0, self._WL - hw), x))
+        y = max(0.0, min(max(0.0, self._HL - hh), y))
         self._storm_hud_pos = (x, y)
+        self._prev_dirty = None
+        self.update()
+
+    def _storm_hud_resize_hit(self, pos):
+        """Small lower-right grip; resizing always keeps the 220:76 ratio."""
+        if pos is None or not storm_hud.visible(self):
+            return False
+        x0, y0, x1, y1 = storm_hud.hud_rect(self)
+        return (x1 - 16.0 <= float(pos[0]) <= x1 + 4.0
+                and y1 - 16.0 <= float(pos[1]) <= y1 + 4.0)
+
+    def _storm_hud_resize_to(self, pos):
+        if self._storm_hud_resize is None or pos is None:
+            return
+        sx, sy, base, ax, ay = self._storm_hud_resize
+        # Use the larger axis delta so diagonal and edge drags feel identical;
+        # scaling is anchored at the upper-left and never changes the aspect.
+        dx = float(pos[0]) - sx
+        dy = float(pos[1]) - sy
+        delta = max(dx, dy)
+        scale = max(0.55, min(2.5, base + delta / max(1.0, storm_hud.HUD_W)))
+        self._storm_hud_scale = scale
+        hw, hh = storm_hud.hud_size(self)
+        self._storm_hud_pos = (max(0.0, min(self._WL - hw, ax)),
+                               max(0.0, min(self._HL - hh, ay)))
         self._prev_dirty = None
         self.update()
 
     def mousePressEvent(self, e):
         pos = self.to_logical(e.position().x(), e.position().y())
+        if (e.button() == Qt.MouseButton.LeftButton
+                and self._storm_hud_resize_hit(pos)):
+            x0, y0, _x1, _y1 = storm_hud.hud_rect(self)
+            self._storm_hud_resize = (pos[0], pos[1], storm_hud.hud_scale(self),
+                                      x0, y0)
+            self._storm_hud_drag = None
+            return
         if (e.button() == Qt.MouseButton.LeftButton
                 and self._storm_hud_hit(pos)):
             x0, y0, _x1, _y1 = storm_hud.hud_rect(self)
@@ -2575,6 +2610,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         super().keyPressEvent(e)
 
     def mouseMoveEvent(self, e):
+        if self._storm_hud_resize is not None:
+            if e.buttons() & Qt.MouseButton.LeftButton:
+                self._storm_hud_resize_to(self.to_logical(e.position().x(), e.position().y()))
+            else:
+                self._storm_hud_resize = None
+            return
         if self._storm_hud_drag is not None:
             if e.buttons() & Qt.MouseButton.LeftButton:
                 self._storm_hud_drag_to(self.to_logical(e.position().x(), e.position().y()))
@@ -2599,6 +2640,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
+        if self._storm_hud_resize is not None:
+            if e.button() == Qt.MouseButton.LeftButton:
+                self._storm_hud_resize = None
+            return
         if self._storm_hud_drag is not None:
             if e.button() == Qt.MouseButton.LeftButton:
                 self._storm_hud_drag = None

@@ -213,6 +213,17 @@ LOOK_CURSOR_BASE = 1.00
 LOOK_ITEM_BASE = 0.80
 # idle 兜底层：踱步
 PACE_PROB = 0.0016
+# Idle wander should feel like a short purposeful walk rather than a random
+# left/right oscillator.  The reversal lock also keeps a crowded room from
+# making every pet re-plan on the same few pixels.
+WANDER_MIN_TRAVEL = 34.0
+WANDER_REVERSE_COOLDOWN = 110
+WANDER_PROGRESS_EPS = 10.0
+
+# Friendly projectile checks are quadratic in the number of pets.  Sampling a
+# couple of times per second is enough for a 40 Hz simulation and avoids every
+# cat rebuilding the same threat query on the same frame.
+SHOT_DODGE_SCAN_INTERVAL = 3
 # idle 社交走位：按 sociability 决定趋近/远离/随机
 SOCIAL_WANDER_LO = 0.4
 SOCIAL_WANDER_HI = 0.6
@@ -268,7 +279,7 @@ COB_SEEK_RETRY = 300          # 放弃后的重试冷却
 COB_SPEAR_R = 420.0           # 拿矛打未开荚爆米花的距离
 
 # 玩耍：追光标/抓光标（原版蛞蝓猫对移动物体的注意）
-PLAYCUR_BASE = 1.00
+PLAYCUR_BASE = 0.78
 PLAYCUR_START = 0.66
 PLAYCUR_QUIT = 0.30
 PLAYCUR_INIT = 0.30
@@ -330,7 +341,7 @@ PET_SOOTHE = 0.05                 # 一次抚摸/拍拍的安抚量（双方 tem
 # ── 平时随手小动作：不在社交欲望态里也能冒出来（词表同一份）──
 IDLE_SOCIAL_CHECK = 90            # 每隔这么多 tick 掷一次骰
 IDLE_SOCIAL_P = 0.45              # 附近有同伴时的触发概率（再乘性格）
-IDLE_SOCIAL_CURSOR_P = 0.35       # 鼠标在附近停够久时对鼠标做动作的概率
+IDLE_SOCIAL_CURSOR_P = 0.22       # 鼠标在附近停够久时对鼠标做动作的概率
 IDLE_SOCIAL_CD = 220              # 一次平时小动作后的冷却（约 5.5s）
 IDLE_SOCIAL_TICKS_MIN = 40        # 单次小动作时长
 IDLE_SOCIAL_TICKS_MAX = 130

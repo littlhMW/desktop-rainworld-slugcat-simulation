@@ -34,7 +34,10 @@ REF_H = 70.0             # 内容高
 RING_CX = 34.0           # 主圆环中心 x（放大外圈后仍留出左边距）
 RING_CY = 29.0           # 主圆环中心 y
 RING_R = 26.0            # 一圈圆点所在半径（参考图约 52 px @ 2x）
-DOTS = 17                # 无效时的设计稿兜底；实际数量按 RainMeter.cs 计算
+# Rain World 的雨循环刻度是固定数量。循环长短只改变每个刻度所代表的
+# 时间，不能因为不同的 cycle 时长而增删圆点（旧实现会随 ring_total 改变
+# 数量，导致计时器每次切相位都重新排版）。
+DOTS = 17
 DOT_R = 1.15             # 剩余的实心圆点半径
 KARMA_REF = 34.0         # karma 精灵边长（参考图中心环约 68 px @ 2x）
 PIP_X0 = 75.0            # 第一格圆心 x（与主环留出约 82 px @ 2x）
@@ -143,12 +146,14 @@ def karma_frame(level: int) -> str:
 
 
 def ring_count(info) -> int:
-    """RainMeter.cs:52-60：每 1200 tick 一颗，最多 30 颗。"""
-    try:
-        total = float((info or {}).get("ring_total") or 0.0)
-    except (TypeError, ValueError):
-        total = 0.0
-    return max(1, min(30, int(total / 1200.0))) if total > 0 else DOTS
+    """Return the fixed Rain World meter dot count.
+
+    ``ring_total`` is deliberately ignored here.  A short or long cycle uses
+    the same set of dots; each dot simply represents a different amount of
+    time (``ring_total / DOTS``).  Keeping the geometry stable avoids the
+    visible jump that the old proportional-count implementation caused.
+    """
+    return DOTS
 
 
 def ring_lit(info) -> int:
@@ -380,11 +385,23 @@ def hud_rect(win):
     """
     hl = float(getattr(win, "_HL", 0.0) or 0.0)
     pos = getattr(win, "_storm_hud_pos", None)
+    scale = max(0.55, min(2.5, float(getattr(win, "_storm_hud_scale", 1.0) or 1.0)))
+    width, height = HUD_W * scale, HUD_H * scale
     if pos is None:
         x0, y1 = 0.0, hl
-        return (x0, y1 - HUD_H, x0 + HUD_W, y1)
+        return (x0, y1 - height, x0 + width, y1)
     x0, y0 = float(pos[0]), float(pos[1])
-    return (x0, y0, x0 + HUD_W, y0 + HUD_H)
+    return (x0, y0, x0 + width, y0 + height)
+
+
+def hud_scale(win) -> float:
+    """Current user scale, clamped to a useful range."""
+    return max(0.55, min(2.5, float(getattr(win, "_storm_hud_scale", 1.0) or 1.0)))
+
+
+def hud_size(win):
+    s = hud_scale(win)
+    return HUD_W * s, HUD_H * s
 
 
 def visible(win) -> bool:
@@ -403,18 +420,24 @@ def draw_storm_hud(p, win) -> None:
     if not info:
         return
     x0, y0, _, _ = hud_rect(win)
+    user_scale = hud_scale(win)
     s = _layout_scale()
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
     # 默认底边正好贴任务栏上沿，柔边也不能伸到任务栏下方。
     p.setClipRect(QRectF(0.0, 0.0, float(win._WL), float(win._HL)),
                   Qt.ClipOperation.IntersectClip)
-    _draw_backdrop(p, x0, y0, info, s)
+    # Draw in the original 220×76 design space and apply one uniform scale
+    # around the HUD origin.  This keeps the ring, pips, text and backdrop in
+    # proportion when the user resizes the timer.
+    p.translate(x0, y0)
+    p.scale(user_scale, user_scale)
+    _draw_backdrop(p, 0.0, 0.0, info, s)
     # 参考图是硬边像素画：贴图放大用最近邻
     p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
     # 不参与像素化滤镜：圆点/描边开抗锯齿，保持清晰
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    p.translate(x0 + _PAD, y0 + (HUD_H - REF_H * s) * 0.5)
+    p.translate(_PAD, (HUD_H - REF_H * s) * 0.5)
     p.scale(s, s)
     p.translate(-REF_X0, -REF_Y0)        # 参考坐标 -> 内容左上角
     # 参考图中的白色计时器有一圈很轻的黑色外发光；先画一层扩大后的

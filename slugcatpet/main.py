@@ -122,6 +122,19 @@ def _ensure_assets_interactive() -> bool:
 
 def main():
     app = QApplication(sys.argv)
+    # Keep all auxiliary UI surfaces in the same high-contrast monochrome theme.
+    # Individual panels may add geometry-specific rules, but no panel falls back
+    # to the old green/olive palette.
+    app.setStyleSheet(
+        "QDialog,QMenu,QToolTip{background:#000;color:#fff;}"
+        "QToolTip{background:#000;color:#fff;border:1px solid #fff;}"
+        "QMenu{background:#000;color:#fff;border:1px solid #fff;}"
+        "QMenu::item:selected{background:#333;}"
+        "QPushButton,QCheckBox,QRadioButton{color:#fff;}"
+        "QPushButton{background:#000;border:1px solid #fff;border-radius:2px;}"
+        "QPushButton:hover{background:#222;}"
+        "QSlider::groove:horizontal{background:#222;height:2px;}"
+        "QSlider::handle:horizontal{background:#fff;border:1px solid #fff;width:10px;margin:-4px 0;}")
     app.setWindowIcon(_tray_icon())
     app.setQuitOnLastWindowClosed(False)
 
@@ -156,6 +169,7 @@ def main():
         params["tab_expanded"] = tab.expanded
         params["hud_x"] = hud.x()
         params["hud_y"] = hud.y()
+        params["storm_hud_scale"] = float(getattr(pet, "_storm_hud_scale", 1.0))
 
         def _cat(p):
             b = p.body

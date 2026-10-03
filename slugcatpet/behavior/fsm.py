@@ -132,7 +132,11 @@ THROW_BLOCK_R = 14.0            # 同伴躯干算多粗（挡枪判定半径）
 THROW_BLOCK_LEN = 320.0         # 没给目标时的水平射线长度
 # ── 友伤规避（AI 层；伤害照旧，只是尽量不把人打进弹道里）──
 SHOT_PROBE_TICKS = 16           # 出手前预演这么多帧弹道（平飞段→半重力下落）
-SHOT_INTENT_TICKS = 34          # 攻击意图存活 tick：起手到出手那一小段
+# This is deliberately short.  The intent is written after a real throw, so
+# it is only a launch cue; the projectile itself is what keeps a nearby ally
+# dodging.  Keeping the old 34-frame horizon made cats pre-dodge an already
+# distant projectile and repeatedly enter DodgeShot in crowded rooms.
+SHOT_INTENT_TICKS = 10
 SHOT_DODGE_TICKS = 30           # 被瞄准者一次避让持续 tick
 SHOT_DODGE_DX = 54.0            # 避让侧移距离（先侧移，其次退开）
 SHOT_DODGE_R = 16.0             # 弹道离我这么近才值得躲
@@ -383,6 +387,9 @@ class BehaviorFSM:
         self.cursor = None
         self._settle = 0
         self._idle_hold = 0
+        self._wander_dir = 0
+        self._wander_lock = 0
+        self._last_wander_target = None
         self._zerog_target = None
         self._swim_goal = None
         self._chew = ChewCycle()          # 与普通重力路径共用同一咀嚼周期
@@ -519,6 +526,8 @@ class BehaviorFSM:
         self._dodge_from = None          # 锁定的射手（进入 DodgeShot 时定下；状态面板第二段用）
         self._dodge_dir = 0              # 锁定的避让方向（±1）：进入时算一次，中途不再重选
         self._dodge_target_x = None      # 锁定的走位目标 x：进入时算一次，不再是「当前 x ± DX」
+        self._dodge_scan_cd = 0          # 友伤扫描错峰，避免多猫 O(n²) 同帧重复
+        self._block_scan_cd = 0
         # 动态关系表 + 事件游标：关系由事件驱动、每 tick 衰减（behavior/relationship.py）
         self._rel = relations_for(self.win)
         self._ev_seen = -1                # 事件总线游标（事件序号，不是 tick）
@@ -1378,14 +1387,26 @@ class BehaviorFSM:
     def _act_dodgeshot_pre(self, ctx):
         if self._dodge_cd > 0:
             self._dodge_cd -= 1
+        if self._dodge_scan_cd > 0:
+            self._dodge_scan_cd -= 1
 
     def _act_dodgeshot_gate(self, ctx):
         if self.state == "DodgeShot" or self._dodge_cd > 0:
             return False                 # 正在躲 / 刚躲完：别原地抽搐
+        # Stagger the expensive cross-pet trajectory query.  The pre hook
+        # decrements this counter every tick; only an actual scan rearms it.
+        # This keeps crowded rooms from rebuilding the same arcs once per cat
+        # and still reacts within a few simulation frames to a fresh throw.
+        if self._dodge_scan_cd > 0:
+            return False
         if self.grab.active or self._zerog() or self.body.swimming:
             return False
         if self.state not in _DODGE_FROM:
             return False                 # 只在「没事干」的态里让开
+        # The query uses a short arc and a distance prefilter.  Keep the gate
+        # immediate: action tests and a real throw must never wait for a scan
+        # slot after another action has just released the body.
+        self._dodge_scan_cd = max(1, int(tuning.SHOT_DODGE_SCAN_INTERVAL))
         return self._threat_shot_at_me() is not None
 
     def _act_dodgeshot(self, ctx):
@@ -1531,6 +1552,10 @@ class BehaviorFSM:
     def _act_blockreact_gate(self, ctx):
         return (True)
     def _act_blockreact(self, ctx):
+        if self._block_scan_cd > 0:
+            self._block_scan_cd -= 1
+            return
+        self._block_scan_cd = 2
         self._scan_blocking()
 
     def _act_wakeonthreat_pre(self, ctx):
@@ -2197,6 +2222,8 @@ class BehaviorFSM:
             self._idle_pace()
 
     def _idle_pace(self):
+        if self._wander_lock > 0:
+            self._wander_lock -= 1
         if not self.body.is_moving() and self.rng.random() < tuning.PACE_PROB * self._look_fac:
             self._pick_wander_target()
 
@@ -4212,6 +4239,33 @@ class BehaviorFSM:
                                  tuning.SOCIAL_WANDER_STAY_GAIN,
                                  self.WL * tuning.SOCIAL_WANDER_STAY_SPAN_FRAC)
         x = self._storm_wander_bias_x(x, lo, hi)
+        # Do not pick a new point a few pixels across the body.  That pattern
+        # looks like a stuck AI and is especially common when several cats
+        # evaluate the same social density field.  A short directional lock
+        # prevents immediate left/right ping-pong while still allowing a cat
+        # to turn around naturally after it has travelled.
+        cur = float(self.body.chunk1.x)
+        span = max(1.0, hi - lo)
+        min_travel = min(float(tuning.WANDER_MIN_TRAVEL), span * 0.25)
+        if abs(x - cur) < min_travel:
+            side = self._wander_dir or (1 if self.rng.random() >= 0.5 else -1)
+            candidate = cur + side * min_travel
+            if candidate > hi or candidate < lo:
+                side = -side
+                candidate = cur + side * min_travel
+            x = clampf(candidate, lo, hi)
+        direction = 1 if x > cur + tuning.WANDER_PROGRESS_EPS else (
+            -1 if x < cur - tuning.WANDER_PROGRESS_EPS else 0)
+        if (direction and self._wander_lock > 0 and self._wander_dir
+                and direction != self._wander_dir):
+            same_side = cur + self._wander_dir * min_travel
+            if lo <= same_side <= hi:
+                x = same_side
+                direction = self._wander_dir
+        if direction:
+            self._wander_dir = direction
+            self._wander_lock = tuning.WANDER_REVERSE_COOLDOWN
+        self._last_wander_target = x
         self.body.walk_to(x)
 
     def _point_at_cursor(self, cursor, enforce_side=False, cover=False):
@@ -8665,7 +8719,12 @@ class BehaviorFSM:
         return it
 
     def _threat_shot_at_me(self):
-        """附近有没有同伴正朝我这边掷东西（读意图 + 预演弹道）→ 那只猫 / None。"""
+        """附近有没有同伴正朝我这边掷东西（读意图 + 预演弹道）→ 那只猫 / None。
+
+        The intent is recorded after launch.  Only the still-near section of
+        that launch is dangerous; replaying an old arc from its origin made an
+        already distant projectile trigger DodgeShot repeatedly.
+        """
         me = self.body
         for o in getattr(self.win, "pets", ()):
             ob = getattr(o, "body", None)
@@ -8674,12 +8733,32 @@ class BehaviorFSM:
             it = self._live_intent(o)
             if it is None:
                 continue
+            launched_at = int(it.get("until", self._shot_clock)
+                              - SHOT_INTENT_TICKS)
+            age = max(0, min(SHOT_PROBE_TICKS,
+                              self._shot_clock - launched_at))
+            # Cheap broad phase before allocating/replaying a 16-point arc.
+            # A horizontal launch cannot reach behind its origin, and its
+            # probe distance is bounded by the launch speed and horizon.
+            dx = me.chunk0.x - float(it.get("ox", me.chunk0.x))
+            dy = me.chunk0.y - float(it.get("oy", me.chunk0.y))
+            direction = 1.0 if float(it.get("dir", 1)) >= 0.0 else -1.0
+            vx = abs(float(it.get("vx", 0.0)))
+            if dx * direction < -40.0 or dx * direction > vx * SHOT_PROBE_TICKS + 90.0:
+                continue
+            if abs(dy) > 150.0:
+                continue
             tp = it.get("target_pt")
-            if (tp is not None
-                    and math.hypot(tp[0] - me.chunk0.x, tp[1] - me.chunk0.y) < 30.0):
-                return o                  # 明确瞄着我：先让开
+            if (tp is not None and age <= 2
+                    and math.hypot(tp[0] - me.chunk0.x,
+                                   tp[1] - me.chunk0.y) < 30.0):
+                return o                  # 明确瞄着我：只在刚出手窗口躲
             pts = self._shot_arc(it["ox"], it["oy"], it["vx"], it["vy"],
                                  profile=it.get("profile"))
+            # Ignore the already-travelled section, retaining one overlap point
+            # so a fast spear cannot skip the body between staggered scans.
+            if age:
+                pts = pts[max(0, age - 1):]
             if self._shot_hits_body(pts, me, SHOT_DODGE_R, it.get("profile")):
                 return o
         return None

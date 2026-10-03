@@ -18,20 +18,20 @@ _VARIANTS = pickable_variants()
 _CHECK = (resource_dir() / "icons" / "check.svg").as_posix()   # 缺 QtSvg 时退化为高亮块
 
 _QSS = (
-    "QWidget{background:rgba(30,34,40,245);color:#e8f5d8;font-size:12px;}"
-    "QLabel{color:#e8f5d8;}"
-    "#secHeader{color:#aef156;font-size:13px;font-weight:bold;}"
-    "#dim{color:#9fc080;}"
-    "QPushButton{color:#e8f5d8;background:rgba(60,70,55,255);border:1px solid #4a5a3a;"
-    "border-radius:5px;padding:4px 12px;}"
-    "QPushButton:enabled:hover{background:rgba(80,100,70,255);}"
-    "QPushButton:disabled{color:#777;background:rgba(45,48,52,255);}"
-    "QCheckBox{color:#e8f5d8;}"
-    "QRadioButton{color:#e8f5d8;spacing:8px;}"
+    "QWidget{background:#000;color:#fff;font-size:12px;}"
+    "QLabel{color:#fff;background:transparent;}"
+    "#secHeader{color:#fff;font-size:13px;font-weight:bold;}"
+    "#dim{color:#ccc;}"
+    "QPushButton{color:#fff;background:#000;border:1px solid #fff;"
+    "border-radius:2px;padding:4px 12px;}"
+    "QPushButton:enabled:hover{background:#222;}"
+    "QPushButton:disabled{color:#777;background:#111;border-color:#555;}"
+    "QCheckBox{color:#fff;}"
+    "QRadioButton{color:#fff;spacing:8px;}"
     "QRadioButton::indicator{width:16px;height:16px;border-radius:8px;"
-    "border:1px solid #52633f;background:#262b22;}"
-    "QRadioButton::indicator:hover{border-color:#7c9a52;}"
-    f"QRadioButton::indicator:checked{{border:2px solid #aef156;background:#aef156;"
+    "border:1px solid #fff;background:#000;}"
+    "QRadioButton::indicator:hover{border-color:#fff;}"
+    f"QRadioButton::indicator:checked{{border:2px solid #fff;background:#fff;"
     f"image:url({_CHECK});}}")
 
 
@@ -62,6 +62,9 @@ class SettingsWindow(QWidget):
     def open(self):
         self._drop_stale_dlg()           # 残留句柄：不清理会永久卡住增删
         self._rebuild()
+        # Settings is an explicit user action from either the tab bar or tray;
+        # re-assert topmost each time in case another window changed the flag.
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         self.show()
         self.raise_()
         self.activateWindow()
@@ -94,8 +97,6 @@ class SettingsWindow(QWidget):
         left.addStretch(1)
         self._section_env(right)
         right.addWidget(self._divider())
-        self._section_mouse(right)
-        right.addWidget(self._divider())
         self._section_storm(right)
         right.addWidget(self._divider())
         self._section_ai(right)
@@ -118,7 +119,7 @@ class SettingsWindow(QWidget):
     def _divider():
         f = QFrame()
         f.setFixedHeight(1)
-        f.setStyleSheet("background:rgba(120,150,100,90);border:none;")
+        f.setStyleSheet("background:#fff;border:none;")
         return f
 
     def _section_cats(self, v):
