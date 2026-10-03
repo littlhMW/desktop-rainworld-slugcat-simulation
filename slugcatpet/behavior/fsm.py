@@ -6590,7 +6590,11 @@ class BehaviorFSM:
         #     门槛＝「对光标的兴趣攒满 + 按性格出手」，不是每 tick 掷一次渺茫的骰：
         #     光标待在附近就开始攒（spear_like / hurry / activity 决定出手率），
         #     手上有矛或背上有矛都算（背上会自动抽出来）。
-        if (self._pincur_cd <= 0 and self.state in _IDLE_SOCIAL_FROM
+        # 这是猎手的独占鼠标互动（原版猎手的矛专长）；不能因为默认
+        # spear_like=1.0 让普通猫也继承“拿矛插鼠标”。
+        is_hunter = (getattr(getattr(self.win, "cat", None), "key", "")
+                     == "hunter")
+        if (is_hunter and self._pincur_cd <= 0 and self.state in _IDLE_SOCIAL_FROM
                 and not b.swimming and b.on_floor() and cursor is not None
                 and getattr(self.pers, "spear_like", 1.0) >= tuning.PIN_CURSOR_SPEAR_LIKE
                 and self._armed_in_hand()):
