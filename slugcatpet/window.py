@@ -507,6 +507,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._storm_hud_drag = None     # (dx, dy) 鼠标相对计时器左上角偏移
         self._storm_hud_scale = max(0.55, min(2.5, float(self._params.get("storm_hud_scale", 1.0) or 1.0)))
         self._storm_hud_resize = None   # (start_x, start_y, start_scale, anchor_x, anchor_y)
+        self._storm_hud_info_cache = None
 
         self.anim = QTimer(self)
         self.anim.setTimerType(Qt.TimerType.PreciseTimer)
@@ -775,8 +776,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
     # 暴雨绘制层是固定屏幕空间的整窗重绘；限制它到约 30 FPS，避免高 DPI
     # 下雨线/遮罩把 UI 线程占满。物理累加器仍独立按 40 Hz 推进，不改变 AI、
     # 碰撞或存档时间尺度。
-    _INT_WEATHER = 34
-    _INT_WEATHER_CROWDED = 50
+    _INT_WEATHER = 45           # ms; rain compositing is full-window work
+    _INT_WEATHER_CROWDED = 66   # ms; avoid saturating Qt in crowded storms
     _INT_SLOW = 66
     _MOTION_STILL = 1.2
     MAX_FRUITS = 3
@@ -955,6 +956,13 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                             self.water_surface is not None))
         weather_iv = self._INT_WEATHER_CROWDED if crowded_weather else self._INT_WEATHER
         want_iv = weather_iv if weather_only else (self._INT_FAST if active else self._INT_SLOW)
+        # Painting is the expensive side of a crowded scene; physics remains
+        # on its fixed 40 Hz accumulator above. Avoid queuing a fresh full
+        # repaint every 25 ms when many lizards or water are moving.
+        crowded_scene = (len(self.lizards) > 12 or len(self.pets) > 8
+                         or self.water_surface is not None)
+        if crowded_scene and not dragging and not grabbing:
+            want_iv = max(want_iv, 40)
         if self.anim.interval() != want_iv:
             # Precise 保平滑，Coarse 省功耗
             self.anim.stop()
@@ -1341,6 +1349,11 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
     def _do_tick(self):
         """推进一个物理 tick。"""
+        # hud_info() is read by hit testing, dirty-region calculation and the
+        # renderer in the same GUI frame.  Invalidate once per physics tick so
+        # those readers share one snapshot instead of repeatedly scanning all
+        # pets while rain is forcing full-window repaints.
+        self._storm_hud_info_cache = None
         self._pole_tick += 1
         self._plat_tick -= 1
         if self._plat_tick <= 0:
@@ -2449,6 +2462,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         x0, y0, x1, y1 = storm_hud.hud_rect(self)
         return x0 - 8.0 <= x <= x1 + 8.0 and y0 - 8.0 <= y <= y1 + 8.0
 
+    def _get_storm_hud_info(self):
+        """Return one cached timer snapshot for the current physics tick."""
+        if self._storm_hud_info_cache is None:
+            self._storm_hud_info_cache = self.storm.hud_info(self.pets)
+        return self._storm_hud_info_cache
+
     def _storm_hud_drag_to(self, pos):
         if self._storm_hud_drag is None or pos is None:
             return
@@ -2458,18 +2477,26 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # same bounds that are used for hit testing.
         x = float(pos[0]) - ox
         y = float(pos[1]) - oy
+        bx0 = by0 = bx1 = by1 = None
         try:
-            info = self.storm.hud_info(self.pets)
+            info = self._get_storm_hud_info()
             ds = storm_hud._layout_scale()
-            bx0, by0, _bx1, _by1 = storm_hud._backdrop_bounds(info, ds)
+            bx0, by0, bx1, by1 = storm_hud._backdrop_bounds(info, ds)
             us = storm_hud.hud_scale(self)
             x -= bx0 * us
             y -= by0 * us
         except Exception:
             pass
-        hw, hh = storm_hud.hud_size(self)
-        x = max(0.0, min(max(0.0, self._WL - hw), x))
-        y = max(0.0, min(max(0.0, self._HL - hh), y))
+        us = storm_hud.hud_scale(self)
+        if bx0 is not None:
+            # Clamp the visible plate, rather than the transparent design
+            # frame, to the desktop and taskbar edges.
+            x = max(-bx0 * us, min(self._WL - bx1 * us, x))
+            y = max(-by0 * us, min(self._HL - by1 * us, y))
+        else:
+            hw, hh = storm_hud.hud_size(self)
+            x = max(0.0, min(max(0.0, self._WL - hw), x))
+            y = max(0.0, min(max(0.0, self._HL - hh), y))
         self._storm_hud_pos = (x, y)
         self._prev_dirty = None
         self.update()
@@ -2496,9 +2523,17 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         delta = max(dx, dy)
         scale = max(0.55, min(2.5, base + delta / max(1.0, storm_hud.HUD_W)))
         self._storm_hud_scale = scale
-        hw, hh = storm_hud.hud_size(self)
-        self._storm_hud_pos = (max(0.0, min(self._WL - hw, ax)),
-                               max(0.0, min(self._HL - hh, ay)))
+        try:
+            info = self._get_storm_hud_info()
+            bx0, by0, bx1, by1 = storm_hud._backdrop_bounds(
+                info, storm_hud._layout_scale())
+            self._storm_hud_pos = (
+                max(-bx0 * scale, min(self._WL - bx1 * scale, ax)),
+                max(-by0 * scale, min(self._HL - by1 * scale, ay)))
+        except Exception:
+            hw, hh = storm_hud.hud_size(self)
+            self._storm_hud_pos = (max(0.0, min(self._WL - hw, ax)),
+                                   max(0.0, min(self._HL - hh, ay)))
         self._prev_dirty = None
         self.update()
 
@@ -2884,6 +2919,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
     def set_storm_enabled(self, on):
         """开/关雨循环。**不会**自动放庇护所 —— 屋子由工具栏自己框选出来。"""
         on = bool(on)
+        self._storm_hud_info_cache = None
         self.storm.enabled = on
         self._params["storm_enabled"] = on
         if not on and not self.storm.manual:
@@ -2898,6 +2934,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
     def set_storm_durations(self, focus_minutes=None, warning_minutes=None,
                             sleep_minutes=None):
         self.storm.set_durations(focus_minutes, warning_minutes, sleep_minutes)
+        self._storm_hud_info_cache = None
         self.update()
 
     def trigger_storm(self):
@@ -2908,6 +2945,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         """
         if not self.storm.trigger_storm():
             return False
+        self._storm_hud_info_cache = None
         self._prev_dirty = None
         self.update()
         return True
@@ -2916,6 +2954,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         """环境面板切走「暴雨」：收掉手动那一场（自动雨循环交给开关）。"""
         if not self.storm.cancel_manual():
             return False
+        self._storm_hud_info_cache = None
         for sh in self.shelters:
             sh.start_opening()
         self._prev_dirty = None

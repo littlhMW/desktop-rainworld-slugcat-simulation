@@ -61,6 +61,16 @@ _INK = QColor(245, 245, 245)
 _BACKDROP_CACHE = {}
 
 
+def _hud_info(win):
+    getter = getattr(win, "_get_storm_hud_info", None)
+    if callable(getter):
+        return getter()
+    try:
+        return win.storm.hud_info(getattr(win, "pets", ()))
+    except Exception:
+        return None
+
+
 def _backdrop_bounds(info, scale: float):
     """Return the visible timer bounds in local HUD coordinates.
 
@@ -396,8 +406,16 @@ def hud_origin_rect(win):
     scale = max(0.55, min(2.5, float(getattr(win, "_storm_hud_scale", 1.0) or 1.0)))
     width, height = HUD_W * scale, HUD_H * scale
     if pos is None:
-        x0, y1 = 0.0, hl
-        return (x0, y1 - height, x0 + width, y1)
+        # Anchor the *painted* black plate to the taskbar.  Anchoring the
+        # transparent design frame left a 13 px gap below the plate because
+        # its internal content ends well above HUD_H.
+        try:
+            info = _hud_info(win)
+            _bx0, _by0, _bx1, by1 = _backdrop_bounds(info, _layout_scale())
+        except Exception:
+            by1 = HUD_H
+        x0, y0 = 0.0, hl - by1 * scale
+        return (x0, y0, x0 + width, y0 + height)
     x0, y0 = float(pos[0]), float(pos[1])
     return (x0, y0, x0 + width, y0 + height)
 
@@ -412,7 +430,7 @@ def hud_rect(win):
     """
     ox0, oy0, _ox1, _oy1 = hud_origin_rect(win)
     try:
-        info = win.storm.hud_info(getattr(win, "pets", ()))
+        info = _hud_info(win)
     except Exception:
         info = None
     if not info:
@@ -436,7 +454,7 @@ def hud_size(win):
 
 def visible(win) -> bool:
     try:
-        return win.storm.hud_info(getattr(win, "pets", ())) is not None
+        return _hud_info(win) is not None
     except Exception:
         return False
 
@@ -444,7 +462,7 @@ def visible(win) -> bool:
 def draw_storm_hud(p, win) -> None:
     """画左下角的雨眠计时器。雨循环未开时什么都不画。"""
     try:
-        info = win.storm.hud_info(getattr(win, "pets", ()))
+        info = _hud_info(win)
     except Exception:
         return
     if not info:
