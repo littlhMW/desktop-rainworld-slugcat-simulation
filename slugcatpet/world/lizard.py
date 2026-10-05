@@ -247,6 +247,7 @@ TONGUE_DOT_MIN = 0.3           # 目标与体前轴的点积门槛：≤ 它舌�
 TONGUE_RECOIL = 0.55           # 射舌反作用：后节 vel -= 方向 × 出手速度（原版 bodyChunks[1]）
 TONGUE_DRAG = 1.5              # 舌外伸期间每 tick：头被拽向舌尖、后节反向（原版 Update 里的 ±4）
 TONGUE_TERRAIN_PULL = 0.75     # 舌尖粘住地形时，把头往锚点拖（LizardTongue.TerrainDrag）
+TONGUE_TERRAIN_MAX = 90        # 舌尖失去有效碰撞后最多粘住这么久
 BODY_JUMP_TAIL = 0.06          # PrepareToJump：尾节逐节冲量（越往后越强）
 BODY_JUMP_WOBBLE = 1.6         # PrepareToJump：尾巴垂直方向 ± 交替甩动
 WALL_LEAN = 0.35               # 爬墙时前节朝爬行方向、后节反向拉开（身体贴墙而不是被提着）
@@ -2465,6 +2466,27 @@ class Lizard(CombatTarget):
         if st in ("Attack", "HuntPrey", "ApproachPrey", "InvestigatePos",
                   "InvestigateSound", "InvestigateCursor", "PackCoordination"):
             return o
+        # Background Climb is normal traversal too, not only a chase shortcut.
+        # Feed idle lizards a synthetic upper endpoint so the existing planner
+        # and attachment physics are reused without a second climb path.
+        if st in ("Wander", "Lurk") and o is None and self.breed.climb_wall:
+            best = None
+            for sx, top, bot, kind in self.climb_surfaces:
+                if kind != "background" or self.y <= top + CLIMB_MIN_DY:
+                    continue
+                on_line = top - 12.0 <= self.y <= bot + 12.0
+                foot_here = (bot >= self.y - CLIMB_WALK_TOL
+                             and bot <= self.y + CLIMB_WALK_TOL)
+                if not (on_line or foot_here) or abs(self.x - sx) > CLIMB_WALK_R:
+                    continue
+                d = math.hypot(self.x - sx, self.y - top)
+                if best is None or d < best[0]:
+                    best = (d, sx, top)
+            if best is not None:
+                # A stale patrol route must not cancel this explicit climb
+                # request on the next branch below.
+                self.plan = None
+                return Observation(None, best[1], best[2], best[0], "background")
         plan = self.plan
         if (o is not None and plan is not None and plan.alive(self._tick)
                 and getattr(plan, "climb", None) is not None):
@@ -2753,7 +2775,11 @@ class Lizard(CombatTarget):
                 want = clampf((tx - self.x) * 0.05, -sp, sp)
                 self._drive_vx(want, WALK_TURN)
                 return
-        self.vx -= self.vx * 0.25
+        # If no ambush point is available, keep patrolling instead of damping
+        # to zero forever (the old Lurk fallback could freeze a whole species).
+        if self.idle_timer > IDLE_TICKS[1] - 24:
+            self.idle_timer = IDLE_TICKS[1] - 24
+        self._wander(WL, HL)
 
     def _noise_wants(self) -> bool:
         if self.noise_t <= 0:
@@ -4253,6 +4279,22 @@ class Lizard(CombatTarget):
         if st == "terrain":
             # StuckInTerrain：舌尖固定，身体沿舌方向受地形拖拽；靠近锚点后收回。
             tipx, tipy = self.tongue_tip
+            # A wall can disappear while the tongue is out.  Without this
+            # guard the old state remained at an air coordinate forever.
+            self.tongue_t += 1
+            valid_anchor = False
+            try:
+                from ..core import chunkphys
+                for a0, b0, a1, b1 in chunkphys.cat_solids() or ():
+                    if (a0 - 4.0 <= tipx <= a1 + 4.0
+                            and b0 - 4.0 <= tipy <= b1 + 4.0):
+                        valid_anchor = True
+                        break
+            except Exception:
+                valid_anchor = True
+            if (not valid_anchor or self.tongue_t > TONGUE_TERRAIN_MAX):
+                self.tongue_state = "back"
+                return
             dx0, dy0 = tipx - mx, tipy - my
             d0 = math.hypot(dx0, dy0)
             if d0 <= TONGUE_MOUTH_R:

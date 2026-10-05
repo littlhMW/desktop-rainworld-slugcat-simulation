@@ -626,15 +626,23 @@ def _draw_head(p, atlas, lz, hx, hy, s0x, s0y, rot, jaw, color, ts=1.0):
     b = lz.breed
     hg = b.head_graphics
     num = lerp(lz.last_head_depth, lz.head_depth, ts)
+    # During a slow turn headDepthRotation can briefly cross zero
+    # independently of the look angle.  Using that transient sign for the
+    # jaw offsets swaps the upper/lower jaw (chin above the head).  Keep its
+    # magnitude for the sprite row, but derive the jaw side from head angle.
+    side = math.sin(math.radians(rot))
+    if abs(side) < 0.18:
+        side = float(getattr(lz, "body_dir", 1.0))
+    jaw_num = (-1.0 if side >= 0.0 else 1.0) * max(0.18, abs(num))
     vnx, vny = s0x - hx, s0y - hy                # 颈-头（屏幕 y↓）
     L = math.hypot(vnx, vny) or 1.0
     n3x, n3y = vny / L, -vnx / L                 # 游戏 normalized3 的屏幕等价
-    apart = b.jaw_apart * jaw * num * BODY_SCALE
+    apart = b.jaw_apart * jaw * jaw_num * BODY_SCALE
     lf = b.jaw_lower_fac
     up_off = apart * (1.0 - lf)
     lo_off = -apart * lf
-    up_rot = rot + b.jaw_open_angle * (1.0 - lf) * jaw * num
-    lo_rot = rot - b.jaw_open_angle * lf * jaw * num
+    up_rot = rot + b.jaw_open_angle * (1.0 - lf) * jaw * jaw_num
+    lo_rot = rot - b.jaw_open_angle * lf * jaw * jaw_num
     sc = b.head_size * BODY_SCALE
     sx = (1.0 if num >= 0.0 else -1.0) * sc      # 原版 scaleX = Sign(num)
     row = head_row(lz, ts)

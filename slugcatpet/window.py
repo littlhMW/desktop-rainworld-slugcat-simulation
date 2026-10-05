@@ -668,7 +668,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
     def cursor_logical(self):
         g = self.mapFromGlobal(QCursor.pos())
-        return self.to_logical(g.x(), g.y())
+        # The frameless window has a transparent ground inset below the
+        # playable canvas.  Treat that inset as the canvas edge for all world
+        # cursor users, so placement previews cannot drift into the taskbar.
+        x, y = self.to_logical(g.x(), g.y())
+        return (clampf(x, 0.0, max(0.0, self._WL)),
+                clampf(y, 0.0, max(0.0, self._HL)))
 
     def _set_cursor_permission(self, name, allowed):
         allowed = bool(allowed)
@@ -2634,6 +2639,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if self._place_mode:
             if e.button() == Qt.MouseButton.LeftButton:
                 lx, ly = self.to_logical(e.position().x(), e.position().y())
+                lx = clampf(lx, 0.0, max(0.0, self._WL))
+                ly = clampf(ly, 0.0, max(0.0, self._HL))
                 if self._place_kind == "erase":
                     self.erase_at((lx, ly))       # 删除模式：删完继续留着，可连点
                 elif self._place_kind in ("vpole", "hpole", "pole"):
@@ -2762,6 +2769,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                                                      "pole", "wall"):
             if e.buttons() & Qt.MouseButton.LeftButton:
                 lx, ly = self.to_logical(e.position().x(), e.position().y())
+                lx = clampf(lx, 0.0, max(0.0, self._WL))
+                ly = clampf(ly, 0.0, max(0.0, self._HL))
                 if self._place_kind == "shelter":
                     if self._shelter_drag_start is None:
                         self._shelter_drag_start = (lx, ly)
@@ -2786,6 +2795,8 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
                                                      "pole", "wall"):
             if e.button() == Qt.MouseButton.LeftButton:
                 lx, ly = self.to_logical(e.position().x(), e.position().y())
+                lx = clampf(lx, 0.0, max(0.0, self._WL))
+                ly = clampf(ly, 0.0, max(0.0, self._HL))
                 if self._place_kind == "shelter":
                     self._finish_shelter_place((lx, ly))
                 elif self._place_kind == "wall":
@@ -3120,7 +3131,9 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             # 还没按下：光标处给一个模板比例的默认大小
             h = max(Shelter.MIN_H, 110.0)
             w = max(Shelter.MIN_W, h / ar)
-            return Shelter(cur[0] - w * 0.5, cur[1] - h * 0.5, w, h, None, self._WL,
+            x = clampf(cur[0] - w * 0.5, 0.0, max(0.0, self._WL - w))
+            y = clampf(cur[1] - h * 0.5, 0.0, max(0.0, self._HL - h))
+            return Shelter(x, y, w, h, None, self._WL,
                            seed=self._shelter_seed, door_ticks=ticks, template=tpl)
         sx, sy = self._shelter_drag_start
         cx, cy = cur
@@ -3129,6 +3142,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # 拖多大就是多大（不再被 760×340 裁掉），只夹到画布内并保底
         dw = min(max(x1 - x0, Shelter.MIN_W), max(Shelter.MIN_W, self._WL))
         dh = min(max(y1 - y0, Shelter.MIN_H), max(Shelter.MIN_H, self._HL))
+        # Keep the preview itself inside the playable canvas; the final
+        # ``add_shelter`` clamp is a last line of defence, not the preview.
+        x0 = clampf(x0, 0.0, max(0.0, self._WL - dw))
+        y0 = clampf(y0, 0.0, max(0.0, self._HL - dh))
         return Shelter(x0, y0, dw, dh, None, self._WL,
                        seed=self._shelter_seed, door_ticks=ticks, template=tpl)
 

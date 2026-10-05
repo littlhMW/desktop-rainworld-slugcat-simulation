@@ -12,11 +12,25 @@ import time
 from PySide6.QtCore import QPoint
 from PySide6.QtGui import QGuiApplication, QImage, QColor, QRegion
 
-CACHE_TTL = 1.6          # 同一块地方这么久复用一次采样（低频）
+CACHE_TTL = 0.45         # 桌面窗口切换/画布滚动后及时跟随；仍避免每帧抓屏
 PIXEL_STEP = 2           # 环形采样步长：隔一个像素取一个，够了又便宜
-INNER_FRAC = 0.42        # 挖掉的中央椭圆 = 采样半径 × 这个系数（避开自己身体）
+INNER_FRAC = 0.70        # 更大的中央排除区，避免把白蜥自身长条身体采进迷彩色
 OWN_ALPHA_MIN = 16       # 「我们自己画的」判定阈值：alpha 到这就当前景挖掉
 _CACHE = {}
+
+
+def _pixel_rgb(px):
+    """Return RGB and whether the pixel carries useful colour data.
+
+    Windows desktop composition can expose an RGB screenshot with alpha=0
+    (notably hardware-accelerated CSP/Clip Studio canvases).  Treating every
+    alpha-zero pixel as empty made camouflage stick to its previous colour.
+    Fully transparent black is still ignored so a failed grab cannot turn a
+    lizard black.
+    """
+    a = (px >> 24) & 0xFF
+    r, g, b = (px >> 16) & 0xFF, (px >> 8) & 0xFF, px & 0xFF
+    return (r, g, b), (a >= 8 or (r | g | b) != 0)
 
 
 def _screen_of(widget):
@@ -101,6 +115,13 @@ def _own_mask(widget, lx, ly, w, h, scale):
         iw = max(1, int(round(w * scale)))
         ih = max(1, int(round(h * scale)))
         img = QImage(iw, ih, QImage.Format.Format_ARGB32_Premultiplied)
+        # QScreen.grabWindow returns device pixels on a scaled desktop.  Keep
+        # the mask in the same device-pixel space; without this, the rendered
+        # foreground occupies only the top-left logical portion and a white
+        # lizard's own body leaks into the background histogram on 125/150/200%
+        # displays (common with CSP/Clip Studio).
+        if scale > 1.0 and hasattr(img, "setDevicePixelRatio"):
+            img.setDevicePixelRatio(float(scale))
         img.fill(QColor(0, 0, 0, 0))
         widget.render(img, QPoint(0, 0), QRegion(int(lx), int(ly), int(w), int(h)))
     except Exception:
@@ -155,9 +176,10 @@ def _grab_ring(scr, widget, gx, gy, w, h, half_w, half_h):
                 if dx * dx + dy * dy < 1.0:
                     continue                      # 中央椭圆＝自己身体，不采
             px = img.pixel(ix, iy)
-            if ((px >> 24) & 0xFF) < 8:           # 全透明：什么也没抓到
+            rgb, usable = _pixel_rgb(px)
+            if not usable:                         # 真正的空像素
                 continue
-            q = ((px >> 16) & 0xF8, (px >> 8) & 0xF8, px & 0xF8)
+            q = (rgb[0] & 0xF8, rgb[1] & 0xF8, rgb[2] & 0xF8)
             hist[q] = hist.get(q, 0) + 1
     if not hist:
         return None
@@ -181,9 +203,10 @@ def _grab(scr, gx, gy, w, h):
     for iy in range(0, img.height(), step_y):
         for ix in range(0, img.width(), step_x):
             px = img.pixel(ix, iy)
-            if ((px >> 24) & 0xFF) < 8:              # 全透明：什么也没抓到
+            rgb, usable = _pixel_rgb(px)
+            if not usable:                            # 真正的空像素
                 continue
-            q = ((px >> 16) & 0xF8, (px >> 8) & 0xF8, px & 0xF8)
+            q = (rgb[0] & 0xF8, rgb[1] & 0xF8, rgb[2] & 0xF8)
             hist[q] = hist.get(q, 0) + 1
     if not hist:
         return None
