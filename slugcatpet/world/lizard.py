@@ -394,6 +394,7 @@ CAMO_COLOR_RATE = 0.25         # 整只体色向新采样色渐变的速度（�
 CAMO_FADE_IN = 0.10            # 进入伪装：体色/头色 → 采样色（~0.5 s 淡入）
 CAMO_FADE_OUT = 0.50           # 发起攻击 / 被攻击：伪装立刻垮掉（~4 tick）
 CAMO_HIDE_VX = 1.2             # 位移速度低于它 = 潜伏不动，伪装才成立
+CAMO_HIDDEN_MIX = 0.70         # 达到这个视觉混合度才算真正隐身（避免淡入首帧突然消失）
 CAMO_FLICKER_TICKS = 90        # 受伤后「不由自主胡乱变色」剩余 tick（原版受伤乱闪）
 CAMO_FLICKER_STEP = 3          # 乱闪期间每隔几 tick 换一个随机色
 SALAMANDER_RGB = (232, 232, 244)
@@ -419,7 +420,7 @@ class LizardAnimIntent:
     jaw_open: float = 0.0       # 下颚目标开度
     body_compress: float = 0.0  # 压低身体
     body_raise: float = 0.0     # 支起上半身
-    locomotion: str = "idle"    # idle / walk / run / lurk / carry
+    locomotion: str = "idle"    # idle / walk / run / lurk / carry / climb
     turn: float = 0.0
 
 
@@ -1453,6 +1454,18 @@ class Lizard(CombatTarget):
             return False
         return math.hypot(self.vx, self.vy) < CAMO_HIDE_VX
 
+    @property
+    def camo_hidden(self) -> bool:
+        """当前是否已达到可被视为「隐身」的白蜥迷彩状态。
+
+        关系/威胁系统不能只看 ``breed.camo``：白蜥刚开始淡入、移动淡出，
+        以及受伤乱闪时都仍然应该能被发现。统一使用混合度阈值并排除乱闪，
+        让猫和蜥蜴的感知口径与画面实际可见度一致。
+        """
+        return bool(getattr(self.breed, "camo", False)
+                    and self.camo_flicker <= 0
+                    and self.camo_mix >= CAMO_HIDDEN_MIX)
+
     def camo_tick(self, win, tick: int) -> None:
         """白蜥：**每 tick** 采一次「自己周围」的**背景**主色，整只（含头）保持它。
 
@@ -1488,10 +1501,16 @@ class Lizard(CombatTarget):
                 self.camo_color = self.camo_target
             else:
                 t = CAMO_COLOR_RATE
-                self.camo_color = (
-                    int(self.camo_color[0] + (self.camo_target[0] - self.camo_color[0]) * t),
-                    int(self.camo_color[1] + (self.camo_target[1] - self.camo_color[1]) * t),
-                    int(self.camo_color[2] + (self.camo_target[2] - self.camo_color[2]) * t))
+                # 使用四舍五入并在最后一个色阶内直接收敛，避免 int 截断让
+                # 某个通道永远停在目标值 1 像素之外，导致“变色不精确”。
+                if max(abs(self.camo_color[i] - self.camo_target[i])
+                       for i in range(3)) <= 1:
+                    self.camo_color = tuple(self.camo_target)
+                else:
+                    self.camo_color = tuple(
+                        int(round(self.camo_color[i]
+                                  + (self.camo_target[i] - self.camo_color[i]) * t))
+                        for i in range(3))
         # 淡入 / 淡出：潜伏时满值（不再呼吸），追猎或被攻击后迅速垮掉
         tgt = 1.0 if hide else 0.0
         rate = CAMO_FADE_IN if tgt > self.camo_mix else CAMO_FADE_OUT
@@ -2068,8 +2087,16 @@ class Lizard(CombatTarget):
             return
         # 已经贴上：横向用弹簧吸住（不是硬钉 x），纵向按爬速走
         # 实体墙有厚度，身体停在墙面外；杆和背景可从任一侧贴住中心线。
-        anchor_x = (sx + self.climb_side * (r + LINE_COLLIDE_PAD)
-                    if self.climb_kind == "wall" else sx)
+        if self.climb_kind == "wall":
+            # 实体墙有厚度，身体停在可碰撞墙面外侧。
+            anchor_x = sx + self.climb_side * (r + LINE_COLLIDE_PAD)
+        elif self.climb_kind == "background":
+            # 背景墙是非实体的视觉表面，但蜥蜴仍应贴在背景边缘，不能把
+            # 身体中心线直接穿过背景图。偏移小于实体墙，保留原版贴面感。
+            anchor_x = sx + self.climb_side * (r * 0.65 + LINE_COLLIDE_PAD)
+        else:
+            # 竖杆是中心线，允许从任一侧抓附。
+            anchor_x = sx
         self.vx += (anchor_x - self.x) * CLIMB_GRIP_SPRING
         self.vx *= CLIMB_GRIP_DAMP
         self.x += self.vx
@@ -2100,22 +2127,31 @@ class Lizard(CombatTarget):
             self.y = max(float(top), r)
             self.vy = 0.0
             self._contact_floor = False
+            self.plan = None
             self._climb_release()
         elif bot is not None and self.y > bot:
             self.y = min(bot, floor)              # 爬到底 / 线到头：站住并脱墙
             self.vy = 0.0
             self._contact_floor = True
+            self.plan = None
             self._climb_release()
         elif self.y > floor:
             self.y = floor
             self.vy = 0.0
             self._contact_floor = True
+            self.plan = None
             self._climb_release()
         elif self.y < r:
             self.y, self.vy = r, 0.0
+            # 线一直延伸到窗口上边缘时没有可站的上端；不能在 y=r 处
+            # 永远保持附着，否则下一帧会重复向上爬并卡在顶边。
+            if self.climb_dir > 0:
+                self.plan = None
+                self._climb_release()
         elif top is not None and self.y < top + 4.0:
             self.y = max(r, top + 4.0)            # 到墙头：脱墙，站到墙沿上
             self.vy = 0.0
+            self.plan = None
             self._climb_release()
 
     # ── AI ──
@@ -2499,9 +2535,10 @@ class Lizard(CombatTarget):
     def _climb_plan(self, o, HL) -> None:
         """要不要贴着一条竖线爬（原版 LizardPather 的 Climb / Wall 通行能力）。
 
-        ``surfaces`` 每项 ``(x, y_top, y_bot, kind)``：kind == "wall" 是背景墙
-        的可见墙段，只有会爬墙的品种（WallClimber：蓝/白/鳗鱼蜥）才考虑；
-        kind == "pole" 是竖杆，会爬杆的品种都能用。选中条件不再要求「已经贴到
+        ``surfaces`` 每项 ``(x, y_top, y_bot, kind)``：kind == "wall" 是实体墙
+        的可见墙段，kind == "background" 是非实体背景墙边缘；两者只有会爬墙的
+        品种（WallClimber：蓝/白/鳗鱼蜥）才考虑。kind == "pole" 是竖杆，会爬杆
+        的品种都能用。选中条件不再要求「已经贴到
         线上」，而是「线够得着目标那一端」且「我够得着这条线」—— 线还在我这一层
         就抓上去，否则墙底/杆底落在我这层就走过去（原版 Floor→Wall 那条连接）。
         真正的位移交给 _step_wall（附着物理），不再每帧硬钉 x。
@@ -4420,6 +4457,10 @@ class Lizard(CombatTarget):
             it.locomotion, it.body_compress, it.alert = "lurk", 0.5, 0.4
         elif st in ("Wander", "FollowFriend", "PackCoordination", "CasualBite"):
             it.locomotion = "walk"
+        # 攀爬是独立的动作层状态。AI 的 stage 可能仍是 Hunt/Investigate，
+        # 但一旦真正附着在竖杆、实体墙或背景墙上，渲染和步态都应使用爬行动画。
+        if self.climb_x is not None and self.climb_attached:
+            it.locomotion = "climb"
         it.turn = clampf(self._turn_imp, -2.0, 2.0)
         return it
 
@@ -5241,10 +5282,18 @@ class Lizard(CombatTarget):
         top = self.climb_top
         bot = self.climb_bot
         span = (float(top), float(bot)) if top is not None and bot is not None else None
-        wall = self.climb_kind == "wall"
-        wall_x = (float(self.climb_x)
-                  + (self.climb_side * (self.head_rad + LINE_COLLIDE_PAD)
-                     if wall else 0.0))
+        if self.climb_kind == "wall":
+            # 实体墙的脚也落在墙面外侧，避免四肢穿进 shelter/extra wall。
+            wall_x = (float(self.climb_x)
+                      + self.climb_side * (self.head_rad + LINE_COLLIDE_PAD))
+        elif self.climb_kind == "background":
+            # 背景墙不参与实体碰撞，但四肢仍要挂在其可见边缘，而不是
+            # 以背景中心线为抓点，否则爬行动画看起来会穿过背景。
+            wall_x = (float(self.climb_x)
+                      + self.climb_side * (self.head_rad * 0.65 + LINE_COLLIDE_PAD))
+        else:
+            # 竖杆的抓点是中心线；左右脚仅通过 along/flip 做视觉分层。
+            wall_x = float(self.climb_x)
         # ``walk_phase`` advances in the body stepper.  Offset front/rear
         # pairs in opposite phases so three visible contact points remain on
         # the surface when the lizard changes direction.

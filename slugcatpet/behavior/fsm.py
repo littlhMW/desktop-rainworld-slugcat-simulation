@@ -6008,6 +6008,8 @@ class BehaviorFSM:
         for lz in getattr(self.win, "lizards", ()):
             if getattr(lz, "dead", False) or lz.state != ItemState.FREE:
                 continue
+            if getattr(lz, "camo_hidden", False):
+                continue
             d = math.hypot(lz.x - c1.x, lz.y - c1.y)
             if d <= bd:
                 best, bd = lz, d

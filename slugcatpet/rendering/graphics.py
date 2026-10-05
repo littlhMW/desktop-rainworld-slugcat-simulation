@@ -217,7 +217,10 @@ class SlugcatGraphics(GraphicsDrawMixin):
         self.tongue = None
         self.gills = None            # 仅 caps.gills 猫非空
 
-        self.tail_smooth = True
+        # Keep the original segmented tail silhouette.  Smoothing here hides
+        # the multi-segment joints that convey slugcat movement and makes the
+        # tail read as a single ribbon.
+        self.tail_smooth = False
         self.tail_smooth_subdiv = 4
 
         c0, c1 = body.chunk0, body.chunk1

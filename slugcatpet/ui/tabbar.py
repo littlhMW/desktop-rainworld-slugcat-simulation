@@ -841,7 +841,8 @@ class TabBar(QWidget):
             grid3.setColumnStretch(c, 1)
         for i, (kind, tip, cb) in enumerate(
                 [("erase", t("tip_erase"), self._erase_mode),
-                 ("clear", t("tip_clear"), self._clear_all)]):
+                 ("clear", t("tip_clear"), self._clear_all),
+                 ("clear", t("tip_clear_terrain"), self._clear_terrain)]):
             ib = QPushButton()
             ib.setIcon(QIcon(_make_place_icon(kind, 22, dpr, atlas)))
             ib.setIconSize(QSize(22, 22))
@@ -850,7 +851,7 @@ class TabBar(QWidget):
             install_tip(ib, tip)
             ib.setCursor(Qt.CursorShape.PointingHandCursor)
             ib.clicked.connect(cb)
-            grid3.addWidget(ib, 0, i)
+            grid3.addWidget(ib, i // 4, i % 4)
         tool_host = QWidget()
         tool_host.setLayout(grid3)
         lay.addWidget(tool_host)
@@ -1092,6 +1093,13 @@ class TabBar(QWidget):
             # 清完重新枚举窗口地形：用户实测「清了重画就好」的那份过期
             # 平台 / 背景就在这里一起重置掉。
             self.pet.reset_window_geometry()
+        else:
+            self._toast(t("toast_no_object"))
+
+    def _clear_terrain(self):
+        if self.pet.poles or self.pet.extra_walls:
+            self.pet.clear_poles()
+            self.pet.clear_walls()
         else:
             self._toast(t("toast_no_object"))
 

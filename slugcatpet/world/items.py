@@ -748,7 +748,7 @@ class ItemInteractionMixin:
         """清除实体，默认保留手绘杆和墙。
 
         矛仍会连同自己钉成的杆一起撤销。clear_pups=True 时清掉幼崽；
-        全体转生显式请求 clear_terrain=True，保留原有的新循环重置行为。
+        需要清理墙杆时由工具栏单独调用 ``clear_poles`` / ``clear_walls``。
         """
         self.clear_fruits()
         self.clear_stones()
@@ -771,12 +771,12 @@ class ItemInteractionMixin:
             self.clear_pups()
 
     def clear_world_for_reincarnation(self):
-        """全体转生：全体复活那一瞬把场上所有东西一起清空（原版换雨循环＝整房间重置）。
+        """全体转生：清空场上生物与物品，但保留手绘墙和杆。
 
         除了可交互实体，还要清掉「死后原地长业力花」的排期 —— 转生是新循环，
         上一轮尸体的花不该再冒出来。
         """
-        self.clear_all_items(clear_terrain=True)
+        self.clear_all_items()
         if getattr(self, "_karma_flower_spawns", None):
             self._karma_flower_spawns = []
         self._dragged_spear = None
@@ -2073,7 +2073,12 @@ class ItemInteractionMixin:
                 continue
             if other.dead or other.state != ItemState.FREE:
                 continue
-            route(*lizard_rel(lz.breed.key, other.breed.key), other)
+            rel = lizard_rel(lz.breed.key, other.breed.key)
+            # 有效迷彩中的白蜥不会被其它蜥蜴当作“害怕”的威胁；
+            # 淡入/淡出和受伤乱闪仍沿用原版关系。
+            if rel[0] == "Afraid" and getattr(other, "camo_hidden", False):
+                continue
+            route(*rel, other)
         for sq in self.squidcadas:
             if not sq.dead and sq.state == ItemState.FREE:
                 route(*lizard_rel_kind(lz.breed.key, "squidcada"), sq)

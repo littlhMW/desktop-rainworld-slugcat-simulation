@@ -134,6 +134,10 @@ class ThreatField:
             for lz in getattr(w, "lizards", ()) or ():
                 if getattr(lz, "dead", False) or getattr(lz, "state", None) != free:
                     continue
+                # 白蜥达到有效迷彩时不进入全局威胁表；淡入、移动淡出和
+                # 受伤乱闪仍会保留，由 Lizard.camo_hidden 统一决定口径。
+                if getattr(lz, "camo_hidden", False):
+                    continue
                 out.append(self._make(lz, "lizard", _lizard_strength(lz)))
             for f in getattr(w, "needleworms", ()) or ():
                 if hostile_needleworm(f, w):

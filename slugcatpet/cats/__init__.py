@@ -41,9 +41,8 @@ def pickable_variants() -> tuple:
 
 
 def display_order(pets) -> list:
-    """按角色选择顺序列出已有蛞蝓猫，同种角色保持加入顺序。"""
-    rank = {variant: i for i, variant in enumerate(pickable_variants())}
-    return sorted(pets, key=lambda pet: rank.get(pet.variant, len(rank)))
+    """按实际加入顺序列出已有蛞蝓猫。"""
+    return list(pets)
 
 
 def get(variant) -> CatDef:

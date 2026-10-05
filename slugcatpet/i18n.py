@@ -52,6 +52,7 @@ _STR = {
     "tip_karmaflower": {"zh": "业力花", "en": "Karma flower"},
     "tip_slugpup": {"zh": "猫崽", "en": "Slugpup"},
     "tip_clear":   {"zh": "清除所有实体", "en": "Clear all entities"},
+    "tip_clear_terrain": {"zh": "清除墙和杆", "en": "Clear walls and poles"},
     "tip_shelter": {"zh": "庇护所", "en": "Shelter"},
 
     # —— settings：自然生成生物列表 ——
@@ -128,7 +129,7 @@ _STR = {
 
     # —— 设置窗 ——
     "settings_title":        {"zh": "设置", "en": "Settings"},
-    "settings_cats_section": {"zh": "蛞蝓猫阵容", "en": "Slugcat roster"},
+    "settings_cats_section": {"zh": "蛞蝓猫", "en": "Slugcats"},
     "settings_add":          {"zh": "添加", "en": "Add"},
     "settings_remove":       {"zh": "移除", "en": "Remove"},
     "settings_max_pets":     {"zh": "最多 10 只", "en": "At most 10 cats"},
