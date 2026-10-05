@@ -491,6 +491,10 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # 场是「世界的」，上下文是「每只猫的」——所以这里放世界，NavContext 放猫。
         self.threat_field = ThreatField(self)
         self.traffic_field = TrafficField(self)
+        # Threat/crowd snapshots are shared by all cats.  Physics still runs
+        # at 40 Hz, but rebuilding these world-wide snapshots every tick adds
+        # avoidable list scans and navigation cache work in crowded scenes.
+        self._field_tick = 0
         self._all_dead_t = 0        # 全员死亡守灵计时
         self._reincarnate_cleanup_pending = False   # 转生：全体复活那一瞬才清场
         self._build_pets()
@@ -1005,8 +1009,13 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         # made their motion visibly stutter even though physics still ran at
         # 40 Hz.  Heavy environment layers may still use their own slower
         # weather interval above, but ordinary multi-cat scenes stay smooth.
-        if (len(self.lizards) > 12 or self.water_surface is not None) \
+        if (len(self.lizards) > 12 or len(self.pets) >= 3
+                or self.water_surface is not None) \
                 and not dragging and not grabbing:
+            # Keep physics at 40 Hz, but cap expensive transparent-window
+            # painting to 25 FPS once three cats share the desktop.  This
+            # avoids saturating the GUI thread while the restored smooth tail
+            # remains visually continuous between physics steps.
             want_iv = max(want_iv, 40)
         elif (self.pets and not active and not self.rain.active
               and self.water_surface is None and not dragging and not grabbing):
@@ -1445,9 +1454,14 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         cycle_prog = self._cold_update_world()
         self._water_update()          # 须在 pet.step 前
 
-        # 危险 / 拥挤：本 tick 先各采一次，之后所有猫的寻路读的都是同一份快照
-        self.threat_field.update(self)
-        self.traffic_field.update(self)
+        # 危险 / 拥挤：多猫/多蜥蜴场景把共享快照降到 20 Hz，物理仍为 40 Hz。
+        # 两次物理步之间复用同一份数据只会带来 25 ms 的感知延迟；单猫小场景
+        # 继续每 tick 更新，保持交互和旧测试的即时语义。
+        self._field_tick += 1
+        crowded_ai = len(self.pets) >= 3 or len(self.lizards) > 6
+        if not crowded_ai or (self._field_tick & 1):
+            self.threat_field.update(self)
+            self.traffic_field.update(self)
 
         for pet in self.pets:
             pet.step(cur, cycle_prog)
