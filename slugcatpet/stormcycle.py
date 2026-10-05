@@ -384,10 +384,18 @@ class StormCycle:
             omen = False
         need = 0
         first = None
+        # Keep a body fallback for the HUD.  A dead first/only cat still has
+        # valid food-meter dimensions; returning food_max=0 makes the entire
+        # satiety row disappear until that cat is revived or removed.
+        fallback = None
         for p in (pets or ()):
             beh = getattr(p, "behavior", None)
             body = getattr(p, "body", None)
-            if body is None or (beh is not None and beh.is_truly_dead()):
+            if body is None:
+                continue
+            if fallback is None:
+                fallback = body
+            if beh is not None and beh.is_truly_dead():
                 continue
             if first is None:
                 first = body          # 计时器固定显示第一只猫的数据
@@ -396,16 +404,17 @@ class StormCycle:
                 + int(getattr(body, "food_quarter", 0)))
             if miss > need:
                 need = miss
+        food_body = first if first is not None else fallback
         return {"mode": mode, "seconds": ring_remain / TICK_HZ,
                 "phase": self.phase,
                 "ring_total": ring_total, "ring_remain": ring_remain,
                 "omen": omen, "tick": int(self.phase_t),
                 "cycles": int(self.cycles_done),
-                "food": int(getattr(first, "food", 0)) if first is not None else 0,
-                "food_quarter": int(getattr(first, "food_quarter", 0)) if first is not None else 0,
-                "food_max": int(getattr(first, "food_max", 0)) if first is not None else 0,
-                "food_hibernate": (int(getattr(first, "food_hibernate", 0))
-                                   if first is not None else 0),
+                "food": int(getattr(food_body, "food", 0)) if food_body is not None else 0,
+                "food_quarter": int(getattr(food_body, "food_quarter", 0)) if food_body is not None else 0,
+                "food_max": int(getattr(food_body, "food_max", 0)) if food_body is not None else 0,
+                "food_hibernate": (int(getattr(food_body, "food_hibernate", 0))
+                                   if food_body is not None else 0),
                 "starvation": (need + 3) // 4,
                 "hungry": need > 0,
                 "storm": self.active}
