@@ -9,9 +9,9 @@ $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 if (-not $DistPath) { $DistPath = Join-Path $root "dist" }
 
-# Only ship layouts and the project icon/check mark. Rain World atlases, game
-# audio, Workshop audio, and other copyrighted media are always read or
-# extracted from the user's own local installation at runtime.
+# Ship layouts and the small UI icon set used by the sidebar. Rain World
+# atlases, game audio, Workshop audio, and other copyrighted media are always
+# read or extracted from the user's own local installation at runtime.
 & $Python -m PyInstaller --noconfirm --clean --windowed --onedir --name $Name `
     --icon (Join-Path $root "slugcatpet\resources\icons\app_icon.ico") `
     --collect-submodules UnityPy `
@@ -19,8 +19,7 @@ if (-not $DistPath) { $DistPath = Join-Path $root "dist" }
     --workpath (Join-Path $root "build\work") `
     --specpath (Join-Path $root "build") `
     --add-data "$root\slugcatpet\resources\layouts;slugcatpet/resources/layouts" `
-    --add-data "$root\slugcatpet\resources\icons\app_icon.png;slugcatpet/resources/icons" `
-    --add-data "$root\slugcatpet\resources\icons\check.svg;slugcatpet/resources/icons" `
+    --add-data "$root\slugcatpet\resources\icons;slugcatpet/resources/icons" `
     (Join-Path $root "run_slugcatpet.py")
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
 
