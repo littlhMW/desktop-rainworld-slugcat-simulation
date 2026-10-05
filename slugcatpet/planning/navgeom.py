@@ -369,7 +369,22 @@ class NavGeometry:
         #     脚支撑）、不能站；只有 Background Climb 的品种能附上去。
         #     旧版这里 kind=WALL / solid=True，于是「墙被当杆爬 + 挡住视线」
         #     两个 bug 都由这一处发源。
-        for ws in getattr(win, "wall_surfaces", ()) or ():
+        # ``wall_surfaces`` is normally produced by ``Window._sync_window_terrain``.
+        # A resize / monitor switch can briefly update the raw ``walls`` list before
+        # the derived segments are rebuilt; use the raw list as a safe fallback so
+        # WallClimber lizards do not lose their background for one or more AI
+        # frames.  This mirrors the game's AImap rebuild: the source geometry is
+        # authoritative and the accessibility view is derived from it.
+        wall_surfaces = getattr(win, "wall_surfaces", ()) or ()
+        if not wall_surfaces:
+            raw_walls = getattr(win, "walls", ()) or ()
+            if raw_walls:
+                try:
+                    from ..world.walls import build_wall_surfaces
+                    wall_surfaces = build_wall_surfaces(raw_walls)
+                except Exception:
+                    wall_surfaces = ()
+        for ws in wall_surfaces:
             for j, (tp, bt) in enumerate(ws.segments):
                 g._add(Surface("bg:%d:%d" % (ws.index, j), BACKGROUND, x=ws.x,
                                top=tp, bot=bt, stand=False,

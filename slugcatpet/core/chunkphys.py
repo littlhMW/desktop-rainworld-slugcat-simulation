@@ -533,12 +533,19 @@ def _set_contact_x(obj, v: int) -> None:
 
 def _oneway_platform(obj, r: float, bounce: float, tang: float, impact=None,
                      first_contact: bool = True) -> bool:
-    """落到某个窗口顶边就站住；只对「上一步还在顶边上方」生效。"""
+    """落到某个窗口顶边就站住；只对「上一步还在顶边上方」生效。
+
+    ``BodyChunk.update`` 在每帧开始会重新加入重力，所以站在平台上的
+    chunk 下一帧通常已经有一个很小的正向 ``vy``。旧条件用 ``<=`` 拒绝
+    ``bottom == y0`` 的边界帧，导致刚落地的 chunk 先下沉一帧、丢失
+    ``cy=1``，随后才被下一帧推回去。把边界相等视作接触，仍保持向上
+    运动（``vy <= 0``）完全穿透的单向语义。
+    """
     if not PLATFORMS or obj.vy <= 0.0:
         return False
     prev_bottom = obj.y - obj.vy + r
     for x0, y0, x1 in PLATFORMS:
-        if prev_bottom > y0 + 0.6 or obj.y + r <= y0:
+        if prev_bottom > y0 + 0.6 or obj.y + r < y0 - 1e-6:
             continue
         if obj.x <= x0 - r or obj.x >= x1 + r:
             continue
