@@ -213,6 +213,57 @@ class MeowManager:
         return MeowManager._waa_green_lizard(pet) is not None
 
     @staticmethod
+    def _waa_only_green_threat(pet) -> bool:
+        """Return whether the field contains exactly one threat: this green lizard.
+
+        ``_waa_green_lizard`` deliberately looks at the lizard roster so the
+        candidate remains stable while the shared ThreatField is refreshing.
+        The trigger itself must be stricter: a scavenger, hostile needleworm,
+        or any other registered threat alongside the green lizard disqualifies
+        the easter egg.  In the running window the field has already been
+        updated before ``MeowManager.tick``; the small roster fallback keeps
+        compatibility with lightweight test doubles that do not expose a
+        ThreatField.
+        """
+        green = MeowManager._waa_green_lizard(pet)
+        if green is None:
+            return False
+        window = getattr(pet, "window", None)
+        if window is None:
+            window = getattr(getattr(pet, "behavior", None), "win", None)
+        field = getattr(window, "threat_field", None)
+        table = getattr(field, "threats", None) if field is not None else None
+        if table is not None:
+            active = []
+            for threat in table or ():
+                actor = getattr(threat, "actor", None)
+                if actor is None or getattr(actor, "dead", False):
+                    continue
+                active.append(threat)
+            return (len(active) == 1
+                    and getattr(active[0], "actor", None) is green
+                    and str(getattr(active[0], "kind", "")).lower() == "lizard")
+
+        # Compatibility fallback: ThreatField is present in the real window,
+        # but older saves/test doubles may only provide entity rosters.
+        for worm in getattr(window, "needleworms", ()) or ():
+            if (getattr(worm, "dead", False)
+                    or getattr(worm, "age", None) != "big"
+                    or getattr(worm, "state", None) not in (None, "free")):
+                continue
+            try:
+                if worm.hostile_to({"uid": id(window)}):
+                    return False
+            except Exception:
+                pass
+        for scav in getattr(window, "scavengers", ()) or ():
+            if (not getattr(scav, "dead", False)
+                    and getattr(scav, "state", None) == "free"
+                    and not getattr(scav, "friendly", False)):
+                return False
+        return True
+
+    @staticmethod
     def _waa_green_lizard_threat(pet) -> bool:
         """Whether the unique green lizard has selected this Survivor.
 
@@ -470,7 +521,7 @@ class MeowManager:
                     self._waa_player.stop()
                 self._waa_threat_latched = False
                 return
-            threatened = (self._waa_single_green_lizard(pet)
+            threatened = (self._waa_only_green_threat(pet)
                           and (self._pet_in_threat(pet)
                                or self._waa_green_lizard_threat(pet)))
             if not threatened:
