@@ -1564,7 +1564,14 @@ class BehaviorFSM:
         self._scan_blocking()
 
     def _act_wakeonthreat_pre(self, ctx):
-        board_for(self.win).sync(self.win, getattr(self.win, "_pole_tick", 0))
+        # Claims are synchronized once for the whole roster by PetWindow before
+        # the per-cat decisions.  Doing it here made every cat sweep and reseat
+        # the shared board (including every other claim) once per tick.
+        tick = getattr(self.win, "_pole_tick", 0)
+        if getattr(self.win, "_board_sync_tick", None) != tick:
+            # Keep direct BehaviorFSM/unit tests (which do not run PetWindow's
+            # outer tick) correct while the normal path remains centralized.
+            board_for(self.win).sync(self.win, tick)
         self._board_loss_tick()
         self._watch_fetch_steal()          # 同样只负责«发现被抢 + 发事件»
         # 事件总线：消化这一 tick 别人做过的事（关系变化 + 社会反应）。

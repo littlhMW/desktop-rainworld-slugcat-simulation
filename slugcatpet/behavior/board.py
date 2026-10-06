@@ -96,7 +96,7 @@ class Board:
         self.tick = 0
 
     # ── 认领 ──
-    def sync(self, unit, tick=None) -> None:
+    def sync(self, unit, tick=None, *, sweep=True) -> None:
         """把这只猫此刻的「正事目标」登记成认领（无正事则注销）。"""
         if tick is not None:
             self.tick = tick
@@ -106,7 +106,8 @@ class Board:
         key = id(unit)
         if obj is None:
             self._claims.pop(key, None)
-            self._sweep()
+            if sweep:
+                self._sweep()
             return
         c = self._claims.get(key)
         if c is None or c.obj is not obj or c.kind != kind:
@@ -115,7 +116,8 @@ class Board:
         else:
             c.until = tick + CLAIM_TICKS
             self._progress(unit, c, tick)
-        self._sweep()
+        if sweep:
+            self._sweep()
 
     def register_actor(self, actor, obj, kind, tick=None) -> None:
         """世界生物（拾荒者 / 蜥蜴）来占位：它盯上的东西在猫眼里就是「有主」的。

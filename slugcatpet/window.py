@@ -476,6 +476,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._shelter_seed = 0
 
         self._prev_dirty = None
+        self._last_update_region = None
         self._fx_active_prev = False
         self._fx_active = False
         self.follow_cursor = True
@@ -487,6 +488,18 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._edibles_cache_key = None
         self._edibles_cache = None
         self._fetchables_cache = {}
+        # Collision participants keep their object identity while they are in
+        # the world.  Rebuilding the flattened list every 40 Hz tick created
+        # a large amount of short lived Python garbage in crowded scenes;
+        # retain it until one of the backing collections changes.
+        self._collision_entities_cache = None
+        self._collision_entities_sig = None
+        # TerrainQuery is a cheap facade over the cached NavGeometry, but
+        # allocating it and resolving the facade on every lizard tick is still
+        # avoidable.  The snapshot is replaced when terrain collections or
+        # their geometry versions change.
+        self._terrain_query_cache = None
+        self._terrain_query_sig = None
         # 共享世界层（文档 §二 的数据流）：危险 / 拥挤各更新一份，所有猫共用。
         # 场是「世界的」，上下文是「每只猫的」——所以这里放世界，NavContext 放猫。
         self.threat_field = ThreatField(self)
@@ -510,6 +523,11 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self._ts = 1.0                  # 0..1 插值因子
         self._hwnd = 0
         self._passthrough = None        # None 强制首次同步
+        # _passthrough_want probes every interactive entity.  With the
+        # uncapped zero-timeout render timer, reevaluating it on every GUI
+        # callback became a hidden O(entity) hot path.  Recheck on cursor or
+        # physics-tick changes; setters and pointer handlers invalidate it.
+        self._passthrough_eval_key = None
         saved_hud_pos = self._params.get("storm_hud_pos")
         if isinstance(saved_hud_pos, (list, tuple)) and len(saved_hud_pos) == 2:
             self._storm_hud_pos = (float(saved_hud_pos[0]), float(saved_hud_pos[1]))
@@ -522,7 +540,9 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
         self.anim = QTimer(self)
         self.anim.setTimerType(Qt.TimerType.PreciseTimer)
-        self.anim.setInterval(self._INT_FAST)
+        # Zero-timeout timer: repaint whenever Qt is ready; it is not a
+        # software FPS cap.  Physics is still fixed-step in _advance().
+        self.anim.setInterval(0)
         self.anim.timeout.connect(self._tick)
         self.anim.start()
 
@@ -683,6 +703,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         allowed = bool(allowed)
         setattr(self, name, allowed)
         self._params[name] = allowed
+        self._passthrough_eval_key = None
         return allowed
 
     def set_cursor_cat_interaction_allowed(self, allowed):
@@ -808,7 +829,12 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             return
         if self._place_mode:
             return        # 放置模式接管点击，勿翻转
-        want = self._passthrough_want(self.cursor_logical())
+        cur = self.cursor_logical()
+        key = (getattr(self, "_pole_tick", 0), cur)
+        if self._passthrough is not None and key == self._passthrough_eval_key:
+            return
+        self._passthrough_eval_key = key
+        want = self._passthrough_want(cur)
         if want != self._passthrough:
             self._passthrough = want
             if not self._hwnd:
@@ -820,13 +846,6 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
     _PHYS_DT = 1.0 / 40.0
     _MAX_TICKS = 4             # 普通场景防时间螺旋
     _MAX_DT = 0.1
-    _INT_FAST = 25           # ms
-    # 暴雨绘制层是固定屏幕空间的整窗重绘；限制它到约 30 FPS，避免高 DPI
-    # 下雨线/遮罩把 UI 线程占满。物理累加器仍独立按 40 Hz 推进，不改变 AI、
-    # 碰撞或存档时间尺度。
-    _INT_WEATHER = 45           # ms; rain compositing is full-window work
-    _INT_WEATHER_CROWDED = 66   # ms; avoid saturating Qt in crowded storms
-    _INT_SLOW = 66
     _MOTION_STILL = 1.2
     MAX_FRUITS = 3
     MAX_STONES = 3
@@ -982,55 +1001,30 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             return
         self._update_passthrough()
         if not self.world_paused:
-            self._advance(min(dt, self._MAX_DT))
+            ticks = self._advance(min(dt, self._MAX_DT))
         else:
             # 丢弃暂停期间累积的时间，取消暂停后从当前帧继续，不产生快进。
             self._phys_acc = 0.0
-        region = self._update_region()
-        dragging = self._dragged_fruit is not None or self._dragged_stone is not None
-        grabbing = any(pet.behavior is not None and pet.behavior.grab.active for pet in self.pets)
-        active = (self._fx_active or dragging or grabbing or self.isActiveWindow()
-                  or self._scene_moving())
-        # Storm rain is the one persistent full-window effect. Keep interaction
-        # responsive at the normal 40 FPS when dragging/grabbing, otherwise
-        # cap only paint scheduling near 30 FPS; _advance() still catches up
-        # physics at _PHYS_DT=1/40 and _MAX_TICKS remains the spiral guard.
-        weather_only = bool(self.rain.active and not dragging and not grabbing)
-        # Full-window storm compositing is the most expensive paint path.  A
-        # crowded scene gets a lower paint cadence while physics keeps its
-        # fixed 40 Hz accumulator, so input and AI timing do not change.
-        crowded_weather = (weather_only and
-                           (len(self.lizards) > 12 or len(self.pets) > 8 or
-                            self.water_surface is not None))
-        weather_iv = self._INT_WEATHER_CROWDED if crowded_weather else self._INT_WEATHER
-        want_iv = weather_iv if weather_only else (self._INT_FAST if active else self._INT_SLOW)
-        # Keep cat animation at the normal 40 FPS cadence.  A previous
-        # optimization raised this interval to 60 ms for three cats, which
-        # made their motion visibly stutter even though physics still ran at
-        # 40 Hz.  Heavy environment layers may still use their own slower
-        # weather interval above, but ordinary multi-cat scenes stay smooth.
-        if (len(self.lizards) > 12 or len(self.pets) >= 3
-                or self.water_surface is not None) \
-                and not dragging and not grabbing:
-            # Keep physics at 40 Hz, but cap expensive transparent-window
-            # painting to 25 FPS once three cats share the desktop.  This
-            # avoids saturating the GUI thread while the restored smooth tail
-            # remains visually continuous between physics steps.
-            want_iv = max(want_iv, 40)
-        elif (self.pets and not active and not self.rain.active
-              and self.water_surface is None and not dragging and not grabbing):
-            # A transparent desktop pet is normally not the active window;
-            # the old idle fallback then dropped to 66 ms (15 FPS), making
-            # even a calm cat look like it was animating in slow motion.
-            # Keep an idle pose at 25 FPS without waking the full interaction
-            # cadence used during movement or dragging.
-            want_iv = min(want_iv, 40)
-        if self.anim.interval() != want_iv:
-            # Precise 保平滑，Coarse 省功耗
+            ticks = 0
+        # The dirty-region decision scans effect/entity lists.  A zero-timeout
+        # timer can run many times between fixed physics steps, so reuse the
+        # last region during interpolation and only rescan after a step.
+        if ticks:
+            region = self._update_region()
+            self._last_update_region = region
+        else:
+            region = getattr(self, "_last_update_region", None)
+        # Render as soon as the Qt event loop can accept another update.  The
+        # simulation clock remains fixed at 40 Hz in _advance(); this timer is
+        # deliberately not used as a frame-rate limiter.  Earlier versions
+        # switched to 40/45/66 ms intervals for crowded scenes and made a
+        # healthy simulation look like a low-FPS freeze.  Avoiding the
+        # per-tick _scene_moving() scan also removes an O(entity) hot path from
+        # the GUI scheduler.
+        if self.anim.interval() != 0 or self.anim.timerType() != Qt.TimerType.PreciseTimer:
             self.anim.stop()
-            self.anim.setTimerType(Qt.TimerType.PreciseTimer if active
-                                   else Qt.TimerType.CoarseTimer)
-            self.anim.setInterval(want_iv)
+            self.anim.setTimerType(Qt.TimerType.PreciseTimer)
+            self.anim.setInterval(0)
             self.anim.start()
         if region is None:
             self.update()
@@ -1090,6 +1084,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
             self._do_tick()
         # 余量/步长，[0,1)
         self._ts = min(self._phys_acc / phys_dt, 1.0)
+        return ticks
 
     # ── 环境让位 ──
     def freeze_tick(self):
@@ -1462,6 +1457,19 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         if not crowded_ai or (self._field_tick & 1):
             self.threat_field.update(self)
             self.traffic_field.update(self)
+
+        # The claim board is shared by every cat.  Synchronize all pet claims
+        # once before their decisions, then seat the groups once.  Previously
+        # each BehaviorFSM performed a full sweep/seat during its own update,
+        # multiplying the same O(claims) work by the number of cats.
+        from .behavior.board import board_for
+        board = board_for(self)
+        tick = getattr(self, "_pole_tick", 0)
+        for pet in self.pets:
+            if getattr(pet, "behavior", None) is not None:
+                board.sync(pet, tick, sweep=False)
+        board._sweep()
+        self._board_sync_tick = tick
 
         for pet in self.pets:
             pet.step(cur, cycle_prog)
@@ -1914,9 +1922,17 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
 
     def _collide_objects(self):
         """物体间通用碰撞互推。"""
-        chunkphys.collide_objects([*(pet.body for pet in self.pets),
-                                   *self.fruits, *self.seeds, *self.stones,
-                                   *self.slimemolds, *self.pearls])
+        collections = (self.pets, self.fruits, self.seeds, self.stones,
+                       self.slimemolds, self.pearls)
+        sig = tuple((id(items), len(items)) for items in collections)
+        entities = self._collision_entities_cache
+        if entities is None or sig != self._collision_entities_sig:
+            entities = [*(pet.body for pet in self.pets),
+                        *self.fruits, *self.seeds, *self.stones,
+                        *self.slimemolds, *self.pearls]
+            self._collision_entities_cache = entities
+            self._collision_entities_sig = sig
+        chunkphys.collide_objects(entities)
 
     # ── 按猫杀死编排 ──
     def request_kill(self, pet):
@@ -2637,6 +2653,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         self.update()
 
     def mousePressEvent(self, e):
+        self._passthrough_eval_key = None
         pos = self.to_logical(e.position().x(), e.position().y())
         if (e.button() == Qt.MouseButton.LeftButton
                 and self._storm_hud_resize_hit(pos)):
@@ -2765,6 +2782,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         super().keyPressEvent(e)
 
     def mouseMoveEvent(self, e):
+        self._passthrough_eval_key = None
         if self._storm_hud_resize is not None:
             if e.buttons() & Qt.MouseButton.LeftButton:
                 self._storm_hud_resize_to(self.to_logical(e.position().x(), e.position().y()))
@@ -2797,6 +2815,7 @@ class PetWindow(EffectsMixin, ItemInteractionMixin, QWidget):
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e):
+        self._passthrough_eval_key = None
         if self._storm_hud_resize is not None:
             if e.button() == Qt.MouseButton.LeftButton:
                 self._storm_hud_resize = None

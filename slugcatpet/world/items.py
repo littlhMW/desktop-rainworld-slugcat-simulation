@@ -6,6 +6,7 @@ import random
 
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import (QBrush, QColor, QPainter, QPainterPath, QPen,
+                           QPicture,
                            QPolygonF, QRadialGradient)
 
 from .._paths import log_error
@@ -1093,16 +1094,34 @@ class ItemInteractionMixin:
         """手绘墙块：纯黑实心，边缘有稳定缺洼、磨损与少量杂草。"""
         p.save()
         for x0, y0, x1, y1 in (getattr(self, "extra_walls", None) or ()):
-            # Coordinates form the seed, so moving another wall does not change
-            # this wall's texture and every repaint produces the same result.
-            seed = hash((round(x0, 2), round(y0, 2), round(x1, 2), round(y1, 2)))
-            rng = random.Random(seed)
-            shape = self._wall_shape(x0, y0, x1, y1, rng)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(*WALL_COLOR))
-            p.drawPath(shape)
-            self._draw_wall_decor(p, x0, y0, x1, y1, rng, shape)
+            # Wall wear/grass is static for a given rectangle.  Recording the
+            # complete vector pass once avoids rebuilding hundreds of random
+            # polygons and clip paths on every transparent-window repaint.
+            p.drawPicture(0, 0, self._wall_picture(x0, y0, x1, y1))
         p.restore()
+
+    def _wall_picture(self, x0, y0, x1, y1):
+        cache = getattr(self, "_wall_picture_cache", None)
+        if cache is None:
+            cache = self._wall_picture_cache = {}
+        key = tuple(round(float(v), 2) for v in (x0, y0, x1, y1))
+        hit = cache.get(key)
+        if hit is not None:
+            return hit
+        seed = hash(key)
+        rng = random.Random(seed)
+        pic = QPicture()
+        qp = QPainter(pic)
+        shape = self._wall_shape(x0, y0, x1, y1, rng)
+        qp.setPen(Qt.PenStyle.NoPen)
+        qp.setBrush(QColor(*WALL_COLOR))
+        qp.drawPath(shape)
+        self._draw_wall_decor(qp, x0, y0, x1, y1, rng, shape)
+        qp.end()
+        if len(cache) > 128:
+            cache.clear()
+        cache[key] = pic
+        return pic
 
     def _draw_wall_hint(self, p):
         """放墙预览：和庇护所一样拖出实心矩形（松手就落成同尺寸的墙块）。"""
@@ -1127,6 +1146,7 @@ class ItemInteractionMixin:
         """清掉手绘墙（和杆子一起在「清除可交互实体」里收掉）。"""
         if getattr(self, "extra_walls", None):
             self.extra_walls = []
+            getattr(self, "_wall_picture_cache", {}).clear()
             refresh = getattr(self, "_refresh_shelter_solids", None)
             if refresh is not None:
                 refresh()
@@ -1141,8 +1161,27 @@ class ItemInteractionMixin:
                 continue        # 光标那截：看不见，只是给猫爬的
             if getattr(pl, "from_spear", None) is not None:
                 continue        # 插住的矛自己成杆：由矛贴图（_draw_spears）画，别再叠一根杆
-            self._draw_pole_rod(p, pl.ax, pl.ay, pl.bx, pl.by, POLE_RAD)
+            p.drawPicture(0, 0,
+                          self._pole_picture(pl.ax, pl.ay, pl.bx, pl.by,
+                                             POLE_RAD))
         p.restore()
+
+    def _pole_picture(self, ax, ay, bx, by, rad):
+        cache = getattr(self, "_pole_picture_cache", None)
+        if cache is None:
+            cache = self._pole_picture_cache = {}
+        key = tuple(round(float(v), 2) for v in (ax, ay, bx, by, rad))
+        hit = cache.get(key)
+        if hit is not None:
+            return hit
+        pic = QPicture()
+        qp = QPainter(pic)
+        self._draw_pole_rod(qp, ax, ay, bx, by, rad)
+        qp.end()
+        if len(cache) > 256:
+            cache.clear()
+        cache[key] = pic
+        return pic
 
     def _draw_pole_rod(self, p, ax, ay, bx, by, rad):
         """纯黑圆角杆体，带极少量稳定磨损和一小撮杂草。
@@ -1963,7 +2002,24 @@ class ItemInteractionMixin:
         # 这也移除了每帧构建全场线段/圆形集合的平方级开销。
         blockers = ()
         # 地形查询：这一帧一份，全场蜥蜴共用（地面 / 墙 / 竖杆 / 横杆 / 背景墙）
-        terrain = self.terrain = TerrainQuery(self)
+        # TerrainQuery wraps the already cached NavGeometry.  Keep one facade
+        # for a stable geometry snapshot instead of allocating it for every
+        # lizard on every physics tick.  Pole/shelter/window changes alter the
+        # signature and force a fresh facade on the next pass.
+        terrain_sig = (
+            int(getattr(self, "geometry_version", 0) or 0),
+            int(getattr(self, "wall_version", 0) or 0),
+            int(getattr(self, "_nav_version", 0) or 0),
+            len(getattr(self, "poles", ()) or ()),
+            len(getattr(self, "wall_surfaces", ()) or ()),
+            len(getattr(self, "shelters", ()) or ()),
+        )
+        terrain = getattr(self, "_terrain_query_cache", None)
+        if terrain is None or terrain_sig != getattr(self, "_terrain_query_sig", None):
+            terrain = TerrainQuery(self)
+            self._terrain_query_cache = terrain
+            self._terrain_query_sig = terrain_sig
+        self.terrain = terrain
         surfaces = terrain.climb_surfaces()
         # 蜥蜴把唯一庇护所当作回巢风险参考：优先把猎物带向远离庇护所
         # 的虚拟巢穴。字段每帧注入，避免把窗口对象耦合进 Lizard。
@@ -2005,7 +2061,7 @@ class ItemInteractionMixin:
             lz._claims = claims
             scan = lz.should_scan(tick)
             if scan:
-                prey, threats, others, pack = self._lizard_relations(lz)
+                prey, threats, others, pack = self._lizard_relations(lz, live)
             else:
                 prey = threats = others = pack = ()
             lz.perceive(self._WL, self._HL, targets=targets, prey=prey,
@@ -2024,6 +2080,7 @@ class ItemInteractionMixin:
                     lz.absorb_alert(relayed)
         # ③ 执行：这时才真正改世界
         ai_ids = {id(lz) for lz in ai_live}
+        claim_board = board_for(self)
         for lz in self.lizards:
             if id(lz) in ai_ids:
                 lz.act(self._WL, self._HL, cursor=cur)
@@ -2031,7 +2088,7 @@ class ItemInteractionMixin:
             self._lizard_bite(lz, tick)
             # 蜥蜴的猎物也上认领板（Lizard.intent）：全场只有一份「谁在追什么」
             obj_i, kind_i = lz.intent()
-            board_for(self).register_actor(lz, obj_i, kind_i)
+            claim_board.register_actor(lz, obj_i, kind_i)
         for lz in ai_live:
             lz.camo_tick(self, tick)          # 白蜥迷彩：低频采背后背景色
         self._cull_flung_corpses()
@@ -2052,7 +2109,7 @@ class ItemInteractionMixin:
         """兼容旧调用；视觉不再把地形或其它生物作为遮挡物。"""
         return ((), ())
 
-    def _lizard_relations(self, lz):
+    def _lizard_relations(self, lz, candidates=None):
         """按原版关系表（StaticWorld.cs:3668-3726 + LizardAI.ModuleToTrackRelationship）
         把场上对象分成四组：prey(Eats/Attacks) / threats(Afraid) / others(AgressiveRival)
         / pack(Pack)。返回 (prey, threats, others, pack)，每项是 [(obj, 权重)]。"""
@@ -2068,7 +2125,7 @@ class ItemInteractionMixin:
             elif kind == "AgressiveRival":
                 others.append((obj, w))
 
-        for other in self.lizards:
+        for other in self.lizards if candidates is None else candidates:
             if other is lz or other is self._dragged_lizard:
                 continue
             if other.dead or other.state != ItemState.FREE:
